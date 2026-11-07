@@ -21,7 +21,7 @@ package's description says its job in plain English.
 | `@veda-hq/kavach` | कवच, armour | Agent guards: refuses unsafe or out-of-bounds agent commands | planned |
 | `@veda-hq/dvara` | द्वार, gate | Git hooks: cheap checks at commit, expensive ones once at push | planned |
 | `@veda-hq/agnipariksha` | अग्निपरीक्षा, trial by fire | Mutation gate: wiring and policy on top of Stryker | planned |
-| `@veda-hq/eslint-plugin-shuddhi` | शुद्धि, purification | Generic ESLint rules | planned |
+| [`@veda-hq/eslint-plugin-shuddhi`](packages/eslint-plugin-shuddhi) | शुद्धि, purification | Generic ESLint rules | v0.2: error handling, input parsing, NestJS and Prisma boundaries, test lint |
 | `sarathi` (Claude Code plugin) | सारथि, charioteer | Carries the guards, session hooks, agents and skills; installed as `sarathi@veda` from this repository's marketplace | planned |
 
 The work rules for repositories that track work in GitHub Issues live in their

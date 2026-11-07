@@ -1,0 +1,15 @@
+{
+  "// why": "Typed RuleTester project for nest-body-dto. file.ts is the placeholder every case's code replaces; body-dtos.ts is the cross-file DTO module the cases import.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": []
+  },
+  "include": ["*.ts"]
+}

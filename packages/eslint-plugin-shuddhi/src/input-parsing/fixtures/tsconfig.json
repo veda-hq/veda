@@ -1,0 +1,11 @@
+{
+  "// why": "Default project for the input-parsing suites' typed RuleTester: strict, as linted workspaces usually are. A non-null assertion changes a type only under strictNullChecks, which the built-in default project lacks. placeholder.ts exists because a tsconfig needs an input.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "files": ["placeholder.ts"]
+}

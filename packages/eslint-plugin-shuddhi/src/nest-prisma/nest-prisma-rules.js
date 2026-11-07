@@ -94,7 +94,7 @@ const prismaMultiWriteTransaction = {
     defaultOptions: [{ transactionWrappers: [] }],
     messages: {
       untransacted:
-        'This function performs {{count}} Prisma writes outside a transaction. A failure between them leaves the rows partially updated — the audit-log and match-rebuild defects Cubic reported. Wrap them in `prisma.$transaction`.',
+        'This function performs {{count}} Prisma writes outside a transaction. A failure between them leaves the rows partially updated — the audit-log and match-rebuild defects code review kept finding. Wrap them in `prisma.$transaction`.',
     },
   },
   create(context) {
@@ -139,7 +139,7 @@ const nestParamPipe = {
     schema: [],
     messages: {
       unparsed:
-        '`{{name}}` is declared `{{declared}}` but arrives from the request unvalidated. Without a pipe (or a validated DTO) it reaches the query layer as-is — the NaN pagination and malformed-date defects Cubic reported. Add {{pipe}}, or take a validated DTO.',
+        '`{{name}}` is declared `{{declared}}` but arrives from the request unvalidated. Without a pipe (or a validated DTO) it reaches the query layer as-is — the NaN pagination and malformed-date defects code review kept finding. Add {{pipe}}, or take a validated DTO.',
     },
   },
   create(context) {

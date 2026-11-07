@@ -128,7 +128,7 @@ describe('what each rule tells the author', () => {
       'nest-param-pipe',
       'a number param',
       'class C {\n  list(@Query("page") page: number) { return page; }\n}',
-      '`page` is declared `number` but arrives from the request unvalidated. Without a pipe (or a validated DTO) it reaches the query layer as-is — the NaN pagination and malformed-date defects Cubic reported. Add `ParseIntPipe`/`ParseDatePipe`, or take a validated DTO.',
+      '`page` is declared `number` but arrives from the request unvalidated. Without a pipe (or a validated DTO) it reaches the query layer as-is — the NaN pagination and malformed-date defects code review kept finding. Add `ParseIntPipe`/`ParseDatePipe`, or take a validated DTO.',
       [],
     ],
     [
@@ -142,7 +142,7 @@ describe('what each rule tells the author', () => {
       'nest-param-pipe',
       'a string id param',
       'class C {\n  get(@Param("brandId") brandId: string) { return brandId; }\n}',
-      '`brandId` is declared `string id` but arrives from the request unvalidated. Without a pipe (or a validated DTO) it reaches the query layer as-is — the NaN pagination and malformed-date defects Cubic reported. Add `ParseUUIDPipe`, or take a validated DTO.',
+      '`brandId` is declared `string id` but arrives from the request unvalidated. Without a pipe (or a validated DTO) it reaches the query layer as-is — the NaN pagination and malformed-date defects code review kept finding. Add `ParseUUIDPipe`, or take a validated DTO.',
       [],
     ],
   ];

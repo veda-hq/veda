@@ -1,0 +1,29 @@
+{
+  "// why this file exists": [
+    "A shared list of suite qualifiers, in the shape a repository passes to no-self-mock-sut: the trailing name segments a colocated suite may carry that are stripped to find its subject (`foo.integration.test.ts` tests `foo.ts`). A mutation gate deriving a suite's subject can read the same list, so the two cannot drift apart.",
+    "`stateMatrix` alone may carry one area segment matching `stateMatrixArea` (`ProductsPage.states.loading.test.tsx`). `notQualifiers` are the near-misses that stay out: `usecase` is a source suffix, `meta` names a suite that tests the property suites."
+  ],
+  "stateMatrix": "states",
+  "stateMatrixArea": "[a-z0-9-]+",
+  "qualifiers": [
+    "integration",
+    "e2e",
+    "perf",
+    "perf-test",
+    "performance",
+    "unit",
+    "contract",
+    "properties",
+    "sync",
+    "security",
+    "pipeline",
+    "runtime",
+    "diagnostics",
+    "auto-capture",
+    "import-timers",
+    "schema-sql",
+    "sql-verbatim",
+    "test-sign-in"
+  ],
+  "notQualifiers": ["usecase", "meta"]
+}

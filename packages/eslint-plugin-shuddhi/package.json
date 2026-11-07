@@ -1,0 +1,58 @@
+{
+  "name": "@veda-hq/eslint-plugin-shuddhi",
+  "version": "0.2.0",
+  "description": "ESLint rules for code coding agents write: error handling, input parsing, NestJS and Prisma boundaries, and test quality. Each rule closes a defect class reviewers kept finding after push.",
+  "keywords": ["eslint", "eslintplugin", "eslint-plugin", "nestjs", "prisma", "vitest", "testing", "coding agents"],
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24.15"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/veda-hq/veda.git",
+    "directory": "packages/eslint-plugin-shuddhi"
+  },
+  "homepage": "https://github.com/veda-hq/veda/tree/main/packages/eslint-plugin-shuddhi#readme",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./error-handling": "./src/error-handling/index.js",
+    "./error-handling/configs": "./src/error-handling/configs.js",
+    "./input-parsing": "./src/input-parsing/index.js",
+    "./nest-prisma": "./src/nest-prisma/index.js",
+    "./server-boundary": "./src/server-boundary/index.js",
+    "./server-boundary/configs": "./src/server-boundary/configs.js",
+    "./test-lint": "./src/test-lint/index.js",
+    "./test-lint/configs": "./src/test-lint/configs.js",
+    "./nest-prisma/helpers": "./src/nest-prisma/helpers.js"
+  },
+  "files": [
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/fixtures"
+  ],
+  "scripts": {
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts --test-coverage-exclude=src/**/fixtures/** src/**/*.test.ts",
+    "smoke": "node --input-type=module -e \"const p = (await import('@veda-hq/eslint-plugin-shuddhi')).default; if (Object.keys(p.rules).length === 0) throw new Error('no rules');\"",
+    "check": "pnpm test && pnpm smoke"
+  },
+  "peerDependencies": {
+    "eslint": "^9.24.0",
+    "typescript": ">=5.4 <6"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@typescript-eslint/rule-tester": "8.48.0",
+    "eslint": "9.39.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.48.0"
+  }
+}

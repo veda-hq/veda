@@ -1,0 +1,14 @@
+{
+  "name": "veda",
+  "private": true,
+  "description": "Veda: generic, public tooling for repositories that coding agents work in. Nothing is published under this name; each package under packages/ is.",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@12.9.0",
+  "engines": {
+    "node": ">=24.15"
+  },
+  "scripts": {
+    "check": "pnpm -r check"
+  }
+}

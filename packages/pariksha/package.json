@@ -1,0 +1,38 @@
+{
+  "name": "@veda-hq/pariksha",
+  "version": "0.1.0",
+  "description": "Repository checks: doc drift, rule enforcement, test-quality ratchets. v0.1: the boundary check, which refuses any tracked file naming a denied word.",
+  "keywords": ["repository checks", "lint", "boundary", "ci", "coding agents"],
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24.15"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/veda-hq/veda.git",
+    "directory": "packages/pariksha"
+  },
+  "homepage": "https://github.com/veda-hq/veda/tree/main/packages/pariksha#readme",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "bin": {
+    "pariksha": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts src/**/*.test.ts",
+    "smoke": "node dist/cli.js --version && node dist/cli.js boundary --root ../..",
+    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}

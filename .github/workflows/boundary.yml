@@ -1,0 +1,42 @@
+name: boundary
+
+# The shared boundary check, for every veda-hq repository: no tracked file
+# names a word on the repository's deny list (.veda/deny.sha256, SHA-256
+# hashes of lowercase words). Call it at a release:
+#
+#   jobs:
+#     boundary:
+#       uses: veda-hq/veda/.github/workflows/boundary.yml@v0.1.0
+#       with:
+#         pariksha-version: 0.1.0
+on:
+  workflow_call:
+    inputs:
+      pariksha-version:
+        description: The @veda-hq/pariksha version to run, exact.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  boundary:
+    name: Boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        timeout-minutes: 3
+        with:
+          node-version: 24
+      - name: No tracked file names a denied word
+        env:
+          VERSION: ${{ inputs.pariksha-version }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::pariksha-version must be exact, got $VERSION"; exit 1; }
+          npx --yes "@veda-hq/pariksha@$VERSION" boundary

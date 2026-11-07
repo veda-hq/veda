@@ -1,0 +1,4 @@
+# The boundary check refuses any tracked file naming one of these words.
+# Each line is the SHA-256 of a lowercase word: `pariksha hash <word>` makes one.
+# The first: the client whose tooling this repo was carved from (T-9).
+39b79495ef4280479dee2794e627c132cd54b36f2e8af299aa2636a701bc913e

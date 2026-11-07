@@ -1,0 +1,74 @@
+name: Release
+
+# A tag vX.Y.Z on main publishes every package under packages/ whose version is
+# X.Y.Z to npm, signed with provenance from this workflow, and makes the GitHub
+# release. A version already on npm is skipped, so a rerun is safe.
+#
+# npm auth: trusted publishing (OIDC) once it is set up for a package on
+# npmjs.com; until then, for a package's first publish, the NPM_TOKEN secret.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The tag is on main and names at least one package's version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::tag $TAG is not on main"; exit 1; }
+          found=0
+          for pkg in packages/*/package.json; do
+            [ "v$(jq -r .version "$pkg")" = "$TAG" ] && found=1
+          done
+          [ "$found" = 1 ] || { echo "::error::no package under packages/ has version ${TAG#v}"; exit 1; }
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        timeout-minutes: 3
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      # pnpm check builds each package's dist/ and tests it; what is published is that build.
+      - run: pnpm check
+      - name: Publish the packages at this version
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/packs"
+          for dir in packages/*/; do
+            name=$(jq -r .name "$dir/package.json")
+            version=$(jq -r .version "$dir/package.json")
+            [ "v$version" = "$TAG" ] || continue
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version is on npm already: skipped"
+              continue
+            fi
+            (cd "$dir" && pnpm pack --pack-destination "$RUNNER_TEMP/packs")
+            tgz=$(ls "$RUNNER_TEMP/packs/$(echo "${name#@}" | tr / -)-$version.tgz")
+            npm publish "$tgz" --access public --provenance
+          done
+      - name: Publish the release, with the packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          shopt -s nullglob
+          packs=("$RUNNER_TEMP"/packs/*.tgz)
+          gh release create "$TAG" "${packs[@]}" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "veda $TAG"

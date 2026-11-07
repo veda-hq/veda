@@ -1,0 +1,7 @@
+[extend]
+useDefault = true
+
+# Installed and built files are not ours to scan; the git history scan in CI
+# never sees them because they are ignored.
+[[allowlists]]
+paths = ['''^node_modules/''', '''^dist/''']

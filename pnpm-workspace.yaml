@@ -1,0 +1,7 @@
+packages:
+  - packages/*
+
+# A package version must be a day old before it installs: a hijacked release is
+# usually caught and pulled within hours.
+minimumReleaseAge: 1440
+minimumReleaseAgeExclude: []

@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULTS, findUncited, formatClaims, listAdrs, readOrUndefined, stagedSource, treeSource, type Options } from './authority-citations.ts';
+import { adrDirOf, DEFAULTS, findUncited, formatClaims, listAdrs, readOrUndefined, stagedSource, treeSource, type Options } from './authority-citations.ts';
 import { findDenied, hash, isText, parseDenyList, type TrackedFile } from './boundary.ts';
 import { checkBudgets } from './doc-budgets.ts';
 import { checkExportDeletions, formatReport } from './export-deletions.ts';
@@ -160,7 +160,7 @@ const authorityCitations = (f: Map<string, string>, io: Io, env: NodeJS.ProcessE
   const opts: Options = {
     authorities: list(f.get('--authority')),
     issuePrefixes: list(f.get('--issue-prefix')),
-    adrDir: f.get('--adr-dir') ?? DEFAULTS.adrDir,
+    adrDir: adrDirOf(f.get('--adr-dir') ?? DEFAULTS.adrDir),
   };
   let result: ReturnType<typeof formatClaims>;
   try {

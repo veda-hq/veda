@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   addedLines,
+  adrDirOf,
   DEFAULTS,
   findUncited,
   formatClaims,
@@ -284,6 +285,93 @@ describe('authority-citations, staged, outside a merge', () => {
   });
 });
 
+describe('authority-citations, staged, against what git or its config can hide', () => {
+  const planted = (setup: (root: string) => void) => {
+    const root = init();
+    write(root, 'base.md', ['# Base']);
+    git(root, 'add', '--all');
+    git(root, 'commit', '--quiet', '-m', 'base');
+    setup(root);
+    return validate(root);
+  };
+
+  it('reads :(literal) paths when GIT_LITERAL_PATHSPECS is set', () => {
+    const r = planted((root) => {
+      write(root, 'd.md', [NEW_CLAIM]);
+      git(root, 'add', 'd.md');
+      process.env['GIT_LITERAL_PATHSPECS'] = '1';
+    });
+    delete process.env['GIT_LITERAL_PATHSPECS'];
+    assert.equal(r.status, 1, r.output);
+    assert.ok(r.output.includes(`1: ${NEW_MATCH}`), r.output);
+  });
+
+  it('reads the lines of a file git classes as binary, by size or by attribute', () => {
+    const bySize = planted((root) => {
+      git(root, 'config', 'core.bigFileThreshold', '1');
+      write(root, 'd.md', ['# D', NEW_CLAIM]);
+      git(root, 'add', 'd.md');
+    });
+    assert.equal(bySize.status, 1, bySize.output);
+    const byAttribute = planted((root) => {
+      write(root, '.gitattributes', ['*.md binary']);
+      write(root, 'd.md', ['# D', NEW_CLAIM]);
+      git(root, 'add', '--all');
+    });
+    assert.equal(byAttribute.status, 1, byAttribute.output);
+    assert.ok(byAttribute.output.includes(`2: ${NEW_MATCH}`), byAttribute.output);
+  });
+
+  it('judges a symlink replaced by a file', () => {
+    const r = planted((root) => {
+      symlinkSync('base.md', join(root, 'b.md'));
+      git(root, 'add', 'b.md');
+      git(root, 'commit', '--quiet', '-m', 'link');
+      rmSync(join(root, 'b.md'));
+      write(root, 'b.md', [NEW_CLAIM]);
+      git(root, 'add', 'b.md');
+    });
+    assert.equal(r.status, 1, r.output);
+    assert.ok(r.output.includes('uncited authority claim(s) in b.md'), r.output);
+  });
+
+  it('reads a path that starts with a stage number as itself', () => {
+    const r = planted((root) => {
+      write(root, 'a.md', ['plain']);
+      git(root, 'add', 'a.md');
+      git(root, 'commit', '--quiet', '-m', 'a');
+      write(root, '0:a.md', [NEW_CLAIM]);
+      git(root, 'add', '0:a.md');
+    });
+    assert.equal(r.status, 1, r.output);
+    assert.ok(r.output.includes('uncited authority claim(s) in 0:a.md'), r.output);
+  });
+
+  it('reads a name stored decomposed, whatever core.precomposeUnicode says', () => {
+    const r = planted((root) => {
+      const name = 'é.md';
+      writeFileSync(join(root, name), `${NEW_CLAIM}\n`);
+      git(root, '-c', 'core.precomposeUnicode=false', 'add', '--', name);
+      git(root, 'config', 'core.precomposeUnicode', 'true');
+    });
+    assert.equal(r.status, 1, r.output);
+    assert.ok(r.output.includes(`1: ${NEW_MATCH}`), r.output);
+  });
+
+  it('spells the ADR directory as paths do, and counts only files as ADRs', () => {
+    const root = init();
+    mkdirSync(join(root, 'docs', 'adr', '0002-dir.md'), { recursive: true });
+    writeFileSync(join(root, 'docs', 'adr', '0002-dir.md', 'x'), '');
+    write(root, 'docs/adr/0001-self.md', [`${NEW_CLAIM} ADR-0001`]);
+    write(root, 'b.md', [`${NEW_CLAIM} ADR-0002`]);
+    git(root, 'add', '--all');
+    const r = validate(root, {}, 'staged', ['--adr-dir', './docs//adr/']);
+    assert.equal(r.status, 1, r.output);
+    assert.ok(r.output.includes('uncited authority claim(s) in docs/adr/0001-self.md'), r.output);
+    assert.ok(r.output.includes('uncited authority claim(s) in b.md'), r.output);
+  });
+});
+
 describe('authority-citations, tree', () => {
   it('judges every tracked file naming a phrase, skipping vendored paths, other extensions and files gone from disk', () => {
     const root = init();
@@ -303,6 +391,18 @@ describe('authority-citations, tree', () => {
     assert.ok(!r.output.includes('b.txt'));
     assert.ok(!r.output.includes('dist/c.md'));
     assert.ok(!r.output.includes('gone.md'));
+  });
+
+  it('exits 2 on a tracked file it cannot read, rather than skipping it', () => {
+    const root = init();
+    write(root, 'a.md', [NEW_CLAIM]);
+    git(root, 'add', '--all');
+    git(root, 'commit', '--quiet', '-m', 'a');
+    chmodSync(join(root, 'a.md'), 0o000);
+    const r = validate(root, {}, 'tree');
+    chmodSync(join(root, 'a.md'), 0o644);
+    // root reads any file; everyone else is refused it.
+    assert.equal(r.status, process.getuid?.() === 0 ? 1 : 2, r.output);
   });
 
   it('passes a tree whose claims are all cited, with issue prefixes from a list', () => {
@@ -375,6 +475,12 @@ describe('citations', () => {
   it('accepts a commit id only when it names a commit', () => {
     assert.equal(hasCitation('(owner decision, f1a0da2d)', 'x.md', opts, resolves, []), true);
     assert.equal(hasCitation('(owner decision, deadbeef)', 'x.md', opts, resolves, []), false);
+  });
+
+  it('normalises an ADR directory', () => {
+    assert.equal(adrDirOf('./docs//adr/'), 'docs/adr');
+    assert.equal(adrDirOf('docs/adr'), 'docs/adr');
+    assert.equal(adrDirOf('./'), '.');
   });
 
   it('lists the ADR directory, or nothing when there is none', () => {

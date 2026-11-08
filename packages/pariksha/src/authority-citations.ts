@@ -19,8 +19,8 @@
 // staged mode judges only lines the commit adds; on a merge, only lines new
 // against every parent, so text a merged branch already carried is not judged
 // again. tree mode judges every tracked file.
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, posix } from 'node:path';
 import { must, PLAIN_DIFF, type Git } from './git.ts';
 
 export interface Options {
@@ -135,8 +135,10 @@ export const stagedSource = (git: Git, env: NodeJS.ProcessEnv, readFile: (path: 
   const added = (file: string, against: readonly string[]): Set<number> =>
     addedLines(must(git, ['diff', ...PLAIN_DIFF, '--cached', '-U0', ...against, '--', literal(file)]));
   return {
-    files: nulList(must(git, ['diff', ...PLAIN_DIFF, '--cached', '-z', '--name-only', '--diff-filter=ACM'])),
-    content: (file) => must(git, ['show', `:${file}`]),
+    // T: a symlink or submodule replaced by a file brings in its every line.
+    files: nulList(must(git, ['diff', ...PLAIN_DIFF, '--cached', '-z', '--name-only', '--diff-filter=ACMT'])),
+    // `:0:` names stage 0 explicitly, so a path such as `0:a.md` is read as itself.
+    content: (file) => must(git, ['show', `:0:${file}`]),
     judged: (file) => {
       let lines = added(file, []);
       for (const parent of parents) {
@@ -176,18 +178,25 @@ export const findUncited = (source: Source, opts: Options, git: Git, adrFiles: r
   return claims;
 };
 
-/** Files under the ADR directory, relative to the root. */
+/**
+ * An ADR directory as the claiming files' paths spell it: `./docs//adr/`
+ * is `docs/adr`, so an ADR citing itself is still recognised as itself.
+ */
+export const adrDirOf = (dir: string): string => posix.normalize(dir).replace(/\/+$/, '') || '.';
+
+/** Files (not directories) under the ADR directory, relative to the root. */
 export const listAdrs = (root: string, adrDir: string): string[] => {
   const dir = join(root, adrDir);
-  return existsSync(dir) ? readdirSync(dir).map((f) => `${adrDir}/${f}`) : [];
+  return existsSync(dir) ? readdirSync(dir).filter((f) => statSync(join(dir, f)).isFile()).map((f) => `${adrDir}/${f}`) : [];
 };
 
-/** A file's text, or undefined when it cannot be read (gone, a directory). */
+/** A file's text, or undefined when it is not there (gone, or now a directory); any other failure throws. */
 export const readOrUndefined = (path: string): string | undefined => {
   try {
     return readFileSync(path, 'utf8');
-  } catch {
-    return undefined;
+  } catch (e) {
+    if (['ENOENT', 'ENOTDIR', 'EISDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) return undefined;
+    throw e;
   }
 };
 

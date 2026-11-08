@@ -100,18 +100,21 @@ export const checkExportDeletions = (git: Git, base: string): Report => {
   // Renames off, so a file moved and edited lists its old path, whose removed
   // lines the per-file diff then shows; colour, external diff tools and
   // textconv off, so a user's config cannot rewrite the lines read here.
-  const changed = must(git, ['diff', ...PLAIN_DIFF, '--name-only', '--diff-filter=ACMRD', `${base}...HEAD`, '--', ...SOURCE_GLOBS])
-    .split('\n')
+  // NUL-separated, so no name comes back quoted.
+  const changed = must(git, ['diff', ...PLAIN_DIFF, '-z', '--name-only', '--diff-filter=ACMRD', `${base}...HEAD`, '--', ...SOURCE_GLOBS])
+    .split('\0')
     .filter((f) => f !== '' && !SKIPPED_DIR.test(f));
   const violations: Finding[] = [];
   const declared: Finding[] = [];
   const coveredFiles: string[] = [];
   const used = new Map<string, boolean>();
   for (const file of changed) {
-    const removed = removedExports(must(git, ['diff', ...PLAIN_DIFF, '-U0', `${base}...HEAD`, '--', file]));
+    // `:(literal)` so a name like `src/[id].ts` names only itself.
+    const spec = `:(literal)${file}`;
+    const removed = removedExports(must(git, ['diff', ...PLAIN_DIFF, '-U0', `${base}...HEAD`, '--', spec]));
     if (removed.length === 0) continue;
     // A file trailer covers a file only once HEAD has nothing at its path.
-    if (files.has(file) && must(git, ['ls-tree', '--name-only', 'HEAD', '--', file]).trim() === '') {
+    if (files.has(file) && must(git, ['ls-tree', '--name-only', 'HEAD', '--', spec]).trim() === '') {
       coveredFiles.push(file);
       continue;
     }

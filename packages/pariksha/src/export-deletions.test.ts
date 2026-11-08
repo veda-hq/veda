@@ -198,6 +198,18 @@ describe('checkExportDeletions', () => {
     assert.deepEqual(checkExportDeletions(gitAt(root), 'main').violations, [{ symbol: 'gone', file: 'src/a.ts' }]);
   });
 
+  it('reads a name git would quote, and a name with glob characters as itself', () => {
+    const root = branch(
+      { 'src/a"b.ts': 'export const quoted = 1;\n', 'src/[id].ts': 'export const routed = 1;\n', 'src/i.ts': 'export const other = 1;\n' },
+      { 'src/a"b.ts': '', 'src/[id].ts': '', 'src/i.ts': '' },
+    );
+    assert.deepEqual(checkExportDeletions(gitAt(root), 'main').violations, [
+      { symbol: 'routed', file: 'src/[id].ts' },
+      { symbol: 'quoted', file: 'src/a"b.ts' },
+      { symbol: 'other', file: 'src/i.ts' },
+    ]);
+  });
+
   it('reads a non-ASCII path whatever core.quotePath says', () => {
     const root = branch({ 'src/é.ts': 'export const gone = 1;\n' }, { 'src/é.ts': '' });
     sh(root, 'config', 'core.quotePath', 'true');

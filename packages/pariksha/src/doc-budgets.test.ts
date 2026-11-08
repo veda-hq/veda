@@ -18,6 +18,9 @@ describe('parsing', () => {
   it('reads a last section to the end, and an absent one as empty', () => {
     assert.deepEqual(parseBudgets(section('x\n## Budgets\n| D | B |\n| - | - |\n| `z.md` | 5 |', 'Budgets')), [{ path: 'z.md', bytes: 5 }]);
     assert.equal(section('no table', 'Budgets'), '');
+    const crlf = section('## Budgets\r\n| D | B |\r\n|:--|--:|\r\n| `z.md` | 5 |\r\n', 'Budgets');
+    assert.deepEqual(parseBudgets(crlf), [{ path: 'z.md', bytes: 5 }]);
+    assert.equal(dataRows(crlf).length, 1);
     assert.deepEqual(dataRows(''), []);
   });
 });

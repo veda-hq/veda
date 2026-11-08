@@ -79,6 +79,8 @@ is never reported; a mention in a comment does not count as a use. Bare
 `export { a, b }` lists and files under `node_modules`, `dist`, `build`,
 `coverage` and `generated` are not read. Without `--base`, the base is the
 first of `origin/main`, `origin/develop`, `origin/master` and `main` that
-exists; with none, nothing is checked. It reads the whole repository from
-any directory inside it. When git cannot read the range (no merge base, a
-shallow clone), it exits 2: nothing was checked, so it is not a pass.
+exists. It reads the whole repository from any directory inside it, and
+renames, colour, external diff tools and textconv in a user's git config
+do not change what it reads. With no base, or when git cannot read the
+range (no merge base, a shallow clone), it exits 2: nothing was checked,
+so it is not a pass.

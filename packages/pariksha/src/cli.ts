@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { findDenied, hash, isText, parseDenyList, type TrackedFile } from './boundary.ts';
 import { checkBudgets } from './doc-budgets.ts';
 import { checkExportDeletions, formatReport } from './export-deletions.ts';
-import { gitAtTop, resolveBase } from './git.ts';
+import { BASE_CANDIDATES, gitAtTop, resolveBase } from './git.ts';
 
 export interface Io {
   readonly out: (line: string) => void;
@@ -118,12 +118,13 @@ const exportDeletions = (f: Map<string, string>, io: Io): number => {
   const asked = f.get('--base');
   const base = asked === undefined ? resolveBase(git) : resolveBase(git, [asked]);
   if (base === undefined) {
-    if (asked !== undefined) {
-      io.err(`pariksha export-deletions: --base ${asked} names no commit`);
-      return 2;
-    }
-    io.out('pariksha export-deletions: no base branch to compare with; nothing checked');
-    return 0;
+    // A shallow single-branch checkout lands here; passing it would pass unread work.
+    io.err(
+      asked === undefined
+        ? `pariksha export-deletions: none of ${BASE_CANDIDATES.join(', ')} names a commit; fetch one or pass --base`
+        : `pariksha export-deletions: --base ${asked} names no commit`,
+    );
+    return 2;
   }
   let report: ReturnType<typeof checkExportDeletions>;
   try {
@@ -154,7 +155,7 @@ export const run = (args: readonly string[], io: Io, version: string = ownVersio
     io.out(hash(rest[0]));
     return 0;
   }
-  const spec = command === undefined ? undefined : COMMANDS[command];
+  const spec = command !== undefined && Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;
   const f = spec && flags(rest, spec.allowed);
   if (!spec || !f) {
     io.err(USAGE);

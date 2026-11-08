@@ -73,11 +73,17 @@ describe('removedExports and usedOutsideComments', () => {
       '-export enum E {}',
       '-export let l = 1;',
       '-export var v = 1;',
+      '-export const enum CE {}',
+      '-export declare function d(): void;',
+      '-export function* gen() {}',
+      '-export async function *agen() {}',
+      '-export namespace N {}',
+      '-export const enumLike = 1;',
       '-export { x, y };',
       '+export const added = 1;',
       '-const notExported = 1;',
     ].join('\n');
-    assert.deepEqual(removedExports(diff), ['a', 'b', 'C', 'I', 'T', 'E', 'l', 'v']);
+    assert.deepEqual(removedExports(diff), ['a', 'b', 'C', 'I', 'T', 'E', 'l', 'v', 'CE', 'd', 'gen', 'agen', 'N', 'enumLike']);
   });
 
   it('counts a code hit, not a comment', () => {
@@ -148,7 +154,7 @@ describe('checkExportDeletions', () => {
     const silent: Git = { run: () => undefined };
     assert.throws(() => checkExportDeletions(silent, 'main'), /git log --format=%B main\.\.HEAD failed/);
     const noDiff: Git = { run: (args) => (args[0] === 'log' ? '' : undefined) };
-    assert.throws(() => checkExportDeletions(noDiff, 'main'), /git diff --name-only/);
+    assert.throws(() => checkExportDeletions(noDiff, 'main'), /git diff --no-renames .* --name-only .* failed$/);
   });
 
   it('reads a comment as a mention under grep.column, and in a path with a colon', () => {
@@ -161,6 +167,35 @@ describe('checkExportDeletions', () => {
       { symbol: 'gone', file: 'src/a.ts' },
       { symbol: 'other', file: 'src/x:y.ts' },
     ]);
+  });
+
+  it('reads a file renamed and edited by its old path', () => {
+    const root = branch(
+      { 'src/old.ts': 'export const gone = 1;\nexport const kept = 2;\nconst a = 1;\nconst b = 2;\nconst c = 3;\n' },
+      { 'src/old.ts': null, 'src/new.ts': 'export const kept = 2;\nconst a = 1;\nconst b = 2;\nconst c = 3;\n' },
+    );
+    assert.deepEqual(checkExportDeletions(gitAt(root), 'main').violations, [{ symbol: 'gone', file: 'src/old.ts' }]);
+  });
+
+  it('reads plain diffs and greps under colour, external diff and textconv settings', () => {
+    const root = branch({ 'src/a.ts': 'export const gone = 1;\n', 'src/b.ts': 'export const other = 1;\n' }, { 'src/a.ts': '', 'src/b.ts': '// other\n' });
+    for (const [k, v] of [
+      ['color.diff', 'always'],
+      ['color.grep', 'always'],
+      ['diff.external', 'false'],
+      ['diff.fake.textconv', 'false'],
+    ] as const)
+      sh(root, 'config', k, v);
+    write(root, { '.gitattributes': '*.ts diff=fake\n' });
+    assert.deepEqual(checkExportDeletions(gitAt(root), 'main').violations, [
+      { symbol: 'gone', file: 'src/a.ts' },
+      { symbol: 'other', file: 'src/b.ts' },
+    ]);
+  });
+
+  it('does not count a committed build as a use', () => {
+    const root = branch({ 'src/a.ts': 'export const gone = 1;\n', 'dist/a.js': 'export const gone = 1;\n' }, { 'src/a.ts': '' });
+    assert.deepEqual(checkExportDeletions(gitAt(root), 'main').violations, [{ symbol: 'gone', file: 'src/a.ts' }]);
   });
 
   it('reads a non-ASCII path whatever core.quotePath says', () => {

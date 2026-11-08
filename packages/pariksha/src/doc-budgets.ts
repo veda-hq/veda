@@ -15,19 +15,22 @@ export interface Budget {
 
 /** The text of the `## <section>` section, up to the next `## ` heading; '' when absent. */
 export const section = (markdown: string, name: string): string => {
-  const start = markdown.indexOf(`\n## ${name}\n`);
+  // Line endings normalised and a leading newline added, so a CRLF file and a
+  // heading on the first line read like any other.
+  const text = `\n${markdown.replaceAll('\r\n', '\n')}`;
+  const start = text.indexOf(`\n## ${name}\n`);
   if (start === -1) return '';
-  const end = markdown.indexOf('\n## ', start + 1);
-  return markdown.slice(start, end === -1 ? undefined : end);
+  const end = text.indexOf('\n## ', start + 1);
+  return text.slice(start, end === -1 ? undefined : end);
 };
 
-/** Table lines after the header row and its `| --- |` separator. */
+/** Table lines after the header row and its `| --- |` (or `|:--|`) separator. */
 export const dataRows = (text: string): string[] =>
   text
     .split('\n')
     .filter((line) => line.startsWith('|'))
     .slice(1)
-    .filter((line) => !/^\|\s*-/.test(line));
+    .filter((line) => !/^\|\s*:?-/.test(line));
 
 /** Rows of the form "| `path` | 1,200 |". */
 export const parseBudgets = (text: string): Budget[] =>

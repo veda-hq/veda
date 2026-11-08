@@ -102,7 +102,7 @@ describe('run, other commands', () => {
   });
 
   it('refuses anything else with the usage', () => {
-    for (const args of [[], ['lint'], ['hash'], ['hash', ''], ['hash', 'a', 'b'], ['--version', 'x']]) {
+    for (const args of [[], ['lint'], ['hash'], ['hash', ''], ['hash', 'a', 'b'], ['--version', 'x'], ['constructor'], ['toString']]) {
       const c = capture();
       assert.equal(run(args, c.io, '1.2.3'), 2);
       assert.match(c.err[0] ?? '', /^usage: pariksha boundary/);
@@ -209,12 +209,12 @@ describe('run export-deletions', () => {
     assert.match(failed.err[0] ?? '', /failed; nothing was checked, so this is not a pass$/);
   });
 
-  it('passes with nothing to compare with', () => {
+  it('stops with nothing to compare with, since that reads nothing', () => {
     const c = capture();
     const root = repo({ 'a.ts': '' });
     commit(root, '-m', 'only');
     git(root, 'branch', '-M', 'trunk');
-    assert.equal(run(['export-deletions', '--root', root], c.io, '0'), 0);
-    assert.deepEqual(c.out, ['pariksha export-deletions: no base branch to compare with; nothing checked']);
+    assert.equal(run(['export-deletions', '--root', root], c.io, '0'), 2);
+    assert.deepEqual(c.err, ['pariksha export-deletions: none of origin/main, origin/develop, origin/master, main names a commit; fetch one or pass --base']);
   });
 });

@@ -14,15 +14,19 @@ import { must, type Git } from './git.ts';
 
 export const SOURCE_GLOBS = ['*.ts', '*.tsx', '*.js', '*.jsx', '*.mjs', '*.cjs', '*.mts', '*.cts'] as const;
 
-/** Build output and vendored code never count as a source change. */
-const SKIPPED_DIR = /(^|\/)(node_modules|dist|build|coverage|generated)\//;
+/** Build output and vendored code never count as a source change, or as a use. */
+const SKIPPED = ['node_modules', 'dist', 'build', 'coverage', 'generated'] as const;
+const SKIPPED_DIR = new RegExp(`(^|/)(${SKIPPED.join('|')})/`);
+const SKIPPED_PATHSPECS = SKIPPED.map((d) => `:(exclude,glob)**/${d}/**`);
+
+const PLAIN_DIFF = ['--no-renames', '--no-color', '--no-ext-diff', '--no-textconv'] as const;
 
 /**
  * A removed named declaration on a `-` diff line. Bare re-export lists
  * (`export { a, b }`) are left out: they shuffle in refactors and name nothing new.
  */
 const EXPORT_DECL =
-  /^-\s*export\s+(?:default\s+)?(?:async\s+)?(?:abstract\s+)?(?:const|let|var|function|class|interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)/;
+  /^-\s*export\s+(?:default\s+)?(?:declare\s+)?(?:async\s+)?(?:abstract\s+)?(?:const\s+enum|const|let|var|function|class|interface|type|enum|namespace)[\s*]+([A-Za-z_$][A-Za-z0-9_$]*)/;
 
 /**
  * A grep hit (`HEAD:path:line:text`) whose text starts a comment (`//`, `*`,
@@ -93,7 +97,10 @@ export const checkExportDeletions = (git: Git, base: string): Report => {
   const messages = must(git, ['log', '--format=%B', `${base}..HEAD`]);
   const symbols = new Set(declaredExports(messages));
   const files = new Set(declaredFiles(messages));
-  const changed = must(git, ['diff', '--name-only', '--diff-filter=ACMRD', `${base}...HEAD`, '--', ...SOURCE_GLOBS])
+  // Renames off, so a file moved and edited lists its old path, whose removed
+  // lines the per-file diff then shows; colour, external diff tools and
+  // textconv off, so a user's config cannot rewrite the lines read here.
+  const changed = must(git, ['diff', ...PLAIN_DIFF, '--name-only', '--diff-filter=ACMRD', `${base}...HEAD`, '--', ...SOURCE_GLOBS])
     .split('\n')
     .filter((f) => f !== '' && !SKIPPED_DIR.test(f));
   const violations: Finding[] = [];
@@ -101,10 +108,10 @@ export const checkExportDeletions = (git: Git, base: string): Report => {
   const coveredFiles: string[] = [];
   const used = new Map<string, boolean>();
   for (const file of changed) {
-    const removed = removedExports(must(git, ['diff', '-U0', `${base}...HEAD`, '--', file]));
+    const removed = removedExports(must(git, ['diff', ...PLAIN_DIFF, '-U0', `${base}...HEAD`, '--', file]));
     if (removed.length === 0) continue;
-    // A file trailer covers a file only once no blob is left at its path.
-    if (files.has(file) && git.run(['cat-file', '-t', `HEAD:${file}`])?.trim() !== 'blob') {
+    // A file trailer covers a file only once HEAD has nothing at its path.
+    if (files.has(file) && must(git, ['ls-tree', '--name-only', 'HEAD', '--', file]).trim() === '') {
       coveredFiles.push(file);
       continue;
     }
@@ -112,7 +119,8 @@ export const checkExportDeletions = (git: Git, base: string): Report => {
       let stillUsed = used.get(symbol);
       if (stillUsed === undefined) {
         // git grep exits 1 when nothing matches, so undefined here is "no hit".
-        stillUsed = usedOutsideComments(git.run(['grep', '-nwF', '-e', symbol, 'HEAD', '--', ...SOURCE_GLOBS]) ?? '');
+        // Skipped trees are excluded here too: a stale committed build naming the symbol is no use.
+        stillUsed = usedOutsideComments(git.run(['grep', '--no-color', '-nwF', '-e', symbol, 'HEAD', '--', ...SOURCE_GLOBS, ...SKIPPED_PATHSPECS]) ?? '');
         used.set(symbol, stillUsed);
       }
       if (stillUsed) continue;

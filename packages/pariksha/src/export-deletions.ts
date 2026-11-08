@@ -10,7 +10,7 @@
 //   Removes-Export: <symbol> — <why>     covers one symbol
 //   Removes-File: <path> — <why>         covers every export of a file that
 //                                        no longer exists at HEAD
-import { must, type Git } from './git.ts';
+import { must, PLAIN_DIFF, type Git } from './git.ts';
 
 export const SOURCE_GLOBS = ['*.ts', '*.tsx', '*.js', '*.jsx', '*.mjs', '*.cjs', '*.mts', '*.cts'] as const;
 
@@ -18,8 +18,6 @@ export const SOURCE_GLOBS = ['*.ts', '*.tsx', '*.js', '*.jsx', '*.mjs', '*.cjs',
 const SKIPPED = ['node_modules', 'dist', 'build', 'coverage', 'generated'] as const;
 const SKIPPED_DIR = new RegExp(`(^|/)(${SKIPPED.join('|')})/`);
 const SKIPPED_PATHSPECS = SKIPPED.map((d) => `:(exclude,glob)**/${d}/**`);
-
-const PLAIN_DIFF = ['--no-renames', '--no-color', '--no-ext-diff', '--no-textconv'] as const;
 
 /**
  * A removed named declaration on a `-` diff line. Bare re-export lists

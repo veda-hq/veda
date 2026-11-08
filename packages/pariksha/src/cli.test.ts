@@ -86,7 +86,7 @@ describe('run boundary', () => {
     for (const args of [['--root'], ['--root', ''], ['--dir', 'x'], ['--root', 'a', '--root', 'b']]) {
       const c = capture();
       assert.equal(run(['boundary', ...args], c.io, '0.1.0'), 2);
-      assert.match(c.err[0] ?? '', /^usage: pariksha boundary/);
+      assert.match(c.err[0] ?? '', /^usage: pariksha authority-citations/);
     }
   });
 });
@@ -105,7 +105,7 @@ describe('run, other commands', () => {
     for (const args of [[], ['lint'], ['hash'], ['hash', ''], ['hash', 'a', 'b'], ['--version', 'x'], ['constructor'], ['toString']]) {
       const c = capture();
       assert.equal(run(args, c.io, '1.2.3'), 2);
-      assert.match(c.err[0] ?? '', /^usage: pariksha boundary/);
+      assert.match(c.err[0] ?? '', /^usage: pariksha authority-citations/);
     }
   });
 });

@@ -35,9 +35,15 @@ export const gitAt = (root: string): Git => ({
  * there whichever directory it was started in.
  */
 export const gitAtTop = (dir: string): Git | undefined => {
-  const top = gitAt(dir).run(['rev-parse', '--show-toplevel'])?.trim();
-  return top ? gitAt(top) : undefined;
+  const top = topOf(dir);
+  return top === undefined ? undefined : gitAt(top);
 };
+
+/** The top level of the repository holding `dir`, or undefined outside one. */
+export const topOf = (dir: string): string | undefined => gitAt(dir).run(['rev-parse', '--show-toplevel'])?.trim() || undefined;
+
+/** Diff output a user's config cannot reshape: no colour, external tool, textconv or rename pairing. */
+export const PLAIN_DIFF = ['--no-renames', '--no-color', '--no-ext-diff', '--no-textconv'] as const;
 
 /** A git call whose failure must stop the check rather than read as "nothing found". */
 export const must = (git: Git, args: readonly string[]): string => {

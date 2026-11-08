@@ -4,10 +4,11 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULTS, findUncited, formatClaims, listAdrs, readOrUndefined, stagedSource, treeSource, type Options } from './authority-citations.ts';
 import { findDenied, hash, isText, parseDenyList, type TrackedFile } from './boundary.ts';
 import { checkBudgets } from './doc-budgets.ts';
 import { checkExportDeletions, formatReport } from './export-deletions.ts';
-import { BASE_CANDIDATES, gitAtTop, resolveBase } from './git.ts';
+import { BASE_CANDIDATES, gitAt, gitAtTop, resolveBase, topOf } from './git.ts';
 
 export interface Io {
   readonly out: (line: string) => void;
@@ -17,7 +18,8 @@ export interface Io {
 export const DENY_FILE = '.veda/deny.sha256';
 
 const USAGE = [
-  'usage: pariksha boundary [--root <dir>] [--deny <file>]',
+  'usage: pariksha authority-citations [--mode staged|tree] [--authority <a,b>] [--issue-prefix <A,B>] [--adr-dir <dir>] [--root <dir>]',
+  '       pariksha boundary [--root <dir>] [--deny <file>]',
   '       pariksha doc-budgets --table <file> [--section <name>] [--root <dir>]',
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
   '       pariksha hash <word>',
@@ -139,13 +141,48 @@ const exportDeletions = (f: Map<string, string>, io: Io): number => {
   return result.ok ? 0 : 1;
 };
 
-const COMMANDS: Record<string, { allowed: readonly string[]; run: (f: Map<string, string>, io: Io) => number }> = {
+/** A comma-separated flag value as a list; empty entries dropped. */
+const list = (value: string | undefined): string[] => (value ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+
+const authorityCitations = (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv): number => {
+  const mode = f.get('--mode') ?? 'staged';
+  if (mode !== 'staged' && mode !== 'tree') {
+    io.err(USAGE);
+    return 2;
+  }
+  const dir = resolve(f.get('--root') ?? '.');
+  const root = topOf(dir);
+  if (root === undefined) {
+    io.err(`pariksha authority-citations: ${dir} is not in a git repository`);
+    return 2;
+  }
+  const git = gitAt(root);
+  const opts: Options = {
+    authorities: list(f.get('--authority')),
+    issuePrefixes: list(f.get('--issue-prefix')),
+    adrDir: f.get('--adr-dir') ?? DEFAULTS.adrDir,
+  };
+  let result: ReturnType<typeof formatClaims>;
+  try {
+    const source = mode === 'tree' ? treeSource(git, root, readOrUndefined) : stagedSource(git, env, readOrUndefined);
+    result = formatClaims(findUncited(source, opts, git, listAdrs(root, opts.adrDir)), opts);
+  } catch (e) {
+    io.err(`pariksha authority-citations: ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+  result.out.forEach(io.out);
+  result.err.forEach(io.err);
+  return result.ok ? 0 : 1;
+};
+
+const COMMANDS: Record<string, { allowed: readonly string[]; run: (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv) => number }> = {
+  'authority-citations': { allowed: ['--mode', '--authority', '--issue-prefix', '--adr-dir', '--root'], run: authorityCitations },
   boundary: { allowed: ['--root', '--deny'], run: boundary },
   'doc-budgets': { allowed: ['--table', '--section', '--root'], run: docBudgets },
   'export-deletions': { allowed: ['--base', '--root'], run: exportDeletions },
 };
 
-export const run = (args: readonly string[], io: Io, version: string = ownVersion()): number => {
+export const run = (args: readonly string[], io: Io, version: string = ownVersion(), env: NodeJS.ProcessEnv = process.env): number => {
   const [command, ...rest] = args;
   if (command === '--version' && rest.length === 0) {
     io.out(version);
@@ -161,7 +198,7 @@ export const run = (args: readonly string[], io: Io, version: string = ownVersio
     io.err(USAGE);
     return 2;
   }
-  return spec.run(f, io);
+  return spec.run(f, io, env);
 };
 
 const isMain = (): boolean => {

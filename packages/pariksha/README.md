@@ -4,14 +4,45 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.3.1 <check> [flags]
-npx @veda-hq/pariksha@0.3.1 --version
+npx @veda-hq/pariksha@0.3.2 <check> [flags]
+npx @veda-hq/pariksha@0.3.2 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
 (each finding on stderr, with how to fix it), and 2 on a usage or input
 error. `--root <dir>` (default: the current directory) names the repository.
 Node 24 or later. MIT.
+
+## `authority-citations`
+
+```sh
+pariksha authority-citations [--mode staged|tree] [--authority <a,b>]
+  [--issue-prefix <A,B>] [--adr-dir <dir>] [--root <dir>]
+```
+
+A coherent fabrication passes every internal check: an agent that deletes a
+public API and calls the deletion "an owner decision" is consistent with
+itself. So a line that invokes an authority (`owner decision`,
+`founder decided`, `product rule`, `approved by` / `decided by` /
+`authorized by` / `mandated by` / `per` an office, a `--authority` name or an
+`@handle`) must cite, within three lines, something only that authority could
+have produced:
+
+- resolved: a commit id naming a commit here, or `ADR-NNNN` /
+  `<adr-dir>/NNNN` naming an existing `NNNN-*.md` other than the claiming file
+  (default `docs/adr`);
+- shape-checked: an issue id with a `--issue-prefix` (`ABC-123`), a GitHub
+  pull request or issue URL, or `PR #123`.
+
+`ALLOW-AUTHORITY-PHRASE: <reason>` in the window marks words used without
+asserting authority; the reason is required. TypeScript, JavaScript, SQL,
+Prisma, shell and Markdown files are read, outside `node_modules`, `dist`,
+`build`, `coverage`, `generated`, `.tmp` and `.local`.
+
+`staged` (the default, for a pre-commit or pre-merge-commit hook) judges only
+the lines the commit adds; on a merge, only lines new against every parent,
+so text a merged branch already carried is not judged again. `tree` judges
+every tracked file. When git cannot read the change it exits 2.
 
 ## `boundary`
 

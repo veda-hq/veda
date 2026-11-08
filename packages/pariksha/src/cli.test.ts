@@ -121,17 +121,24 @@ describe('ownVersion and the command', () => {
 });
 
 describe('run doc-budgets', () => {
-  const RULE = '# r\n\n## Budgets\n\n| Doc | Budget |\n| --- | --: |\n| `a.md` | 5 |\n';
+  const RULE = '# r\n\n## Budgets\n\n| Doc | Budget |\n| --- | --: |\n| `a.md` | 5 |\n| `rule.md` | 500 |\n';
 
   it('passes and refuses by size, relative to the root', () => {
     const ok = capture();
     const root = repo({ 'rule.md': RULE, 'a.md': 'abc' });
     assert.equal(run(['doc-budgets', '--root', root, '--table', 'rule.md'], ok.io, '0'), 0);
-    assert.deepEqual(ok.out, ['pariksha doc-budgets: a.md 3 / 5 bytes']);
+    assert.deepEqual(ok.out, ['pariksha doc-budgets: a.md 3 / 5 bytes', `pariksha doc-budgets: rule.md ${RULE.length} / 500 bytes`]);
     const over = capture();
     writeFileSync(join(root, 'a.md'), 'abcdef');
     assert.equal(run(['doc-budgets', '--root', root, '--table', 'rule.md'], over.io, '0'), 1);
     assert.deepEqual(over.err, ['pariksha doc-budgets: a.md is 6 bytes, over its budget of 5; cut it']);
+  });
+
+  it('names the table by its path under the root when it misses its own row', () => {
+    const root = repo({ 'docs/rule.md': RULE, 'a.md': 'abc' });
+    const c = capture();
+    assert.equal(run(['doc-budgets', '--root', root, '--table', 'docs/rule.md'], c.io, '0'), 1);
+    assert.match(c.err[0] ?? '', /^pariksha doc-budgets: docs\/rule.md sets budgets but has no row for itself/);
   });
 
   it('reads another section by --section, and a directory is not a file', () => {
@@ -178,6 +185,28 @@ describe('run export-deletions', () => {
     const bad = capture();
     assert.equal(run(['export-deletions', '--root', root, '--base', 'nope'], bad.io, '0'), 2);
     assert.deepEqual(bad.err, ['pariksha export-deletions: --base nope names no commit']);
+  });
+
+  it('checks the whole repository from a subdirectory', () => {
+    const root = work();
+    mkdirSync(join(root, 'sub'));
+    const c = capture();
+    assert.equal(run(['export-deletions', '--root', join(root, 'sub')], c.io, '0'), 1);
+    assert.ok(c.err.includes('  gone   (removed from a.ts)'));
+  });
+
+  it('stops outside a repository, and when git cannot read the branch', () => {
+    const outside = capture();
+    const dir = mkdtempSync(join(tmpdir(), 'pariksha-norepo-'));
+    assert.equal(run(['export-deletions', '--root', dir], outside.io, '0'), 2);
+    assert.match(outside.err[0] ?? '', /is not in a git repository$/);
+    const root = work();
+    git(root, 'checkout', '-q', '--orphan', 'unrelated');
+    commit(root, '-m', 'no shared history');
+    git(root, 'checkout', '-q', 'work');
+    const failed = capture();
+    assert.equal(run(['export-deletions', '--root', root, '--base', 'unrelated'], failed.io, '0'), 2);
+    assert.match(failed.err[0] ?? '', /failed; nothing was checked, so this is not a pass$/);
   });
 
   it('passes with nothing to compare with', () => {

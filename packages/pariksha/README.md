@@ -51,6 +51,8 @@ budgets are one Markdown table, under `## Budgets` (or `--section`) in the
 
 Refuses a file over its budget, a budgeted file that does not exist, and a
 row that is not `` | `path` | bytes | ``, since nothing would enforce it.
+The table file is read on every check too, so it must budget itself: a row
+for its own path (relative to `--root`) is required.
 
 ## `export-deletions`
 
@@ -77,4 +79,6 @@ is never reported; a mention in a comment does not count as a use. Bare
 `export { a, b }` lists and files under `node_modules`, `dist`, `build`,
 `coverage` and `generated` are not read. Without `--base`, the base is the
 first of `origin/main`, `origin/develop`, `origin/master` and `main` that
-exists; with none, nothing is checked.
+exists; with none, nothing is checked. It reads the whole repository from
+any directory inside it. When git cannot read the range (no merge base, a
+shallow clone), it exits 2: nothing was checked, so it is not a pass.

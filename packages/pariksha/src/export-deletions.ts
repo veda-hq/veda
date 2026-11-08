@@ -10,7 +10,7 @@
 //   Removes-Export: <symbol> — <why>     covers one symbol
 //   Removes-File: <path> — <why>         covers every export of a file that
 //                                        no longer exists at HEAD
-import type { Git } from './git.ts';
+import { must, type Git } from './git.ts';
 
 export const SOURCE_GLOBS = ['*.ts', '*.tsx', '*.js', '*.jsx', '*.mjs', '*.cjs', '*.mts', '*.cts'] as const;
 
@@ -24,8 +24,11 @@ const SKIPPED_DIR = /(^|\/)(node_modules|dist|build|coverage|generated)\//;
 const EXPORT_DECL =
   /^-\s*export\s+(?:default\s+)?(?:async\s+)?(?:abstract\s+)?(?:const|let|var|function|class|interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)/;
 
-/** A grep hit whose text starts a comment (`//`, `*`, `/*`) is a mention, not a use. */
-const COMMENT_HIT = /^[^:]*:[^:]*:\d+:\s*(?:\/\/|\*|\/\*)/;
+/**
+ * A grep hit (`HEAD:path:line:text`) whose text starts a comment (`//`, `*`,
+ * `/*`) is a mention, not a use. Unanchored, so a colon in a path still matches.
+ */
+const COMMENT_HIT = /:\d+:\s*(?:\/\/|\*|\/\*)/;
 
 const unique = (xs: readonly string[]): string[] => [...new Set(xs)].sort();
 
@@ -81,12 +84,16 @@ export interface Report {
   readonly declaredFiles: readonly string[];
 }
 
-/** Compares `base...HEAD`: every export removed and named nowhere in HEAD's source must be declared. */
+/**
+ * Compares `base...HEAD`: every export removed and named nowhere in HEAD's
+ * source must be declared. A git failure throws (with no merge base, say, in a
+ * shallow clone): the check cannot pass without having read the branch.
+ */
 export const checkExportDeletions = (git: Git, base: string): Report => {
-  const messages = git.run(['log', '--format=%B', `${base}..HEAD`]) ?? '';
+  const messages = must(git, ['log', '--format=%B', `${base}..HEAD`]);
   const symbols = new Set(declaredExports(messages));
   const files = new Set(declaredFiles(messages));
-  const changed = (git.run(['diff', '--name-only', '--diff-filter=ACMRD', `${base}...HEAD`, '--', ...SOURCE_GLOBS]) ?? '')
+  const changed = must(git, ['diff', '--name-only', '--diff-filter=ACMRD', `${base}...HEAD`, '--', ...SOURCE_GLOBS])
     .split('\n')
     .filter((f) => f !== '' && !SKIPPED_DIR.test(f));
   const violations: Finding[] = [];
@@ -94,7 +101,7 @@ export const checkExportDeletions = (git: Git, base: string): Report => {
   const coveredFiles: string[] = [];
   const used = new Map<string, boolean>();
   for (const file of changed) {
-    const removed = removedExports(git.run(['diff', '-U0', `${base}...HEAD`, '--', file]) ?? '');
+    const removed = removedExports(must(git, ['diff', '-U0', `${base}...HEAD`, '--', file]));
     if (removed.length === 0) continue;
     // A file trailer covers a file only once no blob is left at its path.
     if (files.has(file) && git.run(['cat-file', '-t', `HEAD:${file}`])?.trim() !== 'blob') {
@@ -104,7 +111,8 @@ export const checkExportDeletions = (git: Git, base: string): Report => {
     for (const symbol of removed) {
       let stillUsed = used.get(symbol);
       if (stillUsed === undefined) {
-        stillUsed = usedOutsideComments(git.run(['grep', '-nw', '-e', symbol, 'HEAD', '--', ...SOURCE_GLOBS]) ?? '');
+        // git grep exits 1 when nothing matches, so undefined here is "no hit".
+        stillUsed = usedOutsideComments(git.run(['grep', '-nwF', '-e', symbol, 'HEAD', '--', ...SOURCE_GLOBS]) ?? '');
         used.set(symbol, stillUsed);
       }
       if (stillUsed) continue;

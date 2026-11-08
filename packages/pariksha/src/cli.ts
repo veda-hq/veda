@@ -2,12 +2,12 @@
 // pariksha: repository checks. One subcommand per check.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findDenied, hash, isText, parseDenyList, type TrackedFile } from './boundary.ts';
 import { checkBudgets } from './doc-budgets.ts';
 import { checkExportDeletions, formatReport } from './export-deletions.ts';
-import { gitAt, resolveBase } from './git.ts';
+import { gitAtTop, resolveBase } from './git.ts';
 
 export interface Io {
   readonly out: (line: string) => void;
@@ -102,14 +102,19 @@ const docBudgets = (f: Map<string, string>, io: Io): number => {
     io.err(`pariksha doc-budgets: no budget table at ${tablePath}`);
     return 2;
   }
-  const outcome = checkBudgets(readFileSync(tablePath, 'utf8'), f.get('--section') ?? 'Budgets', table, (p) => fileSize(resolve(root, p)));
+  const outcome = checkBudgets(readFileSync(tablePath, 'utf8'), f.get('--section') ?? 'Budgets', relative(root, tablePath), (p) => fileSize(resolve(root, p)));
   outcome.out.forEach(io.out);
   outcome.err.forEach(io.err);
   return outcome.ok ? 0 : 1;
 };
 
 const exportDeletions = (f: Map<string, string>, io: Io): number => {
-  const git = gitAt(resolve(f.get('--root') ?? '.'));
+  const dir = resolve(f.get('--root') ?? '.');
+  const git = gitAtTop(dir);
+  if (git === undefined) {
+    io.err(`pariksha export-deletions: ${dir} is not in a git repository`);
+    return 2;
+  }
   const asked = f.get('--base');
   const base = asked === undefined ? resolveBase(git) : resolveBase(git, [asked]);
   if (base === undefined) {
@@ -120,7 +125,14 @@ const exportDeletions = (f: Map<string, string>, io: Io): number => {
     io.out('pariksha export-deletions: no base branch to compare with; nothing checked');
     return 0;
   }
-  const result = formatReport(checkExportDeletions(git, base));
+  let report: ReturnType<typeof checkExportDeletions>;
+  try {
+    report = checkExportDeletions(git, base);
+  } catch (e) {
+    io.err(`pariksha export-deletions: ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+  const result = formatReport(report);
   result.out.forEach(io.out);
   result.err.forEach(io.err);
   return result.ok ? 0 : 1;

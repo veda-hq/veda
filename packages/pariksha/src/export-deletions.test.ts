@@ -12,7 +12,7 @@ import {
   removedExports,
   usedOutsideComments,
 } from './export-deletions.ts';
-import { gitAt, resolveBase, type Git } from './git.ts';
+import { gitAt, gitAtTop, must, resolveBase, type Git } from './git.ts';
 
 const sh = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, {
@@ -144,9 +144,49 @@ describe('checkExportDeletions', () => {
     assert.equal(calls.filter((c) => c[0] === 'grep').length, 1);
   });
 
-  it('treats git failures as empty output', () => {
+  it('throws on a git failure rather than reading it as no changes', () => {
     const silent: Git = { run: () => undefined };
-    assert.deepEqual(checkExportDeletions(silent, 'main'), { base: 'main', violations: [], declared: [], declaredFiles: [] });
+    assert.throws(() => checkExportDeletions(silent, 'main'), /git log --format=%B main\.\.HEAD failed/);
+    const noDiff: Git = { run: (args) => (args[0] === 'log' ? '' : undefined) };
+    assert.throws(() => checkExportDeletions(noDiff, 'main'), /git diff --name-only/);
+  });
+
+  it('reads a comment as a mention under grep.column, and in a path with a colon', () => {
+    const root = branch(
+      { 'src/a.ts': 'export function gone() {}\n', 'src/x:y.ts': 'export function other() {}\n' },
+      { 'src/a.ts': null, 'src/x:y.ts': '// gone was here\n// other too\n' },
+    );
+    sh(root, 'config', 'grep.column', 'true');
+    assert.deepEqual(checkExportDeletions(gitAt(root), 'main').violations, [
+      { symbol: 'gone', file: 'src/a.ts' },
+      { symbol: 'other', file: 'src/x:y.ts' },
+    ]);
+  });
+
+  it('reads a non-ASCII path whatever core.quotePath says', () => {
+    const root = branch({ 'src/é.ts': 'export const gone = 1;\n' }, { 'src/é.ts': '' });
+    sh(root, 'config', 'core.quotePath', 'true');
+    assert.deepEqual(checkExportDeletions(gitAt(root), 'main').violations, [{ symbol: 'gone', file: 'src/é.ts' }]);
+  });
+
+  it('reports a $-named symbol that only a longer name contains', () => {
+    const root = branch({ 'src/a.ts': 'export const $gone = 1;\n', 'src/b.ts': 'const xgone = 2;\n' }, { 'src/a.ts': '' });
+    assert.deepEqual(checkExportDeletions(gitAt(root), 'main').violations, [{ symbol: '$gone', file: 'src/a.ts' }]);
+  });
+});
+
+describe('gitAtTop and must', () => {
+  it('runs at the top level from a subdirectory, and is undefined outside a repository', () => {
+    const root = branch({ 'src/a.ts': 'export const gone = 1;\n' }, { 'src/a.ts': '' });
+    const top = gitAtTop(join(root, 'src'));
+    assert.ok(top);
+    assert.deepEqual(checkExportDeletions(top, 'main').violations, [{ symbol: 'gone', file: 'src/a.ts' }]);
+    assert.equal(gitAtTop(mkdtempSync(join(tmpdir(), 'pariksha-norepo-'))), undefined);
+  });
+
+  it('returns output, or throws naming the command', () => {
+    assert.equal(must({ run: () => 'x' }, ['status']), 'x');
+    assert.throws(() => must({ run: () => undefined }, ['status', '-s']), /^Error: git status -s failed$/);
   });
 });
 

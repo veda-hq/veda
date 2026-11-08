@@ -61,6 +61,10 @@ export const checkBudgets = (
     err.push(
       `pariksha doc-budgets: ${tablePath}: ${rows.length - budgets.length} row(s) under "## ${sectionName}" are not "| \`path\` | bytes |", so nothing enforces them`,
     );
+  // The table is read on every check, so it is a hot document too; a table
+  // without its own row could grow without limit while every row it lists passes.
+  if (rows.length > 0 && !budgets.some((b) => b.path === tablePath))
+    err.push(`pariksha doc-budgets: ${tablePath} sets budgets but has no row for itself; add "| \`${tablePath}\` | <bytes> |"`);
   const out: string[] = [];
   for (const b of budgets) {
     const bytes = size(b.path);

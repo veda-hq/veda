@@ -1,7 +1,7 @@
 {
   "name": "@veda-hq/pariksha",
-  "version": "0.1.0",
-  "description": "Repository checks: doc drift, rule enforcement, test-quality ratchets. v0.1: the boundary check, which refuses any tracked file naming a denied word.",
+  "version": "0.4.0",
+  "description": "Repository checks: doc drift, rule enforcement, test-quality ratchets. Checks: boundary, doc-budgets, export-deletions.",
   "keywords": ["repository checks", "lint", "boundary", "ci", "coding agents"],
   "license": "MIT",
   "type": "module",

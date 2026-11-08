@@ -1,0 +1,21 @@
+{
+  "worktree": {
+    "trustedCommands": [
+      {
+        "script": "scripts/worktree-tool.py",
+        "pattern": "python3 scripts/worktree-tool\\.py (?:status|begin --branch agent/[A-Za-z0-9][A-Za-z0-9._-]{0,99})"
+      }
+    ]
+  },
+  "command": {
+    "protectedVariables": ["AGENT_REMOTE"],
+    "protectedVariablesReason": "it marks a hosted session; leave it as the session set it",
+    "pairedChanges": [
+      {
+        "changes": "schema.sql",
+        "requires": "changesets/",
+        "reason": "a schema change needs its changeset"
+      }
+    ]
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "name": "@veda-hq/kavach",
+  "version": "0.3.0",
+  "description": "Guards for coding agents: refuses writes outside the agent's worktree, git-hook bypasses and history-destroying pushes, and runs a project's own rule checks on each tool call. Read-only commands pass.",
+  "keywords": ["coding agents", "claude code", "hooks", "guard", "worktree", "git safety"],
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24.15"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/veda-hq/veda.git",
+    "directory": "packages/kavach"
+  },
+  "homepage": "https://github.com/veda-hq/veda/tree/main/packages/kavach#readme",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "bin": {
+    "kavach-rule-checks": "dist/rule-checks/cli.js"
+  },
+  "exports": {
+    "./rule-checks": "./dist/rule-checks/runtime.js",
+    "./rule-checks/registry": "./dist/rule-checks/registry.js",
+    "./rule-checks/shell-words": "./dist/rule-checks/shell-words.js",
+    "./corpus.json": "./corpus/corpus.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "python/kavach/*.py",
+    "corpus/corpus.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts --test-coverage-exclude=corpus/**/*.test.ts src/**/*.test.ts corpus/**/*.test.ts",
+    "test:python": "python3 -B -m unittest discover -s python/tests -t python",
+    "check": "pnpm typecheck && pnpm test:python && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}

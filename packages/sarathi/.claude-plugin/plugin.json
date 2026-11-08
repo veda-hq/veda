@@ -1,0 +1,8 @@
+{
+  "name": "sarathi",
+  "version": "0.4.0",
+  "description": "Veda's Claude Code plugin: the worker and researcher agents. The hooks run from the @veda-hq/sarathi package (one settings entry per event).",
+  "author": { "name": "veda-hq" },
+  "homepage": "https://github.com/veda-hq/veda/tree/main/packages/sarathi#readme",
+  "license": "MIT"
+}

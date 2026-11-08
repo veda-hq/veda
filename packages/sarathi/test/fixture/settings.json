@@ -1,0 +1,6 @@
+{
+  "hooks": {
+    "PreToolUse": [{ "matcher": "Bash|Edit|Write", "hooks": [{ "type": "command", "command": "sarathi hook PreToolUse", "timeout": 60 }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "sarathi hook Stop", "timeout": 30 }] }]
+  }
+}

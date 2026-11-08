@@ -1,0 +1,10 @@
+{
+  "kavach": { "python": "python3" },
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Bash|Edit|Write", "guard": "worktree" },
+      { "matcher": "Bash", "guard": "command" }
+    ],
+    "Stop": [{ "command": "true", "timeout": 30 }]
+  }
+}

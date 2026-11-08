@@ -1,0 +1,7 @@
+{
+  "name": "veda",
+  "owner": { "name": "veda-hq" },
+  "plugins": [
+    { "name": "sarathi", "source": "./packages/sarathi", "description": "The worker and researcher agents; the hooks come from the @veda-hq/sarathi package." }
+  ]
+}

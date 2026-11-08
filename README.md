@@ -22,7 +22,7 @@ package's description says its job in plain English.
 | `@veda-hq/dvara` | द्वार, gate | Git hooks: cheap checks at commit, expensive ones once at push | planned |
 | `@veda-hq/agnipariksha` | अग्निपरीक्षा, trial by fire | Mutation gate: wiring and policy on top of Stryker | planned |
 | [`@veda-hq/eslint-plugin-shuddhi`](packages/eslint-plugin-shuddhi) | शुद्धि, purification | Generic ESLint rules | v0.2: error handling, input parsing, NestJS and Prisma boundaries, test lint |
-| `sarathi` (Claude Code plugin) | सारथि, charioteer | Carries the guards, session hooks, agents and skills; installed as `sarathi@veda` from this repository's marketplace | planned |
+| [`@veda-hq/sarathi`](packages/sarathi) | सारथि, charioteer | Runs a project's Claude Code hooks from one entry per event, kavach's guards built in; its plugin `sarathi@veda` carries the agents | v0.4: hook runner, kavach guards, worker and researcher agents |
 
 The work rules for repositories that track work in GitHub Issues live in their
 own repository, `veda-hq/niyam` (नियम, rule).

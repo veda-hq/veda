@@ -199,6 +199,19 @@ importers:
         specifier: 7.0.2
         version: 7.0.2
 
+  packages/sarathi:
+    dependencies:
+      '@veda-hq/kavach':
+        specifier: workspace:*
+        version: link:../kavach
+    devDependencies:
+      '@types/node':
+        specifier: 24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
 packages:
 
   '@eslint-community/eslint-utils@4.10.1':

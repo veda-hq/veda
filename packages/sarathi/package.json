@@ -1,0 +1,42 @@
+{
+  "name": "@veda-hq/sarathi",
+  "version": "0.4.0",
+  "description": "Runs a project's Claude Code hooks from one entry per event, with kavach's guards built in, and carries the sarathi plugin's agents.",
+  "keywords": ["coding agents", "claude code", "hooks", "plugin", "guard"],
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24.15"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/veda-hq/veda.git",
+    "directory": "packages/sarathi"
+  },
+  "homepage": "https://github.com/veda-hq/veda/tree/main/packages/sarathi#readme",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "bin": {
+    "sarathi": "dist/bin.js"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.js"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts --test-coverage-exclude=src/bin.ts src/**/*.test.ts",
+    "smoke": "node dist/bin.js --version && node dist/bin.js check --config test/fixture/sarathi.json --settings test/fixture/settings.json",
+    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
+  },
+  "dependencies": {
+    "@veda-hq/kavach": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}

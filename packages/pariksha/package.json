@@ -1,7 +1,7 @@
 {
   "name": "@veda-hq/pariksha",
-  "version": "0.3.1",
-  "description": "Repository checks: doc drift, rule enforcement, test-quality ratchets. Checks: boundary, doc-budgets, export-deletions.",
+  "version": "0.3.2",
+  "description": "Repository checks: doc drift, rule enforcement, test-quality ratchets. Checks: authority-citations, boundary, doc-budgets, export-deletions.",
   "keywords": ["repository checks", "lint", "boundary", "ci", "coding agents"],
   "license": "MIT",
   "type": "module",

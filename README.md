@@ -17,7 +17,7 @@ package's description says its job in plain English.
 
 | Package | Meaning | Job | Status |
 | --- | --- | --- | --- |
-| [`@veda-hq/pariksha`](packages/pariksha) | परीक्षा, examination | Repository checks: doc drift, rule enforcement, test-quality ratchets | v0.1: the boundary check |
+| [`@veda-hq/pariksha`](packages/pariksha) | परीक्षा, examination | Repository checks: doc drift, rule enforcement, test-quality ratchets | v0.3: boundary, doc-budgets, export-deletions |
 | `@veda-hq/kavach` | कवच, armour | Agent guards: refuses unsafe or out-of-bounds agent commands | planned |
 | `@veda-hq/dvara` | द्वार, gate | Git hooks: cheap checks at commit, expensive ones once at push | planned |
 | `@veda-hq/agnipariksha` | अग्निपरीक्षा, trial by fire | Mutation gate: wiring and policy on top of Stryker | planned |

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { adrDirOf, DEFAULTS, findUncited, formatClaims, listAdrs, readOrUndefined, stagedSource, treeSource, type Options } from './authority-citations.ts';
 import { findDenied, hash, isText, parseDenyList, type TrackedFile } from './boundary.ts';
 import { DEFAULT_CONFIG, findGaps, formatGaps, listedPaths, parseConfig, treePaths, type Config } from './coverage-by-type.ts';
-import { checkBuild, checkPackage, checkVitest, formatViolations, loadVitestExclude, missingConfigs, ownedBy, parseConfig as parseExemptions } from './coverage-exemptions.ts';
+import { checkBuild, checkPackage, checkVitest, formatViolations, loaderFailure, loadVitestExclude, missingConfigs, ownedBy, parseConfig as parseExemptions } from './coverage-exemptions.ts';
 import { checkBudgets } from './doc-budgets.ts';
 import { loadTypescript, typescriptLoaders, type Ts } from './typescript.ts';
 import { checkExportDeletions, formatReport } from './export-deletions.ts';
@@ -245,6 +245,11 @@ const coverageExemptions = (f: Map<string, string>, io: Io): number => {
     const missing = missingConfigs(root, [...vitest, ...build]);
     if (missing.length > 0) {
       io.err(`pariksha coverage-exemptions: ${missing.join(', ')} named in ${configPath} but not a file; nothing was checked, so this is not a pass`);
+      return 2;
+    }
+    const noLoader = vitest.length > 0 ? loaderFailure(root, config.loader) : undefined;
+    if (noLoader !== undefined) {
+      io.err(`pariksha coverage-exemptions: ${noLoader}; nothing was checked, so this is not a pass`);
       return 2;
     }
     let violations = checkVitest(config, vitest, (c) => loadVitestExclude(root, c, config.loader));

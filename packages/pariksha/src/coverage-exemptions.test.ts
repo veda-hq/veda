@@ -7,7 +7,10 @@ import {
   checkBuild,
   checkPackage,
   checkVitest,
+  failureOf,
   formatViolations,
+  loaderFailure,
+  loaderScriptBeside,
   loadVitestExclude,
   missingConfigs,
   ownedBy,
@@ -71,7 +74,7 @@ describe('checkPackage and ownedBy', () => {
 
   it('accepts a folder under the root and refuses anything that would match nothing', () => {
     assert.equal(checkPackage(root, 'apps/server'), undefined);
-    for (const dir of ['', '.', '..', '../x', '/tmp', 'apps/server/', 'apps//server', 'apps/nowhere', 'file.txt']) {
+    for (const dir of ['', '.', '..', '../x', '/tmp', 'apps/server/', 'apps//server', 'apps/nowhere', 'file.txt', 'APPS/Server']) {
       assert.match(checkPackage(root, dir) ?? '', /is not/, dir);
     }
   });
@@ -94,10 +97,19 @@ describe('readExclude and loadVitestExclude', () => {
     'factory.mjs': 'export default () => ({ test: { coverage: { exclude: ["f"] } } });',
     'async.mjs': 'export default async () => ({ test: { coverage: { exclude: ["async"] } } });',
     'none.mjs': 'export default { test: {} };',
-    'noisy.mjs': 'console.log("pariksha-vitest-exclude not this"); console.log("hello"); export default { test: { coverage: { exclude: ["n"] } } };',
+    'noisy.mjs': 'console.log("hello"); export default { test: { coverage: { exclude: ["n"] } } };',
+    'forged.mjs': 'setTimeout(() => console.log(\'["**/*.test.ts"]\'), 0); export default { test: {} };',
+    'timer.mjs': 'setInterval(() => {}, 1000); export default { test: { coverage: { exclude: ["t"] } } };',
+    'fn.mjs': 'export default { test: { coverage: { exclude: () => [] } } };',
+    'wrote-then-failed.mjs': 'import { writeSync } from "node:fs"; writeSync(3, \'["x"]\'); process.exit(1);',
+    'garbage.mjs': 'import { writeSync } from "node:fs"; writeSync(3, "oops"); export default {};',
     'throws.mjs': 'throw new Error("config exploded");',
+    'throws-text.mjs': 'throw "a string";',
+    'hang.mjs': 'setInterval(() => {}, 1000); await new Promise(() => {});',
+    'sub/reads.mjs': 'import { readFileSync } from "node:fs"; export default { test: { coverage: { exclude: JSON.parse(readFileSync("./excl.json", "utf8")) } } };',
+    'sub/excl.json': '["from-its-folder"]',
+    'sub/hooked.mjs': 'export default { test: { coverage: { exclude: [globalThis.hooked ? "hooked" : "plain"] } } };',
     'hook.mjs': 'globalThis.hooked = true;',
-    'hooked.mjs': 'export default { test: { coverage: { exclude: [globalThis.hooked ? "hooked" : "plain"] } } };',
   });
 
   it('reads an object, a top-level coverage, a factory and an async factory', async () => {
@@ -108,25 +120,54 @@ describe('readExclude and loadVitestExclude', () => {
     assert.equal(await readExclude(join(root, 'none.mjs')), undefined);
   });
 
-  it('loads each config in its own process, reading only the marked line', () => {
+  it('loads each config in its own process; nothing it prints is the answer', () => {
     assert.deepEqual(loadVitestExclude(root, 'object.mjs', undefined), { ok: true, exclude: ['a'] });
     assert.deepEqual(loadVitestExclude(root, 'noisy.mjs', undefined), { ok: true, exclude: ['n'] });
     assert.deepEqual(loadVitestExclude(root, 'none.mjs', undefined), { ok: true, exclude: null });
+    assert.deepEqual(loadVitestExclude(root, 'forged.mjs', undefined), { ok: true, exclude: null });
+    assert.deepEqual(loadVitestExclude(root, 'fn.mjs', undefined), { ok: true, exclude: null });
   });
 
-  it('imports the product loader first, resolved from the root', () => {
-    assert.deepEqual(loadVitestExclude(root, 'hooked.mjs', './hook.mjs'), { ok: true, exclude: ['hooked'] });
-    assert.deepEqual(loadVitestExclude(root, 'hooked.mjs', undefined), { ok: true, exclude: ['plain'] });
+  it('answers without waiting on a config’s open timer', () => {
+    const started = Date.now();
+    assert.deepEqual(loadVitestExclude(root, 'timer.mjs', undefined), { ok: true, exclude: ['t'] });
+    assert.ok(Date.now() - started < 30_000);
   });
 
-  it('reports a config that throws, or a loader that is missing, with the reason', () => {
-    const thrown = loadVitestExclude(root, 'throws.mjs', undefined);
-    assert.equal(thrown.ok, false);
-    assert.equal(thrown.ok ? '' : thrown.error, 'Error: config exploded');
-    const silent = tree({ 'exit.mjs': 'process.exit(3);' });
-    assert.deepEqual(loadVitestExclude(silent, 'exit.mjs', undefined), { ok: false, error: 'exit 3' });
+  it('runs in the config’s own folder, with a relative loader taken from the root', () => {
+    assert.deepEqual(loadVitestExclude(root, 'sub/reads.mjs', undefined), { ok: true, exclude: ['from-its-folder'] });
+    assert.deepEqual(loadVitestExclude(root, 'sub/hooked.mjs', './hook.mjs'), { ok: true, exclude: ['hooked'] });
+    assert.deepEqual(loadVitestExclude(root, 'sub/hooked.mjs', undefined), { ok: true, exclude: ['plain'] });
+  });
+
+  it('reports a failure with its reason, even after an answer was written', () => {
+    assert.deepEqual(loadVitestExclude(root, 'throws.mjs', undefined), { ok: false, error: 'Error: config exploded' });
+    assert.deepEqual(loadVitestExclude(root, 'throws-text.mjs', undefined), { ok: false, error: 'a string' });
+    assert.deepEqual(loadVitestExclude(root, 'wrote-then-failed.mjs', undefined), { ok: false, error: 'exit 1' });
+    const garbage = loadVitestExclude(root, 'garbage.mjs', undefined);
+    assert.match(garbage.ok ? '' : garbage.error, /^the config's coverage\.exclude is not data: oops/);
+    const hang = loadVitestExclude(root, 'hang.mjs', undefined, 1_000);
+    assert.match(hang.ok ? '' : hang.error, /ETIMEDOUT/);
     const noLoader = loadVitestExclude(root, 'object.mjs', 'no-such-loader-pariksha');
     assert.match(noLoader.ok ? '' : noLoader.error, /no-such-loader-pariksha/);
+  });
+
+  it('names a loader that does not load, and accepts none or one that does', () => {
+    assert.equal(loaderFailure(root, undefined), undefined);
+    assert.equal(loaderFailure(root, './hook.mjs'), undefined);
+    assert.match(loaderFailure(root, 'no-such-loader-pariksha') ?? '', /^loader no-such-loader-pariksha does not load: .*no-such-loader-pariksha/);
+  });
+
+  it('reads the reason a child failed', () => {
+    assert.equal(failureOf('at x\nTypeError: bad\n', 1), 'TypeError: bad');
+    assert.equal(failureOf('node:internal/x:1\n  throw v;\n  ^\n\nplain value\n', 1), 'plain value');
+    assert.equal(failureOf('just this\n', 1), 'just this');
+    assert.equal(failureOf('', 4), 'exit 4');
+  });
+
+  it('picks the .ts child under test and the .js child once built', () => {
+    assert.match(loaderScriptBeside('file:///p/src/coverage-exemptions.ts'), /\/p\/src\/load-vitest-config\.ts$/);
+    assert.match(loaderScriptBeside('file:///p/dist/coverage-exemptions.js'), /\/p\/dist\/load-vitest-config\.js$/);
   });
 });
 

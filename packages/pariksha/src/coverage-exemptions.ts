@@ -7,13 +7,10 @@
 // reviewer reads past, so the lists are named once, in the product's config,
 // and every config is held to them.
 import { spawnSync } from 'node:child_process';
-import { readFileSync, statSync } from 'node:fs';
-import { isAbsolute, join, posix } from 'node:path';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, join, posix, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Ts } from './typescript.ts';
-
-/** The line load-vitest-config prints its answer on. */
-export const MARK = 'pariksha-vitest-exclude ';
 
 export interface Config {
   /** Vitest configs, root-relative, and the patterns each one's `coverage.exclude` must hold. */
@@ -72,7 +69,10 @@ const isRepoPath = (p: string): boolean => !isAbsolute(p) && posix.normalize(p) 
 /** A `--package` folder, checked: a value that matches no config would check nothing and pass. */
 export const checkPackage = (root: string, dir: string): string | undefined => {
   if (!isRepoPath(dir)) return `"${dir}" is not a normalized root-relative folder`;
-  if (statSync(join(root, dir), { throwIfNoEntry: false })?.isDirectory() !== true) return `"${dir}" is not a folder under the root`;
+  const full = join(root, dir);
+  if (statSync(full, { throwIfNoEntry: false })?.isDirectory() !== true) return `"${dir}" is not a folder under the root`;
+  // On a case-insensitive disk `Apps/Server` is a folder too, but owns no config spelled `apps/server/…`.
+  if (realpathSync.native(full) !== join(realpathSync.native(root), dir)) return `"${dir}" is not spelled as the folder on disk is`;
   return undefined;
 };
 
@@ -88,27 +88,52 @@ export const readExclude = async (file: string): Promise<unknown> => {
   return config?.test?.coverage?.exclude || config?.coverage?.exclude;
 };
 
-/** The child script that loads one config: the `.ts` source under test, the `.js` build when installed. */
-const LOADER_SCRIPT = fileURLToPath(new URL(`./load-vitest-config${import.meta.url.endsWith('.ts') ? '.ts' : '.js'}`, import.meta.url));
+/** The child script beside a module: the `.ts` source under test, the `.js` build when installed. */
+export const loaderScriptBeside = (moduleUrl: string): string => fileURLToPath(new URL(`./load-vitest-config${moduleUrl.endsWith('.ts') ? '.ts' : '.js'}`, moduleUrl));
+
+const LOADER_SCRIPT = loaderScriptBeside(import.meta.url);
 
 export type Load = { ok: true; exclude: unknown } | { ok: false; error: string };
 
+/** The `--import` argument for a loader: a relative path is the root's file, a bare name resolves from the config's folder. */
+const importArg = (root: string, loader: string): string => (loader.startsWith('.') ? pathToFileURL(resolve(root, loader)).href : loader);
+
+/** Why a child failed: the error's own line (`Error: …`), the value thrown when it is not an Error, else its first line. */
+export const failureOf = (stderr: string, status: number | null): string => {
+  const lines = stderr.split('\n');
+  const named = lines.find((l) => /^\w*Error\b/.test(l));
+  if (named !== undefined) return named.trim();
+  // `throw 'text'` prints Node's own frame, a caret line, then the value.
+  const caret = lines.findIndex((l) => /^\s*\^+\s*$/.test(l));
+  const thrown = caret >= 0 ? lines.slice(caret + 1).find((l) => /\S/.test(l)) : undefined;
+  return (thrown ?? lines.find((l) => /\S/.test(l)) ?? `exit ${String(status)}`).trim();
+};
+
 /**
  * One vitest config's exclusions, loaded in its own Node process under the
- * product's loader. One process per config: two configs loaded side by side in
- * one process can race on a shared module.
+ * product's loader, in the config's own folder (as the product's tooling runs
+ * it, so its tsconfig `paths` and relative reads hold). One process per config:
+ * two configs loaded side by side in one process can race on a shared module.
+ * The answer comes back on fd 3, which nothing a config prints can reach.
  */
-export const loadVitestExclude = (root: string, config: string, loader: string | undefined): Load => {
-  const args = [...(loader === undefined ? [] : ['--import', loader]), LOADER_SCRIPT, join(root, config)];
-  const r = spawnSync(process.execPath, args, { cwd: root, encoding: 'utf8', timeout: 120_000, maxBuffer: 1 << 26 });
-  const line = r.status === 0 ? r.stdout.split('\n').findLast((l) => l.startsWith(MARK)) : undefined;
-  if (line === undefined) {
-    // The thrown error's own line (`Error: …`, `SyntaxError: …`), not the source line Node prints above it.
-    const lines = r.stderr.split('\n');
-    const why = (r.error?.message ?? lines.find((l) => /^\w*Error\b/.test(l)) ?? lines.find((l) => /\S/.test(l)) ?? `exit ${String(r.status)}`).trim();
-    return { ok: false, error: why };
+export const loadVitestExclude = (root: string, config: string, loader: string | undefined, timeout = 120_000): Load => {
+  const file = join(root, config);
+  const args = [...(loader === undefined ? [] : ['--import', importArg(root, loader)]), LOADER_SCRIPT, file];
+  const r = spawnSync(process.execPath, args, { cwd: dirname(file), encoding: 'utf8', timeout, maxBuffer: 1 << 26, stdio: ['ignore', 'pipe', 'pipe', 'pipe'] });
+  const answer = r.status === 0 && r.error === undefined ? (r.output[3] ?? '') : '';
+  if (answer === '') return { ok: false, error: r.error?.message ?? failureOf(r.stderr, r.status) };
+  try {
+    return { ok: true, exclude: JSON.parse(answer) as unknown };
+  } catch {
+    return { ok: false, error: `the config's coverage.exclude is not data: ${answer.slice(0, 80)}` };
   }
-  return { ok: true, exclude: JSON.parse(line.slice(MARK.length)) as unknown };
+};
+
+/** Whether the loader itself loads, from the root; a missing one would otherwise be blamed on every config. */
+export const loaderFailure = (root: string, loader: string | undefined): string | undefined => {
+  if (loader === undefined) return undefined;
+  const r = spawnSync(process.execPath, ['--import', importArg(root, loader), '-e', ''], { cwd: root, encoding: 'utf8', timeout: 120_000 });
+  return r.status === 0 && r.error === undefined ? undefined : `loader ${loader} does not load: ${r.error?.message ?? failureOf(r.stderr, r.status)}`;
 };
 
 export interface Violation {

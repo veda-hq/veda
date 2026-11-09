@@ -115,11 +115,14 @@ JSON `--config` (relative to the root) names both lists:
 }
 ```
 
-- Each vitest config is imported in its own Node process, after `loader` when
-  one is named (resolved from the root, as `node --import` does), so a config
-  that imports the product's TypeScript loads as the product's tooling loads
-  it. A default export may be an object or a factory, sync or async. A config
-  that fails to load is a finding, with its error.
+- Each vitest config is imported in its own Node process, in the config's
+  folder, after `loader` when one is named (a relative path is the root's
+  file; a package name resolves as `node --import` does), so a config that
+  imports the product's TypeScript loads as the product's tooling loads it. A
+  default export may be an object or a factory, sync or async. The answer
+  comes back on fd 3, so nothing a config prints can pose as it, and the
+  process exits once it answers. A config that fails to load is a finding,
+  with its error; a loader that does not load exits 2.
 - Each build config is read as TypeScript reads it (comments allowed); only
   its own `include` is judged, not one it `extends`.
 - `--package <dir>` judges only the configs under that folder (a package's

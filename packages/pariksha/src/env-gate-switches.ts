@@ -15,7 +15,7 @@
 // (`X_SKIP="${X_SKIP:-0}"`) is a read, and so is an assignment inside a branch,
 // loop, function or group (indented or not), which a run may never reach, and
 // `X_SKIP=1 cmd`, which sets cmd's environment only.
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { isAbsolute, join, posix } from 'node:path';
 import type * as TS from 'typescript';
 import { gitAt, must, PLAIN_DIFF, type Git } from './git.ts';
@@ -40,7 +40,7 @@ const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every((s)
 const isRepoPath = (p: string): boolean => !isAbsolute(p) && posix.normalize(p) === p && p !== '.' && p !== '..' && !p.startsWith('../') && !p.endsWith('/');
 
 const patterns = (raw: Record<string, unknown>, key: string): RegExp[] => {
-  const v = raw[key] ?? [];
+  const v = raw[key] === undefined ? [] : raw[key];
   if (!isStrings(v)) throw new Error(`"${key}" must be a list of non-empty regular expressions`);
   return v.map((source) => {
     try {
@@ -68,12 +68,12 @@ export const parseConfig = (text: string): Config => {
   const gatePaths = patterns(raw, 'gatePaths');
   if (gatePaths.length === 0) throw new Error('"gatePaths" is empty, so nothing would be checked');
   const notGateCode = patterns(raw, 'notGateCode');
-  const words = raw['words'] ?? DEFAULT_WORDS;
+  const words = raw['words'] === undefined ? DEFAULT_WORDS : raw['words'];
   if (!Array.isArray(words) || words.length === 0) throw new Error('"words" must be a non-empty list');
   const badWord = words.find((w) => typeof w !== 'string' || !/^[A-Z0-9]+$/.test(w));
   if (badWord !== undefined) throw new Error(`words: ${JSON.stringify(badWord)} is not an upper-case word ([A-Z0-9]+)`);
   const isSwitch = new RegExp(`^${switchName(words as string[])}$`);
-  const allowed = raw['notAGate'] ?? {};
+  const allowed = raw['notAGate'] === undefined ? {} : raw['notAGate'];
   if (!isRecord(allowed)) throw new Error('"notAGate" must be an object');
   const notAGate: Record<string, { files: string[]; reason: string }> = {};
   for (const [name, entry] of Object.entries(allowed)) {
@@ -880,25 +880,30 @@ export type Mode = 'staged' | 'tree';
 /** How the check reads the repository: git at its top level, and the working tree by root-relative path. */
 export interface Reads {
   readonly git: Git;
-  readonly exists: (file: string) => boolean;
-  /** A working-tree file's text; throws when it cannot be read. */
+  /** A working-tree file's text; throws (with the system's error code) when it cannot be read. */
   readonly read: (file: string) => string;
 }
 
 export const diskReads = (root: string): Reads => ({
   git: gitAt(root),
-  exists: (file) => existsSync(join(root, file)),
   read: (file) => readFileSync(join(root, file), 'utf8'),
 });
 
 /** A file the check was asked to read and could not: never a clean result. */
 export class UnreadableGateFile extends Error {}
 
-/** The files a mode judges: every tracked file, or the ones the index adds, copies, modifies or renames. */
+/**
+ * The files a mode judges: every tracked file, or the ones the index adds,
+ * copies, modifies, renames or changes the type of (T: a symlink replaced by
+ * a file brings in its every line).
+ */
 export const listFiles = (reads: Reads, mode: Mode): string[] =>
-  must(reads.git, mode === 'staged' ? ['diff', ...PLAIN_DIFF, '--cached', '--name-only', '--diff-filter=ACMR', '-z'] : ['ls-files', '-z'])
+  must(reads.git, mode === 'staged' ? ['diff', ...PLAIN_DIFF, '--cached', '--name-only', '--diff-filter=ACMRT', '-z'] : ['ls-files', '-z'])
     .split('\0')
     .filter(Boolean);
+
+/** Errors that mean the file is gone from the working tree (deleted, or a parent replaced by a file). */
+const GONE = ['ENOENT', 'ENOTDIR'];
 
 /** A gate file's text: the index's for staged, the working tree's for tree (undefined when deleted there). */
 export const readGate = (reads: Reads, mode: Mode, file: string): string | undefined => {
@@ -908,10 +913,12 @@ export const readGate = (reads: Reads, mode: Mode, file: string): string | undef
     if (text === undefined) throw new UnreadableGateFile(`${file}: git show :0:${file} failed`);
     return text;
   }
-  if (!reads.exists(file)) return undefined;
   try {
     return reads.read(file);
   } catch (e) {
+    // Only a file that is not there is skipped: one under an unreadable
+    // folder (EACCES), or a folder in its place (EISDIR), is unchecked.
+    if (GONE.includes((e as NodeJS.ErrnoException).code ?? '')) return undefined;
     throw new UnreadableGateFile(`${file}: ${(e as Error).message}`);
   }
 };

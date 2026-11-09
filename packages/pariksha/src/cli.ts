@@ -300,35 +300,35 @@ const envGateSwitches = (f: Map<string, string>, io: Io): number => {
     return 2;
   }
   const reads = (io.gateReads ?? diskReads)(root);
-  let listed: string[];
-  let sources: Array<{ file: string; text: string }>;
+  let result: ReturnType<typeof formatReads>;
   try {
-    listed = listFiles(reads, mode).filter(reader.isGateCode);
-    sources = listed.flatMap((file) => {
+    const listed = listFiles(reads, mode).filter(reader.isGateCode);
+    // A tree with no gate code is a config whose gatePaths match nothing (a
+    // typo): staged mode would pass every commit under it, so both refuse.
+    if (!(mode === 'tree' ? listed.length > 0 : listFiles(reads, 'tree').some(reader.isGateCode))) {
+      io.err(`${P} no tracked file is gate code under the config's gatePaths; nothing was checked, so this is not a pass`);
+      return 2;
+    }
+    const sources = listed.flatMap((file) => {
       const text = readGate(reads, mode, file);
       return text === undefined ? [] : [{ file, text }];
     });
+    const ts = sources.some((s) => needsTypescript(s.file)) ? (io.typescript ?? (() => loadTypescript(typescriptLoaders(root))))() : undefined;
+    if (typeof ts === 'string') {
+      io.err(`${P} ${ts}`);
+      return 2;
+    }
+    result = formatReads(
+      sources.flatMap((s) => reader.findSwitchReads(s.file, s.text, ts)),
+      words,
+      sources.length,
+      configPath,
+    );
   } catch (e) {
-    // An unread gate is unchecked, never clean.
+    // An unread gate, or one the reader failed on, is unchecked, never clean.
     io.err(`${P} could not read gate code, so it is unchecked: ${(e as Error).message}`);
     return 2;
   }
-  if (mode === 'tree' && listed.length === 0) {
-    // A whole tree with no gate code is a config whose gatePaths match nothing.
-    io.err(`${P} no tracked file is gate code under the config's gatePaths; nothing was checked, so this is not a pass`);
-    return 2;
-  }
-  const ts = sources.some((s) => needsTypescript(s.file)) ? (io.typescript ?? (() => loadTypescript(typescriptLoaders(root))))() : undefined;
-  if (typeof ts === 'string') {
-    io.err(`${P} ${ts}`);
-    return 2;
-  }
-  const result = formatReads(
-    sources.flatMap((s) => reader.findSwitchReads(s.file, s.text, ts)),
-    words,
-    sources.length,
-    configPath,
-  );
   result.out.forEach(io.out);
   result.err.forEach(io.err);
   return result.ok ? 0 : 1;

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type * as TS from 'typescript';
-import { DEFAULT_WORDS, formatReads, parseConfig, readerFor, readGate, type Reads } from './env-gate-switches.ts';
+import { DEFAULT_WORDS, formatReads, parseConfig, readerFor, readGate, UnreadableGateFile, type Reads } from './env-gate-switches.ts';
 import { loadTypescript, type Ts } from './typescript.ts';
 
 const loaded = loadTypescript();
@@ -83,6 +83,11 @@ describe('parseConfig', () => {
       ['{"gatePaths": ["^a/"], "words": [""]}', /words: "" is not/],
       ['{"gatePaths": ["^a/"], "words": [3]}', /words: 3 is not/],
       ['{"gatePaths": ["^a/"], "notAGate": []}', /"notAGate" must be an object/],
+      // `null` is a value of the wrong type, not a missing key.
+      ['{"gatePaths": null}', /"gatePaths" must be a list/],
+      ['{"gatePaths": ["^a/"], "notGateCode": null}', /"notGateCode" must be a list/],
+      ['{"gatePaths": ["^a/"], "words": null}', /"words" must be a non-empty list/],
+      ['{"gatePaths": ["^a/"], "notAGate": null}', /"notAGate" must be an object/],
       ['{"gatePaths": ["^a/"], "notAGate": {"HOME": {"files": ["a"], "reason": "r"}}}', /notAGate: "HOME" is not a switch name, so it allows nothing/],
       ['{"gatePaths": ["^a/"], "notAGate": {"X_SKIP": true}}', /notAGate\.X_SKIP must be an object/],
       ['{"gatePaths": ["^a/"], "notAGate": {"X_SKIP": {"files": ["a"], "reason": "r", "more": 1}}}', /notAGate\.X_SKIP: unknown key "more"/],
@@ -132,31 +137,29 @@ describe('formatReads', () => {
 });
 
 describe('readGate', () => {
-  const reads = (over: Partial<Reads>): Reads => ({ git: { run: () => 'text' }, exists: () => true, read: () => 'disk', ...over });
+  const reads = (over: Partial<Reads>): Reads => ({ git: { run: () => 'text' }, read: () => 'disk', ...over });
+  /** A read that fails as the system would, with `code`. */
+  const failing = (code: string | undefined) =>
+    reads({
+      read: () => {
+        throw Object.assign(new Error(`${String(code)}: cannot read`), { code });
+      },
+    });
 
-  it('reads the index for staged and the working tree for tree, skipping a deleted file', () => {
+  it('reads the index for staged and the working tree for tree, skipping a file that is gone', () => {
     const asked: string[][] = [];
     assert.equal(readGate(reads({ git: { run: (args) => (asked.push([...args]), 'index') } }), 'staged', '0:a.sh'), 'index');
     assert.deepEqual(asked, [['show', ':0:0:a.sh']]);
     assert.equal(readGate(reads({}), 'tree', 'a.sh'), 'disk');
-    assert.equal(readGate(reads({ exists: () => false }), 'tree', 'a.sh'), undefined);
+    assert.equal(readGate(failing('ENOENT'), 'tree', 'a.sh'), undefined);
+    assert.equal(readGate(failing('ENOTDIR'), 'tree', 'a.sh'), undefined);
   });
 
-  it('throws, naming the file, when it cannot read one', () => {
+  it('throws, naming the file, when it cannot read one that is there', () => {
     assert.throws(() => readGate(reads({ git: { run: () => undefined } }), 'staged', 'a.sh'), /^Error: a\.sh: git show :0:a\.sh failed$/);
-    assert.throws(
-      () =>
-        readGate(
-          reads({
-            read: () => {
-              throw new Error('EISDIR: illegal operation on a directory');
-            },
-          }),
-          'tree',
-          'a.sh',
-        ),
-      /a\.sh: EISDIR/,
-    );
+    for (const code of ['EISDIR', 'EACCES', 'EIO', undefined]) {
+      assert.throws(() => readGate(failing(code), 'tree', 'a.sh'), (e: unknown) => e instanceof UnreadableGateFile && e.message === `a.sh: ${String(code)}: cannot read`, String(code));
+    }
   });
 });
 

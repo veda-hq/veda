@@ -202,12 +202,14 @@ environment variable whose name has a switch word (`X_SKIP`, `SKIP_X`,
   reads are `$X`, `env.X` and `env['X']` outside comments.
 
 `tree` (the default) reads every tracked file in the working tree, skipping
-one deleted there; a tree with no gate code exits 2, since the config would
-check nothing. `staged` (for a pre-commit hook) reads the files the index
-adds, copies, modifies or renames, as the index holds them. A gate file that
-cannot be read, or a git call that fails, exits 2: an unread gate is never
-clean. Needs `typescript` only when a TypeScript or JavaScript file is gate
-code.
+one deleted there. `staged` (for a pre-commit hook) reads the files the index
+adds, copies, modifies, renames or changes the type of (a symlink replaced
+by a file), as the index holds them. In either mode, a repository with no
+tracked gate code exits 2, since the config would check nothing. A gate file
+that cannot be read (one under a folder the check cannot open included), a
+git call that fails, or a failure while reading a file's code exits 2: an
+unread gate is never clean. Needs `typescript` only when a TypeScript or
+JavaScript file is gate code.
 
 ## `export-deletions`
 

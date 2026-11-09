@@ -4,8 +4,8 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.3.2 <check> [flags]
-npx @veda-hq/pariksha@0.3.2 --version
+npx @veda-hq/pariksha@0.5.3 <check> [flags]
+npx @veda-hq/pariksha@0.5.3 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
@@ -62,6 +62,76 @@ the repository's deny list.
 - Binary files (any NUL byte) are skipped. Untracked files are not read.
   Line 0 in a finding is the file's path.
 
+## `coverage-by-type`
+
+```sh
+pariksha coverage-by-type [--config <file>] [--files-from <file>|-] [--root <dir>]
+```
+
+A source file in a category needs the tests its category names: by default a
+service, hook, utility or context a unit test, a repository a unit and an
+integration test, a component or screen a UI (`.test.tsx`) test. A suite named
+after its subject that never imports it is no test of it, so a candidate
+counts only when it loads the subject at runtime, directly or through one
+module it imports (a barrel, a collaborator). `import type`, a clause whose
+every binding is type-only, and `typeof import()` load nothing and do not
+count; `import()`, `require()`, `importActual` and `requireActual` do.
+
+Only `.ts` and `.tsx` files are judged. Without `--files-from` every tracked
+regular file is (not a symlink, not one deleted in the working tree), and a
+tree with none in a category exits 2. With it, the listed paths are (one per
+line or NUL-separated, relative to the root or absolute; `-` reads stdin, a
+file path is relative to the current directory); a listed path that does not
+exist or lies outside the root exits 2, and a listed symlink is skipped. The
+JSON `--config` (relative to the root) replaces each default it names, and
+refuses one that would judge nothing (no categories, an empty pattern, a
+category needing no test):
+`categories` (name to path regex, first match wins), `required` (category to
+test kinds), `tests` (kind to candidate paths, `{dir}` and `{name}`),
+`exclude` (path regexes), `aliases` (specifier prefix to a directory under the
+importing file's nearest `package.json`), `maxHops` (default 1) and `hint` (a
+line printed under a failure).
+
+Needs `typescript` `>=5.4 <6`, the repository's own install first, else one
+beside pariksha (an optional peer dependency: only the checks that read code
+or tsconfig files load it). TypeScript 7 exports no stable compiler API yet,
+so they exit 2 naming the installed version.
+
+## `coverage-exemptions`
+
+```sh
+pariksha coverage-exemptions --config <file> [--package <dir>] [--root <dir>]
+```
+
+Each vitest config's `coverage.exclude` holds every pattern the product
+exempts, and no production tsconfig's `include` brings those files back. The
+JSON `--config` (relative to the root) names both lists:
+
+```json
+{
+  "vitest": { "configs": ["apps/api/vitest.config.ts"], "requiredExcludes": ["**/*.test.ts", "**/__mocks__/**"] },
+  "build": { "configs": ["apps/api/tsconfig.build.json"], "forbiddenIncludes": ["__mocks__", ".test."] },
+  "loader": "tsx"
+}
+```
+
+- Each vitest config is imported in its own Node process, in the config's
+  folder, after `loader` when one is named (a relative path is the root's
+  file; a package name resolves as `node --import` does), so a config that
+  imports the product's TypeScript loads as the product's tooling loads it. A
+  default export may be an object or a factory, sync or async. The answer
+  comes back on fd 3, so nothing a config prints can pose as it, and the
+  process exits once it answers. A config that fails to load is a finding,
+  with its error; a loader that does not load exits 2.
+- Each build config is read as TypeScript reads it (comments allowed); only
+  its own `include` is judged, not one it `extends`.
+- `--package <dir>` judges only the configs under that folder (a package's
+  own run), which must be a normalized folder under the root.
+- A listed config that is not a file, a tsconfig TypeScript cannot read, and
+  a config naming no configs or empty lists exit 2.
+
+Needs `typescript` for the build configs.
+
 ## `doc-budgets`
 
 ```sh
@@ -84,6 +154,72 @@ Refuses a file over its budget, a budgeted file that does not exist, and a
 row that is not `` | `path` | bytes | ``, since nothing would enforce it.
 The table file is read on every check too, so it must budget itself: a row
 for its own path (relative to `--root`) is required.
+
+## `env-gate-switches`
+
+```sh
+pariksha env-gate-switches --config <file> [--mode staged|tree] [--root <dir>]
+```
+
+A hook that reads `PUSH_SKIP` from the environment has a bypass anyone can
+type: `PUSH_SKIP=1 git push`. This check refuses gate code that READS an
+environment variable whose name has a switch word (`X_SKIP`, `SKIP_X`,
+`X_PROBE_Y`): writing or deleting one is not a read. The JSON `--config`
+(relative to the root) says where gate code is:
+
+```json
+{
+  "gatePaths": ["^\\.husky/", "^scripts/", "^\\.github/workflows/"],
+  "notGateCode": ["\\.test\\.[cm]?[jt]sx?$", "(?:^|/)fixtures?/", "\\.md$"],
+  "notAGate": {
+    "SETUP_SKIP_MOBILE": { "files": ["scripts/setup.sh"], "reason": "installs no mobile toolchain; checks nothing" }
+  },
+  "words": ["SKIP", "PROBE"]
+}
+```
+
+- `gatePaths` (required) and `notGateCode` are path regexes: a file is gate
+  code when a gate path matches it and no `notGateCode` entry does.
+- `notAGate` allows a switch that turns off something other than a check,
+  in the files listed only, with the reason a reviewer reads; the same name
+  anywhere else is still refused.
+- `words` (default `SKIP` and `PROBE`) are upper-case words; a name made of
+  `_`-joined words, one of them a switch word, is a switch.
+- Shell (`.sh`, and every file under `.husky/`) is read as bash reads it:
+  single quotes, escapes, comments and quoted heredoc bodies expand nothing,
+  and a bare name bash reads is a read: in arithmetic (`(( X_SKIP ))`,
+  `let`, `-eq`, a subscript), `printenv X_SKIP`, and `-v X_SKIP` in `[ ]`,
+  `[[ ]]` or `test`. A variable the file initialises at the top level before
+  reading it is the script's own decision, not a read; one initialised in a
+  branch, loop, function, group, subshell, pipeline or the end of a `&&`
+  list, or self-defaulted (`X_SKIP="${X_SKIP:-0}"`), is.
+- TypeScript and JavaScript are read as a syntax tree, with a type checker
+  over the one file: dotted, bracketed, optional, destructured (nested too:
+  `const { env: { X_SKIP } } = process`) and `in` reads count, through
+  `process`, `globalThis.process`, `node:process` and any local bound to the
+  environment, with constant keys resolved (`env['X_' + 'SKIP']`); a mention
+  in a comment or string does not.
+- Python reads are `os.environ[…]`, `.get(…)`, `.setdefault(…)`, `.pop(…)`,
+  `'X' in` / `'X' not in os.environ`, the same on `os.environ.copy()` or
+  `dict(os.environ)`, and `os.getenv(…)`, with the bytes forms (`environb`,
+  `getenvb`): under `os` by any name, through `from os import environ as e`
+  / `getenv as g`, and through a name assigned one (`env = os.environ`,
+  `read = os.getenv`), outside strings and comments (f-string fields are
+  code). A key held in a variable is not resolved. Workflow YAML reads are
+  `$X`, `env.X` and `env['X']` outside comments.
+
+`tree` (the default) reads every tracked file in the working tree, skipping
+one deleted there; when every tracked gate file is deleted, nothing was read
+and it exits 2. `staged` (for a pre-commit hook) reads the files the index
+adds, copies, modifies, renames or changes the type of (a symlink replaced
+by a file), as the index holds them. In either mode, a repository with no
+tracked gate code exits 2, since the config would check nothing, and a gate
+file that is a symlink (in the index for staged, in the working tree for
+tree) exits 2: its text is a path, and its target goes unchecked. A gate
+file that cannot be read (one under a folder the check cannot open
+included), a git call that fails, or a failure while reading a file's code
+exits 2: an unread gate is never clean. Needs `typescript` only when a
+TypeScript or JavaScript file is gate code.
 
 ## `export-deletions`
 

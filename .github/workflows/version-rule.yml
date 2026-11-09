@@ -1,0 +1,114 @@
+name: version-rule
+
+# The version rule for every veda-hq repository (README.md, "Releasing"):
+# patch up to x.y.20, then x.(y+1).0, and a major bump only with Alok's yes.
+# Each release is compared with the previous v* tag.
+#
+# At a tag push, pass the tag; on a change, pass nothing and the unreleased
+# package versions are checked. A major bump waits in the caller's
+# `major-release` environment and passes only if Alok approved that
+# deployment himself (or pushed it himself): the approval is read back from
+# GitHub, so an unprotected or missing environment refuses it too.
+#
+#   jobs:
+#     version-rule:
+#       uses: veda-hq/veda/.github/workflows/version-rule.yml@v0.5.1
+#       with:
+#         veda-ref: v0.5.1
+#         tag: ${{ github.ref_name }}
+#       permissions:
+#         contents: read
+#         actions: read
+#     release:
+#       needs: version-rule
+on:
+  workflow_call:
+    inputs:
+      veda-ref:
+        description: >-
+          The veda-hq/veda ref whose rule runs, the same one as in `uses:`. Empty runs the
+          caller's own scripts/version-rule.mjs, which only veda has.
+        type: string
+        default: ''
+      tag:
+        description: The tag being released, vX.Y.Z. Empty checks the unreleased package versions.
+        type: string
+        default: ''
+      manifests:
+        description: Space-separated package.json paths. Empty means packages/*/package.json, else package.json.
+        type: string
+        default: ''
+    outputs:
+      bump:
+        description: none, first, patch, minor or major.
+        value: ${{ jobs.rule.outputs.bump }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  rule:
+    name: Version rule
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      bump: ${{ steps.rule.outputs.bump }}
+      version: ${{ steps.rule.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - if: inputs.veda-ref != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: veda-hq/veda
+          ref: ${{ inputs.veda-ref }}
+          path: .veda-version-rule
+          sparse-checkout: scripts
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        timeout-minutes: 3
+        with:
+          node-version: 24
+      - name: The version follows the rule
+        id: rule
+        env:
+          VEDA_REF: ${{ inputs.veda-ref }}
+          TAG: ${{ inputs.tag }}
+          MANIFESTS: ${{ inputs.manifests }}
+        run: |
+          set -euo pipefail
+          script=scripts/version-rule.mjs
+          if [ -n "$VEDA_REF" ]; then script=.veda-version-rule/scripts/version-rule.mjs; fi
+          read -r -a manifests <<< "$MANIFESTS"
+          if [ -n "$TAG" ]; then
+            node "$script" tag "$TAG" "${manifests[@]}"
+          else
+            node "$script" pending "${manifests[@]}"
+          fi
+
+  major:
+    name: Major release, Alok's approval
+    needs: rule
+    if: needs.rule.outputs.bump == 'major'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: major-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.veda-ref != '' && 'veda-hq/veda' || github.repository }}
+          ref: ${{ inputs.veda-ref != '' && inputs.veda-ref || github.sha }}
+          sparse-checkout: scripts
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        timeout-minutes: 3
+        with:
+          node-version: 24
+      - name: Alok approved this major release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.rule.outputs.version }}
+        run: node scripts/version-rule.mjs approval

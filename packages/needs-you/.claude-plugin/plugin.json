@@ -1,0 +1,11 @@
+{
+  "name": "needs-you",
+  "version": "0.1.0",
+  "description": "A band above the message box listing what this chat is waiting on from you",
+  "author": {
+    "name": "veda-hq"
+  },
+  "homepage": "https://github.com/veda-hq/veda/tree/main/packages/needs-you#readme",
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

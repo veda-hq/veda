@@ -6,13 +6,23 @@ import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adrDirOf, DEFAULTS, findUncited, formatClaims, listAdrs, readOrUndefined, stagedSource, treeSource, type Options } from './authority-citations.ts';
 import { findDenied, hash, isText, parseDenyList, type TrackedFile } from './boundary.ts';
+import { DEFAULT_CONFIG, findGaps, formatGaps, listedPaths, parseConfig, treePaths, type Config } from './coverage-by-type.ts';
+import { checkBuild, checkPackage, checkVitest, formatViolations, loaderFailure, loadVitestExclude, missingConfigs, ownedBy, parseConfig as parseExemptions } from './coverage-exemptions.ts';
 import { checkBudgets } from './doc-budgets.ts';
+import { diskReads, formatReads, listFiles, needsTypescript, parseConfig as parseGateConfig, readerFor, readGate, type Reads } from './env-gate-switches.ts';
+import { loadTypescript, typescriptLoaders, type Ts } from './typescript.ts';
 import { checkExportDeletions, formatReport } from './export-deletions.ts';
-import { BASE_CANDIDATES, gitAt, gitAtTop, resolveBase, topOf } from './git.ts';
+import { BASE_CANDIDATES, gitAt, gitAtTop, must, resolveBase, topOf } from './git.ts';
 
 export interface Io {
   readonly out: (line: string) => void;
   readonly err: (line: string) => void;
+  /** Standard input, read whole; only `--files-from -` reads it. */
+  readonly stdin?: () => string;
+  /** How a check that needs TypeScript gets it; the product's own install by default. */
+  readonly typescript?: () => Ts | string;
+  /** How env-gate-switches reads the repository at a root; git and the disk by default. */
+  readonly gateReads?: (root: string) => Reads;
 }
 
 export const DENY_FILE = '.veda/deny.sha256';
@@ -20,7 +30,10 @@ export const DENY_FILE = '.veda/deny.sha256';
 const USAGE = [
   'usage: pariksha authority-citations [--mode staged|tree] [--authority <a,b>] [--issue-prefix <A,B>] [--adr-dir <dir>] [--root <dir>]',
   '       pariksha boundary [--root <dir>] [--deny <file>]',
+  '       pariksha coverage-by-type [--config <file>] [--files-from <file>|-] [--root <dir>]',
+  '       pariksha coverage-exemptions --config <file> [--package <dir>] [--root <dir>]',
   '       pariksha doc-budgets --table <file> [--section <name>] [--root <dir>]',
+  '       pariksha env-gate-switches --config <file> [--mode staged|tree] [--root <dir>]',
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
   '       pariksha hash <word>',
   '       pariksha --version',
@@ -33,7 +46,7 @@ export const ownVersion = (): string => {
 
 /** The files git tracks under root, text ones only. */
 export const trackedFiles = (root: string): TrackedFile[] => {
-  const names = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean);
+  const names = must(gitAt(root), ['ls-files', '-z']).split('\0').filter(Boolean);
   const files: TrackedFile[] = [];
   for (const path of names) {
     const full = join(root, path);
@@ -175,10 +188,164 @@ const authorityCitations = (f: Map<string, string>, io: Io, env: NodeJS.ProcessE
   return result.ok ? 0 : 1;
 };
 
+const coverageByType = (f: Map<string, string>, io: Io): number => {
+  const dir = resolve(f.get('--root') ?? '.');
+  const root = topOf(dir);
+  if (root === undefined) {
+    io.err(`pariksha coverage-by-type: ${dir} is not in a git repository`);
+    return 2;
+  }
+  const ts = (io.typescript ?? (() => loadTypescript(typescriptLoaders(root))))();
+  if (typeof ts === 'string') {
+    io.err(`pariksha coverage-by-type: ${ts}`);
+    return 2;
+  }
+  try {
+    const configPath = f.get('--config');
+    const config: Config = configPath === undefined ? DEFAULT_CONFIG : parseConfig(readFileSync(resolve(root, configPath), 'utf8'));
+    const from = f.get('--files-from');
+    const paths =
+      from === undefined
+        ? treePaths(root, must(gitAt(root), ['ls-files', '-z']))
+        : listedPaths(root, from === '-' ? (io.stdin ?? (() => readFileSync(0, 'utf8')))() : readFileSync(resolve(from), 'utf8'));
+    const findings = findGaps(ts, config, root, paths);
+    if (from === undefined && findings.judged === 0) {
+      // The whole tree in no category is a config that checks nothing.
+      io.err(`pariksha coverage-by-type: none of ${findings.listed} tracked file(s) is in a category; nothing was checked, so this is not a pass`);
+      return 2;
+    }
+    const result = formatGaps(config, findings);
+    result.out.forEach(io.out);
+    result.err.forEach(io.err);
+    return result.ok ? 0 : 1;
+  } catch (e) {
+    io.err(`pariksha coverage-by-type: ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+};
+
+const coverageExemptions = (f: Map<string, string>, io: Io): number => {
+  const configPath = f.get('--config');
+  if (configPath === undefined) {
+    io.err(USAGE);
+    return 2;
+  }
+  const dir = resolve(f.get('--root') ?? '.');
+  const root = topOf(dir);
+  if (root === undefined) {
+    io.err(`pariksha coverage-exemptions: ${dir} is not in a git repository`);
+    return 2;
+  }
+  try {
+    const config = parseExemptions(readFileSync(resolve(root, configPath), 'utf8'));
+    const pkg = f.get('--package');
+    const refused = pkg === undefined ? undefined : checkPackage(root, pkg);
+    if (refused !== undefined) {
+      io.err(`pariksha coverage-exemptions: --package ${refused}`);
+      return 2;
+    }
+    const vitest = ownedBy(config.vitest.configs, pkg);
+    const build = ownedBy(config.build.configs, pkg);
+    const missing = missingConfigs(root, [...vitest, ...build]);
+    if (missing.length > 0) {
+      io.err(`pariksha coverage-exemptions: ${missing.join(', ')} named in ${configPath} but not a file; nothing was checked, so this is not a pass`);
+      return 2;
+    }
+    const noLoader = vitest.length > 0 ? loaderFailure(root, config.loader) : undefined;
+    if (noLoader !== undefined) {
+      io.err(`pariksha coverage-exemptions: ${noLoader}; nothing was checked, so this is not a pass`);
+      return 2;
+    }
+    let violations = checkVitest(config, vitest, (c) => loadVitestExclude(root, c, config.loader));
+    if (build.length > 0) {
+      const ts = (io.typescript ?? (() => loadTypescript(typescriptLoaders(root))))();
+      if (typeof ts === 'string') {
+        io.err(`pariksha coverage-exemptions: ${ts}`);
+        return 2;
+      }
+      violations = [...violations, ...checkBuild(ts, config, root, build)];
+    }
+    const result = formatViolations(violations, vitest.length, build.length, pkg);
+    result.out.forEach(io.out);
+    result.err.forEach(io.err);
+    return result.ok ? 0 : 1;
+  } catch (e) {
+    io.err(`pariksha coverage-exemptions: ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+};
+
+const envGateSwitches = (f: Map<string, string>, io: Io): number => {
+  const P = 'pariksha env-gate-switches:';
+  const configPath = f.get('--config');
+  const mode = f.get('--mode') ?? 'tree';
+  if (configPath === undefined || (mode !== 'staged' && mode !== 'tree')) {
+    io.err(USAGE);
+    return 2;
+  }
+  const dir = resolve(f.get('--root') ?? '.');
+  const root = topOf(dir);
+  if (root === undefined) {
+    io.err(`${P} ${dir} is not in a git repository`);
+    return 2;
+  }
+  let reader: ReturnType<typeof readerFor>;
+  let words: readonly string[];
+  try {
+    const config = parseGateConfig(readFileSync(resolve(root, configPath), 'utf8'));
+    reader = readerFor(config);
+    words = config.words;
+  } catch (e) {
+    io.err(`${P} ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+  const reads = (io.gateReads ?? diskReads)(root);
+  let result: ReturnType<typeof formatReads>;
+  try {
+    const listed = listFiles(reads, mode).filter((l) => reader.isGateCode(l.file));
+    // A tree with no gate code is a config whose gatePaths match nothing (a
+    // typo): staged mode would pass every commit under it, so both refuse.
+    if (!(mode === 'tree' ? listed.length > 0 : listFiles(reads, 'tree').some((l) => reader.isGateCode(l.file)))) {
+      io.err(`${P} no tracked file is gate code under the config's gatePaths; nothing was checked, so this is not a pass`);
+      return 2;
+    }
+    const sources = listed.flatMap((entry) => {
+      const text = readGate(reads, mode, entry);
+      return text === undefined ? [] : [{ file: entry.file, text }];
+    });
+    if (mode === 'tree' && sources.length === 0) {
+      // Staged mode reads the index, which holds every file it lists.
+      io.err(`${P} every tracked gate file (${listed.length}) is gone from the working tree; nothing was checked, so this is not a pass`);
+      return 2;
+    }
+    const ts = sources.some((s) => needsTypescript(s.file)) ? (io.typescript ?? (() => loadTypescript(typescriptLoaders(root))))() : undefined;
+    if (typeof ts === 'string') {
+      io.err(`${P} ${ts}`);
+      return 2;
+    }
+    result = formatReads(
+      sources.flatMap((s) => reader.findSwitchReads(s.file, s.text, ts)),
+      words,
+      sources.length,
+      configPath,
+    );
+  } catch (e) {
+    // An unread gate, or one the reader failed on, is unchecked, never clean.
+    io.err(`${P} could not read gate code, so it is unchecked: ${(e as Error).message}`);
+    return 2;
+  }
+  result.out.forEach(io.out);
+  result.err.forEach(io.err);
+  return result.ok ? 0 : 1;
+};
+
 const COMMANDS: Record<string, { allowed: readonly string[]; run: (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv) => number }> = {
+  'coverage-exemptions': { allowed: ['--config', '--package', '--root'], run: coverageExemptions },
   'authority-citations': { allowed: ['--mode', '--authority', '--issue-prefix', '--adr-dir', '--root'], run: authorityCitations },
   boundary: { allowed: ['--root', '--deny'], run: boundary },
+  'coverage-by-type': { allowed: ['--config', '--files-from', '--root'], run: coverageByType },
   'doc-budgets': { allowed: ['--table', '--section', '--root'], run: docBudgets },
+  'env-gate-switches': { allowed: ['--config', '--mode', '--root'], run: envGateSwitches },
   'export-deletions': { allowed: ['--base', '--root'], run: exportDeletions },
 };
 

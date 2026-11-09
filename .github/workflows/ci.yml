@@ -28,6 +28,12 @@ jobs:
           node-version-file: .nvmrc
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      # The version rule's own tests: scripts/ is outside the packages pnpm check runs.
+      - name: Version rule tests
+        run: >-
+          node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95
+          --test-coverage-branches=90 '--test-coverage-include=scripts/*.mjs' '--test-coverage-exclude=scripts/*.test.mjs'
+          scripts/*.test.mjs
       # The boundary check from source: Veda never names a client (deny list: .veda/deny.sha256).
       - name: Boundary
         run: node packages/pariksha/src/cli.ts boundary
@@ -45,6 +51,47 @@ jobs:
           echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/$TAR" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$TAR" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color
+
+  # The marketplace and its plugins validate, and the plugins' own tests pass, under
+  # one pinned Claude Code build: its linux-x64 npm tarball, checked against its sha256.
+  plugins:
+    name: Plugins
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate and test
+        env:
+          CLAUDE_CODE_VERSION: 2.1.318
+          CLAUDE_CODE_SHA256: 2a4d5e3bd0f5bd2959bb1955bd99ea97f57af162681991dcae00fee82f9d554f
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/claude-code"
+          mkdir -p "$DIR"
+          TGZ="claude-code-linux-x64-${CLAUDE_CODE_VERSION}.tgz"
+          curl -fsSL --retry 3 -o "$DIR/$TGZ" \
+            "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/${TGZ}"
+          echo "${CLAUDE_CODE_SHA256}  $DIR/$TGZ" | sha256sum -c -
+          tar -xzf "$DIR/$TGZ" -C "$DIR" package/claude
+          CLAUDE="$DIR/package/claude"
+          "$CLAUDE" --version
+          "$CLAUDE" plugin validate .
+          for plugin in $(jq -r '.plugins[].source' .claude-plugin/marketplace.json); do
+            "$CLAUDE" plugin validate "$plugin"
+          done
+          "$CLAUDE" plugin test packages/needs-you
+
+  # Every unreleased package version is the next legal release (README.md, "Releasing").
+  # Run from the last release, as in release.yml; the tests above check the copy being changed.
+  version-rule:
+    uses: veda-hq/veda/.github/workflows/version-rule.yml@3038b11092afd1e65bab64f182012b349c0d82f8 # v0.5.2
+    with:
+      veda-ref: 3038b11092afd1e65bab64f182012b349c0d82f8 # v0.5.2
+    permissions:
+      contents: read
+      actions: read
 
   secrets:
     name: Secret scans

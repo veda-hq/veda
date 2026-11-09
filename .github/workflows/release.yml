@@ -1,8 +1,8 @@
 name: Release
 
-# A tag vX.Y.Z on main publishes every package under packages/ whose version is
-# X.Y.Z to npm, signed with provenance from this workflow, and makes the GitHub
-# release. A version already on npm is skipped, so a rerun is safe.
+# A tag vX.Y.Z on main that keeps the version rule publishes every package
+# under packages/ whose version is X.Y.Z to npm, signed with provenance from
+# this workflow, and makes the GitHub release. A version already on npm is skipped, so a rerun is safe.
 #
 # npm auth: trusted publishing (OIDC) once it is set up for a package on
 # npmjs.com; until then, for a package's first publish, the NPM_TOKEN secret.
@@ -15,8 +15,22 @@ permissions:
   id-token: write
 
 jobs:
+  # The version rule (README.md, "Releasing"): the tag is the next legal
+  # version after the previous v* tag, and a major one waits for Alok.
+  # Run from the last release, never from the commit being tagged, so a
+  # broken change to the rule cannot pass itself. Move both pins together.
+  version-rule:
+    uses: veda-hq/veda/.github/workflows/version-rule.yml@3038b11092afd1e65bab64f182012b349c0d82f8 # v0.5.2
+    with:
+      veda-ref: 3038b11092afd1e65bab64f182012b349c0d82f8 # v0.5.2
+      tag: ${{ github.ref_name }}
+    permissions:
+      contents: read
+      actions: read
+
   release:
     name: Release
+    needs: version-rule
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -52,6 +66,8 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/packs"
           for dir in packages/*/; do
+            # A folder without package.json is a plugin only (packages/needs-you): nothing to publish.
+            [ -f "$dir/package.json" ] || continue
             name=$(jq -r .name "$dir/package.json")
             version=$(jq -r .version "$dir/package.json")
             [ "v$version" = "$TAG" ] || continue

@@ -1,0 +1,6 @@
+# What enforces the release rules (README.md, "Releasing"): a change here needs
+# the owner's review once main's ruleset requires review from code owners.
+# This file is under .github/, so it guards itself.
+/.github/                  @AlokBansal8
+/scripts/version-rule.mjs  @AlokBansal8
+/README.md                 @AlokBansal8

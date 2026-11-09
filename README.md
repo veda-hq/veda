@@ -12,17 +12,20 @@ Veda's packages take that configuration as input.
 ## Packages
 
 Each is published to npm under `@veda-hq`, at exact versions, signed with
-provenance from this repository's release workflow. Names are Sanskrit; each
-package's description says its job in plain English.
+provenance from this repository's release workflow; a folder with no
+`package.json` (`needs-you`) is a Claude Code plugin only, installed from
+this repository's marketplace, `.claude-plugin/marketplace.json`. Names are
+Sanskrit; each package's description says its job in plain English.
 
 | Package | Meaning | Job | Status |
 | --- | --- | --- | --- |
-| [`@veda-hq/pariksha`](packages/pariksha) | परीक्षा, examination | Repository checks: doc drift, rule enforcement, test-quality ratchets | v0.3.2: authority-citations, boundary, doc-budgets, export-deletions |
+| [`@veda-hq/pariksha`](packages/pariksha) | परीक्षा, examination | Repository checks: doc drift, rule enforcement, test-quality ratchets | v0.5.3: authority-citations, boundary, coverage-by-type, coverage-exemptions, doc-budgets, env-gate-switches, export-deletions |
 | [`@veda-hq/kavach`](packages/kavach) | कवच, armour | Agent guards: refuses unsafe or out-of-bounds agent commands | v0.3: worktree boundary, command guard, rule-check engine, adversarial corpus |
 | [`@veda-hq/dvara`](packages/dvara) | द्वार, gate | Git hooks: cheap checks at commit, expensive ones once at push | v0.5: the hook supervisor, quiet output, keep-going mode |
 | `@veda-hq/agnipariksha` | अग्निपरीक्षा, trial by fire | Mutation gate: wiring and policy on top of Stryker | planned |
 | [`@veda-hq/eslint-plugin-shuddhi`](packages/eslint-plugin-shuddhi) | शुद्धि, purification | Generic ESLint rules | v0.2: error handling, input parsing, NestJS and Prisma boundaries, test lint |
 | [`@veda-hq/sarathi`](packages/sarathi) | सारथि, charioteer | Runs a project's Claude Code hooks from one entry per event, kavach's guards built in; its plugin `sarathi@veda` carries the agents | v0.4: hook runner, kavach guards, worker and researcher agents |
+| [`needs-you`](packages/needs-you) | (a plugin, not a package) | A band above Claude Code's message box listing what the chat is waiting on from you: its end-of-turn question, an open question dialog, a side session waiting on you | v0.1: plugin `needs-you@veda` only, not on npm |
 
 The work rules for repositories that track work in GitHub Issues live in their
 own repository, `veda-hq/niyam` (नियम, rule).
@@ -75,11 +78,36 @@ TruffleHog.
 
 ## Releasing
 
-1. Bump the version of each package being released, on main.
-2. Tag `vX.Y.Z` on main and push the tag. The release workflow checks that
-   the tag is on main and names at least one package's version, runs
-   `pnpm check`, publishes every package at that version that is not on npm
-   yet, and makes the GitHub release with the packed packages attached.
+### The version rule
+
+One tag, `vX.Y.Z`, releases the whole repository, and each release is
+compared with the previous `v*` tag:
+
+- **Patch** up to 20: `x.y.0`, `x.y.1`, … `x.y.20`, one at a time, none
+  skipped.
+- **Minor** only after `x.y.20`: the release after `x.y.20` is `x.(y+1).0`.
+- **Major** only with Alok's yes. Ask him before bumping one. A major release
+  is `(x+1).0.0`, and its run waits in the `major-release` environment until
+  he approves that deployment on GitHub himself (or he pushes the tag
+  himself). The check reads his approval back from GitHub, so no one else's
+  approval, and no label, input or variable, lets one through.
+
+[`scripts/version-rule.mjs`](scripts/version-rule.mjs) enforces it, through
+the shared workflow [`version-rule.yml`](.github/workflows/version-rule.yml):
+CI refuses a change that sets a package to a version that is neither released
+nor the next legal one, and the release workflow refuses a tag that is not the
+next legal one. Other veda-hq repositories call the same workflow at a
+release; its header shows how.
+
+### Steps
+
+1. Set the version of each package being released to the next legal version,
+   on main.
+2. Tag `vX.Y.Z` on main and push the tag. The release workflow checks the
+   version rule, that the tag is on main and names at least one package's
+   version, runs `pnpm check`, publishes every package at that version that is
+   not on npm yet, and makes the GitHub release with the packed packages
+   attached.
 
 ## Licence
 

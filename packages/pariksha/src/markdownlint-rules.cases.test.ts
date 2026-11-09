@@ -1,6 +1,7 @@
 // The examples the markdownlint rules are judged on: data only, no tests. The
-// rules suite drives them through hand-built tokens; a markdownlint run can
-// lint the same texts through the real parser. Rule names are given without
+// rules suite drives them through hand-built tokens; a consumer's markdownlint
+// run lints the same texts through the real parser, and is the only check on
+// a case marked engineOnly. Rule names are given without
 // their `pariksha-` prefix.
 
 export interface Case {

@@ -12,8 +12,10 @@ import rulesDefault, { DEFAULT_OPTIONS, listOption, proseLines, readConfig, RULE
 // markdownlint is not a dependency, so the rules run on micromark-shaped tokens
 // built here: the token types the rules read (paragraph, codeText, codeFenced
 // with its fences, info and values, codeIndented, htmlFlow), with markdownlint's
-// 1-based lines and columns and exclusive end columns. A run of real
-// markdownlint over the same texts is the check on this builder.
+// 1-based lines and columns and exclusive end columns. This suite does not run
+// real markdownlint: the check on this builder is a consumer's run of
+// markdownlint-cli2 over the same texts, which also covers what only the
+// engine does (the case marked engineOnly: front matter's line offset).
 
 interface Built {
   type: string;
@@ -320,7 +322,7 @@ describe('refused configuration', () => {
     }
   });
 
-  it('refuses a configuration that is not an object', () => {
+  it('refuses a configuration that is not an object, when a rule is run directly', () => {
     for (const config of [[], null, 'x', 42]) {
       assert.throws(run('fence-empty', config), /^Error: pariksha-fence-empty: its configuration must be true, false or an object of options; got /);
     }

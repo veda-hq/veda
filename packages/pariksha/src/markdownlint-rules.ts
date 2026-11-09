@@ -84,8 +84,12 @@ const describe = (value: unknown): string => {
 
 /**
  * The rule's configuration as markdownlint passes it, checked: an object whose
- * every key is an option of this module. Anything else throws, which fails the
- * lint run with the message; a misspelt or mistyped option is never ignored.
+ * every key is an option of this module. A key no rule here reads throws,
+ * which fails the lint run with the message. A key another rule reads is
+ * accepted, since options set under the tag reach every rule and a rule
+ * cannot tell the tag's object from its own. markdownlint always passes an
+ * object (a string or number becomes `{}`, an array its indexes as keys); the
+ * non-object refusal is for a caller that runs a rule directly.
  */
 export const readConfig = (rule: string, config: unknown): Readonly<Record<string, unknown>> => {
   if (config === undefined) return {};

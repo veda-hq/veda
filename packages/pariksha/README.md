@@ -4,8 +4,8 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.5.3 <check> [flags]
-npx @veda-hq/pariksha@0.5.3 --version
+npx @veda-hq/pariksha@0.5.4 <check> [flags]
+npx @veda-hq/pariksha@0.5.4 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
@@ -309,9 +309,15 @@ Options set under the tag reach every rule, so every rule accepts all four
 names. A rule's own key replaces the tag's object for that rule (markdownlint
 takes the last key that names a rule, whole), so above
 `pariksha-fence-swallows-heading` keeps the default `dunder_words`, which it
-does not read. A configuration markdownlint cannot have meant is refused, not
-ignored: an option name no rule reads, a value that is not a non-empty array
-of strings (to turn a rule off, set it to `false`), or an entry that could
-never match (an extension with its dot, a dunder word with its underscores, a
-language with a space). The rule throws, naming itself and the option;
-markdownlint-cli2 reports that on line 1 of each file and fails the run.
+does not read. The same goes for an option of one rule set under another
+rule's key: a rule cannot tell its own object from the tag's, so it accepts
+every name some rule reads. Otherwise a configuration markdownlint cannot have
+meant is refused, not ignored: an option name no rule reads (an array set as
+the configuration reaches the rules as its indexes, `"0"`, and is refused as
+such), a list option that is not a non-empty array of strings (to turn a rule
+off, set it to `false`), or an entry that could never match (an extension with
+its dot, a dunder word with its underscores, a language with a space). Each
+rule that reads the bad configuration throws, naming itself and the option, so
+markdownlint-cli2 reports up to twelve errors on line 1 of each file and the
+run fails; with `"severity": "warning"` in the configuration they are reported
+as warnings instead.

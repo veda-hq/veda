@@ -58,15 +58,19 @@ describe("scope", () => {
 });
 
 describe("rulesFor", () => {
-  it("ships the durable-path rule under the configured settings", () => {
+  it("ships the durable-path and commit-id rules under the configured settings", () => {
     const tree = { typesOf: () => new Map(), baseText: () => undefined };
-    const rules = rulesFor({ ...RECORDS, packageManager: "pnpm" });
-    assert.equal(rules.length, 1);
-    assert.deepEqual(
-      rules
-        .flatMap((rule) => rule("docs/a.md", "run npm install\n", tree))
-        .map((f) => f.check),
-      ["install-command"],
-    );
+    const text = "run npm install after commit abc1234d\n";
+    const run = (records: typeof RECORDS) =>
+      rulesFor({ ...records, packageManager: "pnpm" })
+        .flatMap((rule) => rule("docs/a.md", text, tree))
+        .map((f) => f.check);
+    assert.equal(rulesFor(RECORDS).length, 2);
+    // No identityPaths by default: only the path rule reads the file.
+    assert.deepEqual(run(RECORDS), ["install-command"]);
+    assert.deepEqual(run({ ...RECORDS, identityPaths: [/^docs\//] }), [
+      "install-command",
+      "abbreviated-id",
+    ]);
   });
 });

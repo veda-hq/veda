@@ -89,8 +89,8 @@ field is optional; an unknown field is an error.
 | `baseline`       | `.dvara/records-baseline.json` | the per-file baseline, relative to the root; read from git, so it must be tracked (un-ignore it if `.dvara/` is ignored) |
 | `skip`           | `[]`                           | path prefixes no rule reads, such as a checker's own fixtures                                                            |
 | `frozen`         | `{"paths": [], "except": []}`  | `paths`: prefixes `dvara frozen` refuses changing and no rule reads; `except`: exact paths under them that stay editable |
-| `identityPaths`  | `[]`                           | regular expressions for the paths where a commit must be cited by its full id (read by a rule still to come)             |
-| `repository`     | `null`                         | `owner/name` on GitHub, for that same rule                                                                               |
+| `identityPaths`  | `[]`                           | regular expressions for the paths where a commit must be cited by its full id (`EVIDENCE-01`); none by default           |
+| `repository`     | `null`                         | `owner/name` on GitHub: its commit URLs are this repository's, every other repository's are not checked                  |
 | `allowPaths`     | `[]`                           | regular expressions for machine paths that are durable by agreement, matched from where the path starts: anchor with `^` |
 | `packageManager` | `null`                         | `pnpm`, `npm` or `yarn`: the other managers' install commands are refused; `null` checks none                            |
 
@@ -138,6 +138,25 @@ binary, a skipped or frozen path, the baseline or the config, and refuses
 - another package manager's install command, when `packageManager` names one.
   A clause that says not to ("never run `npm install`") is no finding.
 
+Where `identityPaths` match, it also refuses (rule `EVIDENCE-01`) a commit cited
+by less than its full 40-hex id, since git lengthens abbreviations as history
+grows and clones disagree on their length:
+
+- `abbreviated-id`: a 7–39 hex token the line makes a commit (after a commit
+  word, backticked on its own, in an `a..b` range, cut off with an ellipsis, or
+  in a short commit URL of `repository`), unless the line names it another kind
+  of hash (digest, sha256, checksum, …);
+- `abbreviating-command`: a git command that prints abbreviations
+  (`--oneline`, `%h`, `--abbrev-commit`, `rev-parse --short`);
+- `unresolved-id`: a full id the change adds that is not a commit in this
+  repository, compared with the ids the file cited at the merge base. No
+  baseline holds these: they are new by construction.
+
+In Markdown, a fence's captured output is not read for tokens; its command
+lines are (`$ ` lines of a transcript, every line of an `sh` fence). Fences are
+found by CommonMark's rules (mdast-util-from-markdown), so a fence in a quote or
+a list item counts.
+
 Files written before the gate existed are held by the baseline: each file's
 count per rule, which may only fall. A new finding in a legacy file, a fix that
 leaves its allowance in place, an entry for a file that is gone or not read,
@@ -154,8 +173,7 @@ dvara records --all --survey           # counts per rule and check
 
 Exit 0: clean or within the baseline; 1: refused; 2: could not run. Inside the
 package the gate takes any list of rules, `(path, text, tree) => Finding[]`;
-the command runs the list `rulesFor` in `src/records/rules.ts` returns, which a
-rule for full commit ids (`EVIDENCE-01`, already a baseline rule id) will join.
+the command runs the list `rulesFor` in `src/records/rules.ts` returns.
 
 ## Frozen paths: `dvara frozen`
 

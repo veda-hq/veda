@@ -1,6 +1,6 @@
 {
   "name": "@veda-hq/dvara",
-  "version": "0.5.0",
+  "version": "0.5.3",
   "description": "Git hooks for repositories coding agents work in: runs each hook under a supervisor that times its stages, forwards signals and keeps one history row per run, with quiet output on success and a keep-going mode for preflights.",
   "keywords": [
     "git hooks",
@@ -48,5 +48,8 @@
   "devDependencies": {
     "@types/node": "24.19.2",
     "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "mdast-util-from-markdown": "2.0.3"
   }
 }

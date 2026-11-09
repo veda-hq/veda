@@ -75,11 +75,36 @@ TruffleHog.
 
 ## Releasing
 
-1. Bump the version of each package being released, on main.
-2. Tag `vX.Y.Z` on main and push the tag. The release workflow checks that
-   the tag is on main and names at least one package's version, runs
-   `pnpm check`, publishes every package at that version that is not on npm
-   yet, and makes the GitHub release with the packed packages attached.
+### The version rule
+
+One tag, `vX.Y.Z`, releases the whole repository, and each release is
+compared with the previous `v*` tag:
+
+- **Patch** up to 20: `x.y.0`, `x.y.1`, … `x.y.20`, one at a time, none
+  skipped.
+- **Minor** only after `x.y.20`: the release after `x.y.20` is `x.(y+1).0`.
+- **Major** only with Alok's yes. Ask him before bumping one. A major release
+  is `(x+1).0.0`, and its run waits in the `major-release` environment until
+  he approves that deployment on GitHub himself (or he pushes the tag
+  himself). The check reads his approval back from GitHub, so no one else's
+  approval, and no label, input or variable, lets one through.
+
+[`scripts/version-rule.mjs`](scripts/version-rule.mjs) enforces it, through
+the shared workflow [`version-rule.yml`](.github/workflows/version-rule.yml):
+CI refuses a change that sets a package to a version that is neither released
+nor the next legal one, and the release workflow refuses a tag that is not the
+next legal one. Other veda-hq repositories call the same workflow at a
+release; its header shows how.
+
+### Steps
+
+1. Set the version of each package being released to the next legal version,
+   on main.
+2. Tag `vX.Y.Z` on main and push the tag. The release workflow checks the
+   version rule, that the tag is on main and names at least one package's
+   version, runs `pnpm check`, publishes every package at that version that is
+   not on npm yet, and makes the GitHub release with the packed packages
+   attached.
 
 ## Licence
 

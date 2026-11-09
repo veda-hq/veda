@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { hash } from './boundary.ts';
-import { DENY_FILE, ownVersion, run, trackedFiles } from './cli.ts';
+import { DENY_FILE, ownVersion, run, trackedFiles, type Io } from './cli.ts';
+import { diskReads, type Reads } from './env-gate-switches.ts';
+import { loadTypescript, type Ts } from './typescript.ts';
 
 const capture = () => {
   const out: string[] = [];
@@ -347,4 +349,284 @@ describe('run export-deletions', () => {
     assert.equal(run(['export-deletions', '--root', root], c.io, '0'), 2);
     assert.deepEqual(c.err, ['pariksha export-deletions: none of origin/main, origin/develop, origin/master, main names a commit; fetch one or pass --base']);
   });
+});
+
+const loadedTs = loadTypescript();
+if (typeof loadedTs === 'string') throw new Error(loadedTs);
+const compiler: Ts = loadedTs;
+const commit = (root: string) => git(root, '-c', 'user.email=a@example.com', '-c', 'user.name=a', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'gates');
+
+const GATE_CONFIG = JSON.stringify({
+  gatePaths: ['^\\.husky/', '^scripts/'],
+  notGateCode: ['\\.test\\.[cm]?[jt]sx?$'],
+  notAGate: { SETUP_SKIP_MOBILE: { files: ['scripts/setup.sh'], reason: 'installs no mobile toolchain; checks nothing' } },
+});
+
+describe('run env-gate-switches', () => {
+  const P = 'pariksha env-gate-switches:';
+  const PASS = (n: number) => `${P} no gate reads a *_SKIP / *_PROBE environment switch (${n} gate file(s) read)`;
+  const HINT = `${P} 1 read(s). Decide inside the gate (a flag the gate owns, a file it checks), or, if the switch turns off no check at all, add it to notAGate in gates.json with the reason.`;
+  const check = (root: string, more: string[] = [], over: Partial<Io> = {}) => {
+    const c = capture();
+    const code = run(['env-gate-switches', '--root', root, '--config', 'gates.json', ...more], { ...c.io, ...over }, '0');
+    return { code, out: c.out, err: c.err };
+  };
+
+  /**
+   * Leaves a directory where the gate file was, and returns its restore.
+   * Not `chmod 000`: root reads such a file anyway, so the refusal would
+   * never be exercised for a check run as root.
+   */
+  const makeUnreadable = (gate: string): (() => void) => {
+    const content = readFileSync(gate);
+    unlinkSync(gate);
+    mkdirSync(gate);
+    return () => {
+      rmSync(gate, { recursive: true });
+      writeFileSync(gate, content);
+    };
+  };
+
+  it('finds a read in a tracked file and, in staged mode, only in the index', () => {
+    const root = repo({ 'gates.json': GATE_CONFIG, '.husky/pre-push': '[ -n "$PUSH_SKIP" ] && exit 0\n' });
+    for (const mode of [[], ['--mode', 'tree'], ['--mode', 'staged']]) {
+      const r = check(root, mode);
+      assert.equal(r.code, 1);
+      assert.deepEqual(r.err, [`${P} gate code reads an environment switch anyone can set to turn it off:`, '   .husky/pre-push:1 reads PUSH_SKIP', HINT]);
+    }
+    // The working tree fixed but not staged: staged mode still sees the read.
+    writeFileSync(join(root, '.husky/pre-push'), 'exit 0\n');
+    assert.equal(check(root, ['--mode', 'staged']).code, 1);
+    const tree = check(root);
+    assert.equal(tree.code, 0);
+    assert.deepEqual(tree.out, [PASS(1)]);
+  });
+
+  it('checks the current directory without --root, from anywhere in the repository', () => {
+    const root = repo({ 'gates.json': GATE_CONFIG, 'scripts/setup.sh': 'if [ "$SETUP_SKIP_MOBILE" = 1 ]; then return; fi\n', 'scripts/sub/x.sh': 'exit 0\n' });
+    const before = process.cwd();
+    process.chdir(join(root, 'scripts/sub'));
+    try {
+      const c = capture();
+      assert.equal(run(['env-gate-switches', '--config', 'gates.json'], c.io, '0'), 0);
+      assert.deepEqual(c.out, [PASS(2)]);
+    } finally {
+      process.chdir(before);
+    }
+  });
+
+  it('refuses, rather than passes, when it cannot read a gate file', () => {
+    const root = repo({ 'gates.json': GATE_CONFIG, '.husky/pre-push': 'exit 0\n' });
+    const restore = makeUnreadable(join(root, '.husky/pre-push'));
+    try {
+      const r = check(root);
+      assert.equal(r.code, 2);
+      assert.equal(r.err.length, 1);
+      assert.match(r.err[0] ?? '', /^pariksha env-gate-switches: could not read gate code, so it is unchecked: \.husky\/pre-push: EISDIR/);
+    } finally {
+      restore();
+    }
+    assert.equal(check(root).code, 0);
+  });
+
+  it('reads a long file list, and skips a tracked file the working tree deleted', () => {
+    const long = `scripts/${'a'.repeat(100)}.sh`;
+    const root = repo({ 'gates.json': GATE_CONFIG, '.husky/pre-push': '[ -n "$PUSH_SKIP" ] && exit 0\n', [long]: 'echo "$LONG_SKIP"\n', 'scripts/gone.sh': 'echo "$GONE_SKIP"\n' });
+    rmSync(join(root, 'scripts/gone.sh'));
+    const read = (r: { err: string[] }) => r.err.filter((l) => l.startsWith('   ')).map((l) => l.replace(/^.* reads /, ''));
+    assert.deepEqual(read(check(root)), ['PUSH_SKIP', 'LONG_SKIP']);
+    // The index still holds the deleted file: staged mode reads it there.
+    assert.deepEqual(read(check(root, ['--mode', 'staged'])), ['PUSH_SKIP', 'LONG_SKIP', 'GONE_SKIP']);
+  });
+
+  it('loads TypeScript only for a script gate, and exits 2 when it cannot', () => {
+    const noTs = { typescript: () => 'needs the typescript package (>=5.4 <6) in the repository or beside pariksha' };
+    const shell = repo({ 'gates.json': GATE_CONFIG, 'scripts/a.sh': 'exit 0\n', 'scripts/a.test.ts': 'process.env.A_SKIP;\n' });
+    const s = check(shell, [], noTs);
+    assert.equal(s.code, 0);
+    assert.deepEqual(s.out, [PASS(1)]);
+    const script = repo({ 'gates.json': GATE_CONFIG, 'scripts/a.ts': 'if (process.env.A_SKIP) process.exit(0);\n' });
+    const t = check(script, [], noTs);
+    assert.equal(t.code, 2);
+    assert.deepEqual(t.err, [`${P} needs the typescript package (>=5.4 <6) in the repository or beside pariksha`]);
+    // The default loader finds the one beside pariksha.
+    const found = check(script);
+    assert.equal(found.code, 1);
+    assert.equal(found.err[1], '   scripts/a.ts:1 reads A_SKIP');
+  });
+
+  it('exits 2 on bad flags, outside a repository, on a bad config, and on a tree with no gate code', () => {
+    for (const args of [['--root', '.'], ['--config', 'gates.json', '--mode', 'all'], ['--config', 'gates.json', '--staged'], ['--config']]) {
+      const c = capture();
+      assert.equal(run(['env-gate-switches', ...args], c.io, '0'), 2);
+      assert.match(c.err[0] ?? '', /^usage: pariksha authority-citations/);
+    }
+    const outside = check(mkdtempSync(join(tmpdir(), 'pariksha-none-')));
+    assert.equal(outside.code, 2);
+    assert.match(outside.err[0] ?? '', /^pariksha env-gate-switches: .* is not in a git repository$/);
+    const missing = check(repo({ 'scripts/a.sh': '' }));
+    assert.equal(missing.code, 2);
+    assert.match(missing.err[0] ?? '', /^pariksha env-gate-switches: ENOENT.*; nothing was checked, so this is not a pass$/);
+    const bad = check(repo({ 'gates.json': '{"gatePaths": ["("]}' }));
+    assert.equal(bad.code, 2);
+    assert.match(bad.err[0] ?? '', /^pariksha env-gate-switches: gatePaths: "\(" is not a regular expression: .*; nothing was checked, so this is not a pass$/);
+    const empty = check(repo({ 'gates.json': GATE_CONFIG, 'docs/a.sh': '' }));
+    assert.equal(empty.code, 2);
+    assert.deepEqual(empty.err, [`${P} no tracked file is gate code under the config's gatePaths; nothing was checked, so this is not a pass`]);
+    // Staged mode refuses the same config: it would pass every commit.
+    const staged = check(repo({ 'gates.json': GATE_CONFIG, 'docs/a.sh': '' }), ['--mode', 'staged']);
+    assert.equal(staged.code, 2);
+    assert.deepEqual(staged.err, empty.err);
+  });
+
+  it('passes staged mode with nothing staged under a config that names gate code', () => {
+    const root = repo({ 'gates.json': GATE_CONFIG, 'scripts/a.sh': 'echo "$A_SKIP"\n' });
+    commit(root);
+    const r = check(root, ['--mode', 'staged']);
+    assert.equal(r.code, 0);
+    assert.deepEqual(r.out, [PASS(0)]);
+  });
+
+  it('refuses a symlink gate in the index and in the working tree, rather than reading its target path', () => {
+    const root = repo({ 'gates.json': GATE_CONFIG, 'scripts/target.sh': 'echo "$A_SKIP"\n' });
+    commit(root);
+    symlinkSync('target.sh', join(root, 'scripts/a.sh'));
+    git(root, 'add', 'scripts/a.sh');
+    const staged = check(root, ['--mode', 'staged']);
+    assert.equal(staged.code, 2);
+    assert.deepEqual(staged.err, [`${P} could not read gate code, so it is unchecked: scripts/a.sh is a symlink in the index; its target is unchecked`]);
+    const tree = check(root);
+    assert.equal(tree.code, 2);
+    assert.deepEqual(tree.err, [`${P} could not read gate code, so it is unchecked: scripts/a.sh is a symlink in the working tree; its target is unchecked`]);
+  });
+
+  it('refuses a staged type change from a file to a symlink', () => {
+    const root = repo({ 'gates.json': GATE_CONFIG, 'scripts/target.sh': 'exit 0\n', 'scripts/a.sh': 'exit 0\n' });
+    commit(root);
+    rmSync(join(root, 'scripts/a.sh'));
+    symlinkSync('target.sh', join(root, 'scripts/a.sh'));
+    git(root, 'add', 'scripts/a.sh');
+    const r = check(root, ['--mode', 'staged']);
+    assert.equal(r.code, 2);
+    assert.match(r.err[0] ?? '', /scripts\/a\.sh is a symlink in the index; its target is unchecked$/);
+  });
+
+  it('exits 2 in tree mode when every tracked gate file is gone from the working tree', () => {
+    const root = repo({ 'gates.json': GATE_CONFIG, 'scripts/a.sh': 'echo "$A_SKIP"\n', 'scripts/b.sh': 'exit 0\n' });
+    rmSync(join(root, 'scripts/a.sh'));
+    rmSync(join(root, 'scripts/b.sh'));
+    const r = check(root);
+    assert.equal(r.code, 2);
+    assert.deepEqual(r.err, [`${P} every tracked gate file (2) is gone from the working tree; nothing was checked, so this is not a pass`]);
+  });
+
+  it('reads a staged type change: a symlink replaced by a file that reads a switch', () => {
+    const root = repo({ 'gates.json': GATE_CONFIG, 'scripts/target.sh': 'exit 0\n' });
+    symlinkSync('target.sh', join(root, 'scripts/a.sh'));
+    git(root, 'add', 'scripts/a.sh');
+    commit(root);
+    rmSync(join(root, 'scripts/a.sh'));
+    writeFileSync(join(root, 'scripts/a.sh'), 'echo "$A_SKIP"\n');
+    git(root, 'add', 'scripts/a.sh');
+    assert.match(git(root, 'diff', '--cached', '--name-status').toString(), /^T\tscripts\/a\.sh$/m);
+    const r = check(root, ['--mode', 'staged']);
+    assert.equal(r.code, 1);
+    assert.equal(r.err[1], '   scripts/a.sh:1 reads A_SKIP');
+  });
+
+  it('refuses a gate under a folder it cannot read, rather than skipping it as deleted', () => {
+    const root = repo({ 'gates.json': GATE_CONFIG, 'scripts/ok.sh': 'exit 0\n', 'scripts/locked/a.sh': 'exit 0\n' });
+    const locked = join(root, 'scripts/locked');
+    chmodSync(locked, 0o000);
+    try {
+      const r = check(root);
+      if (process.getuid?.() === 0) {
+        // root reads through mode 000, so the refusal cannot be exercised here.
+        assert.equal(process.getuid(), 0, 'skipped: running as root');
+        assert.equal(r.code, 0);
+        return;
+      }
+      assert.equal(r.code, 2);
+      assert.match(r.err[0] ?? '', /^pariksha env-gate-switches: could not read gate code, so it is unchecked: scripts\/locked\/a\.sh: EACCES/);
+    } finally {
+      chmodSync(locked, 0o755);
+    }
+  });
+
+  it('exits 2, never 1, when reading a gate fails inside the compiler', () => {
+    const root = repo({ 'gates.json': GATE_CONFIG, 'scripts/a.ts': 'export {};\n' });
+    const broken = {
+      ...compiler,
+      createSourceFile: () => {
+        throw new TypeError('ts.isSatisfiesExpression is not a function');
+      },
+    } as Ts;
+    const r = check(root, [], { typescript: () => broken });
+    assert.equal(r.code, 2);
+    assert.deepEqual(r.err, [`${P} could not read gate code, so it is unchecked: ts.isSatisfiesExpression is not a function`]);
+  });
+});
+
+/**
+ * Every call the check makes to read gate code (the git listings, the file
+ * read, `git show` of a staged file) fails in turn against a real
+ * repository: an unread gate is unchecked, never clean, so each run must exit
+ * 2, never 0.
+ */
+describe('run env-gate-switches under fault injection', () => {
+  const GATES = {
+    'gates.json': GATE_CONFIG,
+    '.husky/pre-push': '#!/bin/sh\npnpm validate || exit 1\n',
+    'scripts/gate.sh': '#!/bin/sh\n[ -n "$CI" ] && echo ci\nexit 0\n',
+  };
+  const world = (staged: boolean): string => {
+    const root = repo(GATES);
+    commit(root);
+    if (staged) {
+      writeFileSync(join(root, 'scripts/gate.sh'), `${GATES['scripts/gate.sh']}# staged\n`);
+      git(root, 'add', 'scripts/gate.sh');
+    }
+    return root;
+  };
+  /** The disk's reads with call number `fault` failing (git as a failed run, a file call by throwing), counting every call. */
+  const faulty = (fault: number) => {
+    let calls = 0;
+    const fails = (): boolean => calls++ === fault;
+    const gateReads = (root: string): Reads => {
+      const real = diskReads(root);
+      return {
+        git: { run: (args) => (fails() ? undefined : real.git.run(args)) },
+        read: (file) => {
+          if (fails()) throw new Error('injected: read');
+          return real.read(file);
+        },
+      };
+    };
+    return { calls: () => calls, gateReads };
+  };
+
+  const cases: Array<[string, boolean, number]> = [
+    // The listing, then the read of each of the two gates.
+    ['tree', false, 3],
+    // The staged listing, the tracked listing (is any file gate code?), then
+    // `git show` of the one staged gate.
+    ['staged', true, 3],
+  ];
+  for (const [mode, staged, calls] of cases) {
+    it(`no failed read of gate code ends in exit 0 (${mode})`, () => {
+      const root = world(staged);
+      const runWith = (reads: ReturnType<typeof faulty>) => {
+        const c = capture();
+        return { code: run(['env-gate-switches', '--root', root, '--config', 'gates.json', '--mode', mode], { ...c.io, gateReads: reads.gateReads }, '0'), err: c.err };
+      };
+      const clean = faulty(-1);
+      assert.equal(runWith(clean).code, 0);
+      assert.equal(clean.calls(), calls);
+      for (let fault = 0; fault < calls; fault++) {
+        const r = runWith(faulty(fault));
+        assert.equal(r.code, 2, `fault at call ${fault}`);
+        assert.match(r.err[0] ?? '', /^pariksha env-gate-switches: could not read gate code, so it is unchecked: /);
+      }
+    });
+  }
 });

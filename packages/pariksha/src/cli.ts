@@ -9,6 +9,7 @@ import { findDenied, hash, isText, parseDenyList, type TrackedFile } from './bou
 import { DEFAULT_CONFIG, findGaps, formatGaps, listedPaths, parseConfig, treePaths, type Config } from './coverage-by-type.ts';
 import { checkBuild, checkPackage, checkVitest, formatViolations, loaderFailure, loadVitestExclude, missingConfigs, ownedBy, parseConfig as parseExemptions } from './coverage-exemptions.ts';
 import { checkBudgets } from './doc-budgets.ts';
+import { diskReads, formatReads, listFiles, needsTypescript, parseConfig as parseGateConfig, readerFor, readGate, type Reads } from './env-gate-switches.ts';
 import { loadTypescript, typescriptLoaders, type Ts } from './typescript.ts';
 import { checkExportDeletions, formatReport } from './export-deletions.ts';
 import { BASE_CANDIDATES, gitAt, gitAtTop, must, resolveBase, topOf } from './git.ts';
@@ -20,6 +21,8 @@ export interface Io {
   readonly stdin?: () => string;
   /** How a check that needs TypeScript gets it; the product's own install by default. */
   readonly typescript?: () => Ts | string;
+  /** How env-gate-switches reads the repository at a root; git and the disk by default. */
+  readonly gateReads?: (root: string) => Reads;
 }
 
 export const DENY_FILE = '.veda/deny.sha256';
@@ -30,6 +33,7 @@ const USAGE = [
   '       pariksha coverage-by-type [--config <file>] [--files-from <file>|-] [--root <dir>]',
   '       pariksha coverage-exemptions --config <file> [--package <dir>] [--root <dir>]',
   '       pariksha doc-budgets --table <file> [--section <name>] [--root <dir>]',
+  '       pariksha env-gate-switches --config <file> [--mode staged|tree] [--root <dir>]',
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
   '       pariksha hash <word>',
   '       pariksha --version',
@@ -271,12 +275,77 @@ const coverageExemptions = (f: Map<string, string>, io: Io): number => {
   }
 };
 
+const envGateSwitches = (f: Map<string, string>, io: Io): number => {
+  const P = 'pariksha env-gate-switches:';
+  const configPath = f.get('--config');
+  const mode = f.get('--mode') ?? 'tree';
+  if (configPath === undefined || (mode !== 'staged' && mode !== 'tree')) {
+    io.err(USAGE);
+    return 2;
+  }
+  const dir = resolve(f.get('--root') ?? '.');
+  const root = topOf(dir);
+  if (root === undefined) {
+    io.err(`${P} ${dir} is not in a git repository`);
+    return 2;
+  }
+  let reader: ReturnType<typeof readerFor>;
+  let words: readonly string[];
+  try {
+    const config = parseGateConfig(readFileSync(resolve(root, configPath), 'utf8'));
+    reader = readerFor(config);
+    words = config.words;
+  } catch (e) {
+    io.err(`${P} ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+  const reads = (io.gateReads ?? diskReads)(root);
+  let result: ReturnType<typeof formatReads>;
+  try {
+    const listed = listFiles(reads, mode).filter((l) => reader.isGateCode(l.file));
+    // A tree with no gate code is a config whose gatePaths match nothing (a
+    // typo): staged mode would pass every commit under it, so both refuse.
+    if (!(mode === 'tree' ? listed.length > 0 : listFiles(reads, 'tree').some((l) => reader.isGateCode(l.file)))) {
+      io.err(`${P} no tracked file is gate code under the config's gatePaths; nothing was checked, so this is not a pass`);
+      return 2;
+    }
+    const sources = listed.flatMap((entry) => {
+      const text = readGate(reads, mode, entry);
+      return text === undefined ? [] : [{ file: entry.file, text }];
+    });
+    if (mode === 'tree' && sources.length === 0) {
+      // Staged mode reads the index, which holds every file it lists.
+      io.err(`${P} every tracked gate file (${listed.length}) is gone from the working tree; nothing was checked, so this is not a pass`);
+      return 2;
+    }
+    const ts = sources.some((s) => needsTypescript(s.file)) ? (io.typescript ?? (() => loadTypescript(typescriptLoaders(root))))() : undefined;
+    if (typeof ts === 'string') {
+      io.err(`${P} ${ts}`);
+      return 2;
+    }
+    result = formatReads(
+      sources.flatMap((s) => reader.findSwitchReads(s.file, s.text, ts)),
+      words,
+      sources.length,
+      configPath,
+    );
+  } catch (e) {
+    // An unread gate, or one the reader failed on, is unchecked, never clean.
+    io.err(`${P} could not read gate code, so it is unchecked: ${(e as Error).message}`);
+    return 2;
+  }
+  result.out.forEach(io.out);
+  result.err.forEach(io.err);
+  return result.ok ? 0 : 1;
+};
+
 const COMMANDS: Record<string, { allowed: readonly string[]; run: (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv) => number }> = {
   'coverage-exemptions': { allowed: ['--config', '--package', '--root'], run: coverageExemptions },
   'authority-citations': { allowed: ['--mode', '--authority', '--issue-prefix', '--adr-dir', '--root'], run: authorityCitations },
   boundary: { allowed: ['--root', '--deny'], run: boundary },
   'coverage-by-type': { allowed: ['--config', '--files-from', '--root'], run: coverageByType },
   'doc-budgets': { allowed: ['--table', '--section', '--root'], run: docBudgets },
+  'env-gate-switches': { allowed: ['--config', '--mode', '--root'], run: envGateSwitches },
   'export-deletions': { allowed: ['--base', '--root'], run: exportDeletions },
 };
 

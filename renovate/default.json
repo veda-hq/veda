@@ -1,0 +1,25 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Veda's default dependency updates: weekly on Monday morning (UTC), majors held for approval on the Dependency Dashboard, patches grouped, development dependencies grouped, nothing younger than a day.",
+  "extends": ["config:recommended"],
+  "schedule": ["before 9am on monday"],
+  "prConcurrentLimit": 5,
+  "minimumReleaseAge": "1 day",
+  "labels": ["dependencies", "automated"],
+  "major": {
+    "dependencyDashboardApproval": true
+  },
+  "packageRules": [
+    {
+      "description": "Every patch update in one pull request.",
+      "matchUpdateTypes": ["patch"],
+      "groupName": "patch updates"
+    },
+    {
+      "description": "Minor updates of development dependencies in one pull request.",
+      "matchDepTypes": ["devDependencies", "dev-dependencies", "dev"],
+      "matchUpdateTypes": ["minor"],
+      "groupName": "development dependencies"
+    }
+  ]
+}

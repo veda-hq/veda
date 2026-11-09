@@ -182,6 +182,74 @@ describe('run coverage-by-type', () => {
   });
 });
 
+describe('run coverage-exemptions', () => {
+  const good = 'export default { test: { coverage: { exclude: ["**/*.test.ts", "dist/**"] } } };';
+  const config = JSON.stringify({
+    vitest: { configs: ['apps/a/vitest.config.mjs', 'apps/b/vitest.config.mjs'], requiredExcludes: ['**/*.test.ts'] },
+    build: { configs: ['apps/a/tsconfig.build.json'], forbiddenIncludes: ['__mocks__'] },
+  });
+  const files = {
+    'cov.json': config,
+    'apps/a/vitest.config.mjs': good,
+    'apps/b/vitest.config.mjs': good,
+    'apps/a/tsconfig.build.json': '{ "include": ["src"] }',
+    'packages/c/x.ts': '',
+  };
+
+  it('passes configs that hold the lists, and counts them', () => {
+    const c = capture();
+    assert.equal(run(['coverage-exemptions', '--root', repo(files), '--config', 'cov.json'], c.io, '0'), 0);
+    assert.deepEqual(c.out, ['pariksha coverage-exemptions: 2 vitest and 1 build config(s) checked, none drifts']);
+  });
+
+  it('refuses drift, and judges only a package’s own configs with --package', () => {
+    const root = repo({ ...files, 'apps/b/vitest.config.mjs': 'export default { test: { coverage: { exclude: ["dist/**"] } } };', 'apps/a/tsconfig.build.json': '{ "include": ["src", "src/__mocks__"] }' });
+    const all = capture();
+    assert.equal(run(['coverage-exemptions', '--root', root, '--config', 'cov.json'], all.io, '0'), 1);
+    assert.deepEqual(all.err.slice(0, 2), ['pariksha coverage-exemptions: apps/b/vitest.config.mjs: coverage.exclude lacks **/*.test.ts', 'pariksha coverage-exemptions: apps/a/tsconfig.build.json: include brings test files into the build: __mocks__']);
+    const b = capture();
+    assert.equal(run(['coverage-exemptions', '--root', root, '--config', 'cov.json', '--package', 'apps/b'], b.io, '0'), 1);
+    assert.deepEqual(b.err[0], 'pariksha coverage-exemptions: apps/b/vitest.config.mjs: coverage.exclude lacks **/*.test.ts');
+    const c = capture();
+    assert.equal(run(['coverage-exemptions', '--root', root, '--config', 'cov.json', '--package', 'packages/c'], c.io, '0'), 0);
+    assert.deepEqual(c.out, ['pariksha coverage-exemptions: 0 vitest and 0 build config(s) under packages/c checked, none drifts']);
+  });
+
+  it('exits 2 without a config, outside a repository, on a bad package, a missing config or no typescript', () => {
+    const usage = capture();
+    assert.equal(run(['coverage-exemptions'], usage.io, '0'), 2);
+    assert.match(usage.err[0] ?? '', /^usage:/);
+    const outside = capture();
+    assert.equal(run(['coverage-exemptions', '--root', mkdtempSync(join(tmpdir(), 'pariksha-none-')), '--config', 'cov.json'], outside.io, '0'), 2);
+    assert.match(outside.err[0] ?? '', /is not in a git repository$/);
+    const root = repo(files);
+    const pkg = capture();
+    assert.equal(run(['coverage-exemptions', '--root', root, '--config', 'cov.json', '--package', 'apps/a/'], pkg.io, '0'), 2);
+    assert.deepEqual(pkg.err, ['pariksha coverage-exemptions: --package "apps/a/" is not a normalized root-relative folder']);
+    const gone = repo(Object.fromEntries(Object.entries(files).filter(([p]) => p !== 'apps/a/tsconfig.build.json')));
+    const missing = capture();
+    assert.equal(run(['coverage-exemptions', '--root', gone, '--config', 'cov.json'], missing.io, '0'), 2);
+    assert.deepEqual(missing.err, ['pariksha coverage-exemptions: apps/a/tsconfig.build.json named in cov.json but not a file; nothing was checked, so this is not a pass']);
+    const nots = capture();
+    assert.equal(run(['coverage-exemptions', '--root', root, '--config', 'cov.json'], { ...nots.io, typescript: () => 'needs the typescript package' }, '0'), 2);
+    assert.deepEqual(nots.err, ['pariksha coverage-exemptions: needs the typescript package']);
+    const bad = capture();
+    assert.equal(run(['coverage-exemptions', '--root', root, '--config', 'absent.json'], bad.io, '0'), 2);
+    assert.match(bad.err[0] ?? '', /ENOENT.*nothing was checked, so this is not a pass$/);
+  });
+
+  it('needs no typescript for vitest configs alone, and exits 2 on a loader that does not load', () => {
+    const vitestOnly = JSON.stringify({ vitest: { configs: ['apps/a/vitest.config.mjs'], requiredExcludes: ['**/*.test.ts'] } });
+    const root = repo({ ...files, 'v.json': vitestOnly, 'l.json': JSON.stringify({ ...JSON.parse(vitestOnly), loader: 'no-such-loader-pariksha' }) });
+    const c = capture();
+    assert.equal(run(['coverage-exemptions', '--root', root, '--config', 'v.json'], { ...c.io, typescript: () => 'needs the typescript package' }, '0'), 0);
+    assert.deepEqual(c.out, ['pariksha coverage-exemptions: 1 vitest and 0 build config(s) checked, none drifts']);
+    const l = capture();
+    assert.equal(run(['coverage-exemptions', '--root', root, '--config', 'l.json'], l.io, '0'), 2);
+    assert.match(l.err[0] ?? '', /^pariksha coverage-exemptions: loader no-such-loader-pariksha does not load: .*nothing was checked, so this is not a pass$/);
+  });
+});
+
 describe('run doc-budgets', () => {
   const RULE = '# r\n\n## Budgets\n\n| Doc | Budget |\n| --- | --: |\n| `a.md` | 5 |\n| `rule.md` | 500 |\n';
 

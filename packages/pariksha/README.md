@@ -4,8 +4,8 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.5.1 <check> [flags]
-npx @veda-hq/pariksha@0.5.1 --version
+npx @veda-hq/pariksha@0.5.2 <check> [flags]
+npx @veda-hq/pariksha@0.5.2 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
@@ -93,9 +93,44 @@ importing file's nearest `package.json`), `maxHops` (default 1) and `hint` (a
 line printed under a failure).
 
 Needs `typescript` `>=5.4 <6`, the repository's own install first, else one
-beside pariksha (an optional peer dependency: only this check reads it).
-TypeScript 7 exports no stable compiler API yet, so it exits 2 naming the
-installed version.
+beside pariksha (an optional peer dependency: only the checks that read code
+or tsconfig files load it). TypeScript 7 exports no stable compiler API yet,
+so they exit 2 naming the installed version.
+
+## `coverage-exemptions`
+
+```sh
+pariksha coverage-exemptions --config <file> [--package <dir>] [--root <dir>]
+```
+
+Each vitest config's `coverage.exclude` holds every pattern the product
+exempts, and no production tsconfig's `include` brings those files back. The
+JSON `--config` (relative to the root) names both lists:
+
+```json
+{
+  "vitest": { "configs": ["apps/api/vitest.config.ts"], "requiredExcludes": ["**/*.test.ts", "**/__mocks__/**"] },
+  "build": { "configs": ["apps/api/tsconfig.build.json"], "forbiddenIncludes": ["__mocks__", ".test."] },
+  "loader": "tsx"
+}
+```
+
+- Each vitest config is imported in its own Node process, in the config's
+  folder, after `loader` when one is named (a relative path is the root's
+  file; a package name resolves as `node --import` does), so a config that
+  imports the product's TypeScript loads as the product's tooling loads it. A
+  default export may be an object or a factory, sync or async. The answer
+  comes back on fd 3, so nothing a config prints can pose as it, and the
+  process exits once it answers. A config that fails to load is a finding,
+  with its error; a loader that does not load exits 2.
+- Each build config is read as TypeScript reads it (comments allowed); only
+  its own `include` is judged, not one it `extends`.
+- `--package <dir>` judges only the configs under that folder (a package's
+  own run), which must be a normalized folder under the root.
+- A listed config that is not a file, a tsconfig TypeScript cannot read, and
+  a config naming no configs or empty lists exit 2.
+
+Needs `typescript` for the build configs.
 
 ## `doc-budgets`
 

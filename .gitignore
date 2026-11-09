@@ -3,3 +3,7 @@ dist/
 coverage/
 .DS_Store
 __pycache__/
+
+# Agent scratch files, and the per-machine .local link (or folder) worktrees make.
+.tmp/
+/.local

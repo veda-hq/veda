@@ -179,7 +179,9 @@ export const report = (
       ? "Unstage them (git restore --staged -- <path>), then commit again."
       : // The range is `base...head`, the changes since the merge base: the
         // content to go back to is the merge base's, not what base has today.
-        `Drop them from the branch: restore each path to its content at the merge base with ${mode.base} (git restore --source=$(git merge-base ${mode.base} ${mode.head}) --staged --worktree -- <path>), then commit.`;
+        // The refs stay out of the command: a ref may hold shell syntax, and
+        // this line is meant to be copied.
+        `Drop them from the branch: restore each path to its content at the merge base with ${mode.base} (git restore --source=<merge base> --staged --worktree -- <path>; git merge-base names it), then commit.`;
   return {
     code: 1,
     stdout: [],

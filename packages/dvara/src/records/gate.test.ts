@@ -476,10 +476,12 @@ describe("pre-commit: what is staged", () => {
       }),
     );
     r.commit("an allowance for the link");
+    const refused = gate(r, { mode: "all" });
     assert.match(
-      gate(r, { mode: "all" }).out,
+      refused.out,
       /docs\/notes\/link\.md — not a file the gate reads/,
     );
+    assert.equal(refused.code, 1);
   });
 
   it("skips a submodule, whose commit this store need not have", () => {

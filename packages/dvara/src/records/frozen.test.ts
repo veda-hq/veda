@@ -152,7 +152,7 @@ describe("report", () => {
       "❌ frozen: this branch (since origin/main) changes 1 file(s) under docs/archive/:",
       "     A docs/archive/x.md",
       "   These paths are frozen: no file there is added, changed or deleted.",
-      "   Drop them from the branch: restore each path to its content at the merge base with origin/main (git restore --source=$(git merge-base origin/main HEAD) --staged --worktree -- <path>), then commit.",
+      "   Drop them from the branch: restore each path to its content at the merge base with origin/main (git restore --source=<merge base> --staged --worktree -- <path>; git merge-base names it), then commit.",
     ]);
   });
 });

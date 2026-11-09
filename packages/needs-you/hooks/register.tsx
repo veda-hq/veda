@@ -83,7 +83,7 @@ async function syncSessions($: Engine): Promise<void> {
           id: session.sessionId,
           from: 'session' as const,
           text: session.title.replace(WAITING, '').trim(),
-          page: null,
+          page: PAGE.exec(session.title)?.[0] ?? null,
           answers: [],
           since: before?.since ?? now,
           sessionId: session.sessionId,

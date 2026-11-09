@@ -102,7 +102,10 @@ test('a side session filed with ✋ shows with an Open session button', async ($
   const opened: unknown[] = []
   on('mcp.call', (_, e) => {
     if (e.tool === 'open_session_in') opened.push(e.args)
-    return sessions([{ sessionId: 'local_side', title: '✋ Add the approved label to #42', startedBy: SELF }])(_, e)
+    return sessions([
+      { sessionId: 'local_side', title: '✋ Add the approved label to #42', startedBy: SELF },
+      { sessionId: 'local_page', title: '✋ Approve the plan https://claude.ai/artifact/plan-1', startedBy: SELF },
+    ])(_, e)
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('ui.render', ($, e) => {
@@ -116,7 +119,11 @@ test('a side session filed with ✋ shows with an Open session button', async ($
   let row = await ui.find({ type: 'Text', text: /approved label/ })
   for (let tick = 0; tick < 20 && row === undefined; tick += 1) row = await ui.find({ type: 'Text', text: /approved label/ })
   expect(row?.text).toContain('Add the approved label to #42')
-  await ui.press({ key: 'open:local_side' })
+  const link = await ui.find({ type: 'Link', text: /page/ })
+  expect(link?.props.href).toBe('https://claude.ai/artifact/plan-1')
+  const buttons = await ui.findAll({ type: 'Button', text: /^Open session$/ })
+  expect(buttons.map(button => button.key)).toEqual(['open:local_side', 'open:local_page'])
+  await ui.press({ key: String(buttons[0]?.key) })
   expect(opened).toEqual([{ session_id: 'local_side', target: 'split' }])
   await ui.unmount()
 })

@@ -60,7 +60,7 @@ export const DEFAULT_OPTIONS = {
   /** `pariksha-dunder-mangle`: names whose `__name__` a formatter rewrites as `**name**`; never an English word in bold. */
   dunder_words: ['DEV', 'proto', 'esModule', 'typename'],
   /** `pariksha-fence-swallows-heading`: fence languages where a `# Heading` line cannot be code. */
-  no_hash_languages: ['ts', 'tsx', 'typescript', 'js', 'jsx', 'javascript', 'json', 'jsonc', 'sql', 'css', 'html', 'swift', 'kotlin', 'java', 'go', 'rust', 'prisma', 'graphql'],
+  no_hash_languages: ['ts', 'tsx', 'typescript', 'js', 'jsx', 'javascript', 'json', 'jsonc', 'sql', 'css', 'swift', 'kotlin', 'java', 'go', 'rust', 'prisma'],
 } as const satisfies Record<string, readonly string[]>;
 
 export type OptionName = keyof typeof DEFAULT_OPTIONS;
@@ -173,7 +173,7 @@ const alertPattern = (types: readonly string[]): RegExp => new RegExp(`^\\s*(?:>
  * "[1, 2] (sorted)" stays legal.
  */
 const linkSpacePattern = (extensions: readonly string[]): RegExp =>
-  new RegExp(String.raw`\[[^\]]*\][ \t]+\((?:https?:\/\/|mailto:|\.{0,2}\/|#|[\w.-]+\.(?:${extensions.map(escapeRegExp).join('|')})\b)`, 'g');
+  new RegExp(String.raw`\[[^\]]*\][ \t]+\((?:https?:\/\/|mailto:|\.{0,2}\/|#|[\w./-]+\.(?:${extensions.map(escapeRegExp).join('|')})\b)`, 'g');
 
 /** A letter, one `*`, a letter: what `store_id` becomes once `_` is re-read as emphasis. */
 const EMPHASIS_MANGLE = /(?<=[A-Za-z])\*(?=[A-Za-z])/;

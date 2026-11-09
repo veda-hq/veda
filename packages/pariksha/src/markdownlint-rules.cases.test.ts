@@ -136,7 +136,7 @@ export const CASES: readonly Case[] = [
 ];
 
 /** The fence languages in which a heading means a missing close, by default. */
-export const NO_HASH_LANGUAGES = ['ts', 'tsx', 'typescript', 'js', 'jsx', 'javascript', 'json', 'jsonc', 'sql', 'css', 'html', 'swift', 'kotlin', 'java', 'go', 'rust', 'prisma', 'graphql'];
+export const NO_HASH_LANGUAGES = ['ts', 'tsx', 'typescript', 'js', 'jsx', 'javascript', 'json', 'jsonc', 'sql', 'css', 'swift', 'kotlin', 'java', 'go', 'rust', 'prisma'];
 
 export interface Extra {
   readonly name: string;
@@ -155,6 +155,11 @@ export const EXTRAS: readonly Extra[] = [
   ...NO_HASH_LANGUAGES.map((lang) => ({ name: `takes a heading in a ${lang} fence as a missing close`, text: `\`\`\`${lang}\n# Heading\n\`\`\`\n`, findings: ['fence-swallows-heading@2'] })),
   { name: 'leaves a heading-shaped comment in a fence of no language', text: '```\n# a shell comment\n```\n', findings: [] },
   { name: 'leaves a heading-shaped comment in a fence of another language', text: '```bash\n# a shell comment\n```\n', findings: [] },
+  { name: 'leaves a comment in a graphql fence', text: '```graphql\n# fetch the user\nquery { user { id } }\n```\n', findings: [] },
+  { name: 'leaves heading-shaped text in an html fence', text: '```html\n<p>\n# Heading\n</p>\n```\n', findings: [] },
+  { name: 'takes a nested file path as a link target', text: 'See [the guide] (docs/guide.md) and [foo] (src/foo.ts).\n', findings: ['link-space-before-paren@1', 'link-space-before-paren@1'] },
+  { name: 'reads a line opening with a URI autolink as prose', text: '<https://example.com> **DEV**\n', findings: ['dunder-mangle@1'] },
+  { name: 'leaves a line opening with an HTML tag as an HTML block', text: '<div> **DEV**\n', findings: [] },
   { name: 'takes a fence of blank lines as empty', text: '```\n   \n```\n', findings: ['fence-empty@1'] },
   { name: 'joins a path span wrapped onto an indented line', text: '- In `apps/mobile/`\n  `src/` lives.\n', findings: ['code-span-crosses-line@1'] },
   { name: 'leaves a path span followed by text', text: 'See `apps/mobile/`,\n`src/` too.\n', findings: [] },

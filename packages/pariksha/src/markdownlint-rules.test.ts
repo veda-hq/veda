@@ -81,7 +81,7 @@ const codeSpans = (lines: readonly string[], sl: number, sc: number, el: number,
 
 const FENCE_OPEN = /^( {0,3})(`{3,}|~{3,})(.*)$/;
 const ATX = /^ {0,3}#{1,6}(\s|$)/;
-const HTML = /^ {0,3}<[A-Za-z/!?]/;
+const HTML = /^ {0,3}(?:<\/?[A-Za-z][A-Za-z0-9-]*(?=[\s/>]|$)|<[!?])/;
 const INDENTED = /^( {4}|\t)/;
 const DELIMITER = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/;

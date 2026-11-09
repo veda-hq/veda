@@ -270,8 +270,10 @@ name; `require()` of it returns the array too. Every rule carries the tag
 `pariksha-markdown`, so the config above turns on these rules and nothing
 else. They run on markdownlint's micromark tokens (`parser: "micromark"`)
 and import nothing. Most read prose only, skipping code blocks, HTML blocks
-and code spans; the fence and code-span rules read those, and
-`pariksha-replacement-character` reads every line.
+and code spans; the fence and code-span rules read those,
+`pariksha-replacement-character` reads every line, and
+`pariksha-duplicate-adjacent-line` skips code and HTML blocks but compares
+whole lines, code spans included.
 
 | Rule | Fails |
 | ---- | ----- |
@@ -295,13 +297,16 @@ Options are lists, each replacing its default:
 | `alert_types` | `pariksha-alert-marker-inline` | `NOTE`, `TIP`, `IMPORTANT`, `WARNING`, `CAUTION` (matched case-insensitively) |
 | `link_target_extensions` | `pariksha-link-space-before-paren` | `md`, `mdx`, `html`, `htm`, `ts`, `tsx`, `js`, `json`, `yaml`, `yml`, `png`, `svg`, `jpg`, `jpeg`, `pdf` |
 | `dunder_words` | `pariksha-dunder-mangle` | `DEV`, `proto`, `esModule`, `typename`: names never an English word in bold |
-| `no_hash_languages` | `pariksha-fence-swallows-heading` | `ts`, `tsx`, `typescript`, `js`, `jsx`, `javascript`, `json`, `jsonc`, `sql`, `css`, `html`, `swift`, `kotlin`, `java`, `go`, `rust`, `prisma`, `graphql` (matched case-insensitively) |
+| `no_hash_languages` | `pariksha-fence-swallows-heading` | `ts`, `tsx`, `typescript`, `js`, `jsx`, `javascript`, `json`, `jsonc`, `sql`, `css`, `swift`, `kotlin`, `java`, `go`, `rust`, `prisma` (matched case-insensitively; not `graphql` or `html`, where a `# ` line is a comment or text) |
 
 ```jsonc
-"config": {
-  "default": false,
-  "pariksha-markdown": { "dunder_words": ["DEV", "proto", "esModule", "typename", "dirname"] },
-  "pariksha-fence-swallows-heading": { "no_hash_languages": ["ts", "py"] }
+{
+  "config": {
+    "default": false,
+    "pariksha-markdown": { "dunder_words": ["DEV", "proto", "esModule", "typename", "dirname"] },
+    "pariksha-fence-swallows-heading": { "no_hash_languages": ["ts", "py"] }
+  },
+  "customRules": ["@veda-hq/pariksha/markdownlint"]
 }
 ```
 

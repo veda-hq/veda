@@ -205,8 +205,8 @@ importers:
         specifier: 24.19.2
         version: 24.19.2
       typescript:
-        specifier: 7.0.2
-        version: 7.0.2
+        specifier: 5.9.3
+        version: 5.9.3
 
   packages/sarathi:
     dependencies:

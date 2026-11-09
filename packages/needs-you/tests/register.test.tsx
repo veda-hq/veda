@@ -1,0 +1,132 @@
+import { expect, mock, test } from 'claude-code/testing'
+
+import { age, replies, waitingSessions } from '../hooks/register'
+
+const BAND = {
+  plugin: 'needs-you',
+  component: 'AbovePrompt',
+  requestId: 'band',
+  props: {
+    hasSurvey: false,
+    isWorking: false,
+    maxRows: 20,
+    bodyColumns: 100,
+    scroll: { offset: 0, bodyRows: 19 },
+    view: {},
+  },
+} as const
+
+const SELF = 'local_self'
+
+/** Answers the app's session tools the way the desktop app does. */
+const sessions = (rows: unknown[]) => (_: unknown, e: { server: string; tool: string }) => {
+  if (e.tool === 'get_session') return { value: { content: [{ type: 'text', text: JSON.stringify({ sessionId: SELF }) }], isError: false } }
+  if (e.tool === 'list_sessions') return { value: { content: [{ type: 'text', text: JSON.stringify(rows) }], isError: false } }
+  return { value: { content: [{ type: 'text', text: 'ok' }], isError: false } }
+}
+
+test('ages read as minutes, hours and days', () => {
+  expect(age(0)).toBe('1 min')
+  expect(age(5 * 60_000)).toBe('5 min')
+  expect(age(3 * 3_600_000)).toBe('3 h')
+  expect(age(26 * 3_600_000)).toBe('1 d')
+})
+
+test('only reply buttons become answers, not app actions', () => {
+  expect(replies([{ label: 'Archive' }, { label: 'Keep' }, { action: 'commit', label: 'Commit' }])).toEqual(['Archive', 'Keep'])
+  expect(replies(undefined)).toEqual([])
+})
+
+test('a side session waits when this chat started it and it is filed with ✋', () => {
+  const rows = [
+    { sessionId: 'a', title: '✋ Add the label', startedBy: SELF },
+    { sessionId: 'b', title: 'Working away', startedBy: SELF },
+    { sessionId: 'c', title: '✋ Someone else', startedBy: 'other' },
+    { sessionId: 'd', title: '✋ Archived', startedBy: SELF, isArchived: true },
+  ]
+  expect(waitingSessions(rows, SELF)).toEqual([{ sessionId: 'a', title: '✋ Add the label' }])
+  expect(waitingSessions('not a list', SELF)).toEqual([])
+})
+
+test('a question at the end of a turn shows with its reply buttons, on desktop and terminal', async ($, on) => {
+  mock.clock(on)
+  on('ui.log', () => ({ value: undefined }))
+  on('mcp.call', sessions([]))
+  on('tool.call', () => ({ result: {} }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+
+  await $.tool.call({
+    tool: 'mcp__ccd_turn__wrap_up',
+    recap: 'The mock is published.',
+    ask: 'Which placement should I build?',
+    actions: [{ label: 'Build A' }, { label: 'Build B' }],
+  })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface })
+    expect((await ui.find({ type: 'Text', text: /NEEDS YOU IN THIS CHAT · 1/ }))?.text).toContain('· 1')
+    expect((await ui.find({ type: 'Text', text: /Which placement/ }))?.text).toContain('Which placement should I build?')
+    expect(await ui.find({ type: 'Button', text: /Build A/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('pressing a reply sends it and clears the line', async ($, on) => {
+  mock.clock(on)
+  on('ui.log', () => ({ value: undefined }))
+  on('mcp.call', sessions([]))
+  on('tool.call', () => ({ result: {} }))
+  const sent: string[] = []
+  on('prompt.submit', (_, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
+
+  await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'r', ask: 'Archive S-4?', actions: [{ label: 'Archive' }, { label: 'Keep' }] })
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const button = await ui.find({ type: 'Button', text: /^Archive$/ })
+  expect(button).toBeDefined()
+  await ui.press({ key: String(button?.key) })
+  expect(sent).toEqual(['Archive'])
+  expect(await ui.find({ type: 'Text', text: /Archive S-4/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a side session filed with ✋ shows with an Open session button', async ($, on) => {
+  mock.clock(on)
+  on('ui.log', () => ({ value: undefined }))
+  const opened: unknown[] = []
+  on('mcp.call', (_, e) => {
+    if (e.tool === 'open_session_in') opened.push(e.args)
+    return sessions([{ sessionId: 'local_side', title: '✋ Add the approved label to #42', startedBy: SELF }])(_, e)
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  // The first read of the session list runs beside the start; the band redraws when it lands.
+  let row = await ui.find({ type: 'Text', text: /approved label/ })
+  for (let tick = 0; tick < 20 && row === undefined; tick += 1) row = await ui.find({ type: 'Text', text: /approved label/ })
+  expect(row?.text).toContain('Add the approved label to #42')
+  await ui.press({ key: 'open:local_side' })
+  expect(opened).toEqual([{ session_id: 'local_side', target: 'split' }])
+  await ui.unmount()
+})
+
+test('with nothing waiting the band is the engine’s', async ($, on) => {
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /engine/ }))?.text).toBe('engine')
+  await ui.unmount()
+})

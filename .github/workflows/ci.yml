@@ -84,8 +84,11 @@ jobs:
           "$CLAUDE" plugin test packages/needs-you
 
   # Every unreleased package version is the next legal release (README.md, "Releasing").
+  # Run from the last release, as in release.yml; the tests above check the copy being changed.
   version-rule:
-    uses: ./.github/workflows/version-rule.yml
+    uses: veda-hq/veda/.github/workflows/version-rule.yml@3038b11092afd1e65bab64f182012b349c0d82f8 # v0.5.2
+    with:
+      veda-ref: 3038b11092afd1e65bab64f182012b349c0d82f8 # v0.5.2
     permissions:
       contents: read
       actions: read

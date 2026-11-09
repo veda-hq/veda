@@ -199,11 +199,14 @@ environment variable whose name has a switch word (`X_SKIP`, `SKIP_X`,
   `process`, `globalThis.process`, `node:process` and any local bound to the
   environment, with constant keys resolved (`env['X_' + 'SKIP']`); a mention
   in a comment or string does not.
-- Python reads are `os.environ[…]`, `os.environ.get(…)`,
-  `os.environ.setdefault(…)` and `os.getenv(…)`, under `os` by any name and
-  through `from os import environ as e` / `getenv as g`, outside strings and
-  comments (f-string fields are code); workflow YAML reads are `$X`, `env.X`
-  and `env['X']` outside comments.
+- Python reads are `os.environ[…]`, `.get(…)`, `.setdefault(…)`, `.pop(…)`,
+  `'X' in` / `'X' not in os.environ`, the same on `os.environ.copy()` or
+  `dict(os.environ)`, and `os.getenv(…)`, with the bytes forms (`environb`,
+  `getenvb`): under `os` by any name, through `from os import environ as e`
+  / `getenv as g`, and through a name assigned one (`env = os.environ`,
+  `read = os.getenv`), outside strings and comments (f-string fields are
+  code). A key held in a variable is not resolved. Workflow YAML reads are
+  `$X`, `env.X` and `env['X']` outside comments.
 
 `tree` (the default) reads every tracked file in the working tree, skipping
 one deleted there; when every tracked gate file is deleted, nothing was read

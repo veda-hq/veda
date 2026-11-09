@@ -962,6 +962,61 @@ describe('findSwitchReads on Python, through aliases and setdefault', () => {
     });
   }
 
+  for (const source of [
+    // Membership tells the gate whether the caller set the switch.
+    "if 'PUSH_SKIP' in os.environ: sys.exit(0)",
+    'if "PUSH_SKIP" not in os.environ:\n    run()',
+    "if 'PUSH_SKIP' in os.environ.keys(): sys.exit(0)",
+    "from os import environ as env\nif 'PUSH_SKIP' in env: sys.exit(0)",
+    // pop returns the caller's value as it drops it.
+    "if os.environ.pop('PUSH_SKIP', None): sys.exit(0)",
+    "from os import environ as env\nenv.pop('PUSH_SKIP')",
+    // The bytes environment.
+    "os.getenvb(b'PUSH_SKIP')",
+    "os.environb[b'PUSH_SKIP']",
+    "from os import environb as eb\neb.get(b'PUSH_SKIP')",
+    "from os import getenvb as gb\ngb(b'PUSH_SKIP')",
+    // A copy holds the caller's values.
+    "os.environ.copy()['PUSH_SKIP']",
+    "dict(os.environ)['PUSH_SKIP']",
+    "dict(os.environ).get('PUSH_SKIP')",
+    "if 'PUSH_SKIP' in dict(os.environ): sys.exit(0)",
+    "from os import environ as env\nenv.copy().get('PUSH_SKIP')",
+    // A name assigned the environment, a copy of it, or getenv.
+    "env = os.environ\nif env.get('PUSH_SKIP'): sys.exit(0)",
+    "snapshot = os.environ.copy()  # keep\nsnapshot['PUSH_SKIP']",
+    "snapshot = dict(os.environ)\nif 'PUSH_SKIP' in snapshot: sys.exit(0)",
+    "read = os.getenv\nread('PUSH_SKIP')",
+  ]) {
+    it(`reads ${j(source)}`, () => {
+      assert.deepEqual(names('scripts/gate.py', source), ['PUSH_SKIP']);
+    });
+  }
+
+  for (const source of [
+    "if 'PUSH_SKIP' in names: sys.exit(0)",
+    "from os import environ as env\nif 'PUSH_SKIP' in envelope: sys.exit(0)",
+    "if 'PUSH_SKIP' in other.environment: sys.exit(0)",
+    "print(\"'PUSH_SKIP' in os.environ\")",
+    "env = os.environ\nenv['PUSH_SKIP'] = '1'",
+    "os.environ.copy()['PUSH_SKIP'] = '1'",
+    "env = os.environ.get('HOME')\nenv.get('PUSH_SKIP')",
+    "env = settings\nenv.get('PUSH_SKIP')",
+  ]) {
+    it(`does not read ${j(source)}`, () => {
+      assert.deepEqual(names('scripts/gate.py', source), []);
+    });
+  }
+
+  it('reads through a name imported and assigned once, and through environ under its own name once', () => {
+    assert.deepEqual(names('scripts/gate.py', "from os import environ as env\nenv = os.environ\nenv.get('PUSH_SKIP')"), ['PUSH_SKIP']);
+    assert.deepEqual(names('scripts/gate.py', "from os import environ as environ, getenv as getenv\nenviron.get('PUSH_SKIP')\ngetenv('PUSH_PROBE')"), ['PUSH_SKIP', 'PUSH_PROBE']);
+  });
+
+  it('reports a membership read at its line, once', () => {
+    assert.deepEqual(findSwitchReads('scripts/gate.py', "import os\n\nif 'PUSH_SKIP' in os.environ: pass"), [{ file: 'scripts/gate.py', line: 3, name: 'PUSH_SKIP' }]);
+  });
+
   it('reports an alias read at its line', () => {
     assert.deepEqual(findSwitchReads('scripts/gate.py', "from os import getenv as g\n\ng('PUSH_SKIP')"), [{ file: 'scripts/gate.py', line: 3, name: 'PUSH_SKIP' }]);
   });

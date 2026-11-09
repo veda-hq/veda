@@ -796,9 +796,8 @@ export const readerFor = (config: Config): Reader => {
     out.push({ file, line, name });
   };
 
-  const READS: Readonly<Record<'shell' | 'python' | 'workflow', readonly RegExp[]>> = {
+  const READS: Readonly<Record<'shell' | 'workflow', readonly RegExp[]>> = {
     shell: [new RegExp(String.raw`\$\{?(${SWITCH_NAME})\b`, 'g')],
-    python: [new RegExp(String.raw`\benviron(?:\.(?:get|setdefault))?\s*[[(]\s*['"](${SWITCH_NAME})['"]`, 'g'), new RegExp(String.raw`\bgetenv\s*\(\s*['"](${SWITCH_NAME})['"]`, 'g')],
     workflow: [
       new RegExp(String.raw`\$\{?(${SWITCH_NAME})\b`, 'g'),
       new RegExp(String.raw`\benv\.(${SWITCH_NAME})\b`, 'g'),
@@ -858,23 +857,52 @@ export const readerFor = (config: Config): Reader => {
     });
 
   /**
-   * The reads through names `from os import environ as env` or `getenv as g`
-   * bind: `env['X']`, `env.get('X')`, `env.setdefault('X', …)` and `g('X')`.
-   * The plain names, and `os` under another name (`o.environ`), are the
-   * patterns' own `\benviron` and `\bgetenv`.
+   * The reads of a mapping that holds the caller's environment, `holder` (a
+   * regex source naming it): an index, `.get`, `.setdefault` or `.pop` (each
+   * returns the caller's value), and `'X' in` / `'X' not in` it, on the
+   * mapping itself, its `.copy()` or `dict(…)` of it.
+   */
+  const mappingReads = (holder: string): RegExp[] => {
+    const mapping = String.raw`(?:${holder}(?:\.copy\(\s*\))?|\bdict\(\s*(?:[\w.]*\.)?${holder}\s*\))`;
+    return [
+      new RegExp(String.raw`${mapping}(?:\s*\[|\.(?:get|setdefault|pop)\s*\()\s*['"](${SWITCH_NAME})['"]`, 'g'),
+      new RegExp(String.raw`['"](${SWITCH_NAME})['"]\s+(?:not\s+)?in\s+(?:[\w.]*\.)?${mapping}`, 'g'),
+    ];
+  };
+  /** The reads of a function that returns the caller's value, `holder` (a regex source naming it). */
+  const callReads = (holder: string): RegExp[] => [new RegExp(String.raw`${holder}\s*\(\s*['"](${SWITCH_NAME})['"]`, 'g')];
+  /**
+   * Under `os` by any name (`os.environ`, `o.environ`, a star import's
+   * `environ`): the environment, its bytes form, and getenv. A literal key
+   * keeps its `b` prefix out (`pythonCode` drops it).
+   */
+  const PYTHON_READS = [...mappingReads(String.raw`\benvironb?\b`), ...callReads(String.raw`\bgetenvb?`)];
+  /** A name, in a module-level `name = …` of the environment, a copy of it, or getenv. */
+  const ASSIGNED_ENVIRON = /^[ \t]*(\w+)\s*=\s*(?:(?:[\w.]*\.)?environb?(?:\.copy\(\s*\))?|dict\(\s*(?:[\w.]*\.)?environb?\s*\))\s*(?:#.*)?$/gm;
+  const ASSIGNED_GETENV = /^[ \t]*(\w+)\s*=\s*(?:[\w.]*\.)?getenvb?\s*(?:#.*)?$/gm;
+  /** A local name that `environ`'s own patterns do not already cover. */
+  const local = (name: string): string | null => (/^(?:environb?|getenvb?)$/.test(name) ? null : String.raw`(?<![\w.])${name}\b`);
+
+  /**
+   * The reads through other names for the environment or getenv: those
+   * `from os import environ as env` / `getenv as g` binds (bytes forms too),
+   * and a name assigned one (`env = os.environ`, `snap = os.environ.copy()`,
+   * `read = os.getenv`), read file-wide.
    */
   const pythonAliasReads = (code: string): RegExp[] => {
-    const out: RegExp[] = [];
+    const environ: string[] = [];
+    const getenv: string[] = [];
     for (const imported of code.matchAll(FROM_OS_IMPORT)) {
       for (const name of group(imported, 1).replace(/[()]/g, '').split(',')) {
-        const alias = /^\s*(environ|getenv)\s+as\s+(\w+)\s*$/.exec(name);
-        if (alias === null) continue;
-        const local = group(alias, 2);
-        const call = alias[1] === 'environ' ? String.raw`(?:\s*\[|\.(?:get|setdefault)\s*\()` : String.raw`\s*\(`;
-        out.push(new RegExp(String.raw`(?<![\w.])${local}${call}\s*['"](${SWITCH_NAME})['"]`, 'g'));
+        const alias = /^\s*(environb?|getenvb?)\s+as\s+(\w+)\s*$/.exec(name);
+        if (alias !== null) (group(alias, 1).startsWith('environ') ? environ : getenv).push(group(alias, 2));
       }
     }
-    return out;
+    for (const assigned of code.matchAll(ASSIGNED_ENVIRON)) environ.push(group(assigned, 1));
+    for (const assigned of code.matchAll(ASSIGNED_GETENV)) getenv.push(group(assigned, 1));
+    // A name imported and assigned too is read once.
+    const holders = (names: string[]): string[] => [...new Set(names)].map(local).filter((h) => h !== null);
+    return [...holders(environ).flatMap(mappingReads), ...holders(getenv).flatMap(callReads)];
   };
 
   /**
@@ -886,7 +914,7 @@ export const readerFor = (config: Config): Reader => {
   const pythonSwitchReads = (file: string, source: string): Violation[] => {
     const code = pythonCode(source);
     const out: Violation[] = [];
-    for (const pattern of [...READS.python, ...pythonAliasReads(code)]) {
+    for (const pattern of [...PYTHON_READS, ...pythonAliasReads(code)]) {
       pattern.lastIndex = 0;
       for (const match of code.matchAll(pattern)) {
         const start = match.index;

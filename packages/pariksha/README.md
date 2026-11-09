@@ -155,6 +155,60 @@ row that is not `` | `path` | bytes | ``, since nothing would enforce it.
 The table file is read on every check too, so it must budget itself: a row
 for its own path (relative to `--root`) is required.
 
+## `env-gate-switches`
+
+```sh
+pariksha env-gate-switches --config <file> [--mode staged|tree] [--root <dir>]
+```
+
+A hook that reads `PUSH_SKIP` from the environment has a bypass anyone can
+type: `PUSH_SKIP=1 git push`. This check refuses gate code that READS an
+environment variable whose name has a switch word (`X_SKIP`, `SKIP_X`,
+`X_PROBE_Y`): writing or deleting one is not a read. The JSON `--config`
+(relative to the root) says where gate code is:
+
+```json
+{
+  "gatePaths": ["^\\.husky/", "^scripts/", "^\\.github/workflows/"],
+  "notGateCode": ["\\.test\\.[cm]?[jt]sx?$", "(?:^|/)fixtures?/", "\\.md$"],
+  "notAGate": {
+    "SETUP_SKIP_MOBILE": { "files": ["scripts/setup.sh"], "reason": "installs no mobile toolchain; checks nothing" }
+  },
+  "words": ["SKIP", "PROBE"]
+}
+```
+
+- `gatePaths` (required) and `notGateCode` are path regexes: a file is gate
+  code when a gate path matches it and no `notGateCode` entry does.
+- `notAGate` allows a switch that turns off something other than a check,
+  in the files listed only, with the reason a reviewer reads; the same name
+  anywhere else is still refused.
+- `words` (default `SKIP` and `PROBE`) are upper-case words; a name made of
+  `_`-joined words, one of them a switch word, is a switch.
+- Shell (`.sh`, and every file under `.husky/`) is read as bash reads it:
+  single quotes, escapes, comments and quoted heredoc bodies expand nothing,
+  and a bare name in arithmetic (`(( X_SKIP ))`, `let`, `-eq`, a subscript)
+  is a read. A variable the file initialises at the top level before reading
+  it is the script's own decision, not a read; one initialised in a branch,
+  loop, function, group, subshell, pipeline or the end of a `&&` list, or
+  self-defaulted (`X_SKIP="${X_SKIP:-0}"`), is.
+- TypeScript and JavaScript are read as a syntax tree, with a type checker
+  over the one file: dotted, bracketed, optional, destructured and `in`
+  reads count, through `process`, `globalThis.process`, `node:process` and
+  any local bound to the environment, with constant keys resolved
+  (`env['X_' + 'SKIP']`); a mention in a comment or string does not.
+- Python reads are `os.environ[…]`, `os.environ.get(…)` and `os.getenv(…)`
+  outside strings and comments (f-string fields are code); workflow YAML
+  reads are `$X`, `env.X` and `env['X']` outside comments.
+
+`tree` (the default) reads every tracked file in the working tree, skipping
+one deleted there; a tree with no gate code exits 2, since the config would
+check nothing. `staged` (for a pre-commit hook) reads the files the index
+adds, copies, modifies or renames, as the index holds them. A gate file that
+cannot be read, or a git call that fails, exits 2: an unread gate is never
+clean. Needs `typescript` only when a TypeScript or JavaScript file is gate
+code.
+
 ## `export-deletions`
 
 ```sh

@@ -5,10 +5,10 @@
 // sat at 0% covered while `Page.test.tsx` tested a helper, and a filename match
 // called the page covered. So a candidate suite counts only when it reaches the
 // subject through a runtime import, directly or through one module it imports.
-import { createRequire } from 'node:module';
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync, type Stats } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type * as TS from 'typescript';
+import type { Ts } from './typescript.ts';
 
 /** What a product configures: every key replaces its default when present. */
 export interface Config {
@@ -152,31 +152,6 @@ export const parseConfig = (text: string): Config => {
     if (bad !== undefined) throw new Error(`tests.${kind}: "${bad}" has no {name}, so it names one file for every source`);
   }
   return { categories, required, exclude, tests, aliases, maxHops, hint };
-};
-
-/** The TypeScript compiler API, from the product's own install. */
-export type Ts = typeof TS;
-
-/** Where typescript is looked for: the product's own install at `root` first, then beside pariksha (npx installs no optional peer). */
-export const typescriptLoaders = (root: string): Array<(id: string) => unknown> => [createRequire(join(root, 'package.json')), createRequire(import.meta.url)];
-
-/** TypeScript from the first loader that has it; a message naming why when it cannot be used. */
-export const loadTypescript = (loaders: ReadonlyArray<(id: string) => unknown> = typescriptLoaders(process.cwd())): Ts | string => {
-  let mod: unknown;
-  for (const load of loaders) {
-    try {
-      mod = load('typescript');
-      break;
-    } catch {
-      // not installed there; try the next
-    }
-  }
-  if (mod === undefined) return 'needs the typescript package (>=5.4 <6) in the repository or beside pariksha';
-  const ts = mod as Partial<Ts>;
-  if (typeof ts.createSourceFile !== 'function') {
-    return `needs the TypeScript compiler API, which typescript ${String(ts.version)} does not export; install typescript >=5.4 <6`;
-  }
-  return ts as Ts;
 };
 
 const toPosix = (p: string): string => p.split(sep).join('/');

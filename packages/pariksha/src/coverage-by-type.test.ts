@@ -12,14 +12,12 @@ import {
   ImportWalk,
   isExcluded,
   listedPaths,
-  loadTypescript,
   moduleSpecifiers,
   parseConfig,
   treePaths,
-  typescriptLoaders,
   type Config,
-  type Ts,
 } from './coverage-by-type.ts';
+import { loadTypescript, type Ts } from './typescript.ts';
 
 const loaded = loadTypescript();
 if (typeof loaded === 'string') throw new Error(loaded);
@@ -38,31 +36,6 @@ const tree = (files: Record<string, string>): string => {
 const specs = (source: string, fileName?: string) => moduleSpecifiers(ts, source, fileName);
 const reaches = (root: string, test: string, subject: string, config: Config = DEFAULT_CONFIG) =>
   new ImportWalk(ts, config).reaches(join(root, test), join(root, subject));
-
-describe('loadTypescript', () => {
-  const missing = () => {
-    throw new Error('Cannot find module');
-  };
-
-  it('names the package when no loader has it', () => {
-    assert.equal(loadTypescript([missing, missing]), 'needs the typescript package (>=5.4 <6) in the repository or beside pariksha');
-  });
-
-  it('takes the first loader that has it: the repository before pariksha', () => {
-    assert.equal(loadTypescript([missing, () => ts]), ts);
-    assert.match(String(loadTypescript([() => ({ version: '7.0.2' }), () => ts])), /typescript 7\.0\.2 does not export/);
-  });
-
-  it('refuses a typescript with no compiler API, naming its version', () => {
-    assert.match(String(loadTypescript([() => ({ version: '7.0.2' })])), /typescript 7\.0\.2 does not export; install typescript >=5\.4 <6/);
-  });
-
-  it('finds the repository’s own typescript from its root', () => {
-    const root = tree({ 'package.json': '{}', 'node_modules/typescript/package.json': '{"name":"typescript","main":"index.js"}', 'node_modules/typescript/index.js': 'module.exports = { version: "9.9.9" };' });
-    assert.match(String(loadTypescript(typescriptLoaders(root))), /typescript 9\.9\.9 does not export/);
-    assert.equal(typeof loadTypescript(), 'object');
-  });
-});
 
 describe('moduleSpecifiers', () => {
   it('reads static, dynamic, require and importActual forms', () => {

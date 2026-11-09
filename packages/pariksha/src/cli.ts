@@ -6,8 +6,10 @@ import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adrDirOf, DEFAULTS, findUncited, formatClaims, listAdrs, readOrUndefined, stagedSource, treeSource, type Options } from './authority-citations.ts';
 import { findDenied, hash, isText, parseDenyList, type TrackedFile } from './boundary.ts';
-import { DEFAULT_CONFIG, findGaps, formatGaps, listedPaths, loadTypescript, parseConfig, treePaths, typescriptLoaders, type Config, type Ts } from './coverage-by-type.ts';
+import { DEFAULT_CONFIG, findGaps, formatGaps, listedPaths, parseConfig, treePaths, type Config } from './coverage-by-type.ts';
+import { checkBuild, checkPackage, checkVitest, formatViolations, loadVitestExclude, missingConfigs, ownedBy, parseConfig as parseExemptions } from './coverage-exemptions.ts';
 import { checkBudgets } from './doc-budgets.ts';
+import { loadTypescript, typescriptLoaders, type Ts } from './typescript.ts';
 import { checkExportDeletions, formatReport } from './export-deletions.ts';
 import { BASE_CANDIDATES, gitAt, gitAtTop, must, resolveBase, topOf } from './git.ts';
 
@@ -26,6 +28,7 @@ const USAGE = [
   'usage: pariksha authority-citations [--mode staged|tree] [--authority <a,b>] [--issue-prefix <A,B>] [--adr-dir <dir>] [--root <dir>]',
   '       pariksha boundary [--root <dir>] [--deny <file>]',
   '       pariksha coverage-by-type [--config <file>] [--files-from <file>|-] [--root <dir>]',
+  '       pariksha coverage-exemptions --config <file> [--package <dir>] [--root <dir>]',
   '       pariksha doc-budgets --table <file> [--section <name>] [--root <dir>]',
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
   '       pariksha hash <word>',
@@ -217,7 +220,54 @@ const coverageByType = (f: Map<string, string>, io: Io): number => {
   }
 };
 
+const coverageExemptions = (f: Map<string, string>, io: Io): number => {
+  const configPath = f.get('--config');
+  if (configPath === undefined) {
+    io.err(USAGE);
+    return 2;
+  }
+  const dir = resolve(f.get('--root') ?? '.');
+  const root = topOf(dir);
+  if (root === undefined) {
+    io.err(`pariksha coverage-exemptions: ${dir} is not in a git repository`);
+    return 2;
+  }
+  try {
+    const config = parseExemptions(readFileSync(resolve(root, configPath), 'utf8'));
+    const pkg = f.get('--package');
+    const refused = pkg === undefined ? undefined : checkPackage(root, pkg);
+    if (refused !== undefined) {
+      io.err(`pariksha coverage-exemptions: --package ${refused}`);
+      return 2;
+    }
+    const vitest = ownedBy(config.vitest.configs, pkg);
+    const build = ownedBy(config.build.configs, pkg);
+    const missing = missingConfigs(root, [...vitest, ...build]);
+    if (missing.length > 0) {
+      io.err(`pariksha coverage-exemptions: ${missing.join(', ')} named in ${configPath} but not a file; nothing was checked, so this is not a pass`);
+      return 2;
+    }
+    let violations = checkVitest(config, vitest, (c) => loadVitestExclude(root, c, config.loader));
+    if (build.length > 0) {
+      const ts = (io.typescript ?? (() => loadTypescript(typescriptLoaders(root))))();
+      if (typeof ts === 'string') {
+        io.err(`pariksha coverage-exemptions: ${ts}`);
+        return 2;
+      }
+      violations = [...violations, ...checkBuild(ts, config, root, build)];
+    }
+    const result = formatViolations(violations, vitest.length, build.length, pkg);
+    result.out.forEach(io.out);
+    result.err.forEach(io.err);
+    return result.ok ? 0 : 1;
+  } catch (e) {
+    io.err(`pariksha coverage-exemptions: ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+};
+
 const COMMANDS: Record<string, { allowed: readonly string[]; run: (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv) => number }> = {
+  'coverage-exemptions': { allowed: ['--config', '--package', '--root'], run: coverageExemptions },
   'authority-citations': { allowed: ['--mode', '--authority', '--issue-prefix', '--adr-dir', '--root'], run: authorityCitations },
   boundary: { allowed: ['--root', '--deny'], run: boundary },
   'coverage-by-type': { allowed: ['--config', '--files-from', '--root'], run: coverageByType },

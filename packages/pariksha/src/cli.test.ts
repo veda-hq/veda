@@ -148,7 +148,20 @@ describe('run coverage-by-type', () => {
     assert.deepEqual(c.err, ['pariksha coverage-by-type: service (needs: unit tests)', '  app/services/bare.ts: missing unit', '', 'pariksha coverage-by-type: 1 file(s) missing required tests. A suite counts only when it imports its subject at runtime.', 'see the rules']);
     const s = withStdin('app/services/ok.ts\0scripts/lib/tool.ts\0');
     assert.equal(run(['coverage-by-type', '--root', root, '--config', 'cov.json', '--files-from', '-'], s.io, '0'), 0);
-    assert.deepEqual(s.out, ['pariksha coverage-by-type: 2 file(s) checked, each has the tests its category needs']);
+    assert.deepEqual(s.out, ['pariksha coverage-by-type: 1 of 2 listed file(s) judged, each has the tests its category needs']);
+    const empty = withStdin('');
+    assert.equal(run(['coverage-by-type', '--root', root, '--files-from', '-'], empty.io, '0'), 0);
+    assert.deepEqual(empty.out, ['pariksha coverage-by-type: 0 of 0 listed file(s) judged, each has the tests its category needs']);
+  });
+
+  it('exits 2 when the whole tree has nothing in a category, or a listed file is missing', () => {
+    const root = repo({ 'README.md': '', 'cov.json': JSON.stringify({ categories: { lib: '/nowhere/' }, required: { lib: ['unit'] } }) });
+    const c = capture();
+    assert.equal(run(['coverage-by-type', '--root', root, '--config', 'cov.json'], c.io, '0'), 2);
+    assert.deepEqual(c.err, ['pariksha coverage-by-type: none of 2 tracked file(s) is in a category; nothing was checked, so this is not a pass']);
+    const g = withStdin('ghost.ts\n');
+    assert.equal(run(['coverage-by-type', '--root', root, '--files-from', '-'], g.io, '0'), 2);
+    assert.deepEqual(g.err, ['pariksha coverage-by-type: listed file ghost.ts does not exist; nothing was checked, so this is not a pass']);
   });
 
   it('exits 2 outside a repository, without TypeScript, or on a bad config', () => {

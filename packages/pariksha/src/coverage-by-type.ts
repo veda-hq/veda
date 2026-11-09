@@ -6,8 +6,8 @@
 // called the page covered. So a candidate suite counts only when it reaches the
 // subject through a runtime import, directly or through one module it imports.
 import { createRequire } from 'node:module';
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync, type Stats } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type * as TS from 'typescript';
 
 /** What a product configures: every key replaces its default when present. */
@@ -83,6 +83,8 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === 'string');
 
 const regex = (source: string, where: string): RegExp => {
+  // An empty pattern matches every path: an exclusion would judge nothing.
+  if (source === '') throw new Error(`${where}: an empty pattern matches every path`);
   try {
     // The product's own config file, read from its own checkout.
     return new RegExp(source);
@@ -119,6 +121,10 @@ export const parseConfig = (text: string): Config => {
   };
 
   const cats = stringMap('categories');
+  if (cats?.size === 0) throw new Error('"categories" is empty, so no file would be judged');
+  // JSON objects iterate integer-like keys first, which would reorder "first match wins".
+  const numeric = cats && [...cats.keys()].find((k) => /^(0|[1-9]\d*)$/.test(k));
+  if (numeric) throw new Error(`category "${numeric}": a name that is a number loses its place in the order`);
   const categories = cats ? [...cats].map(([name, src]): [string, RegExp] => [name, regex(src, `categories.${name}`)]) : DEFAULT_CONFIG.categories;
   const required = listMap('required') ?? DEFAULT_CONFIG.required;
   const tests = listMap('tests') ?? DEFAULT_CONFIG.tests;
@@ -137,6 +143,7 @@ export const parseConfig = (text: string): Config => {
   for (const [name] of categories) {
     const kinds = required.get(name);
     if (kinds === undefined) throw new Error(`category "${name}" has no "required" entry`);
+    if (kinds.length === 0) throw new Error(`category "${name}" requires no test, so it would never be refused`);
     const missing = kinds.find((k) => !tests.has(k));
     if (missing !== undefined) throw new Error(`category "${name}" requires "${missing}", which "tests" does not define`);
   }
@@ -150,14 +157,21 @@ export const parseConfig = (text: string): Config => {
 /** The TypeScript compiler API, from the product's own install. */
 export type Ts = typeof TS;
 
-/** TypeScript from the product's install; a message naming why when it cannot be used. */
-export const loadTypescript = (load: (id: string) => unknown = createRequire(import.meta.url)): Ts | string => {
+/** Where typescript is looked for: the product's own install at `root` first, then beside pariksha (npx installs no optional peer). */
+export const typescriptLoaders = (root: string): Array<(id: string) => unknown> => [createRequire(join(root, 'package.json')), createRequire(import.meta.url)];
+
+/** TypeScript from the first loader that has it; a message naming why when it cannot be used. */
+export const loadTypescript = (loaders: ReadonlyArray<(id: string) => unknown> = typescriptLoaders(process.cwd())): Ts | string => {
   let mod: unknown;
-  try {
-    mod = load('typescript');
-  } catch {
-    return 'needs the typescript package (>=5.4 <6); install it beside pariksha';
+  for (const load of loaders) {
+    try {
+      mod = load('typescript');
+      break;
+    } catch {
+      // not installed there; try the next
+    }
   }
+  if (mod === undefined) return 'needs the typescript package (>=5.4 <6) in the repository or beside pariksha';
   const ts = mod as Partial<Ts>;
   if (typeof ts.createSourceFile !== 'function') {
     return `needs the TypeScript compiler API, which typescript ${String(ts.version)} does not export; install typescript >=5.4 <6`;
@@ -314,7 +328,8 @@ export const foundKinds = (config: Config, walk: ImportWalk, root: string, path:
   const found = new Set<string>();
   for (const [kind, patterns] of config.tests) {
     const hit = patterns.some((p) => {
-      const candidate = p.replaceAll('{dir}', dir).replaceAll('{name}', name);
+      // Function replacements: a `$` in a path is text, never a replacement pattern.
+      const candidate = resolve(root, p.replaceAll('{dir}', () => dir).replaceAll('{name}', () => name));
       return isFile(candidate) && walk.reaches(candidate, full);
     });
     if (hit) found.add(kind);
@@ -322,26 +337,76 @@ export const foundKinds = (config: Config, walk: ImportWalk, root: string, path:
   return found;
 };
 
+export interface Findings {
+  readonly gaps: readonly Gap[];
+  /** Files actually judged: `.ts`/`.tsx`, not excluded, in a category. */
+  readonly judged: number;
+  /** Files the run was handed. */
+  readonly listed: number;
+}
+
 /** The gaps among root-relative `paths`: each `.ts`/`.tsx` file, not excluded, in a category, missing a kind. */
-export const findGaps = (ts: Ts, config: Config, root: string, paths: readonly string[]): Gap[] => {
+export const findGaps = (ts: Ts, config: Config, root: string, paths: readonly string[]): Findings => {
   const walk = new ImportWalk(ts, config);
   const gaps: Gap[] = [];
+  let judged = 0;
   for (const path of paths) {
-    const rel = toPosix(relative(root, resolve(root, path)));
+    const rel = toPosix(path);
     if (!/\.(ts|tsx)$/.test(rel) || isExcluded(config, rel)) continue;
     const category = categoryOf(config, rel);
     if (category === undefined) continue;
+    judged++;
     const found = foundKinds(config, walk, root, rel);
     const missing = (config.required.get(category) ?? []).filter((k) => !found.has(k));
     if (missing.length > 0) gaps.push({ file: rel, category, missing });
   }
-  return gaps;
+  return { gaps, judged, listed: paths.length };
+};
+
+/** A listing's entries: NUL-separated when it holds a NUL, else one per line; a leading BOM dropped. */
+export const entries = (text: string): string[] => {
+  const body = text.startsWith('﻿') ? text.slice(1) : text;
+  return body.split(body.includes('\0') ? '\0' : /\r?\n/).filter(Boolean);
+};
+
+/** Every tracked regular file under root: not deleted in the working tree, not a symlink. */
+export const treePaths = (root: string, listed: string): string[] => entries(listed).filter((p) => lstatOrUndefined(join(root, p))?.isFile() === true);
+
+/**
+ * The root-relative path of each listed entry (relative to root, or absolute).
+ * An entry naming nothing, or outside the root, throws: a list that cannot be
+ * read as given is not a list that passed. A symlink is not a source file and
+ * is skipped, as git's own listings do. Directories are resolved through their
+ * real path, so a symlinked checkout prefix still matches `^`-anchored rules.
+ */
+export const listedPaths = (root: string, text: string): string[] => {
+  const out: string[] = [];
+  for (const entry of entries(text)) {
+    const abs = resolve(root, entry);
+    const stat = lstatOrUndefined(abs);
+    if (stat === undefined) throw new Error(`listed file ${entry} does not exist`);
+    if (stat.isSymbolicLink()) continue;
+    const rel = relative(root, join(realpathSync(dirname(abs)), basename(abs)));
+    if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error(`listed file ${entry} is outside ${root}`);
+    if (stat.isFile()) out.push(toPosix(rel));
+  }
+  return out;
+};
+
+const lstatOrUndefined = (p: string): Stats | undefined => {
+  try {
+    return lstatSync(p);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT' || (e as NodeJS.ErrnoException).code === 'ENOTDIR') return undefined;
+    throw e;
+  }
 };
 
 const P = 'pariksha coverage-by-type:';
 
-export const formatGaps = (config: Config, gaps: readonly Gap[], checked: number): { ok: boolean; out: string[]; err: string[] } => {
-  if (gaps.length === 0) return { ok: true, out: [`${P} ${checked} file(s) checked, each has the tests its category needs`], err: [] };
+export const formatGaps = (config: Config, findings: Findings): { ok: boolean; out: string[]; err: string[] } => {
+  const { gaps, judged, listed } = findings;
+  if (gaps.length === 0) return { ok: true, out: [`${P} ${judged} of ${listed} listed file(s) judged, each has the tests its category needs`], err: [] };
   const err: string[] = [];
   const byCategory = new Map<string, Gap[]>();
   for (const g of gaps) byCategory.set(g.category, [...(byCategory.get(g.category) ?? []), g]);

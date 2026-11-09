@@ -6,10 +6,10 @@ import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adrDirOf, DEFAULTS, findUncited, formatClaims, listAdrs, readOrUndefined, stagedSource, treeSource, type Options } from './authority-citations.ts';
 import { findDenied, hash, isText, parseDenyList, type TrackedFile } from './boundary.ts';
-import { DEFAULT_CONFIG, findGaps, formatGaps, loadTypescript, parseConfig, type Config, type Ts } from './coverage-by-type.ts';
+import { DEFAULT_CONFIG, findGaps, formatGaps, listedPaths, loadTypescript, parseConfig, treePaths, typescriptLoaders, type Config, type Ts } from './coverage-by-type.ts';
 import { checkBudgets } from './doc-budgets.ts';
 import { checkExportDeletions, formatReport } from './export-deletions.ts';
-import { BASE_CANDIDATES, gitAt, gitAtTop, resolveBase, topOf } from './git.ts';
+import { BASE_CANDIDATES, gitAt, gitAtTop, must, resolveBase, topOf } from './git.ts';
 
 export interface Io {
   readonly out: (line: string) => void;
@@ -39,7 +39,7 @@ export const ownVersion = (): string => {
 
 /** The files git tracks under root, text ones only. */
 export const trackedFiles = (root: string): TrackedFile[] => {
-  const names = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean);
+  const names = must(gitAt(root), ['ls-files', '-z']).split('\0').filter(Boolean);
   const files: TrackedFile[] = [];
   for (const path of names) {
     const full = join(root, path);
@@ -181,9 +181,6 @@ const authorityCitations = (f: Map<string, string>, io: Io, env: NodeJS.ProcessE
   return result.ok ? 0 : 1;
 };
 
-/** Non-empty lines, or NUL-separated entries when the text holds a NUL. */
-const entries = (text: string): string[] => text.split(text.includes('\0') ? '\0' : /\r?\n/).filter(Boolean);
-
 const coverageByType = (f: Map<string, string>, io: Io): number => {
   const dir = resolve(f.get('--root') ?? '.');
   const root = topOf(dir);
@@ -191,7 +188,7 @@ const coverageByType = (f: Map<string, string>, io: Io): number => {
     io.err(`pariksha coverage-by-type: ${dir} is not in a git repository`);
     return 2;
   }
-  const ts = (io.typescript ?? loadTypescript)();
+  const ts = (io.typescript ?? (() => loadTypescript(typescriptLoaders(root))))();
   if (typeof ts === 'string') {
     io.err(`pariksha coverage-by-type: ${ts}`);
     return 2;
@@ -202,9 +199,15 @@ const coverageByType = (f: Map<string, string>, io: Io): number => {
     const from = f.get('--files-from');
     const paths =
       from === undefined
-        ? entries(execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }))
-        : entries(from === '-' ? (io.stdin ?? (() => readFileSync(0, 'utf8')))() : readFileSync(resolve(from), 'utf8'));
-    const result = formatGaps(config, findGaps(ts, config, root, paths), paths.length);
+        ? treePaths(root, must(gitAt(root), ['ls-files', '-z']))
+        : listedPaths(root, from === '-' ? (io.stdin ?? (() => readFileSync(0, 'utf8')))() : readFileSync(resolve(from), 'utf8'));
+    const findings = findGaps(ts, config, root, paths);
+    if (from === undefined && findings.judged === 0) {
+      // The whole tree in no category is a config that checks nothing.
+      io.err(`pariksha coverage-by-type: none of ${findings.listed} tracked file(s) is in a category; nothing was checked, so this is not a pass`);
+      return 2;
+    }
+    const result = formatGaps(config, findings);
     result.out.forEach(io.out);
     result.err.forEach(io.err);
     return result.ok ? 0 : 1;

@@ -1,18 +1,22 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   categoryOf,
   DEFAULT_CONFIG,
+  entries,
   findGaps,
   formatGaps,
   ImportWalk,
   isExcluded,
+  listedPaths,
   loadTypescript,
   moduleSpecifiers,
   parseConfig,
+  treePaths,
+  typescriptLoaders,
   type Config,
   type Ts,
 } from './coverage-by-type.ts';
@@ -36,15 +40,27 @@ const reaches = (root: string, test: string, subject: string, config: Config = D
   new ImportWalk(ts, config).reaches(join(root, test), join(root, subject));
 
 describe('loadTypescript', () => {
-  it('names the package when it is not installed', () => {
-    const r = loadTypescript(() => {
-      throw new Error('Cannot find module');
-    });
-    assert.equal(r, 'needs the typescript package (>=5.4 <6); install it beside pariksha');
+  const missing = () => {
+    throw new Error('Cannot find module');
+  };
+
+  it('names the package when no loader has it', () => {
+    assert.equal(loadTypescript([missing, missing]), 'needs the typescript package (>=5.4 <6) in the repository or beside pariksha');
+  });
+
+  it('takes the first loader that has it: the repository before pariksha', () => {
+    assert.equal(loadTypescript([missing, () => ts]), ts);
+    assert.match(String(loadTypescript([() => ({ version: '7.0.2' }), () => ts])), /typescript 7\.0\.2 does not export/);
   });
 
   it('refuses a typescript with no compiler API, naming its version', () => {
-    assert.match(String(loadTypescript(() => ({ version: '7.0.2' }))), /typescript 7\.0\.2 does not export; install typescript >=5\.4 <6/);
+    assert.match(String(loadTypescript([() => ({ version: '7.0.2' })])), /typescript 7\.0\.2 does not export; install typescript >=5\.4 <6/);
+  });
+
+  it('finds the repository’s own typescript from its root', () => {
+    const root = tree({ 'package.json': '{}', 'node_modules/typescript/package.json': '{"name":"typescript","main":"index.js"}', 'node_modules/typescript/index.js': 'module.exports = { version: "9.9.9" };' });
+    assert.match(String(loadTypescript(typescriptLoaders(root))), /typescript 9\.9\.9 does not export/);
+    assert.equal(typeof loadTypescript(), 'object');
   });
 });
 
@@ -82,6 +98,10 @@ describe('moduleSpecifiers', () => {
       "export { e, type E } from './mixed-export';",
     ].join('\n');
     assert.deepEqual(specs(src), ['./mixed', './def', './ns', './side', './star', './mixed-export']);
+  });
+
+  it('keeps `export * as ns from`, drops `export type * from`', () => {
+    assert.deepEqual(specs("export * as ns from './ns';\nexport type * from './types';"), ['./ns']);
   });
 
   it('skips templates with substitutions, quoted words, other callees and local export lists', () => {
@@ -220,18 +240,29 @@ describe('findGaps', () => {
     'README.md',
   ];
 
-  it('reports each file missing a kind its category needs', () => {
-    assert.deepEqual(findGaps(ts, DEFAULT_CONFIG, root, paths), [
-      { file: 'app/services/named.ts', category: 'service', missing: ['unit'] },
-      { file: 'app/services/bare.ts', category: 'service', missing: ['unit'] },
-      { file: 'app/repositories/half.ts', category: 'repository', missing: ['unit'] },
-      { file: 'app/components/Old.tsx', category: 'component', missing: ['ui'] },
-    ]);
+  it('reports each file missing a kind its category needs, counting only files judged', () => {
+    assert.deepEqual(findGaps(ts, DEFAULT_CONFIG, root, paths), {
+      gaps: [
+        { file: 'app/services/named.ts', category: 'service', missing: ['unit'] },
+        { file: 'app/services/bare.ts', category: 'service', missing: ['unit'] },
+        { file: 'app/repositories/half.ts', category: 'repository', missing: ['unit'] },
+        { file: 'app/components/Old.tsx', category: 'component', missing: ['ui'] },
+      ],
+      judged: 7,
+      listed: 10,
+    });
+  });
+
+  it('reads a $ in a path as text and a template with no {dir} from the root', () => {
+    const r2 = tree({ 'app/components/$$x.tsx': '', 'app/components/$$x.test.tsx': "import './$$x';", 'app/services/s.ts': '', 's.test.ts': "import './app/services/s';" });
+    assert.deepEqual(findGaps(ts, DEFAULT_CONFIG, r2, ['app/components/$$x.tsx']).gaps, []);
+    const flat = { ...DEFAULT_CONFIG, tests: new Map([...DEFAULT_CONFIG.tests, ['unit', ['{name}.test.ts']]]) };
+    assert.deepEqual(findGaps(ts, flat, r2, ['app/services/s.ts']).gaps, []);
   });
 
   it('formats a pass and a failure, grouped by category with the hint last', () => {
-    assert.deepEqual(formatGaps(DEFAULT_CONFIG, [], 3), { ok: true, out: ['pariksha coverage-by-type: 3 file(s) checked, each has the tests its category needs'], err: [] });
-    const r = formatGaps({ ...DEFAULT_CONFIG, hint: 'See docs/testing.' }, findGaps(ts, DEFAULT_CONFIG, root, paths), paths.length);
+    assert.deepEqual(formatGaps(DEFAULT_CONFIG, { gaps: [], judged: 2, listed: 3 }), { ok: true, out: ['pariksha coverage-by-type: 2 of 3 listed file(s) judged, each has the tests its category needs'], err: [] });
+    const r = formatGaps({ ...DEFAULT_CONFIG, hint: 'See docs/testing.' }, findGaps(ts, DEFAULT_CONFIG, root, paths));
     assert.equal(r.ok, false);
     assert.deepEqual(r.err, [
       'pariksha coverage-by-type: service (needs: unit tests)',
@@ -282,7 +313,45 @@ describe('parseConfig', () => {
       ['{"categories": {"a": "x"}}', /category "a" has no "required" entry/],
       ['{"categories": {"a": "x"}, "required": {"a": ["e2e"]}}', /requires "e2e", which "tests" does not define/],
       ['{"tests": {"unit": ["{dir}/x.test.ts"], "integration": [], "ui": []}}', /has no \{name\}/],
+      ['{"categories": {}, "required": {}}', /"categories" is empty/],
+      ['{"exclude": [""]}', /exclude\[0\]: an empty pattern matches every path/],
+      ['{"categories": {"a": ""}, "required": {"a": ["unit"]}}', /categories\.a: an empty pattern/],
+      ['{"categories": {"a": "x"}, "required": {"a": []}}', /category "a" requires no test/],
+      ['{"categories": {"b": "x", "2": "y"}, "required": {"b": ["unit"], "2": ["unit"]}}', /category "2": a name that is a number/],
     ];
     for (const [text, message] of bad) assert.throws(() => parseConfig(text), message, text);
+  });
+});
+
+describe('entries, treePaths and listedPaths', () => {
+  it('splits lines (LF or CRLF) or NULs, dropping blanks and a BOM', () => {
+    assert.deepEqual(entries('﻿a.ts\r\nb.ts\n\n'), ['a.ts', 'b.ts']);
+    assert.deepEqual(entries('a.ts\0b\nc.ts\0'), ['a.ts', 'b\nc.ts']);
+    assert.deepEqual(entries(''), []);
+  });
+
+  it('keeps tracked regular files only: no deleted file, no symlink', () => {
+    const root = tree({ 'app/services/real.ts': '' });
+    symlinkSync('real.ts', join(root, 'app/services/link.ts'));
+    assert.deepEqual(treePaths(root, 'app/services/real.ts\0app/services/link.ts\0app/services/gone.ts\0'), ['app/services/real.ts']);
+  });
+
+  it('reads relative and absolute entries against the real root, skipping symlinks and directories', () => {
+    const root = realpathSync(tree({ 'scripts/services/tool.ts': '', 'app/services/s.ts': '' }));
+    symlinkSync('s.ts', join(root, 'app/services/link.ts'));
+    const alias = join(mkdtempSync(join(tmpdir(), 'pariksha-alias-')), 'checkout');
+    symlinkSync(root, alias);
+    const listed = listedPaths(root, [join(alias, 'scripts/services/tool.ts'), 'app/services/s.ts', 'app/services/link.ts', 'app'].join('\n'));
+    assert.deepEqual(listed, ['scripts/services/tool.ts', 'app/services/s.ts']);
+  });
+
+  it('refuses an entry naming nothing or outside the root', () => {
+    const root = tree({ 'a.ts': '' });
+    const other = tree({ 'b.ts': '' });
+    assert.throws(() => listedPaths(root, 'ghost.ts'), /listed file ghost\.ts does not exist/);
+    assert.throws(() => listedPaths(root, join(other, 'b.ts')), /is outside/);
+    assert.throws(() => listedPaths(root, 'a.ts/x'), /does not exist/);
+    // Any other stat failure is raised as itself, never read as "no such file".
+    assert.throws(() => listedPaths(root, 'x'.repeat(300)), /ENAMETOOLONG/);
   });
 });

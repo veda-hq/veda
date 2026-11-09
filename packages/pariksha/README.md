@@ -4,8 +4,8 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.3.3 <check> [flags]
-npx @veda-hq/pariksha@0.3.3 --version
+npx @veda-hq/pariksha@0.5.1 <check> [flags]
+npx @veda-hq/pariksha@0.5.1 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
@@ -77,18 +77,25 @@ module it imports (a barrel, a collaborator). `import type`, a clause whose
 every binding is type-only, and `typeof import()` load nothing and do not
 count; `import()`, `require()`, `importActual` and `requireActual` do.
 
-Without `--files-from` every tracked file is judged; with it, the listed paths
-(one per line or NUL-separated, relative to the root; `-` reads stdin). The
-JSON `--config` (relative to the root) replaces each default it names:
+Only `.ts` and `.tsx` files are judged. Without `--files-from` every tracked
+regular file is (not a symlink, not one deleted in the working tree), and a
+tree with none in a category exits 2. With it, the listed paths are (one per
+line or NUL-separated, relative to the root or absolute; `-` reads stdin, a
+file path is relative to the current directory); a listed path that does not
+exist or lies outside the root exits 2, and a listed symlink is skipped. The
+JSON `--config` (relative to the root) replaces each default it names, and
+refuses one that would judge nothing (no categories, an empty pattern, a
+category needing no test):
 `categories` (name to path regex, first match wins), `required` (category to
 test kinds), `tests` (kind to candidate paths, `{dir}` and `{name}`),
 `exclude` (path regexes), `aliases` (specifier prefix to a directory under the
 importing file's nearest `package.json`), `maxHops` (default 1) and `hint` (a
 line printed under a failure).
 
-Needs `typescript` `>=5.4 <6` installed beside it (an optional peer
-dependency: only this check reads it). TypeScript 7 exports no stable compiler
-API yet, so it exits 2 naming the installed version.
+Needs `typescript` `>=5.4 <6`, the repository's own install first, else one
+beside pariksha (an optional peer dependency: only this check reads it).
+TypeScript 7 exports no stable compiler API yet, so it exits 2 naming the
+installed version.
 
 ## `doc-budgets`
 

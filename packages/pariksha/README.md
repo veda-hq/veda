@@ -251,3 +251,67 @@ renames, colour, external diff tools and textconv in a user's git config
 do not change what it reads. With no base, or when git cannot read the
 range (no merge base, a shallow clone), it exits 2: nothing was checked,
 so it is not a pass.
+
+## markdownlint rules
+
+```jsonc
+// .markdownlint-cli2.jsonc
+{
+  "customRules": ["@veda-hq/pariksha/markdownlint"],
+  "config": { "default": false, "pariksha-markdown": true }
+}
+```
+
+Not a check but a module: markdownlint custom rules for Markdown that reads
+fine as source and renders mangled, where no built-in rule fails it for that
+reason. `@veda-hq/pariksha/markdownlint` is an ES module whose default export
+is the rules array, which markdownlint-cli2's `customRules` loads by package
+name; `require()` of it returns the array too. Every rule carries the tag
+`pariksha-markdown`, so the config above turns on these rules and nothing
+else. They run on markdownlint's micromark tokens (`parser: "micromark"`)
+and import nothing. Most read prose only, skipping code blocks, HTML blocks
+and code spans; the fence and code-span rules read those, and
+`pariksha-replacement-character` reads every line.
+
+| Rule | Fails |
+| ---- | ----- |
+| `pariksha-alert-marker-inline` | `> [!NOTE] body` on one line: GitHub renders the callout only with the marker alone |
+| `pariksha-link-space-before-paren` | `[text] (./a.md)`: the space renders the link as text (targets that look like a URL, path, anchor or file only; task boxes `[ ]` and `[x]` pass) |
+| `pariksha-code-span-crosses-line` | a code span that closes on a later line, or a path span ending in `/` continued in the next line's span |
+| `pariksha-fence-unclosed` | a code fence that never closes |
+| `pariksha-fence-empty` | a fence with nothing but blank lines in it |
+| `pariksha-fence-swallows-heading` | a `# Heading` inside a fence of a language where it cannot be code: the fence above lost its close |
+| `pariksha-table-row-orphaned` | a paragraph made only of `\| … \|` rows: a blank line cut them off their table |
+| `pariksha-duplicate-adjacent-line` | a line of ten or more characters, with a letter, repeating the previous non-blank prose line (table rows may repeat) |
+| `pariksha-replacement-character` | U+FFFD, bytes lost in an encoding round-trip |
+| `pariksha-emphasis-mangle` | `store*id`: a single `*` between letters, where `_` was re-read as emphasis |
+| `pariksha-dunder-mangle` | `**DEV**`: a formatter rewrote `__DEV__` as bold |
+| `pariksha-lettered-step-indent` | `b.` indented unlike the `a.` above it, so it renders under another parent |
+
+Options are lists, each replacing its default:
+
+| Option | Rule | Default |
+| ------ | ---- | ------- |
+| `alert_types` | `pariksha-alert-marker-inline` | `NOTE`, `TIP`, `IMPORTANT`, `WARNING`, `CAUTION` (matched case-insensitively) |
+| `link_target_extensions` | `pariksha-link-space-before-paren` | `md`, `mdx`, `html`, `htm`, `ts`, `tsx`, `js`, `json`, `yaml`, `yml`, `png`, `svg`, `jpg`, `jpeg`, `pdf` |
+| `dunder_words` | `pariksha-dunder-mangle` | `DEV`, `proto`, `esModule`, `typename`: names never an English word in bold |
+| `no_hash_languages` | `pariksha-fence-swallows-heading` | `ts`, `tsx`, `typescript`, `js`, `jsx`, `javascript`, `json`, `jsonc`, `sql`, `css`, `html`, `swift`, `kotlin`, `java`, `go`, `rust`, `prisma`, `graphql` (matched case-insensitively) |
+
+```jsonc
+"config": {
+  "default": false,
+  "pariksha-markdown": { "dunder_words": ["DEV", "proto", "esModule", "typename", "dirname"] },
+  "pariksha-fence-swallows-heading": { "no_hash_languages": ["ts", "py"] }
+}
+```
+
+Options set under the tag reach every rule, so every rule accepts all four
+names. A rule's own key replaces the tag's object for that rule (markdownlint
+takes the last key that names a rule, whole), so above
+`pariksha-fence-swallows-heading` keeps the default `dunder_words`, which it
+does not read. A configuration markdownlint cannot have meant is refused, not
+ignored: an option name no rule reads, a value that is not a non-empty array
+of strings (to turn a rule off, set it to `false`), or an entry that could
+never match (an extension with its dot, a dunder word with its underscores, a
+language with a space). The rule throws, naming itself and the option;
+markdownlint-cli2 reports that on line 1 of each file and fails the run.

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type * as TS from 'typescript';
-import { DEFAULT_WORDS, formatReads, parseConfig, readerFor, readGate, UnreadableGateFile, type Reads } from './env-gate-switches.ts';
+import { DEFAULT_WORDS, formatReads, listFiles, parseConfig, readerFor, readGate, UnreadableGateFile, type Reads } from './env-gate-switches.ts';
 import { loadTypescript, type Ts } from './typescript.ts';
 
 const loaded = loadTypescript();
@@ -148,17 +148,17 @@ describe('readGate', () => {
 
   it('reads the index for staged and the working tree for tree, skipping a file that is gone', () => {
     const asked: string[][] = [];
-    assert.equal(readGate(reads({ git: { run: (args) => (asked.push([...args]), 'index') } }), 'staged', '0:a.sh'), 'index');
+    assert.equal(readGate(reads({ git: { run: (args) => (asked.push([...args]), 'index') } }), 'staged', { file: '0:a.sh', symlink: false }), 'index');
     assert.deepEqual(asked, [['show', ':0:0:a.sh']]);
-    assert.equal(readGate(reads({}), 'tree', 'a.sh'), 'disk');
-    assert.equal(readGate(failing('ENOENT'), 'tree', 'a.sh'), undefined);
-    assert.equal(readGate(failing('ENOTDIR'), 'tree', 'a.sh'), undefined);
+    assert.equal(readGate(reads({}), 'tree', { file: 'a.sh', symlink: false }), 'disk');
+    assert.equal(readGate(failing('ENOENT'), 'tree', { file: 'a.sh', symlink: false }), undefined);
+    assert.equal(readGate(failing('ENOTDIR'), 'tree', { file: 'a.sh', symlink: false }), undefined);
   });
 
   it('throws, naming the file, when it cannot read one that is there', () => {
-    assert.throws(() => readGate(reads({ git: { run: () => undefined } }), 'staged', 'a.sh'), /^Error: a\.sh: git show :0:a\.sh failed$/);
+    assert.throws(() => readGate(reads({ git: { run: () => undefined } }), 'staged', { file: 'a.sh', symlink: false }), /^Error: a\.sh: git show :0:a\.sh failed$/);
     for (const code of ['EISDIR', 'EACCES', 'EIO', undefined]) {
-      assert.throws(() => readGate(failing(code), 'tree', 'a.sh'), (e: unknown) => e instanceof UnreadableGateFile && e.message === `a.sh: ${String(code)}: cannot read`, String(code));
+      assert.throws(() => readGate(failing(code), 'tree', { file: 'a.sh', symlink: false }), (e: unknown) => e instanceof UnreadableGateFile && e.message === `a.sh: ${String(code)}: cannot read`, String(code));
     }
   });
 });
@@ -929,4 +929,112 @@ describe('isGateCode', () => {
       assert.equal(reader.isGateCode(file), expected);
     });
   }
+});
+
+describe('findSwitchReads on Python, through aliases and setdefault', () => {
+  for (const source of [
+    "from os import environ as env\nif env.get('PUSH_SKIP'): sys.exit(0)",
+    "from os import environ as env\nif env['PUSH_SKIP']: sys.exit(0)",
+    "from os import getenv as g\nif g('PUSH_SKIP'): sys.exit(0)",
+    "from os import (\n    environ as e,\n    path,\n)\ne.get('PUSH_SKIP')",
+    "from os import path, getenv as read_env  # noqa\nread_env(\"PUSH_SKIP\")",
+    "import os as o\no.environ.get('PUSH_SKIP')",
+    // setdefault returns the caller's value when there is one.
+    "os.environ.setdefault('PUSH_SKIP', '0')",
+    "from os import environ as env\nenv.setdefault('PUSH_SKIP', '0')",
+  ]) {
+    it(`reads ${j(source)}`, () => {
+      assert.deepEqual(names('scripts/gate.py', source), ['PUSH_SKIP']);
+    });
+  }
+
+  for (const source of [
+    "from os import environ as env\nenv['PUSH_SKIP'] = '1'",
+    "from os import environ as env\ndel env['PUSH_SKIP']",
+    "from os import path as p\np.get('PUSH_SKIP')",
+    "from os import getenv as g\nself.g('PUSH_SKIP')",
+    "from os import getenv as g\nbig('PUSH_SKIP')",
+    "# from os import environ as env\nenv.get('PUSH_SKIP')",
+    "print('from os import environ as env')\nenv.get('PUSH_SKIP')",
+  ]) {
+    it(`does not read ${j(source)}`, () => {
+      assert.deepEqual(names('scripts/gate.py', source), []);
+    });
+  }
+
+  it('reports an alias read at its line', () => {
+    assert.deepEqual(findSwitchReads('scripts/gate.py', "from os import getenv as g\n\ng('PUSH_SKIP')"), [{ file: 'scripts/gate.py', line: 3, name: 'PUSH_SKIP' }]);
+  });
+});
+
+describe('findSwitchReads on scripts, through nested destructuring', () => {
+  for (const [source, found] of [
+    ['const { env: { PUSH_SKIP } } = process;', ['PUSH_SKIP']],
+    ['const { env: { PUSH_SKIP: skip } } = process;', ['PUSH_SKIP']],
+    ['const { env: { PUSH_SKIP } = {} } = process;', ['PUSH_SKIP']],
+    ["const { env: { ['PUSH_' + 'PROBE']: probe, HOME } } = require('node:process');", ['PUSH_PROBE']],
+    ['const { process: { env: { PUSH_SKIP } } } = globalThis;', ['PUSH_SKIP']],
+    ['let skip;\n({ env: { PUSH_SKIP: skip } } = process);', ['PUSH_SKIP']],
+    ['const { env: { HOME } } = process;', []],
+    ['const { argv: { PUSH_SKIP } } = process;', []],
+    ['const { env: { PUSH_SKIP } } = settings;', []],
+    ['const { other: { env: { PUSH_SKIP } } } = globalThis;', []],
+    ['let skip;\n({ argv: { PUSH_SKIP: skip } } = process);', []],
+  ] as const) {
+    it(`${found.length > 0 ? 'reads' : 'does not read'} ${j(source)}`, () => {
+      assert.deepEqual(names('scripts/gate.ts', source), [...found]);
+    });
+  }
+});
+
+describe('findSwitchReads on shell, where a name is read without $', () => {
+  for (const source of [
+    'printenv PUSH_SKIP && exit 0',
+    'if [ "$(printenv HOME PUSH_SKIP)" ]; then exit 0; fi',
+    '[[ -v PUSH_SKIP ]] && exit 0',
+    'if [[ -n "$CI" && -v PUSH_SKIP ]]; then exit 0; fi',
+    '[ -v PUSH_SKIP ] && exit 0',
+    'test -v PUSH_SKIP && exit 0',
+    'if ! test -v PUSH_SKIP; then :; else exit 0; fi',
+  ]) {
+    it(`reads ${j(source)}`, () => {
+      assert.deepEqual(names('.husky/pre-push', source), ['PUSH_SKIP']);
+    });
+  }
+
+  for (const source of [
+    'grep -v PUSH_SKIP log.txt',
+    'echo printenv',
+    '# printenv PUSH_SKIP',
+    "echo '[[ -v PUSH_SKIP ]]'",
+    // The script's own top-level decision, as for `$PUSH_SKIP`.
+    'PUSH_SKIP=""\n[[ -v PUSH_SKIP ]] && exit 0',
+    'PUSH_SKIP=0\nprintenv PUSH_SKIP',
+  ]) {
+    it(`does not read ${j(source)}`, () => {
+      assert.deepEqual(names('.husky/pre-push', source), []);
+    });
+  }
+});
+
+describe('listFiles and readGate on symlinks', () => {
+  it('marks a staged symlink by its index mode', () => {
+    const out = ':000000 100644 0000000 1111111 A\0scripts/a.sh\0:100644 120000 2222222 3333333 T\0scripts/b.sh\0';
+    const listed = listFiles({ git: { run: () => out }, read: () => '' }, 'staged');
+    assert.deepEqual(listed, [
+      { file: 'scripts/a.sh', symlink: false },
+      { file: 'scripts/b.sh', symlink: true },
+    ]);
+  });
+
+  it('refuses a symlink in the index or the working tree: its target is unchecked', () => {
+    const reads: Reads = {
+      git: { run: () => 'target.sh' },
+      read: () => {
+        throw Object.assign(new Error('ELOOP: too many symbolic links'), { code: 'ELOOP' });
+      },
+    };
+    assert.throws(() => readGate(reads, 'staged', { file: 'scripts/b.sh', symlink: true }), (e: unknown) => e instanceof UnreadableGateFile && e.message === 'scripts/b.sh is a symlink in the index; its target is unchecked');
+    assert.throws(() => readGate(reads, 'tree', { file: 'scripts/b.sh', symlink: false }), (e: unknown) => e instanceof UnreadableGateFile && e.message === 'scripts/b.sh is a symlink in the working tree; its target is unchecked');
+  });
 });

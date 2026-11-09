@@ -187,29 +187,36 @@ environment variable whose name has a switch word (`X_SKIP`, `SKIP_X`,
   `_`-joined words, one of them a switch word, is a switch.
 - Shell (`.sh`, and every file under `.husky/`) is read as bash reads it:
   single quotes, escapes, comments and quoted heredoc bodies expand nothing,
-  and a bare name in arithmetic (`(( X_SKIP ))`, `let`, `-eq`, a subscript)
-  is a read. A variable the file initialises at the top level before reading
-  it is the script's own decision, not a read; one initialised in a branch,
-  loop, function, group, subshell, pipeline or the end of a `&&` list, or
-  self-defaulted (`X_SKIP="${X_SKIP:-0}"`), is.
+  and a bare name bash reads is a read: in arithmetic (`(( X_SKIP ))`,
+  `let`, `-eq`, a subscript), `printenv X_SKIP`, and `-v X_SKIP` in `[ ]`,
+  `[[ ]]` or `test`. A variable the file initialises at the top level before
+  reading it is the script's own decision, not a read; one initialised in a
+  branch, loop, function, group, subshell, pipeline or the end of a `&&`
+  list, or self-defaulted (`X_SKIP="${X_SKIP:-0}"`), is.
 - TypeScript and JavaScript are read as a syntax tree, with a type checker
-  over the one file: dotted, bracketed, optional, destructured and `in`
-  reads count, through `process`, `globalThis.process`, `node:process` and
-  any local bound to the environment, with constant keys resolved
-  (`env['X_' + 'SKIP']`); a mention in a comment or string does not.
-- Python reads are `os.environ[…]`, `os.environ.get(…)` and `os.getenv(…)`
-  outside strings and comments (f-string fields are code); workflow YAML
-  reads are `$X`, `env.X` and `env['X']` outside comments.
+  over the one file: dotted, bracketed, optional, destructured (nested too:
+  `const { env: { X_SKIP } } = process`) and `in` reads count, through
+  `process`, `globalThis.process`, `node:process` and any local bound to the
+  environment, with constant keys resolved (`env['X_' + 'SKIP']`); a mention
+  in a comment or string does not.
+- Python reads are `os.environ[…]`, `os.environ.get(…)`,
+  `os.environ.setdefault(…)` and `os.getenv(…)`, under `os` by any name and
+  through `from os import environ as e` / `getenv as g`, outside strings and
+  comments (f-string fields are code); workflow YAML reads are `$X`, `env.X`
+  and `env['X']` outside comments.
 
 `tree` (the default) reads every tracked file in the working tree, skipping
-one deleted there. `staged` (for a pre-commit hook) reads the files the index
+one deleted there; when every tracked gate file is deleted, nothing was read
+and it exits 2. `staged` (for a pre-commit hook) reads the files the index
 adds, copies, modifies, renames or changes the type of (a symlink replaced
 by a file), as the index holds them. In either mode, a repository with no
-tracked gate code exits 2, since the config would check nothing. A gate file
-that cannot be read (one under a folder the check cannot open included), a
-git call that fails, or a failure while reading a file's code exits 2: an
-unread gate is never clean. Needs `typescript` only when a TypeScript or
-JavaScript file is gate code.
+tracked gate code exits 2, since the config would check nothing, and a gate
+file that is a symlink (in the index for staged, in the working tree for
+tree) exits 2: its text is a path, and its target goes unchecked. A gate
+file that cannot be read (one under a folder the check cannot open
+included), a git call that fails, or a failure while reading a file's code
+exits 2: an unread gate is never clean. Needs `typescript` only when a
+TypeScript or JavaScript file is gate code.
 
 ## `export-deletions`
 

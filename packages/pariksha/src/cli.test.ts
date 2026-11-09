@@ -487,6 +487,39 @@ describe('run env-gate-switches', () => {
     assert.deepEqual(r.out, [PASS(0)]);
   });
 
+  it('refuses a symlink gate in the index and in the working tree, rather than reading its target path', () => {
+    const root = repo({ 'gates.json': GATE_CONFIG, 'scripts/target.sh': 'echo "$A_SKIP"\n' });
+    commit(root);
+    symlinkSync('target.sh', join(root, 'scripts/a.sh'));
+    git(root, 'add', 'scripts/a.sh');
+    const staged = check(root, ['--mode', 'staged']);
+    assert.equal(staged.code, 2);
+    assert.deepEqual(staged.err, [`${P} could not read gate code, so it is unchecked: scripts/a.sh is a symlink in the index; its target is unchecked`]);
+    const tree = check(root);
+    assert.equal(tree.code, 2);
+    assert.deepEqual(tree.err, [`${P} could not read gate code, so it is unchecked: scripts/a.sh is a symlink in the working tree; its target is unchecked`]);
+  });
+
+  it('refuses a staged type change from a file to a symlink', () => {
+    const root = repo({ 'gates.json': GATE_CONFIG, 'scripts/target.sh': 'exit 0\n', 'scripts/a.sh': 'exit 0\n' });
+    commit(root);
+    rmSync(join(root, 'scripts/a.sh'));
+    symlinkSync('target.sh', join(root, 'scripts/a.sh'));
+    git(root, 'add', 'scripts/a.sh');
+    const r = check(root, ['--mode', 'staged']);
+    assert.equal(r.code, 2);
+    assert.match(r.err[0] ?? '', /scripts\/a\.sh is a symlink in the index; its target is unchecked$/);
+  });
+
+  it('exits 2 in tree mode when every tracked gate file is gone from the working tree', () => {
+    const root = repo({ 'gates.json': GATE_CONFIG, 'scripts/a.sh': 'echo "$A_SKIP"\n', 'scripts/b.sh': 'exit 0\n' });
+    rmSync(join(root, 'scripts/a.sh'));
+    rmSync(join(root, 'scripts/b.sh'));
+    const r = check(root);
+    assert.equal(r.code, 2);
+    assert.deepEqual(r.err, [`${P} every tracked gate file (2) is gone from the working tree; nothing was checked, so this is not a pass`]);
+  });
+
   it('reads a staged type change: a symlink replaced by a file that reads a switch', () => {
     const root = repo({ 'gates.json': GATE_CONFIG, 'scripts/target.sh': 'exit 0\n' });
     symlinkSync('target.sh', join(root, 'scripts/a.sh'));

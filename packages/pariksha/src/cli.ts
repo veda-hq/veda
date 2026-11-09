@@ -302,17 +302,22 @@ const envGateSwitches = (f: Map<string, string>, io: Io): number => {
   const reads = (io.gateReads ?? diskReads)(root);
   let result: ReturnType<typeof formatReads>;
   try {
-    const listed = listFiles(reads, mode).filter(reader.isGateCode);
+    const listed = listFiles(reads, mode).filter((l) => reader.isGateCode(l.file));
     // A tree with no gate code is a config whose gatePaths match nothing (a
     // typo): staged mode would pass every commit under it, so both refuse.
-    if (!(mode === 'tree' ? listed.length > 0 : listFiles(reads, 'tree').some(reader.isGateCode))) {
+    if (!(mode === 'tree' ? listed.length > 0 : listFiles(reads, 'tree').some((l) => reader.isGateCode(l.file)))) {
       io.err(`${P} no tracked file is gate code under the config's gatePaths; nothing was checked, so this is not a pass`);
       return 2;
     }
-    const sources = listed.flatMap((file) => {
-      const text = readGate(reads, mode, file);
-      return text === undefined ? [] : [{ file, text }];
+    const sources = listed.flatMap((entry) => {
+      const text = readGate(reads, mode, entry);
+      return text === undefined ? [] : [{ file: entry.file, text }];
     });
+    if (mode === 'tree' && sources.length === 0) {
+      // Staged mode reads the index, which holds every file it lists.
+      io.err(`${P} every tracked gate file (${listed.length}) is gone from the working tree; nothing was checked, so this is not a pass`);
+      return 2;
+    }
     const ts = sources.some((s) => needsTypescript(s.file)) ? (io.typescript ?? (() => loadTypescript(typescriptLoaders(root))))() : undefined;
     if (typeof ts === 'string') {
       io.err(`${P} ${ts}`);

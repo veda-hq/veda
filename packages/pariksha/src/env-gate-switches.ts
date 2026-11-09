@@ -15,7 +15,7 @@
 // (`X_SKIP="${X_SKIP:-0}"`) is a read, and so is an assignment inside a branch,
 // loop, function or group (indented or not), which a run may never reach, and
 // `X_SKIP=1 cmd`, which sets cmd's environment only.
-import { readFileSync } from 'node:fs';
+import { closeSync, constants, openSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, posix } from 'node:path';
 import type * as TS from 'typescript';
 import { gitAt, must, PLAIN_DIFF, type Git } from './git.ts';
@@ -418,15 +418,49 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.InKeyword && isEnv(node.right)) {
       found(node, constantString(node.left));
     }
-    if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && node.initializer !== undefined && isEnv(node.initializer)) {
-      for (const element of node.name.elements) found(element, literalKey(element.propertyName ?? element.name));
+    if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && node.initializer !== undefined) {
+      const level = levelOf(node.initializer);
+      if (level !== null) bindingReads(node.name, level);
     }
     ts.forEachChild(node, reads);
   };
+  /** What an initialiser holds, as far as destructuring it can reach the environment. */
+  type Level = 'global' | 'process' | 'env';
+  const levelOf = (node: TS.Expression): Level | null => {
+    if (isEnv(node)) return 'env';
+    if (isProcess(node)) return 'process';
+    const target = strip(node);
+    return ts.isIdentifier(target) && ['globalThis', 'global'].includes(target.text) ? 'global' : null;
+  };
+  /** The level below: `globalThis.process`, then its `env`. */
+  const NEXT: Readonly<Record<Exclude<Level, 'env'>, { key: string; level: Level }>> = { global: { key: 'process', level: 'process' }, process: { key: 'env', level: 'env' } };
+  /**
+   * Each key a binding pattern takes from the environment, through nested
+   * patterns: `const { env: { X_SKIP } } = process` reads X_SKIP as surely as
+   * `const { X_SKIP } = process.env` does.
+   */
+  const bindingReads = (pattern: TS.ObjectBindingPattern, level: Level): void => {
+    for (const element of pattern.elements) {
+      const key = literalKey(element.propertyName ?? element.name);
+      if (level === 'env') found(element, key);
+      else if (key === NEXT[level].key && ts.isObjectBindingPattern(element.name)) bindingReads(element.name, NEXT[level].level);
+    }
+  };
+  /** The same through an assignment pattern: `({ env: { X_SKIP: x } } = process)`. */
+  const assignedReads = (pattern: TS.ObjectLiteralExpression, level: Level): void => {
+    for (const { key, target } of patternEntries(pattern)) {
+      if (level === 'env') {
+        found(pattern, key);
+        continue;
+      }
+      const inner = strip(target);
+      if (key === NEXT[level].key && ts.isObjectLiteralExpression(inner)) assignedReads(inner, NEXT[level].level);
+    }
+  };
   reads(tree);
   for (const { pattern, value } of assigned) {
-    if (!isEnv(value)) continue;
-    for (const { key } of patternEntries(pattern)) found(pattern, key);
+    const level = levelOf(value);
+    if (level !== null) assignedReads(pattern, level);
   }
   return out;
 };
@@ -443,15 +477,22 @@ const ARITHMETIC_PARTS = [
   /\$\{\w+\[([^\]]*)\]/g,
 ];
 
+/** `printenv A B`, to the end of its command: each name is read. */
+const PRINTENV = /\bprintenv\b([^;&|#)]*)/g;
+/** A `[ … ]` or `[[ … ]]` test, and a `test …` command, where `-v NAME` is a read. */
+const TESTS = [/\[\[?\s([^\]]*)\]/g, /\btest\s([^;&|#]*)/g];
+
 /**
- * Shell code with each bare switch name in an arithmetic context written as
- * the read it is: bash evaluates `(( PUSH_SKIP ))`, `let`, `[[ X -eq 1 ]]`
- * and array subscripts by reading the variable, no `$` needed.
+ * Shell code with each bare switch name bash reads written as the read it
+ * is: bash evaluates `(( PUSH_SKIP ))`, `let`, `[[ X -eq 1 ]]` and array
+ * subscripts by reading the variable, no `$` needed, and `printenv X`,
+ * `[[ -v X ]]`, `[ -v X ]` and `test -v X` read whether the caller set it.
+ * Each part is a stretch of code and the names in it that are reads.
  */
-const arithmeticAsReads = (code: string, bareSwitch: RegExp): string => {
+const bareAsReads = (code: string, parts: ReadonlyArray<readonly [RegExp, RegExp]>): string => {
   let out = code;
-  for (const part of ARITHMETIC_PARTS) {
-    out = out.replace(part, (whole, inner: string) => whole.replace(inner, inner.replace(bareSwitch, '$$$1')));
+  for (const [part, names] of parts) {
+    out = out.replace(part, (whole, inner: string) => whole.replace(inner, inner.replace(names, '$$$1')));
   }
   return out;
 };
@@ -706,6 +747,8 @@ const withoutComment = (line: string): string => BEFORE_WORKFLOW_COMMENT.exec(li
  */
 const PYTHON_TOKEN =
   /#[^\n]*|(?<!\w)([rRbBuUfF]{0,2}(?:'''(?:\\[\s\S]|(?!''')[^\\])*(?:'''|)|"""(?:\\[\s\S]|(?!""")[^\\])*(?:"""|)|'(?:\\[\s\S]|[^'\\\n])*'?|"(?:\\[\s\S]|[^"\\\n])*"?))/g;
+/** `from os import a, b as c` or `from os import (…)`, in code with strings and comments emptied. */
+const FROM_OS_IMPORT = /\bfrom\s+os\s+import\s+(\([^)]*\)|[^\n#;]*)/g;
 /** An f-string: its braces hold code. */
 const F_STRING = /^[rRbB]?[fF]/;
 
@@ -755,7 +798,7 @@ export const readerFor = (config: Config): Reader => {
 
   const READS: Readonly<Record<'shell' | 'python' | 'workflow', readonly RegExp[]>> = {
     shell: [new RegExp(String.raw`\$\{?(${SWITCH_NAME})\b`, 'g')],
-    python: [new RegExp(String.raw`\benviron(?:\.get)?\s*[[(]\s*['"](${SWITCH_NAME})['"]`, 'g'), new RegExp(String.raw`\bgetenv\s*\(\s*['"](${SWITCH_NAME})['"]`, 'g')],
+    python: [new RegExp(String.raw`\benviron(?:\.(?:get|setdefault))?\s*[[(]\s*['"](${SWITCH_NAME})['"]`, 'g'), new RegExp(String.raw`\bgetenv\s*\(\s*['"](${SWITCH_NAME})['"]`, 'g')],
     workflow: [
       new RegExp(String.raw`\$\{?(${SWITCH_NAME})\b`, 'g'),
       new RegExp(String.raw`\benv\.(${SWITCH_NAME})\b`, 'g'),
@@ -764,6 +807,8 @@ export const readerFor = (config: Config): Reader => {
     ],
   };
   const BARE_SWITCH = new RegExp(String.raw`(?<![\w$\{])(${SWITCH_NAME})\b`, 'g');
+  const TESTED_SWITCH = new RegExp(String.raw`(?<=(?:^|\s)-v\s+)(${SWITCH_NAME})\b`, 'g');
+  const BARE_READS: ReadonlyArray<readonly [RegExp, RegExp]> = [...ARITHMETIC_PARTS.map((part) => [part, BARE_SWITCH] as const), [PRINTENV, BARE_SWITCH], ...TESTS.map((part) => [part, TESTED_SWITCH] as const)];
   /** A literal that is exactly a switch name: the key of a read. */
   const IS_SWITCH_LITERAL = new RegExp(String.raw`^[rRbBuUfF]{0,2}(['"])${SWITCH_NAME}\1$`);
 
@@ -813,6 +858,26 @@ export const readerFor = (config: Config): Reader => {
     });
 
   /**
+   * The reads through names `from os import environ as env` or `getenv as g`
+   * bind: `env['X']`, `env.get('X')`, `env.setdefault('X', …)` and `g('X')`.
+   * The plain names, and `os` under another name (`o.environ`), are the
+   * patterns' own `\benviron` and `\bgetenv`.
+   */
+  const pythonAliasReads = (code: string): RegExp[] => {
+    const out: RegExp[] = [];
+    for (const imported of code.matchAll(FROM_OS_IMPORT)) {
+      for (const name of group(imported, 1).replace(/[()]/g, '').split(',')) {
+        const alias = /^\s*(environ|getenv)\s+as\s+(\w+)\s*$/.exec(name);
+        if (alias === null) continue;
+        const local = group(alias, 2);
+        const call = alias[1] === 'environ' ? String.raw`(?:\s*\[|\.(?:get|setdefault)\s*\()` : String.raw`\s*\(`;
+        out.push(new RegExp(String.raw`(?<![\w.])${local}${call}\s*['"](${SWITCH_NAME})['"]`, 'g'));
+      }
+    }
+    return out;
+  };
+
+  /**
    * Python reads, matched over the whole file: a call formatted across lines
    * (`os.environ.get(\n    "X_SKIP"\n)`) is still a read. `os.environ["X"] =
    * …` and `del os.environ["X"]` overwrite or drop the caller's value, so they
@@ -821,7 +886,7 @@ export const readerFor = (config: Config): Reader => {
   const pythonSwitchReads = (file: string, source: string): Violation[] => {
     const code = pythonCode(source);
     const out: Violation[] = [];
-    for (const pattern of READS.python) {
+    for (const pattern of [...READS.python, ...pythonAliasReads(code)]) {
       pattern.lastIndex = 0;
       for (const match of code.matchAll(pattern)) {
         const start = match.index;
@@ -850,7 +915,7 @@ export const readerFor = (config: Config): Reader => {
     let depths: number[] | null = null;
     for (const [index, expands] of expanding.entries()) {
       if (expands === null) continue;
-      const code = arithmeticAsReads(expands, BARE_SWITCH);
+      const code = bareAsReads(expands, BARE_READS);
       for (const pattern of patterns) {
         pattern.lastIndex = 0;
         for (const match of code.matchAll(pattern)) {
@@ -880,34 +945,61 @@ export type Mode = 'staged' | 'tree';
 /** How the check reads the repository: git at its top level, and the working tree by root-relative path. */
 export interface Reads {
   readonly git: Git;
-  /** A working-tree file's text; throws (with the system's error code) when it cannot be read. */
+  /**
+   * A working-tree file's text, not followed through a symlink (ELOOP);
+   * throws, with the system's error code, when it cannot be read.
+   */
   readonly read: (file: string) => string;
 }
 
 export const diskReads = (root: string): Reads => ({
   git: gitAt(root),
-  read: (file) => readFileSync(join(root, file), 'utf8'),
+  read: (file) => {
+    const fd = openSync(join(root, file), constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      return readFileSync(fd, 'utf8');
+    } finally {
+      closeSync(fd);
+    }
+  },
 });
 
 /** A file the check was asked to read and could not: never a clean result. */
 export class UnreadableGateFile extends Error {}
 
+/** A file a mode judges; `symlink` when the index holds it as one (staged mode only). */
+export interface Listed {
+  readonly file: string;
+  readonly symlink: boolean;
+}
+
+/** One `--raw -z` entry: the new mode, then the path. */
+const RAW_ENTRY = /:\d+ (\d+) \S+ \S+ [A-Z]\d*\0([^\0]*)\0/g;
+
 /**
  * The files a mode judges: every tracked file, or the ones the index adds,
  * copies, modifies, renames or changes the type of (T: a symlink replaced by
- * a file brings in its every line).
+ * a file brings in its every line), each with its index mode.
  */
-export const listFiles = (reads: Reads, mode: Mode): string[] =>
-  must(reads.git, mode === 'staged' ? ['diff', ...PLAIN_DIFF, '--cached', '--name-only', '--diff-filter=ACMRT', '-z'] : ['ls-files', '-z'])
-    .split('\0')
-    .filter(Boolean);
+export const listFiles = (reads: Reads, mode: Mode): Listed[] =>
+  mode === 'staged'
+    ? [...must(reads.git, ['diff', ...PLAIN_DIFF, '--cached', '--raw', '-z', '--diff-filter=ACMRT']).matchAll(RAW_ENTRY)].map((m) => ({ file: group(m, 2), symlink: m[1] === '120000' }))
+    : must(reads.git, ['ls-files', '-z'])
+        .split('\0')
+        .filter(Boolean)
+        .map((file) => ({ file, symlink: false }));
 
 /** Errors that mean the file is gone from the working tree (deleted, or a parent replaced by a file). */
 const GONE = ['ENOENT', 'ENOTDIR'];
 
-/** A gate file's text: the index's for staged, the working tree's for tree (undefined when deleted there). */
-export const readGate = (reads: Reads, mode: Mode, file: string): string | undefined => {
+/**
+ * A gate file's text: the index's for staged, the working tree's for tree
+ * (undefined when deleted there). A symlink is refused, not followed: its
+ * text is a path, and the file it names is not what the index holds.
+ */
+export const readGate = (reads: Reads, mode: Mode, { file, symlink }: Listed): string | undefined => {
   if (mode === 'staged') {
+    if (symlink) throw new UnreadableGateFile(`${file} is a symlink in the index; its target is unchecked`);
     // `:0:` names stage 0 explicitly, so a path such as `0:a.sh` is read as itself.
     const text = reads.git.run(['show', `:0:${file}`]);
     if (text === undefined) throw new UnreadableGateFile(`${file}: git show :0:${file} failed`);
@@ -916,9 +1008,11 @@ export const readGate = (reads: Reads, mode: Mode, file: string): string | undef
   try {
     return reads.read(file);
   } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? '';
+    if (code === 'ELOOP') throw new UnreadableGateFile(`${file} is a symlink in the working tree; its target is unchecked`);
     // Only a file that is not there is skipped: one under an unreadable
     // folder (EACCES), or a folder in its place (EISDIR), is unchecked.
-    if (GONE.includes((e as NodeJS.ErrnoException).code ?? '')) return undefined;
+    if (GONE.includes(code)) return undefined;
     throw new UnreadableGateFile(`${file}: ${(e as Error).message}`);
   }
 };

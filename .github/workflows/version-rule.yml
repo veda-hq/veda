@@ -81,7 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           script=scripts/version-rule.mjs
-          [ -n "$VEDA_REF" ] && script=.veda-version-rule/scripts/version-rule.mjs
+          if [ -n "$VEDA_REF" ]; then script=.veda-version-rule/scripts/version-rule.mjs; fi
           read -r -a manifests <<< "$MANIFESTS"
           if [ -n "$TAG" ]; then
             node "$script" tag "$TAG" "${manifests[@]}"

@@ -3,7 +3,13 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { CONFIG_FILE, DEFAULTS, loadConfig, parseConfig } from "./config.ts";
+import {
+  CONFIG_FILE,
+  configName,
+  DEFAULTS,
+  loadConfig,
+  parseConfig,
+} from "./config.ts";
 
 const dir = () => mkdtempSync(join(tmpdir(), "dvara-config-"));
 
@@ -24,9 +30,83 @@ describe("parseConfig", () => {
       watchdog: "tools/watchdog.mjs",
       baseRefs: ["origin/trunk"],
       stages: { "pre-push": ["lint", "test"] },
+      records: DEFAULTS.records,
     });
     assert.deepEqual(parseConfig("{}"), DEFAULTS);
     assert.equal(parseConfig('{"watchdog": null}').watchdog, null);
+  });
+
+  it("lays the given record settings over theirs", () => {
+    const records = {
+      baseline: "./tools/../records/baseline.json",
+      skip: ["tools/records/"],
+      frozen: { paths: ["docs/archive/"], except: ["docs/archive/README.md"] },
+      identityPaths: ["^docs/research/.*\\.md$"],
+      repository: "someone/project",
+      allowPaths: ["^/private/tmp/shared/cache(?![\\w.-])"],
+      packageManager: "pnpm",
+    };
+    assert.deepEqual(parseConfig(JSON.stringify({ records })).records, {
+      ...records,
+      baseline: "records/baseline.json",
+      identityPaths: [/^docs\/research\/.*\.md$/],
+      allowPaths: [/^\/private\/tmp\/shared\/cache(?![\w.-])/],
+    });
+    assert.deepEqual(parseConfig('{"records": {}}').records, DEFAULTS.records);
+    assert.deepEqual(
+      parseConfig('{"records": {"frozen": {}, "packageManager": null}}')
+        .records,
+      DEFAULTS.records,
+    );
+    assert.deepEqual(
+      parseConfig('{"records": {"frozen": {"paths": ["a/"]}}}').records.frozen,
+      { paths: ["a/"], except: [] },
+    );
+    assert.equal(
+      parseConfig('{"records": {"repository": null}}').records.repository,
+      null,
+    );
+  });
+
+  it("refuses record settings it cannot use", () => {
+    for (const [records, message] of [
+      [[], /records must be an object/],
+      [{ typo: 1 }, /unknown field records\.typo/],
+      [{ baseline: "" }, /records\.baseline must be a file path/],
+      [{ baseline: 1 }, /records\.baseline must be a file path/],
+      [{ baseline: "/abs.json" }, /records\.baseline must be a file path/],
+      [{ baseline: "../out.json" }, /records\.baseline must be a file path/],
+      [{ baseline: "a/../.." }, /records\.baseline must be a file path/],
+      [{ skip: "a/" }, /records\.skip must be a list/],
+      [{ skip: [""] }, /records\.skip must hold repository-relative paths/],
+      [{ skip: ["/a"] }, /records\.skip must hold repository-relative/],
+      [{ frozen: [] }, /records\.frozen must be an object/],
+      [{ frozen: { typo: [] } }, /unknown field records\.frozen\.typo/],
+      [{ frozen: { paths: [1] } }, /records\.frozen\.paths must be a list/],
+      [{ frozen: { except: [""] } }, /records\.frozen\.except must hold/],
+      [
+        { identityPaths: ["("] },
+        /records\.identityPaths\[0\] is not a regular/,
+      ],
+      [{ allowPaths: ["a", "["] }, /records\.allowPaths\[1\] is not a regular/],
+      [{ allowPaths: "a" }, /records\.allowPaths must be a list/],
+      [{ repository: "project" }, /records\.repository must be "owner\/name"/],
+      [{ repository: 1 }, /records\.repository must be/],
+      [{ packageManager: "bun" }, /records\.packageManager must be one of/],
+    ] as const)
+      assert.throws(
+        () => parseConfig(JSON.stringify({ records })),
+        message,
+        JSON.stringify(records),
+      );
+  });
+
+  it("names the config file as loadConfig reads it", () => {
+    assert.equal(configName({}), CONFIG_FILE);
+    assert.equal(
+      configName({ DVARA_CONFIG: "./tools/dvara.json" }),
+      "tools/dvara.json",
+    );
   });
 
   it("refuses what it cannot use", () => {
@@ -77,9 +157,6 @@ describe("loadConfig", () => {
     const root = dir();
     // A directory where the file should be: EISDIR, not ENOENT.
     mkdirSync(join(root, CONFIG_FILE));
-    assert.throws(
-      () => loadConfig(root, {}),
-      /cannot read/,
-    );
+    assert.throws(() => loadConfig(root, {}), /cannot read/);
   });
 });

@@ -19,6 +19,7 @@ import {
   shellHelper,
   USAGE,
 } from "./cli.ts";
+import { repo } from "./records/fixture.test.ts";
 
 const capture = () => {
   const out: string[] = [];
@@ -121,6 +122,113 @@ describe("dvara", () => {
       assert.equal(await run(argv, { io, cwd: "/", env: {} }), 2);
       assert.deepEqual(err, [USAGE]);
     }
+  });
+});
+
+describe("dvara records and dvara frozen", () => {
+  /** A repository whose config freezes `docs/archive/` and names pnpm. */
+  const configured = () => {
+    const r = repo("dvara-cli-records-");
+    r.write(
+      ".dvara.json",
+      `${JSON.stringify({
+        records: {
+          baseline: "tools/records-baseline.json",
+          frozen: { paths: ["docs/archive/"], except: [] },
+          // The config quotes machine paths; the gate never reads it.
+          allowPaths: ["^/private/tmp/shared(?![\\w.-])"],
+          packageManager: "pnpm",
+        },
+      })}\n`,
+    );
+    r.write("docs/archive/old.md", "old\n");
+    r.write("docs/guide.md", "Install with pnpm install.\n");
+    r.commit("init");
+    return r;
+  };
+
+  it("runs the record gate on the index, with the config's settings", async () => {
+    const r = configured();
+    r.write("docs/guide.md", "Install with npm install.\n");
+    r.git("add", "-A");
+    const { io, out, err } = capture();
+    const context = { io, cwd: r.root, env: r.env };
+    assert.equal(await run(["records", "--staged"], context), 1);
+    assert.deepEqual(err, []);
+    assert.deepEqual(out.slice(0, 3), [
+      "❌ records: refused",
+      "docs/guide.md — EVIDENCE-02:",
+      '  docs/guide.md:1 [EVIDENCE-02/install-command] npm/yarn install: this repository installs with pnpm only: "npm install"',
+    ]);
+    r.commit("a legacy finding");
+    out.length = 0;
+    assert.equal(
+      await run(["records", "--all", "--write-baseline"], context),
+      0,
+    );
+    assert.deepEqual(out, [
+      "dvara records: wrote tools/records-baseline.json (1 files, 1 findings)",
+    ]);
+    r.commit("held");
+    out.length = 0;
+    assert.equal(await run(["records", "--all"], context), 0);
+    assert.match(
+      out[0] ?? "",
+      /^✅ records: 1 file\(s\) checked, 1 legacy finding/,
+    );
+  });
+
+  it("refuses bad arguments, a bad config and a git that cannot answer", async () => {
+    const { io, err } = capture();
+    assert.equal(await run(["records"], { io, cwd: "/", env: {} }), 2);
+    assert.deepEqual(err, [
+      "dvara records: nothing to check",
+      "usage: dvara records --staged | --all [--base REF] [--write-baseline | --survey] | --base REF",
+    ]);
+    const r = configured();
+    r.write(".dvara.json", '{"records": {"typo": 1}}');
+    err.length = 0;
+    assert.equal(
+      await run(["records", "--staged"], { io, cwd: r.root, env: r.env }),
+      2,
+    );
+    assert.match(
+      err[0] ?? "",
+      /^dvara records: dvara: .*unknown field records\.typo$/,
+    );
+    const elsewhere = mkdtempSync(join(tmpdir(), "dvara-cli-none-"));
+    err.length = 0;
+    assert.equal(
+      await run(["records", "--staged"], { io, cwd: elsewhere, env: r.env }),
+      2,
+    );
+    assert.match(err[0] ?? "", /^dvara records: .*not a git repository/);
+  });
+
+  it("refuses a change to a frozen path, and passes one elsewhere", async () => {
+    const r = configured();
+    const { io, out, err } = capture();
+    const context = { io, cwd: r.root, env: r.env };
+    r.write("docs/guide.md", "Install with pnpm install, twice.\n");
+    r.git("add", "-A");
+    assert.equal(await run(["frozen", "--staged"], context), 0);
+    assert.deepEqual(out, ["✅ frozen: no frozen path changes"]);
+    r.write("docs/archive/old.md", "edited\n");
+    r.git("add", "-A");
+    assert.equal(await run(["frozen", "--staged"], context), 1);
+    assert.deepEqual(err.slice(0, 2), [
+      "❌ frozen: this commit changes 1 file(s) under docs/archive/:",
+      "     M docs/archive/old.md",
+    ]);
+    err.length = 0;
+    assert.equal(await run(["frozen", "--base", "nope"], context), 2);
+    assert.match(err[0] ?? "", /^dvara frozen: .*nope/);
+    err.length = 0;
+    assert.equal(await run(["frozen"], context), 2);
+    assert.deepEqual(err, [
+      "dvara frozen: give --staged, or --base REF [--head REF]",
+      "usage: dvara frozen --staged | --base REF [--head REF]",
+    ]);
   });
 });
 

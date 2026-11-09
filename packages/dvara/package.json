@@ -41,7 +41,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts --test-coverage-include=src/**/*.ts src/**/*.test.ts",
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude='src/**/*.test.ts' --test-coverage-include='src/**/*.ts' 'src/**/*.test.ts'",
     "smoke": "node dist/cli.js --version && node dist/cli.js shell stages",
     "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
   },

@@ -1,6 +1,6 @@
 {
   "name": "@veda-hq/dvara",
-  "version": "0.5.0",
+  "version": "0.5.4",
   "description": "Git hooks for repositories coding agents work in: runs each hook under a supervisor that times its stages, forwards signals and keeps one history row per run, with quiet output on success and a keep-going mode for preflights.",
   "keywords": [
     "git hooks",
@@ -41,12 +41,15 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts --test-coverage-include=src/**/*.ts src/**/*.test.ts",
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude='src/**/*.test.ts' --test-coverage-include='src/**/*.ts' 'src/**/*.test.ts'",
     "smoke": "node dist/cli.js --version && node dist/cli.js shell stages",
     "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
   },
   "devDependencies": {
     "@types/node": "24.19.2",
     "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "mdast-util-from-markdown": "2.0.3"
   }
 }

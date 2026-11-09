@@ -12,8 +12,10 @@ Veda's packages take that configuration as input.
 ## Packages
 
 Each is published to npm under `@veda-hq`, at exact versions, signed with
-provenance from this repository's release workflow. Names are Sanskrit; each
-package's description says its job in plain English.
+provenance from this repository's release workflow; a folder with no
+`package.json` (`needs-you`) is a Claude Code plugin only, installed from
+this repository's marketplace, `.claude-plugin/marketplace.json`. Names are
+Sanskrit; each package's description says its job in plain English.
 
 | Package | Meaning | Job | Status |
 | --- | --- | --- | --- |
@@ -23,6 +25,7 @@ package's description says its job in plain English.
 | `@veda-hq/agnipariksha` | अग्निपरीक्षा, trial by fire | Mutation gate: wiring and policy on top of Stryker | planned |
 | [`@veda-hq/eslint-plugin-shuddhi`](packages/eslint-plugin-shuddhi) | शुद्धि, purification | Generic ESLint rules | v0.2: error handling, input parsing, NestJS and Prisma boundaries, test lint |
 | [`@veda-hq/sarathi`](packages/sarathi) | सारथि, charioteer | Runs a project's Claude Code hooks from one entry per event, kavach's guards built in; its plugin `sarathi@veda` carries the agents | v0.4: hook runner, kavach guards, worker and researcher agents |
+| [`needs-you`](packages/needs-you) | (a plugin, not a package) | A band above Claude Code's message box listing what the chat is waiting on from you: its end-of-turn question, an open question dialog, a side session waiting on you | v0.1: plugin `needs-you@veda` only, not on npm |
 
 The work rules for repositories that track work in GitHub Issues live in their
 own repository, `veda-hq/niyam` (नियम, rule).

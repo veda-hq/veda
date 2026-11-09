@@ -3,7 +3,14 @@
 // tree and the inverse; the baseline ratchet; branch and whole-tree modes;
 // skipped and frozen paths read by no mode.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { DEFAULTS, type RecordsConfig } from "../config.ts";
@@ -449,6 +456,47 @@ describe("pre-commit: what is staged", () => {
     assert.match(result.out, passed(0));
   });
 
+  it("skips a symlink: its blob is a target's path, not a record", () => {
+    const r = init();
+    // Read as text, the link's target would be a home-path finding.
+    symlinkSync("/Users/someone/notes.md", join(r.root, "docs/notes/link.md"));
+    r.write("docs/notes/ok.md", "# ok\n");
+    r.git("add", "-A");
+    const result = staged(r);
+    assert.equal(result.code, 0, result.out);
+    assert.match(result.out, passed(1));
+    r.commit("a link");
+    assert.equal(gate(r, { mode: "all" }).code, 0);
+    // An allowance for a link answers to no file the gate reads.
+    r.write(
+      BASELINE,
+      baseline({
+        [LEGACY]: { "EVIDENCE-02": 1 },
+        "docs/notes/link.md": { "EVIDENCE-02": 1 },
+      }),
+    );
+    r.commit("an allowance for the link");
+    assert.match(
+      gate(r, { mode: "all" }).out,
+      /docs\/notes\/link\.md — not a file the gate reads/,
+    );
+  });
+
+  it("skips a submodule, whose commit this store need not have", () => {
+    const r = init();
+    r.git(
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${UNRESOLVED},vendor/lib`,
+    );
+    const result = staged(r);
+    assert.equal(result.code, 0, result.out);
+    assert.match(result.out, passed(0));
+    r.git("commit", "-q", "-m", "a submodule");
+    assert.equal(gate(r, { mode: "all" }).code, 0);
+  });
+
   it("compares a branch's baseline edits with the upstream's, not the last commit", () => {
     const r = init();
     r.git("rm", "-q", BASELINE);
@@ -717,6 +765,22 @@ describe("CI: the branch and the whole tree", () => {
     assert.equal(gate(r, { mode: "all", writeBaseline: true }).code, 0);
     r.commit("baseline");
     assert.equal(gate(r, { mode: "all" }).code, 0);
+  });
+
+  it("refuses to write the baseline through a symlink", () => {
+    const r = feature();
+    const outside = join(
+      mkdtempSync(join(tmpdir(), "dvara-outside-")),
+      "kept.json",
+    );
+    writeFileSync(outside, "kept\n");
+    rmSync(join(r.root, BASELINE));
+    symlinkSync(outside, join(r.root, BASELINE));
+    assert.deepEqual(gate(r, { mode: "all", writeBaseline: true }), {
+      code: 2,
+      out: `dvara records: ${BASELINE} is a symlink; replace it with a file before writing the baseline`,
+    });
+    assert.equal(readFileSync(outside, "utf8"), "kept\n");
   });
 
   it("sorts the survey's checks by name", () => {

@@ -118,6 +118,30 @@ describe("EVIDENCE-01: commit identity", () => {
     );
   });
 
+  it("refuses an abbreviated right endpoint after a ref", () => {
+    for (const [line, token] of [
+      ["Compare main..abc1234 first.", "abc1234"],
+      ["Compare HEAD...abc1234 first.", "abc1234"],
+      ["Compare origin/main..abc1234 first.", "abc1234"],
+      ["Compare HEAD~2..def5678.", "def5678"],
+      ["Compare v1.2..def5678.", "def5678"],
+      ["see compare/main...abc1234", "abc1234"],
+    ] as const) {
+      const found = unbranched(`${line}\n`).filter((f) =>
+        f.message.includes("ends a range"),
+      );
+      assert.equal(found.length, 1, line);
+      includes(found, `"${token}" ends a range`);
+    }
+    // A diff's `index a..b` pairs blobs; a full right end is no abbreviation.
+    assert.deepEqual(unbranched("index main..abc1234\n"), []);
+    assert.ok(
+      !messages(unbranched(`Compare main..${UNKNOWN_2}\n`)).includes(
+        "ends a range",
+      ),
+    );
+  });
+
   it("refuses an abbreviated commit URL of this repository, not another's", () => {
     includes(
       check("See https://github.com/acme/widgets/commit/abc1234.\n"),
@@ -310,6 +334,33 @@ describe("EVIDENCE-01: commit identity", () => {
       "git log --abbrev-commit -1",
     ])
       includes(check(`${command}\n`), "abbreviated commits");
+  });
+
+  it("reads a command a trailing backslash continues as one, at its first line", () => {
+    const at = (text: string): number[] =>
+      check(text)
+        .filter((f) => f.check === "abbreviating-command")
+        .map((f) => f.line);
+    // Every line of a script fence; a transcript's continued `$ ` line.
+    assert.deepEqual(at(`${F}sh\ngit log \\\n  --oneline -3\n${F}\n`), [2]);
+    assert.deepEqual(
+      at(`${F}text\n$ git log \\\n  --format=x \\\n  --oneline\nabc\n${F}\n`),
+      [2],
+    );
+    assert.deepEqual(at(`Run git log \\\n--oneline here.\n`), [1]);
+    // `--no-abbrev-commit` on a continuation line restores full ids.
+    assert.deepEqual(
+      at(`${F}sh\ngit log --oneline \\\n  --no-abbrev-commit\n${F}\n`),
+      [],
+    );
+    // A transcript's printed output is no continuation, nor a later command.
+    assert.deepEqual(at(`${F}text\n$ git log\n--oneline\n${F}\n`), []);
+    assert.deepEqual(
+      at(`${F}text\n$ git status \\\n  -s\n--oneline\n${F}\n`),
+      [],
+    );
+    // Lines join only when adjacent: a skipped output line breaks the command.
+    assert.deepEqual(at(`${F}sh\ngit log \\\n${F}\n--oneline\n`), []);
   });
 
   it("skips git's null id and holds a commit URL to a commit", () => {

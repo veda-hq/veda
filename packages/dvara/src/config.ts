@@ -88,11 +88,20 @@ const onlyKnown = (
     if (!known.includes(key)) throw new Error(`unknown field ${field}${key}`);
 };
 
-/** Repository-relative path prefixes or paths: none empty, none absolute. */
+/** Whether `path`, normalized, leaves the root: `..`, `../x`, `a/../../x`. */
+const escapes = (path: string): boolean => {
+  const normal = posix.normalize(path);
+  return normal === ".." || normal.startsWith("../");
+};
+
+/**
+ * Repository-relative path prefixes or paths: none empty, none absolute, none
+ * leaving the root (git prints no path there, so it would match nothing).
+ */
 const repoPaths = (value: unknown, field: string): readonly string[] => {
   const list = strings(value, field);
   for (const path of list)
-    if (path === "" || isAbsolute(path))
+    if (path === "" || isAbsolute(path) || escapes(path))
       throw new Error(`${field} must hold repository-relative paths`);
   return list;
 };
@@ -116,14 +125,16 @@ const parseRecordsConfig = (value: unknown): RecordsConfig => {
   };
   if ("baseline" in value) {
     const path = value.baseline;
-    // Compared with the paths git prints: `./a/../b.json` is `b.json`.
+    // Compared with the paths git prints: `./a/../b.json` is `b.json`. A
+    // folder (`.`, `archive/`) names no tracked file, so it is no baseline.
     const normal = typeof path === "string" ? posix.normalize(path) : "";
     if (
       typeof path !== "string" ||
       path === "" ||
       isAbsolute(path) ||
-      normal.startsWith("../") ||
-      normal === ".."
+      escapes(path) ||
+      normal === "." ||
+      normal.endsWith("/")
     )
       throw new Error(
         "records.baseline must be a file path inside the repository",

@@ -152,7 +152,7 @@ describe("report", () => {
       "❌ frozen: this branch (since origin/main) changes 1 file(s) under docs/archive/:",
       "     A docs/archive/x.md",
       "   These paths are frozen: no file there is added, changed or deleted.",
-      "   Drop them from the branch: restore each path to its origin/main content.",
+      "   Drop them from the branch: restore each path to its content at the merge base with origin/main (git restore --source=$(git merge-base origin/main HEAD) --staged --worktree -- <path>), then commit.",
     ]);
   });
 });
@@ -336,11 +336,16 @@ describe("--staged: a merge commit", () => {
 
   it("lists every head of an octopus merge, once", () => {
     const r = repo();
-    const head = r.git("rev-parse", "HEAD").trim();
+    const first = r.git("rev-parse", "HEAD").trim();
+    r.write("src/a.ts", "second\n");
+    r.commit("second");
+    const second = r.git("rev-parse", "HEAD").trim();
+    assert.notEqual(first, second);
     const file = gitPath(r, "MERGE_HEAD");
-    writeFileSync(file, `${head}\nnot-a-sha\n${head}\n`);
-    assert.deepEqual(mergeHeads(gitOf(r), { [`GITHEAD_${head}`]: "x" }), [
-      head,
+    writeFileSync(file, `${first}\nnot-a-sha\n${second}\n${first}\n`);
+    assert.deepEqual(mergeHeads(gitOf(r), { [`GITHEAD_${first}`]: "x" }), [
+      first,
+      second,
     ]);
     rmSync(file);
   });

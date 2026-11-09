@@ -26,7 +26,7 @@ export const USAGE = [
   "usage: dvara run <hook-file> [hook args…]   run a git hook under the supervisor",
   "       dvara stages <hook>                  the hook stages the config lists, one per line",
   "       dvara shell <stages|keep-going>      the path of a shell helper to source",
-  "       dvara records <--staged | --all [--base REF] | --base REF> [--write-baseline | --survey]",
+  "       dvara records <--staged | --all [--base REF] [--write-baseline | --survey] | --base REF>",
   "                                            the record gate: no new non-durable paths, a baseline that only falls",
   "       dvara frozen <--staged | --base REF [--head REF]>",
   "                                            refuse changes to the frozen paths",

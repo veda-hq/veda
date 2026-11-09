@@ -63,8 +63,10 @@ const patterns = (manager: PackageManager | null): Pattern[] => [
   },
   {
     check: "home-path",
-    // The hosted CI runner's home is the same on every run.
-    re: /(?<![\w.~-])\/home\/(?!runner\b)[a-z_][a-z0-9._-]*\//,
+    // The hosted CI runner's home is the same on every run. The name ends at
+    // a path boundary: `/`, the line's end, a space or punctuation (a
+    // sentence's closing `.` is not part of it).
+    re: /(?<![\w.~-])\/home\/(?!runner\b)[a-z_][a-z0-9._-]*?(?:\/|(?=$|[^\w.-]|\.(?!\w)))/,
     what: "a /home/<name> path names one machine and its operator",
     path: true,
   },
@@ -76,7 +78,9 @@ const patterns = (manager: PackageManager | null): Pattern[] => [
   },
   {
     check: "git-path",
-    re: /(?<![\w-])\.git\/(hooks|worktrees|objects|refs|index|config|info|logs|modules|HEAD)\b/,
+    // An entry under `.git/` of every kind (`FETCH_HEAD`, `packed-refs`, …);
+    // a bare mention of the folder, `.git/` alone, names no path in it.
+    re: /(?<![\w-])\.git\/[\w.-]+/,
     what: "a literal .git/ path is not the repository layout (worktrees move it)",
     path: true,
   },

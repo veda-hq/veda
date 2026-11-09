@@ -19,9 +19,12 @@ const NOT_TEXT =
 
 export const isTextPath = (path: string): boolean => !NOT_TEXT.test(path);
 
-/** Source files: the path denylist does not read code. */
+/**
+ * Source files, by extension in either case (`main.C`): the path denylist
+ * does not read code.
+ */
 export const isCodePath = (path: string): boolean =>
-  /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|sh|bash|zsh|rb|swift|kt|java|m|mm|h|c|cc|cpp|go|rs|sql|prisma|css|scss)$/.test(
+  /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|sh|bash|zsh|rb|swift|kt|java|m|mm|h|c|cc|cpp|go|rs|sql|prisma|css|scss)$/i.test(
     path,
   );
 

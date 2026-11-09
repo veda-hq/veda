@@ -123,6 +123,15 @@ describe("dvara", () => {
       assert.deepEqual(err, [USAGE]);
     }
   });
+
+  it("offers --write-baseline and --survey with --all only, as the gate takes them", () => {
+    assert.ok(
+      USAGE.includes(
+        "dvara records <--staged | --all [--base REF] [--write-baseline | --survey] | --base REF>",
+      ),
+      USAGE,
+    );
+  });
 });
 
 describe("dvara records and dvara frozen", () => {

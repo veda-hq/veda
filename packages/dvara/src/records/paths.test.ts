@@ -29,6 +29,13 @@ describe("EVIDENCE-02: durable paths", () => {
       ["docs/x.md", "the hook at repo/.git/hooks/pre-push"],
       ["docs/x.md", "files under /private/var/folders/x"],
       ["docs/x.md", "home /home/someone/code"],
+      ["docs/x.md", "home is /home/someone"],
+      ["docs/x.md", "home is /home/someone."],
+      ["docs/x.md", "home (/home/someone), then"],
+      ["docs/x.md", "home `/home/someone`"],
+      ["docs/x.md", "home is /home/some.one, then"],
+      ["docs/x.md", "fetched into .git/FETCH_HEAD"],
+      ["docs/x.md", "see .git/packed-refs"],
       ["docs/x.md", "Run `yarn add lodash`."],
       ["docs/x.md", "Never run npm install; run yarn install instead."],
       ["docs/x.md", "Never run npm install, but use yarn install."],
@@ -57,6 +64,8 @@ describe("EVIDENCE-02: durable paths", () => {
       "frame node_modules/react-dom/cjs/react-dom-client.development.js:8030:22",
       "    at file://<worktree>/node_modules/x.js:1:1",
       "The cache lives in `/home/runner/.cache/pnpm`.",
+      "The runner's home is /home/runner.",
+      "Nothing in the `.git/` folder is committed.",
       "Shared files sit in /Users/Shared/x.",
       "Run `npm install -g some-cli`.",
       "Never run `npm install` here.",
@@ -142,6 +151,11 @@ describe("EVIDENCE-02: durable paths", () => {
         'a /home/<name> path names one machine and its operator: "/home/someone/"',
       ],
       [
+        "it ran as /home/someone.",
+        "home-path",
+        'a /home/<name> path names one machine and its operator: "/home/someone"',
+      ],
+      [
         "at /private/var/folders/x",
         "temp-root",
         'a sandbox temp root is gone after the session: "/private/var/"',
@@ -150,6 +164,11 @@ describe("EVIDENCE-02: durable paths", () => {
         "the .git/hooks/pre-push hook",
         "git-path",
         'a literal .git/ path is not the repository layout (worktrees move it): ".git/hooks"',
+      ],
+      [
+        "read .git/FETCH_HEAD after the fetch",
+        "git-path",
+        'a literal .git/ path is not the repository layout (worktrees move it): ".git/FETCH_HEAD"',
       ],
       [
         "run npm install",
@@ -196,5 +215,28 @@ describe("EVIDENCE-02: durable paths", () => {
     ]);
     // None configured: install commands are not this rule's to judge.
     assert.deepEqual(messages(null), [[], [], [], []]);
+  });
+
+  it("knows every install verb of each manager, and no other verb", () => {
+    const found = (line: string, packageManager: "npm" | "pnpm") =>
+      check("docs/x.md", `${line}\n`, { packageManager }).map((f) =>
+        f.message.split(": ").at(-1),
+      );
+    for (const [line, packageManager] of [
+      ["npm i lodash", "pnpm"],
+      ["npm ci", "pnpm"],
+      ["npm add lodash", "pnpm"],
+      ["yarn install", "pnpm"],
+      ["pnpm install", "npm"],
+    ] as const) {
+      const verb = line.split(" ").slice(0, 2).join(" ");
+      assert.deepEqual(found(line, packageManager), [`"${verb}"`], line);
+    }
+    for (const line of ["npm init", "npm info x", "yarn ci", "pnpm ci"])
+      assert.deepEqual(
+        found(line, line.startsWith("pnpm") ? "npm" : "pnpm"),
+        [],
+        line,
+      );
   });
 });

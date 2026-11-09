@@ -129,8 +129,9 @@ export function exitDisposition(
 
 Committed text should not cite what stops meaning anything once the session
 that wrote it ends. The gate reads every text file that is not source code, a
-binary, a skipped or frozen path, the baseline or the config, and refuses
-(rule `EVIDENCE-02`, one finding per line):
+binary, a lockfile (`*.lock`, `pnpm-lock.yaml`, `package-lock.json`), a
+symlink or a submodule, a skipped or frozen path, the baseline or the config,
+and refuses (rule `EVIDENCE-02`, one finding per line):
 
 - a `file://` URL, a `/Users/<name>` or `/home/<name>` home path, a sandbox temp
   root (`/private/tmp/`, `/private/var/`, `/var/folders/`), a literal `.git/`
@@ -195,7 +196,7 @@ configured it passes without asking git. Exit 0, 1 or 2 as above.
 dvara run <hook-file> [hook args…]   # run a git hook under the supervisor
 dvara stages <hook>                  # the stages .dvara.json lists for it
 dvara shell <stages|keep-going>      # the path of a shell helper
-dvara records <--staged | --all [--base REF] | --base REF> [--write-baseline | --survey]
+dvara records <--staged | --all [--base REF] [--write-baseline | --survey] | --base REF>
 dvara frozen <--staged | --base REF [--head REF]>
 dvara --version
 ```

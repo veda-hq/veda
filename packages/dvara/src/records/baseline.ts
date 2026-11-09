@@ -39,7 +39,12 @@ const isRuleId = (rule: string): rule is RuleId =>
 /** The baseline in `text`; `where` names it in errors. Absent or blank is empty. */
 export const parseBaseline = (text: string | null, where: string): Baseline => {
   if (text === null || text.trim() === "") return { files: pathMap() };
-  const raw: unknown = JSON.parse(text);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${where}: ${(error as Error).message}`);
+  }
   if (!isJsonObject(raw) || !("files" in raw))
     throw new Error(`${where}: expected {"files": {...}}`);
   const files = raw.files;

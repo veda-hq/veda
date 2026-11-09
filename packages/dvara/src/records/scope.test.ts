@@ -36,6 +36,8 @@ describe("scope", () => {
       assert.equal(isTextPath(path), true, path);
     assert.equal(isCodePath("src/a.ts"), true);
     assert.equal(isCodePath("docs/a.md"), false);
+    assert.equal(isCodePath("src/main.C"), true);
+    assert.equal(isCodePath("src/App.TSX"), true);
   });
 
   it("reads no binary, own, skipped or frozen path", () => {

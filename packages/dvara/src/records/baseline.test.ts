@@ -44,6 +44,8 @@ describe("baseline", () => {
 
   it("refuses what it cannot read, naming the file", () => {
     for (const [text, message] of [
+      ['{"files": ', "JSON"],
+      ["not json", "JSON"],
       ["[]", 'expected {"files": {...}}'],
       ["null", 'expected {"files": {...}}'],
       ["1", 'expected {"files": {...}}'],

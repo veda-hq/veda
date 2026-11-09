@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -9,9 +9,11 @@ import {
   batchObjectSize,
   git,
   listedIn,
+  listModes,
   listTree,
   mergeBase,
   noQuestions,
+  OBJECT_BUFFER,
   objectName,
   objectTypes,
   readBlobs,
@@ -104,6 +106,45 @@ describe("trees", () => {
     r.git("add", "-A");
     assert.deepEqual(listTree(at, "HEAD"), ["a.md", "docs/b.md"]);
     assert.deepEqual(listTree(at, ":"), ["a.md", "docs/b.md", "two\nlines.md"]);
+  });
+
+  it("lists each path's mode, and tells a symlink or a submodule from a file", () => {
+    const { r, at } = committed();
+    symlinkSync("a.md", join(r.root, "link.md"));
+    r.write("two\nlines.md", "x\n");
+    r.git("add", "-A");
+    const sub = "0123456789abcdef0123456789abcdef01234567";
+    r.git("update-index", "--add", "--cacheinfo", `160000,${sub},vendor/lib`);
+    const expected = new Map([
+      ["a.md", "100644"],
+      ["docs/b.md", "100644"],
+      ["link.md", "120000"],
+      ["two\nlines.md", "100644"],
+      ["vendor/lib", "160000"],
+    ]);
+    assert.deepEqual(listModes(at, ":"), expected);
+    r.git("commit", "-q", "-m", "links");
+    assert.deepEqual(listModes(at, "HEAD"), expected);
+    for (const ref of [":", "HEAD"]) {
+      const tree = treeContext(at, ref, undefined);
+      assert.deepEqual(
+        ["a.md", "link.md", "vendor/lib", "none.md"].map(tree.isLink),
+        [false, true, true, false],
+        ref,
+      );
+    }
+  });
+
+  it("reads a blob above 64 MiB asked on its own, as the batch would", () => {
+    const { r, at } = committed();
+    const big = `${"x".repeat(65 * 1024 * 1024)}\n`;
+    r.write("big\nname.txt", big);
+    r.git("add", "-A");
+    assert.equal(OBJECT_BUFFER, 1024 * 1024 * 1024);
+    assert.equal(
+      readBlobs(at, [":big\nname.txt"]).get(":big\nname.txt")?.length,
+      big.length,
+    );
   });
 
   it("asks a tree which paths it lists, from the root", () => {

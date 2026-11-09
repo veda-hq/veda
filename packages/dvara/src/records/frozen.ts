@@ -177,7 +177,9 @@ export const report = (
   const undo =
     mode.kind === "staged"
       ? "Unstage them (git restore --staged -- <path>), then commit again."
-      : `Drop them from the branch: restore each path to its ${mode.base} content.`;
+      : // The range is `base...head`, the changes since the merge base: the
+        // content to go back to is the merge base's, not what base has today.
+        `Drop them from the branch: restore each path to its content at the merge base with ${mode.base} (git restore --source=$(git merge-base ${mode.base} ${mode.head}) --staged --worktree -- <path>), then commit.`;
   return {
     code: 1,
     stdout: [],

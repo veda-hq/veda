@@ -22,9 +22,14 @@ import type { Finding, Rule } from "./types.ts";
 
 // Hex is read in either case: git accepts `ABC1234` as readily as `abc1234`.
 const SHORT = /(?<![\w./=?#-])[0-9a-f]{7,39}(?![\w-])/gi;
-/** The right endpoint of an `a..b` or `a...b` range. */
+/**
+ * The right endpoint of an `a..b` or `a...b` range. The left one is an id or
+ * a ref (`main`, `origin/main`, `HEAD~2`, `v1.2`): a ref's dots never run
+ * into the range's own. Bounded, as the windows below are: a page's line of
+ * megabytes is not a ref.
+ */
 const RANGE_RIGHT =
-  /(?<![0-9a-f])[0-9a-f]{7,40}\.{2,3}([0-9a-f]{7,40})(?![\w-])/gi;
+  /(?<![\w-])[\w-]{1,64}(?:[/.][\w-]{1,64}){0,8}(?:[~^]\d{0,4}){0,4}\.{2,3}([0-9a-f]{7,40})(?![\w-])/gi;
 const FULL = /(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])/gi;
 const TEST_MERGE =
   /(?<![0-9a-f])([0-9a-f]{40})(?::refs\/(?:remotes\/)?| +-> +(?:refs\/(?:remotes\/)?)?)pull\/\d+\/merge\b/gi;
@@ -39,6 +44,8 @@ const TASK_HASH = /(cache (hit|miss)|executing|replaying)\W*$/i;
 const ABBREVIATING_COMMAND =
   /\bgit\b[^\n]{0,300}?(--oneline|%h\b|--abbrev-commit|rev-parse\s+--short)/;
 const DIFF_INDEX = /^\s*index\s/;
+/** A shell line that a trailing backslash continues onto the next. */
+const CONTINUED = /\\$/;
 /** A commit word right before the token: `commit 1234567`, `sha: abcdefa`. */
 const IMMEDIATE = new RegExp(`(?:${COMMIT_WORD.source})[\\s:=\`"'(]*$`, "i");
 /** Raw captured output kept as a file: a log, not prose anyone edits. */
@@ -130,6 +137,9 @@ const readable = (
     for (const line of fence.body) into.set(line.n, line.text);
   }
   const out: { n: number; text: string }[] = [];
+  // A transcript command ending in `\` goes on: its next line is the same
+  // command, though it has no `$ `.
+  let continues = false;
   lines.forEach((line, i) => {
     const n = i + 1;
     if (!doc.inFence[n]) {
@@ -142,7 +152,34 @@ const readable = (
       return;
     }
     const body = transcript.get(n);
-    if (body !== undefined && /^\s*\$ /.test(body)) out.push({ n, text: body });
+    const command = body !== undefined && (continues || /^\s*\$ /.test(body));
+    if (command) out.push({ n, text: body });
+    continues = command && CONTINUED.test(body);
+  });
+  return out;
+};
+
+/**
+ * Each line's command with the lines a trailing `\` continues it onto joined
+ * in, keyed by its first line; a continuation line maps to null. Lines join
+ * only when adjacent in the file, so a skipped line breaks the command.
+ */
+const commands = (
+  lines: readonly { n: number; text: string }[],
+): (string | null)[] => {
+  const out: (string | null)[] = [];
+  let open: { at: number; text: string } | null = null;
+  lines.forEach((line, i) => {
+    const previous = lines[i - 1];
+    if (open !== null && previous !== undefined && previous.n + 1 === line.n) {
+      open.text = `${open.text.slice(0, -1)} ${line.text}`;
+      out[open.at] = open.text;
+      out.push(null);
+    } else {
+      open = { at: i, text: line.text };
+      out.push(line.text);
+    }
+    if (!CONTINUED.test(line.text)) open = null;
   });
   return out;
 };
@@ -211,16 +248,22 @@ export const commitIdentity = (
   return (path, text, tree) => {
     if (!records.identityPaths.some((p) => p.test(path))) return [];
     const found: Finding[] = [];
-    for (const { n, text: line } of readable(path, text)) {
-      const abbreviating = ABBREVIATING_COMMAND.exec(line);
+    const lines = readable(path, text);
+    // A command continued with `\` is read whole, reported at its first line.
+    const joined = commands(lines);
+    lines.forEach(({ n, text: line }, i) => {
+      const command = joined[i] ?? null;
+      const abbreviating =
+        command === null ? null : ABBREVIATING_COMMAND.exec(command);
       // `--no-abbrev-commit` after `--oneline` or `--abbrev-commit` restores
       // full ids; `%h` is abbreviated whatever follows.
       const restored =
+        command !== null &&
         abbreviating !== null &&
         /^--(oneline|abbrev-commit)$/.test(group(abbreviating, 1)) &&
-        !/%h\b/.test(line) &&
+        !/%h\b/.test(command) &&
         /--no-abbrev(-commit)?\b/.test(
-          line.slice(abbreviating.index + abbreviating[0].length),
+          command.slice(abbreviating.index + abbreviating[0].length),
         );
       if (abbreviating !== null && !restored) {
         found.push(
@@ -271,7 +314,7 @@ export const commitIdentity = (
           ),
         );
       }
-    }
+    });
     // Full ids anywhere, fences included, but only those the change adds:
     // what a clone has differs by machine (a laptop keeps commits of deleted
     // branches, a CI clone does not), so no baseline could hold legacy ones

@@ -14,7 +14,7 @@
 //   --all --survey           counts per rule and check.
 //
 // Exit 0: clean or within the baseline. 1: refused. 2: could not run.
-import { mkdirSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { RecordsConfig } from "../config.ts";
 import {
@@ -384,8 +384,12 @@ const runChecks = (
   ]
     .sort()
     // No rule reads a binary, the gate's own files, a skipped or a frozen
-    // path, so they are not read at all.
-    .filter((p) => isReadPath(p, settings.records, own));
+    // path, so they are not read at all. Nor a symlink or a submodule: they
+    // are skipped, not refused. A symlink's blob is its target's path, not a
+    // record (the target, when tracked, is read under its own path, and a
+    // link like `CLAUDE.md -> AGENTS.md` is common); a submodule's entry is a
+    // commit of another repository, which this store need not have.
+    .filter((p) => isReadPath(p, settings.records, own) && !tree.isLink(p));
   const blobs = readBlobs(
     repo,
     paths.map((p) => objectName(planned.ref, p)),
@@ -432,6 +436,14 @@ const runChecks = (
     const held = findings.filter((f) => f.ratchet !== false);
     for (const [file, counts] of countFindings(held)) files[file] = counts;
     const target = join(repo.cwd, baselinePath);
+    // Writing through a symlink would replace its target, which may lie
+    // outside the repository.
+    if (lstatSync(target, { throwIfNoEntry: false })?.isSymbolicLink()) {
+      log(
+        `dvara records: ${baselinePath} is a symlink; replace it with a file before writing the baseline`,
+      );
+      return 2;
+    }
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, renderBaseline({ files }));
     log(

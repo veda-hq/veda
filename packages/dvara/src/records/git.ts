@@ -64,6 +64,27 @@ export const listTree = (repo: Git, ref: TreeRef): string[] =>
     : splitZ(git(repo, ["ls-tree", "-r", "-z", "--name-only", ref]));
 
 /**
+ * Every path in the tree with its git mode (`100644`, `120000`, `160000`, …).
+ * The index prints `<mode> <id> <stage>\t<path>`, a commit's tree
+ * `<mode> <type> <id>\t<path>`: the mode leads both, the path follows the tab.
+ */
+export const listModes = (repo: Git, ref: TreeRef): Map<string, string> => {
+  const out =
+    ref === ":"
+      ? git(repo, ["ls-files", "-s", "-z"])
+      : git(repo, ["ls-tree", "-r", "-z", ref]);
+  return new Map(
+    splitZ(out).map((entry) => [
+      entry.slice(entry.indexOf("\t") + 1),
+      entry.slice(0, entry.indexOf(" ")),
+    ]),
+  );
+};
+
+/** A symlink (its blob is the target's path) or a submodule's commit. */
+const LINK_MODES = new Set(["120000", "160000"]);
+
+/**
  * A path the tree lists whose object git cannot read. Nothing about it can be
  * vouched for, so the gate stops rather than read it as absent.
  */
@@ -101,6 +122,12 @@ export const treeLists = (repo: Git, rev: string, path: string): boolean =>
   listedIn(repo, rev, [path]).has(path);
 
 /**
+ * The most object content one git process may print, in the batch and outside
+ * it alike: a blob the batch reads is not refused when asked on its own.
+ */
+export const OBJECT_BUFFER = 1024 * 1024 * 1024;
+
+/**
  * One object question outside the batch: its answer, or null when git has no
  * such object (cat-file exits 128 for a missing name, as the batch says
  * "missing").
@@ -110,7 +137,7 @@ const askOne = (repo: Git, args: readonly string[]): string | null => {
     cwd: repo.cwd,
     env: repo.env ?? process.env,
     encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
+    maxBuffer: OBJECT_BUFFER,
   });
   return result.status === 0 ? result.stdout : null;
 };
@@ -147,7 +174,7 @@ export const readBlobs = (
     cwd: repo.cwd,
     env: repo.env ?? process.env,
     input: `${batch.join("\n")}\n`,
-    maxBuffer: 1024 * 1024 * 1024,
+    maxBuffer: OBJECT_BUFFER,
   });
   if (result.status !== 0)
     throw new Error(`git cat-file --batch failed: ${String(result.stderr)}`);
@@ -238,6 +265,8 @@ export interface GitTreeContext extends TreeContext {
   /** The merge base branch rules compare with (see `TreeContext.baseText`). */
   readonly base: string | null | undefined;
   readonly pathExists: (path: string) => boolean;
+  /** Whether the tree lists `path` as a symlink or a submodule, not a file. */
+  readonly isLink: (path: string) => boolean;
   /** A listed path's text; null when the tree does not list it. */
   readonly read: (path: string) => string | null;
   /** Answer these questions in one git process per kind. */
@@ -272,7 +301,8 @@ export const treeContext = (
   /** The path a file had at the base, when the branch renamed it. */
   renamedFrom: (path: string) => string | undefined = () => undefined,
 ): GitTreeContext => {
-  const present = new Set(listTree(repo, ref));
+  const modes = listModes(repo, ref);
+  const present = new Set(modes.keys());
   const cache = new Map<string, string | null>();
   const baseCache = new Map<string, string | null>();
   /** Object type by name; null when the store does not have it. */
@@ -331,6 +361,7 @@ export const treeContext = (
   return {
     base,
     pathExists: (path) => present.has(path),
+    isLink: (path) => LINK_MODES.has(modes.get(path) ?? ""),
     read: (path) => {
       if (!present.has(path)) return null;
       readInto(cache, ref, [path]);

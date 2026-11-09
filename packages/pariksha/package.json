@@ -1,7 +1,7 @@
 {
   "name": "@veda-hq/pariksha",
-  "version": "0.3.2",
-  "description": "Repository checks: doc drift, rule enforcement, test-quality ratchets. Checks: authority-citations, boundary, doc-budgets, export-deletions.",
+  "version": "0.3.3",
+  "description": "Repository checks: doc drift, rule enforcement, test-quality ratchets. Checks: authority-citations, boundary, coverage-by-type, doc-budgets, export-deletions.",
   "keywords": ["repository checks", "lint", "boundary", "ci", "coding agents"],
   "license": "MIT",
   "type": "module",
@@ -31,8 +31,16 @@
     "smoke": "node dist/cli.js --version && node dist/cli.js boundary --root ../..",
     "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
   },
+  "peerDependencies": {
+    "typescript": ">=5.4 <6"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@types/node": "24.19.2",
-    "typescript": "7.0.2"
+    "typescript": "5.9.3"
   }
 }

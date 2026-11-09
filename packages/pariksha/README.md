@@ -4,8 +4,8 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.3.2 <check> [flags]
-npx @veda-hq/pariksha@0.3.2 --version
+npx @veda-hq/pariksha@0.3.3 <check> [flags]
+npx @veda-hq/pariksha@0.3.3 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
@@ -61,6 +61,34 @@ the repository's deny list.
   `foo-bar`, `foo_bar` and `@Foo/bar` all contain the word `foo`.
 - Binary files (any NUL byte) are skipped. Untracked files are not read.
   Line 0 in a finding is the file's path.
+
+## `coverage-by-type`
+
+```sh
+pariksha coverage-by-type [--config <file>] [--files-from <file>|-] [--root <dir>]
+```
+
+A source file in a category needs the tests its category names: by default a
+service, hook, utility or context a unit test, a repository a unit and an
+integration test, a component or screen a UI (`.test.tsx`) test. A suite named
+after its subject that never imports it is no test of it, so a candidate
+counts only when it loads the subject at runtime, directly or through one
+module it imports (a barrel, a collaborator). `import type`, a clause whose
+every binding is type-only, and `typeof import()` load nothing and do not
+count; `import()`, `require()`, `importActual` and `requireActual` do.
+
+Without `--files-from` every tracked file is judged; with it, the listed paths
+(one per line or NUL-separated, relative to the root; `-` reads stdin). The
+JSON `--config` (relative to the root) replaces each default it names:
+`categories` (name to path regex, first match wins), `required` (category to
+test kinds), `tests` (kind to candidate paths, `{dir}` and `{name}`),
+`exclude` (path regexes), `aliases` (specifier prefix to a directory under the
+importing file's nearest `package.json`), `maxHops` (default 1) and `hint` (a
+line printed under a failure).
+
+Needs `typescript` `>=5.4 <6` installed beside it (an optional peer
+dependency: only this check reads it). TypeScript 7 exports no stable compiler
+API yet, so it exits 2 naming the installed version.
 
 ## `doc-budgets`
 

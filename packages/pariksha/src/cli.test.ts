@@ -120,6 +120,55 @@ describe('ownVersion and the command', () => {
   });
 });
 
+describe('run coverage-by-type', () => {
+  const files = {
+    'app/services/ok.ts': '',
+    'app/services/ok.test.ts': "import './ok';",
+    'app/services/bare.ts': '',
+    'scripts/lib/tool.ts': '',
+  };
+  const withStdin = (text: string) => {
+    const c = capture();
+    return { ...c, io: { ...c.io, stdin: () => text } };
+  };
+
+  it('checks every tracked file by default, and refuses a gap', () => {
+    const c = capture();
+    const root = repo(files);
+    assert.equal(run(['coverage-by-type', '--root', root], c.io, '0'), 1);
+    assert.deepEqual(c.err.slice(0, 3), ['pariksha coverage-by-type: service (needs: unit tests)', '  app/services/bare.ts: missing unit', 'pariksha coverage-by-type: utility (needs: unit tests)']);
+  });
+
+  it('reads a config relative to the root and a file list from a file or stdin', () => {
+    const root = repo({ ...files, 'cov.json': JSON.stringify({ exclude: ['^scripts/'], hint: 'see the rules' }) });
+    const list = join(root, 'list.txt');
+    writeFileSync(list, 'app/services/ok.ts\napp/services/bare.ts\n');
+    const c = capture();
+    assert.equal(run(['coverage-by-type', '--root', root, '--config', 'cov.json', '--files-from', list], c.io, '0'), 1);
+    assert.deepEqual(c.err, ['pariksha coverage-by-type: service (needs: unit tests)', '  app/services/bare.ts: missing unit', '', 'pariksha coverage-by-type: 1 file(s) missing required tests. A suite counts only when it imports its subject at runtime.', 'see the rules']);
+    const s = withStdin('app/services/ok.ts\0scripts/lib/tool.ts\0');
+    assert.equal(run(['coverage-by-type', '--root', root, '--config', 'cov.json', '--files-from', '-'], s.io, '0'), 0);
+    assert.deepEqual(s.out, ['pariksha coverage-by-type: 2 file(s) checked, each has the tests its category needs']);
+  });
+
+  it('exits 2 outside a repository, without TypeScript, or on a bad config', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'pariksha-none-'));
+    const a = capture();
+    assert.equal(run(['coverage-by-type', '--root', outside], a.io, '0'), 2);
+    assert.match(a.err[0] ?? '', /is not in a git repository$/);
+    const root = repo({ ...files, 'bad.json': '{"maxHops": -1}' });
+    const b = capture();
+    assert.equal(run(['coverage-by-type', '--root', root], { ...b.io, typescript: () => 'needs the typescript package' }, '0'), 2);
+    assert.deepEqual(b.err, ['pariksha coverage-by-type: needs the typescript package']);
+    const d = capture();
+    assert.equal(run(['coverage-by-type', '--root', root, '--config', 'bad.json'], d.io, '0'), 2);
+    assert.deepEqual(d.err, ['pariksha coverage-by-type: "maxHops" must be a whole number, 0 or more; nothing was checked, so this is not a pass']);
+    const e = capture();
+    assert.equal(run(['coverage-by-type', '--root', root, '--files-from', join(root, 'absent.txt')], e.io, '0'), 2);
+    assert.match(e.err[0] ?? '', /ENOENT.*nothing was checked, so this is not a pass$/);
+  });
+});
+
 describe('run doc-budgets', () => {
   const RULE = '# r\n\n## Budgets\n\n| Doc | Budget |\n| --- | --: |\n| `a.md` | 5 |\n| `rule.md` | 500 |\n';
 

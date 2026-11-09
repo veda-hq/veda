@@ -6,6 +6,7 @@ import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adrDirOf, DEFAULTS, findUncited, formatClaims, listAdrs, readOrUndefined, stagedSource, treeSource, type Options } from './authority-citations.ts';
 import { findDenied, hash, isText, parseDenyList, type TrackedFile } from './boundary.ts';
+import { DEFAULT_CONFIG, findGaps, formatGaps, loadTypescript, parseConfig, type Config, type Ts } from './coverage-by-type.ts';
 import { checkBudgets } from './doc-budgets.ts';
 import { checkExportDeletions, formatReport } from './export-deletions.ts';
 import { BASE_CANDIDATES, gitAt, gitAtTop, resolveBase, topOf } from './git.ts';
@@ -13,6 +14,10 @@ import { BASE_CANDIDATES, gitAt, gitAtTop, resolveBase, topOf } from './git.ts';
 export interface Io {
   readonly out: (line: string) => void;
   readonly err: (line: string) => void;
+  /** Standard input, read whole; only `--files-from -` reads it. */
+  readonly stdin?: () => string;
+  /** How a check that needs TypeScript gets it; the product's own install by default. */
+  readonly typescript?: () => Ts | string;
 }
 
 export const DENY_FILE = '.veda/deny.sha256';
@@ -20,6 +25,7 @@ export const DENY_FILE = '.veda/deny.sha256';
 const USAGE = [
   'usage: pariksha authority-citations [--mode staged|tree] [--authority <a,b>] [--issue-prefix <A,B>] [--adr-dir <dir>] [--root <dir>]',
   '       pariksha boundary [--root <dir>] [--deny <file>]',
+  '       pariksha coverage-by-type [--config <file>] [--files-from <file>|-] [--root <dir>]',
   '       pariksha doc-budgets --table <file> [--section <name>] [--root <dir>]',
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
   '       pariksha hash <word>',
@@ -175,9 +181,43 @@ const authorityCitations = (f: Map<string, string>, io: Io, env: NodeJS.ProcessE
   return result.ok ? 0 : 1;
 };
 
+/** Non-empty lines, or NUL-separated entries when the text holds a NUL. */
+const entries = (text: string): string[] => text.split(text.includes('\0') ? '\0' : /\r?\n/).filter(Boolean);
+
+const coverageByType = (f: Map<string, string>, io: Io): number => {
+  const dir = resolve(f.get('--root') ?? '.');
+  const root = topOf(dir);
+  if (root === undefined) {
+    io.err(`pariksha coverage-by-type: ${dir} is not in a git repository`);
+    return 2;
+  }
+  const ts = (io.typescript ?? loadTypescript)();
+  if (typeof ts === 'string') {
+    io.err(`pariksha coverage-by-type: ${ts}`);
+    return 2;
+  }
+  try {
+    const configPath = f.get('--config');
+    const config: Config = configPath === undefined ? DEFAULT_CONFIG : parseConfig(readFileSync(resolve(root, configPath), 'utf8'));
+    const from = f.get('--files-from');
+    const paths =
+      from === undefined
+        ? entries(execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }))
+        : entries(from === '-' ? (io.stdin ?? (() => readFileSync(0, 'utf8')))() : readFileSync(resolve(from), 'utf8'));
+    const result = formatGaps(config, findGaps(ts, config, root, paths), paths.length);
+    result.out.forEach(io.out);
+    result.err.forEach(io.err);
+    return result.ok ? 0 : 1;
+  } catch (e) {
+    io.err(`pariksha coverage-by-type: ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+};
+
 const COMMANDS: Record<string, { allowed: readonly string[]; run: (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv) => number }> = {
   'authority-citations': { allowed: ['--mode', '--authority', '--issue-prefix', '--adr-dir', '--root'], run: authorityCitations },
   boundary: { allowed: ['--root', '--deny'], run: boundary },
+  'coverage-by-type': { allowed: ['--config', '--files-from', '--root'], run: coverageByType },
   'doc-budgets': { allowed: ['--table', '--section', '--root'], run: docBudgets },
   'export-deletions': { allowed: ['--base', '--root'], run: exportDeletions },
 };

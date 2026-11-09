@@ -55,6 +55,8 @@ jobs:
   # Every unreleased package version is the next legal release (README.md, "Releasing").
   version-rule:
     uses: ./.github/workflows/version-rule.yml
+    with:
+      veda-ref: claude/version-rule
     permissions:
       contents: read
       actions: read

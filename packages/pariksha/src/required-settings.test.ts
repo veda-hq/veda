@@ -121,23 +121,44 @@ describe('formatFindings', () => {
 describe('baselines/claude-settings.json', () => {
   const baseline = parseRequirements(readFileSync(BASELINE, 'utf8'));
 
+  const allow = [
+    'Edit(./**)', 'Write(./**)', 'NotebookEdit(./**)',
+    'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git show:*)', 'Bash(git branch:*)', 'Bash(git ls-remote:*)', 'Bash(git worktree list:*)',
+    'Bash(gh pr view:*)', 'Bash(gh pr list:*)', 'Bash(gh pr checks:*)', 'Bash(gh pr comment:*)', 'Bash(gh run view:*)', 'Bash(gh run list:*)', 'Bash(gh issue list:*)',
+    'Bash(git push -u origin:*)', 'Bash(gh pr create --draft:*)', 'Bash(gh pr ready:*)',
+    'mcp__ccd_pr__bind_pr', 'mcp__ccd_pr__get_status', 'mcp__ccd_pr__set_monitor',
+    'mcp__Claude_Browser__get_page_text', 'mcp__Claude_Browser__tabs_context', 'mcp__claude-code-remote__send_message',
+  ];
+  const deny = ['Bash(*--no-verify*)'];
+  const ask = [
+    'Bash(*git push*--force*)', 'Bash(*git push* -f*)', 'Bash(*git push*--for*)', 'Bash(*git push*--mi*)',
+    'Bash(*git push*--de*)', 'Bash(*git push*--pru*)', 'Bash(*git push* -d *)', 'Bash(*git push* +*)', 'Bash(*git push* :*)',
+    'Bash(*git branch* -D*)',
+    'Bash(pnpm add:*)', 'Bash(pnpm remove:*)', 'Bash(pnpm update:*)',
+    'Bash(npm install:*)', 'Bash(npm uninstall:*)', 'Bash(npm update:*)', 'Bash(yarn add:*)', 'Bash(yarn remove:*)',
+  ];
+
   it('holds the permission baseline every agent repository keeps', () => {
     assert.deepEqual(
       baseline.map((r) => [r.key, r.kind, r.expected]),
       [
-        ['permissions.allow', 'includes', ['mcp__ccd_pr__set_monitor']],
-        ['permissions.deny', 'includes', ['Bash(*--no-verify*)']],
-        ['permissions.ask', 'includes', ['Bash(*git push*--force*)', 'Bash(*git push* -f*)']],
+        ['permissions.allow', 'includes', allow],
+        ['permissions.deny', 'includes', deny],
+        ['permissions.ask', 'includes', ask],
       ],
     );
   });
 
   it('refuses settings with any baseline entry removed', () => {
-    const full = { permissions: { allow: ['mcp__ccd_pr__set_monitor'], deny: ['Bash(*--no-verify*)'], ask: ['Bash(*git push*--force*)', 'Bash(*git push* -f*)'] } };
+    const full = { permissions: { allow, deny, ask } };
     assert.deepEqual(findMissing(JSON.stringify(full), baseline), []);
     for (const list of ['allow', 'deny', 'ask'] as const) {
-      const planted = { permissions: { ...full.permissions, [list]: [] } };
-      assert.equal(findMissing(JSON.stringify(planted), baseline)[0]?.key, `permissions.${list}`);
+      const emptied = { permissions: { ...full.permissions, [list]: [] } };
+      assert.equal(findMissing(JSON.stringify(emptied), baseline)[0]?.key, `permissions.${list}`);
+      full.permissions[list].forEach((rule, at) => {
+        const dropped = { permissions: { ...full.permissions, [list]: full.permissions[list].filter((_, i) => i !== at) } };
+        assert.equal(findMissing(JSON.stringify(dropped), baseline)[0]?.key, `permissions.${list}`, `${rule} dropped`);
+      });
     }
   });
 });

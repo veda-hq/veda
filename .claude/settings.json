@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "case \"${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-}\" in ''|0|false|FALSE) exit 0 ;; esac; echo 'CLAUDE_CODE_DISABLE_ADVISOR_TOOL is set, and work in veda runs with the advisor on. Unset it and start a new session; until then every edit and command is refused.'"
+            "command": "v=$(printf '%s' \"${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-}\" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'); case \"$v\" in ''|0|false) exit 0 ;; esac; echo 'CLAUDE_CODE_DISABLE_ADVISOR_TOOL is set, and work in veda runs with the advisor on. Unset it and start a new session; until then every edit and command is refused.'"
           }
         ]
       }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "case \"${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-}\" in ''|0|false|FALSE) exit 0 ;; esac; echo 'BLOCKED: CLAUDE_CODE_DISABLE_ADVISOR_TOOL is set, and work in veda runs with the advisor on. Unset it and start a new session.' >&2; exit 2"
+            "command": "v=$(printf '%s' \"${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-}\" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'); case \"$v\" in ''|0|false) exit 0 ;; esac; echo 'BLOCKED: CLAUDE_CODE_DISABLE_ADVISOR_TOOL is set, and work in veda runs with the advisor on. Unset it and start a new session.' >&2; exit 2"
           }
         ]
       }

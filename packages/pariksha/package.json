@@ -1,8 +1,8 @@
 {
   "name": "@veda-hq/pariksha",
-  "version": "0.5.3",
-  "description": "Repository checks: doc drift, rule enforcement, test-quality ratchets. Checks: authority-citations, boundary, coverage-by-type, coverage-exemptions, doc-budgets, env-gate-switches, export-deletions.",
-  "keywords": ["repository checks", "lint", "boundary", "ci", "coding agents"],
+  "version": "0.5.5",
+  "description": "Repository checks: doc drift, rule enforcement, test-quality ratchets. Checks: authority-citations, boundary, coverage-by-type, coverage-exemptions, doc-budgets, env-gate-switches, export-deletions. Also markdownlint rules for Markdown that renders mangled: @veda-hq/pariksha/markdownlint.",
+  "keywords": ["repository checks", "lint", "boundary", "ci", "coding agents", "markdownlint"],
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -21,6 +21,11 @@
   "bin": {
     "pariksha": "dist/cli.js"
   },
+  "exports": {
+    "./markdownlint": "./dist/markdownlint-rules.js",
+    "./dist/*": "./dist/*",
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist"
   ],
@@ -28,7 +33,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts src/**/*.test.ts",
-    "smoke": "node dist/cli.js --version && node dist/cli.js boundary --root ../..",
+    "smoke": "node dist/cli.js --version && node dist/cli.js boundary --root ../.. && node --input-type=module -e \"import { createRequire } from 'node:module'; import { pathToFileURL } from 'node:url'; const id = '@veda-hq/pariksha/markdownlint'; const req = createRequire(process.cwd() + '/'); const required = req(id); const imported = (await import(pathToFileURL(req.resolve(id, { paths: [process.cwd()] })).href)).default; if (!Array.isArray(required) || required !== imported || required.length !== 12) throw new Error(id + ' does not load as markdownlint-cli2 loads it');\"",
     "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
   },
   "peerDependencies": {

@@ -21,11 +21,14 @@ import {
   isCollected,
   isRecord,
   list,
+  minNoteLength,
+  note,
   object,
   onlyKeys,
   optionalText,
   parseBaseline as parseLists,
   parseExamples,
+  parseFindingIds,
   parseJson,
   path,
   paths,
@@ -37,7 +40,10 @@ import {
   text,
   type Baseline,
   type Examples,
+  type FindingIds,
 } from './registry-ratchet.ts';
+import { moduleExports } from './module-exports.ts';
+import type { Ts } from './typescript.ts';
 
 export interface Group {
   /** Tracked folders (or files) the group's discovery reads. */
@@ -77,8 +83,14 @@ export interface Config {
   };
   readonly consumers: readonly Consumer[];
   readonly exempt: ReadonlyArray<{ readonly source: string; readonly reason: string }>;
+  /** The discovery groups an exempt source must be found in. */
+  readonly exemptIn: readonly string[];
+  /** The fewest characters, trimmed, an exemption reason or `uncovered` note may have. */
+  readonly minNoteLength: number;
   readonly examples: Examples | undefined;
-  readonly findingId: RegExp | undefined;
+  readonly findingIds: FindingIds;
+  /** The checks the config opted out of with `null`, as the run prints them. */
+  readonly skipped: readonly string[];
 }
 
 const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
@@ -87,7 +99,7 @@ const LIST_NAME = /^[A-Za-z_][\w-]*$/;
 /** The config a JSON text names; throws naming the first bad key. */
 export const parseConfig = (source: string): Config => {
   const raw = parseJson(source);
-  onlyKeys(raw, ['baseline', 'discover', 'collected', 'harness', 'consumers', 'exempt', 'examples', 'findingId'], '');
+  onlyKeys(raw, ['baseline', 'discover', 'collected', 'harness', 'consumers', 'exempt', 'exemptIn', 'minNoteLength', 'examples', 'findingIds'], '');
   const groupsRaw = object(raw, 'discover', '');
   const discover: Record<string, Group> = {};
   for (const [name, group] of Object.entries(groupsRaw)) {
@@ -118,6 +130,8 @@ export const parseConfig = (source: string): Config => {
   const heldBy = text(harnessRaw, 'heldBy', 'harness: ');
   if (!IDENTIFIER.test(heldBy)) throw new Error('harness: "heldBy" must be a function name');
   const harness = { module: path(harnessRaw, 'module', 'harness: '), imports, checks, heldBy };
+  const skipped: string[] = [];
+  const min = minNoteLength(raw);
   const consumers = records(list(raw, 'consumers', ''), 'consumers').map(({ raw: e, where }): Consumer => {
     onlyKeys(e, ['source', 'unit', 'checks', 'test', 'motivatedBy', 'uncovered'], where);
     const declared = e['checks'];
@@ -130,29 +144,39 @@ export const parseConfig = (source: string): Config => {
       checks: declared as string[],
       test: path(e, 'test', where),
       motivatedBy: optionalText(e, 'motivatedBy', where),
-      uncovered: optionalText(e, 'uncovered', where),
+      uncovered: note(e, 'uncovered', where, min, false),
     };
+  });
+  const exemptInRaw = raw['exemptIn'];
+  if (!Array.isArray(exemptInRaw) || exemptInRaw.length === 0) throw new Error('"exemptIn" must name the discovery groups an exemption may sit in');
+  const exemptIn = exemptInRaw.map((g, i) => {
+    if (typeof g !== 'string' || discover[g] === undefined) throw new Error(`exemptIn[${i}]: ${JSON.stringify(g)} is not a group in "discover"`);
+    return g;
   });
   const exempt = records(list(raw, 'exempt', ''), 'exempt').map(({ raw: e, where }) => {
     onlyKeys(e, ['source', 'reason'], where);
-    return { source: path(e, 'source', where), reason: reason(e, where) };
+    return { source: path(e, 'source', where), reason: reason(e, where, min) };
   });
   const sources = [...consumers.map((c) => c.source), ...exempt.map((e) => e.source)];
   const twice = sources.find((s, i) => sources.indexOf(s) !== i);
   if (twice !== undefined) throw new Error(`"${twice}" is registered or exempt more than once`);
-  const examples = parseExamples(raw);
+  const examples = parseExamples(raw, skipped);
   const unchecked = Object.keys(examples?.fixtures ?? {}).find((id) => checks[id] === undefined);
   if (unchecked !== undefined) throw new Error(`examples.fixtures.${unchecked}: not a check in harness.checks`);
-  const findingId = raw['findingId'] === undefined ? undefined : regex(raw['findingId'], '"findingId"');
-  checkFindingIds(findingId, [
-    ...consumers.map((c) => [`consumers ${c.source}: motivatedBy`, c.motivatedBy] as const),
-    ...Object.entries(examples?.fixtures ?? {}).map(([id, f]) => [`examples.fixtures.${id}: example`, f.example] as const),
-  ]);
-  return { baseline: path(raw, 'baseline', ''), discover, collected: regexes(raw, 'collected', ''), harness, consumers, exempt, examples, findingId };
+  const findingIds = parseFindingIds(raw, skipped);
+  checkFindingIds(
+    findingIds.motivatedBy,
+    consumers.map((c) => [`consumers ${c.source}: motivatedBy`, c.motivatedBy] as const),
+  );
+  checkFindingIds(
+    findingIds.example,
+    Object.entries(examples?.fixtures ?? {}).map(([id, f]) => [`examples.fixtures.${id}: example`, f.example] as const),
+  );
+  return { baseline: path(raw, 'baseline', ''), discover, collected: regexes(raw, 'collected', ''), harness, consumers, exempt, exemptIn, minNoteLength: min, examples, findingIds, skipped };
 };
 
-/** The baseline a JSON text holds: one list of paths per discovery group. */
-export const parseBaseline = (source: string, where: string, config: Pick<Config, 'discover'>): Baseline => parseLists(source, Object.keys(config.discover), where, 'paths');
+/** The baseline a JSON text holds: one list of paths per discovery group (at the merge base, read against today's groups). */
+export const parseBaseline = (source: string, where: string, config: Pick<Config, 'discover'>, atBase = false): Baseline => parseLists(source, Object.keys(config.discover), where, 'paths', atBase);
 
 // ── discovery ───────────────────────────────────────────────────────────────
 
@@ -178,12 +202,25 @@ export const leadName = (unit: string): string => /^[A-Za-z_$][\w$]*/.exec(unit)
 
 const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** Findings about the harness module: it exists and exports every function the config names. */
-export const checkHarness = (root: string, config: Config): string[] => {
+/**
+ * Findings about the harness module: it exists and exports, as a function,
+ * every function the config names. Its syntax tree is read, re-exports
+ * followed, so a type of that name, a constant holding no function, or a
+ * re-export that leads nowhere does not count.
+ */
+export const checkHarness = (ts: Ts, root: string, config: Config): string[] => {
   const { module, checks, heldBy } = config.harness;
-  const body = readText(root, module);
-  if (body === undefined) return [`harness: ${module} does not exist`];
-  return [...new Set([...Object.values(checks), heldBy])].filter((fn) => !new RegExp(String.raw`\bexport\b[^;]*?\b${escape(fn)}\b`).test(body)).map((fn) => `harness: ${module} does not export ${fn}`);
+  if (readText(root, module) === undefined) return [`harness: ${module} does not exist`];
+  const { exports, unfollowed } = moduleExports(ts, root, module);
+  const why = unfollowed.length === 0 ? '' : ` (not followed: ${unfollowed.join(', ')})`;
+  const out: string[] = [];
+  for (const fn of new Set([...Object.values(checks), heldBy])) {
+    const kind = exports.get(fn);
+    if (kind === undefined) out.push(`harness: ${module} does not export ${fn}${why}`);
+    else if (kind === 'unresolved') out.push(`harness: ${module} exports ${fn}, but it resolves to no declaration${why}`);
+    else if (kind !== 'function') out.push(`harness: ${module} exports ${fn} as a ${kind}, not a function`);
+  }
+  return out;
 };
 
 /** Findings about the registered consumers: each suite runs every declared check through the harness. */
@@ -216,30 +253,31 @@ export const checkConsumers = (root: string, config: Config): string[] => {
 };
 
 /** Every finding: harness, consumers, examples, accounting against the baseline, and growth. */
-export const findings = (root: string, config: Config, found: Baseline, baseline: Baseline, grown: readonly string[]): string[] => {
+export const findings = (ts: Ts, root: string, config: Config, found: Baseline, baseline: Baseline, grown: readonly string[]): string[] => {
   const { unaccounted, stale } = audit(expectedBaseline(found, config), baseline);
-  const discovered = new Set(Object.values(found).flat());
+  const exemptable = new Set(config.exemptIn.flatMap((g) => found[g] ?? []));
   const callsCheck = (id: string, body: string): string[] => {
     const fn = config.harness.checks[id] ?? '';
     return body.includes(`${fn}(`) ? [] : [`the ${id} example suite never calls ${fn}(`];
   };
   return [
-    ...checkHarness(root, config),
+    ...checkHarness(ts, root, config),
     ...checkConsumers(root, config),
     ...(config.examples === undefined ? [] : checkExamples(root, config.examples, config.collected, callsCheck)),
-    ...config.exempt.filter((e) => !discovered.has(e.source)).map((e) => `${e.source}: exempt, but discovery does not find it; drop the exemption`),
+    ...config.exempt.filter((e) => !exemptable.has(e.source)).map((e) => `${e.source}: exempt, but discovery does not find it in ${config.exemptIn.join(' or ')}; drop the exemption`),
     ...unaccounted.map((s) => `${s}: discovered and unaccounted; register it with a fault-injection suite, or exempt it with a reason`),
     ...stale.map((s) => `${s}: in ${config.baseline}, but registered, exempt, renamed or gone; remove it from the baseline`),
     ...grown.map((s) => `${s}: added to ${config.baseline} since the merge base; the baseline only shrinks, so register a suite instead`),
   ];
 };
 
-export const formatFindings = (list: readonly string[], found: Baseline, baseline: Baseline): { ok: boolean; out: string[]; err: string[] } =>
+export const formatFindings = (list: readonly string[], found: Baseline, baseline: Baseline, notChecked: readonly string[], compared: boolean): { ok: boolean; out: string[]; err: string[] } =>
   formatOutcome(
     'pariksha fault-injection-registry:',
     list,
     `${Object.entries(found)
       .map(([name, s]) => `${s.length} ${name}`)
-      .join(' and ')} source(s) discovered, each registered, exempt or among the ${Object.values(baseline).flat().length} baselined; the baseline does not grow`,
+      .join(' and ')} source(s) discovered, each registered, exempt or among the ${Object.values(baseline).flat().length} baselined${compared ? '; the baseline does not grow' : ''}`,
     'Register a fault-injection suite for a discovered source, or exempt it with a reason; the baseline only shrinks.',
+    notChecked,
   );

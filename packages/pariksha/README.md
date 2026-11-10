@@ -65,7 +65,7 @@ the repository's deny list.
 ## `codec-registry`
 
 ```sh
-pariksha codec-registry --config <file> [--base <ref>] [--root <dir>]
+pariksha codec-registry --config <file> [--base <ref> | --no-base] [--root <dir>]
 ```
 
 A module that parses markdown with its own regexes passes every example its
@@ -101,28 +101,37 @@ the baseline lists exactly what is still unregistered. The JSON `--config`
   "surfaces": ["scripts/**/*.{differential,roundtrip}.properties.test.ts"],
   "library": "fast-check",
   "markers": { "seed": "seed: SEED", "lineEndings": "LINE_ENDINGS", "golden": "assertGolden" },
-  "handParsers": [{ "source": "scripts/doc.ts", "formats": ["markdown"], "suite": "scripts/doc.differential.properties.test.ts", "outOfModel": "lists and block quotes" }],
+  "handParsers": [{ "source": "scripts/doc.ts", "formats": ["markdown"], "suite": "scripts/doc.differential.properties.test.ts", "outOfModel": "lists and block quotes", "motivatedBy": "M1234567890" }],
   "pairs": [{ "id": "scripts/rows.ts#writeRow->readRow", "kind": "round-trip", "suite": "scripts/rows.roundtrip.properties.test.ts" }],
   "exempt": [{ "id": "scripts/main.ts#csv", "reason": "a comma list in an env var, not CSV" }],
-  "examples": { "catalogue": "checks.json", "slice": "C-20", "fixtures": { "EDGE-12": { "example": "V3586514538", "test": "scripts/edge-12.examples.test.ts" } } },
-  "findingId": "^[MV]\\d{10}$"
+  "minNoteLength": 1,
+  "examples": { "catalogue": { "path": "checks.json", "slice": "C-20" }, "fixtures": { "EDGE-12": { "example": "V3586514538", "test": "scripts/edge-12.examples.test.ts" } } },
+  "findingIds": { "motivatedBy": "^M\\d{10}$", "example": "^[MV]\\d{10}$" }
 }
 ```
 
 - A hand-parser suite sits where a `collected` pattern matches it and on a
-  `surfaces` glob (none named: anywhere), imports its module by a relative
-  specifier that resolves to it, imports `library` (default `fast-check`),
-  names each format's oracle module, holds the `seed` marker, and holds the
-  `lineEndings` marker unless `lfOnly` says why the suite runs LF only.
-  `outOfModel` (what the generators leave out) is required.
+  `surfaces` glob, imports its module by a relative specifier that resolves
+  to it, imports `library` (default `fast-check`), names each format's oracle
+  module, holds the `seed` marker, and holds the `lineEndings` marker unless
+  `lfOnly` says why the suite runs LF only. `outOfModel` (what the generators
+  leave out) is required.
 - A `round-trip` pair suite does the same less the oracle and line endings; a
   `golden` one needs only its module and the `golden` marker.
-- `examples` (optional) holds a fixture per check: its suite exists, is
-  collected and names the finding id; with `catalogue` and `slice`, the
-  fixtures cover exactly the catalogue's checks for that slice (a JSON
-  `{ "checks": [{ "id", "slice", "example" }] }`, each example opening with
-  `<finding id>:`). `findingId` (optional) holds every `motivatedBy` and
-  example id to a pattern.
+- `minNoteLength` is the fewest characters (trimmed) an exemption `reason`,
+  an `outOfModel` or an `lfOnly` may have, so `"reason": "x"` is not a reason.
+- `examples` holds a fixture per check: its suite exists, is collected and
+  names the finding id; with a `catalogue`, the fixtures cover exactly that
+  JSON's checks for its `slice` (`{ "checks": [{ "id", "slice", "example" }]
+  }`, each example opening with `<finding id>:`), and `"catalogue": null`
+  checks the fixtures alone.
+- `findingIds.motivatedBy` holds every `motivatedBy`, and `findingIds.example`
+  every example fixture's id, to its own pattern.
+- `surfaces`, `examples`, `findingIds` and each pattern in it are required, so
+  a forgotten key never drops a check silently. `null` opts a check out, and
+  the run prints it on its own line: `not checked: surfaces, examples`.
+- Messages name the kind (`hand parser scripts/doc.ts: …`, `pair
+  scripts/rows.ts#writeRow->readRow: …`), never a repository's check ids.
 
 Refused (exit 1): a discovered id that is unaccounted; a registered or exempt
 id discovery does not find; a suite that is missing, uncollected, off the
@@ -132,12 +141,25 @@ not have, unless its file only moved (git's rename detection over the
 working tree). Without `--base`, the base is the first of `origin/main`,
 `origin/develop`, `origin/master` and `main` that exists.
 
-Exit 2, since nothing was checked: a config with an unknown or bad key, an
-exemption or `lfOnly` without a reason, an id registered twice; a baseline
-(here or at the merge base) that is missing, not `{ "handParsers": [ids],
-"pairs": [ids] }`, or holds another list; a root holding no tracked file, or
-discovery finding nothing; no base; a git call that fails. Needs
-`typescript`, as `coverage-by-type` does.
+Growth is read against the merge base, so growth committed on the branch is
+refused like growth in the working tree. The merge base's baseline is read
+against today's lists: a list it lacks is empty (an entry in it today is
+growth) and a list no longer named is ignored. Where the merge base has no
+file at `baseline`, the baseline is being introduced and nothing has grown;
+so pointing `baseline` at a new path also compares no growth for that run.
+`--base HEAD` compares the tree with HEAD alone: committed growth passes and
+only uncommitted growth is refused. `--no-base` compares no growth and needs
+no base; the run prints `not checked: baseline growth (--no-base)`. `--base`
+with `--no-base`, and an empty `--base ""`, are usage errors.
+
+Exit 2, since nothing was checked: a config with an unknown, missing or bad
+key, an exemption, `outOfModel` or `lfOnly` shorter than `minNoteLength`, an
+id registered twice; a baseline that is missing or not `{ "handParsers":
+[ids], "pairs": [ids] }` with no other list; a merge-base baseline whose
+lists are malformed; a root holding no tracked file; discovery finding no
+hand parser, or no pair, since a kind found nowhere is checked nowhere; no
+base without `--no-base`; a git call that fails. Needs `typescript`, as
+`coverage-by-type` does.
 
 ## `coverage-by-type`
 
@@ -332,7 +354,7 @@ so it is not a pass.
 ## `fault-injection-registry`
 
 ```sh
-pariksha fault-injection-registry --config <file> [--base <ref>] [--root <dir>]
+pariksha fault-injection-registry --config <file> [--base <ref> | --no-base] [--root <dir>]
 ```
 
 A CLI whose ledger write fails after it published a plan, or a service whose
@@ -361,30 +383,46 @@ still unregistered. The JSON `--config` (relative to the root):
     "checks": { "ERR-09": "checkExitContract", "ERR-10": "checkContainment", "STATE-11": "checkRerunConvergence" },
     "heldBy": "assertNoViolations"
   },
-  "consumers": [{ "source": "scripts/publish.ts", "unit": "main", "checks": ["ERR-09", "STATE-11"], "test": "scripts/publish.faults.test.ts", "uncovered": "the entry block" }],
+  "consumers": [{ "source": "scripts/publish.ts", "unit": "main", "checks": ["ERR-09", "STATE-11"], "test": "scripts/publish.faults.test.ts", "uncovered": "the entry block, which only parses flags", "motivatedBy": "M3933356096" }],
   "exempt": [{ "source": "scripts/report.ts", "reason": "writes no file and holds no state" }],
-  "examples": { "catalogue": "checks.json", "slice": "C-18", "fixtures": { "ERR-09": { "example": "M3933356096", "test": "packages/test-utils/src/fault-injection/err-09.examples.test.ts" } } },
-  "findingId": "^[MV]\\d{10}$"
+  "exemptIn": ["cli"],
+  "minNoteLength": 21,
+  "examples": { "catalogue": { "path": "checks.json", "slice": "C-18" }, "fixtures": { "ERR-09": { "example": "M3933356096", "test": "packages/test-utils/src/fault-injection/err-09.examples.test.ts" } } },
+  "findingIds": { "motivatedBy": "^[MV]\\d{10}$", "example": "^[MV]\\d{10}$" }
 }
 ```
 
-- The harness module exists and exports (by its text: an `export` statement
-  naming it) each `checks` function and `heldBy`; it is never imported.
+- The harness module exists and exports each `checks` function and `heldBy`
+  as a function. Its exports are read with TypeScript: `export { … } from`,
+  `export *` and a local name bound by an import are followed through
+  relative specifiers to the declaration, which must be a function (a
+  declaration, or a constant holding an arrow or function expression), not a
+  type or another value. A package specifier is not followed, and a name it
+  would have to supply is refused, naming what was not followed. The harness
+  is never imported or run.
 - A consumer's suite exists where a `collected` pattern matches it, imports
   the harness (a relative specifier resolving to `module` or its folder, or
   one of `imports`) and the consumer's source, calls each declared check's
   function and `heldBy`, and the name `unit` opens with appears in the source.
-- `examples` works as in `codec-registry`, and each fixture suite also calls
-  its check's function.
+- `exemptIn` names the groups an exemption may sit in: an exempt source must
+  be discovered in one of them, so a source only another group finds (here a
+  best-effort server step) cannot be exempted away.
+- `minNoteLength` is the fewest characters (trimmed) an exemption `reason`
+  or an `uncovered` may have.
+- `examples`, `findingIds`, the opt-out with `null` and the `not checked`
+  line work as in `codec-registry`, and each fixture suite also calls its
+  check's function.
 
 Refused (exit 1): a discovered source that is unaccounted; an exemption
-discovery does not find; a harness or consumer suite missing any part above;
-a stale baseline entry; and growth against the merge base, as in
-`codec-registry` (same `--base`). Exit 2: a bad config (an unknown key, a
-check not in `checks`, an exemption without a reason, a source registered
-twice), a missing or malformed baseline, a root holding no tracked file, a
-group discovering nothing, no base, or a failed git call. Needs no
-TypeScript.
+discovery does not find in an `exemptIn` group; a harness or consumer suite
+missing any part above; a stale baseline entry; and growth against the merge
+base, read as in `codec-registry` (the same `--base`, `--base HEAD`,
+`--no-base`, first introduction and merge-base lists). Exit 2: a bad config
+(an unknown, missing or bad key, a check not in `checks`, an `exemptIn`
+group `discover` lacks, a reason or `uncovered` shorter than
+`minNoteLength`, a source registered twice), a missing or malformed
+baseline, a root holding no tracked file, a group discovering nothing, no
+base without `--no-base`, a failed git call, or no `typescript`.
 
 ## `required-settings`
 

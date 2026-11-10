@@ -22,23 +22,27 @@ import {
   isCollected,
   isFile,
   list,
+  minNoteLength,
   namesModule,
+  note,
   object,
   onlyKeys,
   optionalText,
   parseBaseline as parseLists,
   parseExamples,
+  parseFindingIds,
   parseJson,
   path,
   paths,
   readText,
   reason,
   records,
-  regex,
   regexes,
+  required,
   text,
   type Baseline,
   type Examples,
+  type FindingIds,
 } from './registry-ratchet.ts';
 import type { Ts } from './typescript.ts';
 
@@ -72,8 +76,8 @@ export interface Config {
   readonly oracles: Readonly<Partial<Record<Format, string>>>;
   /** Paths a test runner collects, as regexes. */
   readonly collected: readonly RegExp[];
-  /** Globs a property suite must sit on (where the property library may be imported); none means anywhere. */
-  readonly surfaces: readonly string[];
+  /** Globs a property suite must sit on (where the property library may be imported); undefined when opted out (`null`). */
+  readonly surfaces: readonly string[] | undefined;
   /** The property library a differential or round-trip suite imports. */
   readonly library: string;
   /** Text a suite must hold: a fixed seed; both line endings; a golden's assertion. */
@@ -81,8 +85,12 @@ export interface Config {
   readonly handParsers: readonly HandParser[];
   readonly pairs: readonly CodecPair[];
   readonly exempt: ReadonlyArray<{ readonly id: string; readonly reason: string }>;
+  /** The fewest characters, trimmed, an exemption reason, `outOfModel` or `lfOnly` may have. */
+  readonly minNoteLength: number;
   readonly examples: Examples | undefined;
-  readonly findingId: RegExp | undefined;
+  readonly findingIds: FindingIds;
+  /** The checks the config opted out of with `null`, as the run prints them. */
+  readonly skipped: readonly string[];
 }
 
 const PAIR_ID = /^[^#]+#(?:[A-Za-z_$][\w$]*->[A-Za-z_$][\w$]*|digest)$/;
@@ -92,7 +100,9 @@ const isFormat = (f: unknown): f is Format => typeof f === 'string' && (FORMATS 
 /** The config a JSON text names; throws naming the first bad key. */
 export const parseConfig = (source: string): Config => {
   const raw = parseJson(source);
-  onlyKeys(raw, ['baseline', 'roots', 'oracles', 'collected', 'surfaces', 'library', 'markers', 'handParsers', 'pairs', 'exempt', 'examples', 'findingId'], '');
+  onlyKeys(raw, ['baseline', 'roots', 'oracles', 'collected', 'surfaces', 'library', 'markers', 'handParsers', 'pairs', 'exempt', 'minNoteLength', 'examples', 'findingIds'], '');
+  const skipped: string[] = [];
+  const min = minNoteLength(raw);
   const oraclesRaw = object(raw, 'oracles', '');
   const oracles: Partial<Record<Format, string>> = {};
   for (const [format, module] of Object.entries(oraclesRaw)) {
@@ -101,9 +111,13 @@ export const parseConfig = (source: string): Config => {
     oracles[format] = module;
   }
   if (Object.keys(oracles).length === 0) throw new Error('"oracles" is empty, so no format would be discovered');
-  const surfaces = list(raw, 'surfaces', '').map((g, i) => {
-    if (typeof g !== 'string' || g === '') throw new Error(`surfaces[${i}] must be a non-empty glob`);
-    return g;
+  const surfaces = required(raw, 'surfaces', '', skipped, () => {
+    const globs = list(raw, 'surfaces', '');
+    if (globs.length === 0) throw new Error('"surfaces" is empty; name the globs a property suite must sit on, or null to check no surface');
+    return globs.map((g, i) => {
+      if (typeof g !== 'string' || g === '') throw new Error(`surfaces[${i}] must be a non-empty glob`);
+      return g;
+    });
   });
   const markersRaw = object(raw, 'markers', '');
   onlyKeys(markersRaw, ['seed', 'lineEndings', 'golden'], 'markers: ');
@@ -114,7 +128,14 @@ export const parseConfig = (source: string): Config => {
     if (!Array.isArray(formats) || formats.length === 0 || !formats.every(isFormat)) throw new Error(`${where}"formats" must be a non-empty list of ${FORMATS.join(', ')}`);
     const unheld = formats.find((f) => oracles[f] === undefined);
     if (unheld !== undefined) throw new Error(`${where}"${unheld}" has no entry in "oracles", so its suite has no reference to import`);
-    return { source: path(e, 'source', where), formats, suite: path(e, 'suite', where), outOfModel: text(e, 'outOfModel', where), lfOnly: optionalText(e, 'lfOnly', where), motivatedBy: optionalText(e, 'motivatedBy', where) };
+    return {
+      source: path(e, 'source', where),
+      formats,
+      suite: path(e, 'suite', where),
+      outOfModel: note(e, 'outOfModel', where, min, true) ?? '',
+      lfOnly: note(e, 'lfOnly', where, min, false),
+      motivatedBy: optionalText(e, 'motivatedBy', where),
+    };
   });
   const pairs = records(list(raw, 'pairs', ''), 'pairs').map(({ raw: e, where }): CodecPair => {
     onlyKeys(e, ['id', 'kind', 'suite', 'motivatedBy'], where);
@@ -128,18 +149,21 @@ export const parseConfig = (source: string): Config => {
     onlyKeys(e, ['id', 'reason'], where);
     const id = text(e, 'id', where);
     if (!id.includes('#')) throw new Error(`${where}"${id}" is not path#format or a pair id`);
-    return { id, reason: reason(e, where) };
+    return { id, reason: reason(e, where, min) };
   });
   const ids = [...handParsers.flatMap((h) => h.formats.map((f) => `${h.source}#${f}`)), ...pairs.map((p) => p.id), ...exempt.map((e) => e.id)];
   const twice = ids.find((id, i) => ids.indexOf(id) !== i);
   if (twice !== undefined) throw new Error(`"${twice}" is registered or exempt more than once`);
-  const findingId = raw['findingId'] === undefined ? undefined : regex(raw['findingId'], '"findingId"');
-  const examples = parseExamples(raw);
-  checkFindingIds(findingId, [
+  const examples = parseExamples(raw, skipped);
+  const findingIds = parseFindingIds(raw, skipped);
+  checkFindingIds(findingIds.motivatedBy, [
     ...handParsers.map((h) => [`handParsers ${h.source}: motivatedBy`, h.motivatedBy] as const),
     ...pairs.map((p) => [`pairs ${p.id}: motivatedBy`, p.motivatedBy] as const),
-    ...Object.entries(examples?.fixtures ?? {}).map(([id, f]) => [`examples.fixtures.${id}: example`, f.example] as const),
   ]);
+  checkFindingIds(
+    findingIds.example,
+    Object.entries(examples?.fixtures ?? {}).map(([id, f]) => [`examples.fixtures.${id}: example`, f.example] as const),
+  );
   return {
     baseline: path(raw, 'baseline', ''),
     roots: paths(raw, 'roots', ''),
@@ -151,15 +175,17 @@ export const parseConfig = (source: string): Config => {
     handParsers,
     pairs,
     exempt,
+    minNoteLength: min,
     examples,
-    findingId,
+    findingIds,
+    skipped,
   };
 };
 
 export const LISTS = ['handParsers', 'pairs'] as const;
 
-/** The baseline a JSON text holds: `handParsers` and `pairs`, lists of ids. */
-export const parseBaseline = (source: string, where: string): Baseline => parseLists(source, LISTS, where, 'ids');
+/** The baseline a JSON text holds: `handParsers` and `pairs`, lists of ids (at the merge base, a missing list is empty). */
+export const parseBaseline = (source: string, where: string, atBase = false): Baseline => parseLists(source, LISTS, where, 'ids', atBase);
 
 // ── discovery ───────────────────────────────────────────────────────────────
 
@@ -315,7 +341,8 @@ export const expectedBaseline = (found: Discovery, cover: ReadonlySet<string>): 
 /** Findings about the registered suites: each exists where a runner collects it and holds what its kind needs. */
 export const checkWiring = (root: string, config: Config): string[] => {
   const out: string[] = [];
-  const onSurface = (suite: string): boolean => config.surfaces.length === 0 || config.surfaces.some((g) => matchesGlob(suite, g));
+  const surfaces = config.surfaces ?? [];
+  const onSurface = (suite: string): boolean => config.surfaces === undefined || surfaces.some((g) => matchesGlob(suite, g));
   const common = (what: string, source: string, suite: string): string | undefined => {
     if (!isFile(root, source)) out.push(`${what}: ${source} does not exist`);
     if (!isCollected(config.collected, suite)) out.push(`${what}: no runner collects ${suite}`);
@@ -328,8 +355,8 @@ export const checkWiring = (root: string, config: Config): string[] => {
     return body;
   };
   for (const entry of config.handParsers) {
-    const what = `EDGE-12 ${entry.source}`;
-    if (!onSurface(entry.suite)) out.push(`${what}: ${entry.suite} is not on a property-suite surface (${config.surfaces.join(', ')})`);
+    const what = `hand parser ${entry.source}`;
+    if (!onSurface(entry.suite)) out.push(`${what}: ${entry.suite} is not on a property-suite surface (${surfaces.join(', ')})`);
     const body = common(what, entry.source, entry.suite);
     if (body === undefined) continue;
     if (!importsPackage(body, config.library)) out.push(`${what}: ${entry.suite} does not import ${config.library}`);
@@ -341,9 +368,9 @@ export const checkWiring = (root: string, config: Config): string[] => {
     if (entry.lfOnly === undefined && !body.includes(config.markers.lineEndings)) out.push(`${what}: ${entry.suite} runs LF only; run CRLF too (${config.markers.lineEndings}) or give lfOnly a reason`);
   }
   for (const pair of config.pairs) {
-    const what = `CONTRACT-10 ${pair.id}`;
+    const what = `pair ${pair.id}`;
     const source = pair.id.slice(0, pair.id.indexOf('#'));
-    if (pair.kind === 'round-trip' && !onSurface(pair.suite)) out.push(`${what}: ${pair.suite} is not on a property-suite surface (${config.surfaces.join(', ')})`);
+    if (pair.kind === 'round-trip' && !onSurface(pair.suite)) out.push(`${what}: ${pair.suite} is not on a property-suite surface (${surfaces.join(', ')})`);
     const body = common(what, source, pair.suite);
     if (body === undefined) continue;
     if (pair.kind === 'golden') {
@@ -371,10 +398,11 @@ export const findings = (root: string, config: Config, found: Discovery, baselin
   ];
 };
 
-export const formatFindings = (list: readonly string[], found: Discovery, baseline: Baseline): { ok: boolean; out: string[]; err: string[] } =>
+export const formatFindings = (list: readonly string[], found: Discovery, baseline: Baseline, notChecked: readonly string[], compared: boolean): { ok: boolean; out: string[]; err: string[] } =>
   formatOutcome(
     'pariksha codec-registry:',
     list,
-    `${found.handParsers.length} hand parser(s) and ${found.pairs.length} pair(s) discovered, each registered, exempt or among the ${(baseline['handParsers']?.length ?? 0) + (baseline['pairs']?.length ?? 0)} baselined; the baseline does not grow`,
+    `${found.handParsers.length} hand parser(s) and ${found.pairs.length} pair(s) discovered, each registered, exempt or among the ${(baseline['handParsers']?.length ?? 0) + (baseline['pairs']?.length ?? 0)} baselined${compared ? '; the baseline does not grow' : ''}`,
     'Register a suite for a discovered parser or pair, or exempt it with a reason; the baseline only shrinks.',
+    notChecked,
   );

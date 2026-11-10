@@ -34,13 +34,13 @@ export const DENY_FILE = '.veda/deny.sha256';
 const USAGE = [
   'usage: pariksha authority-citations [--mode staged|tree] [--authority <a,b>] [--issue-prefix <A,B>] [--adr-dir <dir>] [--root <dir>]',
   '       pariksha boundary [--root <dir>] [--deny <file>]',
-  '       pariksha codec-registry --config <file> [--base <ref>] [--root <dir>]',
+  '       pariksha codec-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
   '       pariksha coverage-by-type [--config <file>] [--files-from <file>|-] [--root <dir>]',
   '       pariksha coverage-exemptions --config <file> [--package <dir>] [--root <dir>]',
   '       pariksha doc-budgets --table <file> [--section <name>] [--root <dir>]',
   '       pariksha env-gate-switches --config <file> [--mode staged|tree] [--root <dir>]',
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
-  '       pariksha fault-injection-registry --config <file> [--base <ref>] [--root <dir>]',
+  '       pariksha fault-injection-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
   '       pariksha required-settings --require <file> [--settings <file>] [--root <dir>]',
   '       pariksha hash <word>',
   '       pariksha --version',
@@ -64,14 +64,25 @@ export const trackedFiles = (root: string): TrackedFile[] => {
   return files;
 };
 
-/** `--name value` pairs, each name allowed once and from `allowed`; undefined on anything else. */
-export const flags = (rest: readonly string[], allowed: readonly string[]): Map<string, string> | undefined => {
+/**
+ * `--name value` pairs, each name allowed once and from `allowed`, and bare
+ * `switches` (`--no-base`), each once, held as ''; undefined on anything else.
+ * An empty value is refused: `--base ""` names no ref.
+ */
+export const flags = (rest: readonly string[], allowed: readonly string[], switches: readonly string[] = []): Map<string, string> | undefined => {
   const out = new Map<string, string>();
-  for (let i = 0; i < rest.length; i += 2) {
+  for (let i = 0; i < rest.length; ) {
     const name = rest[i];
+    if (name === undefined || out.has(name)) return undefined;
+    if (switches.includes(name)) {
+      out.set(name, '');
+      i += 1;
+      continue;
+    }
     const value = rest[i + 1];
-    if (name === undefined || !allowed.includes(name) || !value || out.has(name)) return undefined;
+    if (!allowed.includes(name) || !value) return undefined;
     out.set(name, value);
+    i += 2;
   }
   return out;
 };
@@ -347,27 +358,29 @@ const envGateSwitches = (f: Map<string, string>, io: Io): number => {
 };
 
 /** What a registry ratchet plugs into the shared run: its config, discovery, findings and verdict. */
-interface Ratchet<C extends { readonly baseline: string }> {
+interface Ratchet<C extends { readonly baseline: string; readonly skipped: readonly string[] }> {
   readonly name: string;
   readonly parse: (source: string) => C;
-  readonly parseBaseline: (source: string, where: string, config: C) => Baseline;
+  /** The baseline a text holds; `atBase` reads the merge base's copy against today's lists. */
+  readonly parseBaseline: (source: string, where: string, config: C, atBase: boolean) => Baseline;
   /** The roots discovery reads, all of them. */
   readonly roots: (config: C) => readonly string[];
   /** What discovery finds among the tracked files under the roots, as baseline-shaped lists. */
   readonly discover: (root: string, files: readonly string[], config: C, ts: () => Ts) => Baseline;
-  /** A message when the discovered lists would make a vacuous pass, else undefined. */
-  readonly vacuous: (found: Baseline, config: C) => string | undefined;
-  readonly findings: (root: string, config: C, found: Baseline, baseline: Baseline, grown: readonly string[]) => string[];
-  readonly format: (list: readonly string[], found: Baseline, baseline: Baseline) => { ok: boolean; out: string[]; err: string[] };
+  /** What one discovered list is, for a vacuity message: its noun and the roots it was read under. */
+  readonly kind: (list: string, config: C) => { readonly noun: string; readonly roots: readonly string[] };
+  readonly findings: (root: string, config: C, found: Baseline, baseline: Baseline, grown: readonly string[], ts: () => Ts) => string[];
+  readonly format: (list: readonly string[], found: Baseline, baseline: Baseline, notChecked: readonly string[], compared: boolean) => { ok: boolean; out: string[]; err: string[] };
 }
 
 /** Thrown when TypeScript cannot be loaded; carries the loader's message. */
 class NoTypescript extends Error {}
 
-const runRatchet = <C extends { readonly baseline: string }>(spec: Ratchet<C>, f: Map<string, string>, io: Io): number => {
+const runRatchet = <C extends { readonly baseline: string; readonly skipped: readonly string[] }>(spec: Ratchet<C>, f: Map<string, string>, io: Io): number => {
   const P = `pariksha ${spec.name}:`;
   const configPath = f.get('--config');
-  if (configPath === undefined) {
+  const noBase = f.has('--no-base');
+  if (configPath === undefined || (noBase && f.has('--base'))) {
     io.err(USAGE);
     return 2;
   }
@@ -380,8 +393,7 @@ const runRatchet = <C extends { readonly baseline: string }>(spec: Ratchet<C>, f
   const git = gitAt(root);
   try {
     const config = spec.parse(readFileSync(resolve(root, configPath), 'utf8'));
-    const parseBaseline = (source: string, where: string): Baseline => spec.parseBaseline(source, where, config);
-    const baseline = readBaseline(root, config.baseline, parseBaseline);
+    const baseline = readBaseline(root, config.baseline, (source, where) => spec.parseBaseline(source, where, config, false));
     const roots = spec.roots(config);
     const files = trackedUnder(git, root, roots);
     const empty = emptyRoots(files, roots);
@@ -392,15 +404,24 @@ const runRatchet = <C extends { readonly baseline: string }>(spec: Ratchet<C>, f
       return loaded;
     };
     const found = spec.discover(root, files, config, ts);
-    const vacuous = spec.vacuous(found, config);
-    if (vacuous !== undefined) throw new Error(vacuous);
-    const asked = f.get('--base');
-    const base = asked === undefined ? resolveBase(git) : resolveBase(git, [asked]);
-    if (base === undefined) {
-      throw new Error(asked === undefined ? `none of ${BASE_CANDIDATES.join(', ')} names a commit, so the baseline cannot be held to its merge base; fetch one or pass --base` : `--base ${asked} names no commit`);
+    // Each kind discovery reads must find something: one finding nothing is a
+    // config (or a discovery) that checks nothing of that kind, never a pass.
+    const none = Object.entries(found).find(([, ids]) => ids.length === 0)?.[0];
+    if (none !== undefined) {
+      const { noun, roots: under } = spec.kind(none, config);
+      throw new Error(`discovery finds no ${noun} under ${under.join(', ')}, so nothing of that kind would be checked`);
     }
-    const grown = growthSince(git, base, config.baseline, baseline, parseBaseline);
-    const result = spec.format(spec.findings(root, config, found, baseline, grown), found, baseline);
+    let grown: string[] = [];
+    if (!noBase) {
+      const asked = f.get('--base');
+      const base = asked === undefined ? resolveBase(git) : resolveBase(git, [asked]);
+      if (base === undefined) {
+        throw new Error(asked === undefined ? `none of ${BASE_CANDIDATES.join(', ')} names a commit, so the baseline cannot be held to its merge base; fetch one, pass --base, or pass --no-base` : `--base ${asked} names no commit`);
+      }
+      grown = growthSince(git, base, config.baseline, baseline, (source, where) => spec.parseBaseline(source, where, config, true));
+    }
+    const notChecked = [...config.skipped, ...(noBase ? ['baseline growth (--no-base)'] : [])];
+    const result = spec.format(spec.findings(root, config, found, baseline, grown, ts), found, baseline, notChecked, !noBase);
     result.out.forEach(io.out);
     result.err.forEach(io.err);
     return result.ok ? 0 : 1;
@@ -413,13 +434,12 @@ const runRatchet = <C extends { readonly baseline: string }>(spec: Ratchet<C>, f
 const CODEC_REGISTRY: Ratchet<CodecConfig> = {
   name: 'codec-registry',
   parse: parseCodecConfig,
-  parseBaseline: (source, where) => parseCodecBaseline(source, where),
+  parseBaseline: (source, where, _config, atBase) => parseCodecBaseline(source, where, atBase),
   roots: (config) => config.roots,
   discover: (root, files, config, ts) => discoverCodecs(ts(), root, files, new Set(Object.keys(config.oracles) as Format[])),
-  vacuous: (found, config) =>
-    Object.values(found).flat().length === 0 ? `discovery finds no hand parser or pair under ${config.roots.join(', ')}, so nothing would be checked` : undefined,
+  kind: (list, config) => ({ noun: list === 'handParsers' ? 'hand parser' : 'producer/consumer pair', roots: config.roots }),
   findings: (root, config, found, baseline, grown) => codecFindings(root, config, found as Discovery, baseline, grown),
-  format: (list, found, baseline) => formatCodecFindings(list, found as Discovery, baseline),
+  format: (list, found, baseline, notChecked, compared) => formatCodecFindings(list, found as Discovery, baseline, notChecked, compared),
 };
 
 const FAULT_INJECTION_REGISTRY: Ratchet<FaultConfig> = {
@@ -429,11 +449,8 @@ const FAULT_INJECTION_REGISTRY: Ratchet<FaultConfig> = {
   roots: (config) => [...new Set(Object.values(config.discover).flatMap((g) => g.roots))],
   discover: (root, files, config) =>
     Object.fromEntries(Object.entries(config.discover).map(([name, group]) => [name, discoverGroup(root, files.filter((file) => group.roots.some((r) => file === r || file.startsWith(`${r}/`))), group)])),
-  vacuous: (found, config) => {
-    const none = Object.entries(found).find(([, sources]) => sources.length === 0)?.[0];
-    return none === undefined ? undefined : `discovery finds no ${none} source under ${(config.discover[none]?.roots ?? []).join(', ')}, so nothing would be checked`;
-  },
-  findings: faultFindings,
+  kind: (list, config) => ({ noun: `${list} source`, roots: config.discover[list]?.roots ?? [] }),
+  findings: (root, config, found, baseline, grown, ts) => faultFindings(ts(), root, config, found, baseline, grown),
   format: formatFaultFindings,
 };
 
@@ -484,10 +501,10 @@ const requiredSettings = (f: Map<string, string>, io: Io): number => {
   return result.ok ? 0 : 1;
 };
 
-const COMMANDS: Record<string, { allowed: readonly string[]; run: (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv) => number }> = {
-  'codec-registry': { allowed: ['--config', '--base', '--root'], run: codecRegistry },
+const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly string[]; run: (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv) => number }> = {
+  'codec-registry': { allowed: ['--config', '--base', '--root'], switches: ['--no-base'], run: codecRegistry },
   'coverage-exemptions': { allowed: ['--config', '--package', '--root'], run: coverageExemptions },
-  'fault-injection-registry': { allowed: ['--config', '--base', '--root'], run: faultInjectionRegistry },
+  'fault-injection-registry': { allowed: ['--config', '--base', '--root'], switches: ['--no-base'], run: faultInjectionRegistry },
   'authority-citations': { allowed: ['--mode', '--authority', '--issue-prefix', '--adr-dir', '--root'], run: authorityCitations },
   boundary: { allowed: ['--root', '--deny'], run: boundary },
   'coverage-by-type': { allowed: ['--config', '--files-from', '--root'], run: coverageByType },
@@ -508,7 +525,7 @@ export const run = (args: readonly string[], io: Io, version: string = ownVersio
     return 0;
   }
   const spec = command !== undefined && Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;
-  const f = spec && flags(rest, spec.allowed);
+  const f = spec && flags(rest, spec.allowed, spec.switches);
   if (!spec || !f) {
     io.err(USAGE);
     return 2;

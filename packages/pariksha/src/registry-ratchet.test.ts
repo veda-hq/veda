@@ -16,13 +16,17 @@ import {
   importsModule,
   importsPackage,
   isCollected,
+  minNoteLength,
   namesModule,
+  note,
   object,
   onlyKeys,
   optionalText,
   parseBaseline,
   parseExamples,
+  parseFindingIds,
   parseJson,
+  required,
   path,
   paths,
   readBaseline,
@@ -68,10 +72,49 @@ describe('config helpers', () => {
     assert.deepEqual(records([{}], 'list'), [{ raw: {}, where: 'list[0]: ' }]);
   });
 
-  it('needs a reason for an exemption', () => {
+  it('needs a reason for an exemption, of at least minNoteLength characters trimmed', () => {
     assert.equal(reason({ reason: 'reads only' }, ''), 'reads only');
     assert.throws(() => reason({ reason: '  ' }, 'exempt[0]: '), /exempt\[0\]: an exemption needs a reason/);
     assert.throws(() => reason({}, ''), /an exemption needs a reason/);
+    // A rule of more than 20 characters, so 21.
+    assert.equal(reason({ reason: `  ${'x'.repeat(21)}  ` }, '', 21).trim().length, 21);
+    assert.throws(() => reason({ reason: `  ${'x'.repeat(20)}  ` }, 'exempt[0]: ', 21), /exempt\[0\]: "reason" is shorter than minNoteLength \(21\): say why in words/);
+  });
+
+  it('holds a note to minNoteLength when present, and to presence when required', () => {
+    assert.equal(note({}, 'uncovered', '', 21, false), undefined);
+    assert.equal(note({ uncovered: 'x'.repeat(21) }, 'uncovered', '', 21, false), 'x'.repeat(21));
+    assert.throws(() => note({ uncovered: 'x'.repeat(20) }, 'uncovered', 'consumers[0]: ', 21, false), /consumers\[0\]: "uncovered" is shorter than minNoteLength \(21\)/);
+    assert.throws(() => note({}, 'outOfModel', 'w: ', 1, true), /w: "outOfModel" must be a non-empty string/);
+  });
+
+  it('needs minNoteLength as a whole number of at least 1', () => {
+    assert.equal(minNoteLength({ minNoteLength: 21 }), 21);
+    for (const bad of [undefined, 0, 1.5, '21']) assert.throws(() => minNoteLength({ minNoteLength: bad }), /"minNoteLength" must be a whole number of at least 1/);
+  });
+
+  it('requires a key whose absence would drop a check, null recording the opt-out', () => {
+    const skipped: string[] = [];
+    assert.throws(() => required({}, 'surfaces', '', skipped, () => 1), /^Error: "surfaces" is required \(null opts its check out\)$/);
+    assert.equal(required({ surfaces: null }, 'surfaces', '', skipped, () => 1), undefined);
+    assert.equal(required({ catalogue: null }, 'catalogue', 'examples: ', skipped, () => 1), undefined);
+    assert.equal(required({ surfaces: ['a'] }, 'surfaces', '', skipped, () => 7), 7);
+    assert.deepEqual(skipped, ['surfaces', 'examples.catalogue']);
+  });
+
+  it('reads the finding-id patterns, each required, each or all opted out by null', () => {
+    const skipped: string[] = [];
+    const ids = parseFindingIds({ findingIds: { motivatedBy: '^M\\d{10}$', example: null } }, skipped);
+    assert.equal(ids.motivatedBy?.source, '^M\\d{10}$');
+    assert.equal(ids.example, undefined);
+    assert.deepEqual(skipped, ['findingIds.example']);
+    const none: string[] = [];
+    assert.deepEqual(parseFindingIds({ findingIds: null }, none), { motivatedBy: undefined, example: undefined });
+    assert.deepEqual(none, ['findingIds']);
+    assert.throws(() => parseFindingIds({}, []), /"findingIds" is required/);
+    assert.throws(() => parseFindingIds({ findingIds: { motivatedBy: null } }, []), /findingIds: "example" is required/);
+    assert.throws(() => parseFindingIds({ findingIds: { motivatedBy: null, example: null, other: 1 } }, []), /findingIds: unknown key "other"/);
+    assert.throws(() => parseFindingIds({ findingIds: { motivatedBy: '(', example: null } }, []), /findingIds\.motivatedBy: "\(" is not a regular expression/);
   });
 
   it('reads a JSON object, refusing anything else', () => {
@@ -96,6 +139,16 @@ describe('the baseline', () => {
     assert.throws(() => parseBaseline('[]', ['cli', 'server'], 'b.json', 'paths'), /^Error: b\.json: must be an object with "cli" and "server" lists$/);
     assert.throws(() => parseBaseline('{"cli": [], "server": [], "extra": []}', ['cli', 'server'], 'b.json', 'paths'), /b\.json: unknown list "extra"/);
     assert.throws(() => parseBaseline('nope', ['cli'], 'b.json', 'paths'), /^Error: b\.json: not JSON: /);
+  });
+
+  it('reads the merge base’s baseline against today’s lists: one added since is empty, one removed since is ignored', () => {
+    // A group added since the merge base: the base has no list for it.
+    assert.deepEqual(parseBaseline('{"cli": ["a.ts"]}', ['cli', 'server'], 'b.json', 'paths', true), { cli: ['a.ts'], server: [] });
+    // A group removed since: its list at the base is not read.
+    assert.deepEqual(parseBaseline('{"cli": ["a.ts"], "server": ["s.ts"]}', ['cli'], 'b.json', 'paths', true), { cli: ['a.ts'] });
+    // A list it does hold must still be well formed.
+    assert.throws(() => parseBaseline('{"cli": "x"}', ['cli'], 'b.json', 'paths', true), /"cli" must be a list of paths/);
+    assert.throws(() => parseBaseline('[]', ['cli'], 'b.json', 'paths', true), /must be an object/);
   });
 
   it('audits what must be baselined against what is', () => {
@@ -173,16 +226,23 @@ describe('catalogue examples', () => {
   after(() => rmSync(root, { recursive: true, force: true }));
   const collected = [/^scripts\//];
 
-  it('reads the examples key, refusing a half catalogue and an empty fixture list', () => {
-    assert.equal(parseExamples({}), undefined);
-    const examples = parseExamples({ examples: { catalogue: 'cat.json', slice: 'S', fixtures: { 'A-1': { example: 'M1', test: 'scripts/a.test.ts' } } } });
-    assert.deepEqual(examples, { catalogue: { path: 'cat.json', slice: 'S' }, fixtures: { 'A-1': { example: 'M1', test: 'scripts/a.test.ts' } } });
-    assert.deepEqual(parseExamples({ examples: { fixtures: { 'A-1': { example: 'M1', test: 'a.test.ts' } } } })?.catalogue, undefined);
-    assert.throws(() => parseExamples({ examples: { catalogue: 'cat.json', fixtures: {} } }), /"catalogue" and "slice" go together/);
-    assert.throws(() => parseExamples({ examples: { fixtures: {} } }), /"fixtures" is empty/);
-    assert.throws(() => parseExamples({ examples: { fixtures: { a: 1 } } }), /examples\.fixtures\.a must be an object/);
-    assert.throws(() => parseExamples({ examples: { fixtures: { a: { example: 'M1', test: 'a.ts', extra: 1 } } } }), /examples\.fixtures\.a: unknown key "extra"/);
-    assert.throws(() => parseExamples({ examples: { other: 1 } }), /examples: unknown key "other"/);
+  it('reads the examples key, required, null opting it or its catalogue out', () => {
+    assert.throws(() => parseExamples({}, []), /"examples" is required \(null opts its check out\)/);
+    const skipped: string[] = [];
+    assert.equal(parseExamples({ examples: null }, skipped), undefined);
+    assert.deepEqual(skipped, ['examples']);
+    const fixtures = { 'A-1': { example: 'M1', test: 'scripts/a.test.ts' } };
+    assert.deepEqual(parseExamples({ examples: { catalogue: { path: 'cat.json', slice: 'S' }, fixtures } }, []), { catalogue: { path: 'cat.json', slice: 'S' }, fixtures });
+    const noCatalogue: string[] = [];
+    assert.equal(parseExamples({ examples: { catalogue: null, fixtures } }, noCatalogue)?.catalogue, undefined);
+    assert.deepEqual(noCatalogue, ['examples.catalogue']);
+    assert.throws(() => parseExamples({ examples: { fixtures } }, []), /examples: "catalogue" is required/);
+    assert.throws(() => parseExamples({ examples: { catalogue: { path: 'cat.json' }, fixtures } }, []), /examples\.catalogue: "slice" must be a non-empty string/);
+    assert.throws(() => parseExamples({ examples: { catalogue: { path: 'cat.json', slice: 'S', x: 1 }, fixtures } }, []), /examples\.catalogue: unknown key "x"/);
+    assert.throws(() => parseExamples({ examples: { catalogue: null, fixtures: {} } }, []), /"fixtures" is empty/);
+    assert.throws(() => parseExamples({ examples: { catalogue: null, fixtures: { a: 1 } } }, []), /examples\.fixtures\.a must be an object/);
+    assert.throws(() => parseExamples({ examples: { catalogue: null, fixtures: { a: { example: 'M1', test: 'a.ts', extra: 1 } } } }, []), /examples\.fixtures\.a: unknown key "extra"/);
+    assert.throws(() => parseExamples({ examples: { other: 1 } }, []), /examples: unknown key "other"/);
   });
 
   it('passes fixtures that cover the slice, each from its own example, collected and naming it', () => {
@@ -243,6 +303,11 @@ describe('the verdict', () => {
   it('prints a summary when clean and every finding with a hint when not', () => {
     assert.deepEqual(formatOutcome('p:', [], 'all good', 'fix it'), { ok: true, out: ['p: all good'], err: [] });
     assert.deepEqual(formatOutcome('p:', ['a', 'b'], 'all good', 'fix it'), { ok: false, out: [], err: ['p: a', 'p: b', 'p: 2 problem(s). fix it'] });
+  });
+
+  it('says what it did not check, on a pass and a refusal alike', () => {
+    assert.deepEqual(formatOutcome('p:', [], 'all good', 'fix it', ['surfaces', 'baseline growth (--no-base)']).out, ['p: all good', 'p: not checked: surfaces, baseline growth (--no-base)']);
+    assert.deepEqual(formatOutcome('p:', ['a'], 'all good', 'fix it', ['surfaces']).out, ['p: not checked: surfaces']);
   });
 });
 

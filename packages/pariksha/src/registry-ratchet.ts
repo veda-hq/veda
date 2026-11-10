@@ -90,11 +90,58 @@ export const records = (items: readonly unknown[], key: string): Array<{ raw: Ra
     return { raw, where };
   });
 
-/** An exemption must say why, in words a reviewer reads. */
-export const reason = (raw: Raw, where: string): string => {
+/** An exemption must say why, in words a reviewer reads: at least `min` characters, trimmed. */
+export const reason = (raw: Raw, where: string, min = 1): string => {
   const v = raw['reason'];
   if (typeof v !== 'string' || v.trim() === '') throw new Error(`${where}an exemption needs a reason`);
+  if (v.trim().length < min) throw new Error(`${where}"reason" is shorter than minNoteLength (${min}): say why in words`);
   return v;
+};
+
+/** A note (what a suite leaves out, why it runs LF only…): optional or required, at least `min` characters trimmed when present. */
+export const note = (raw: Raw, key: string, where: string, min: number, required: boolean): string | undefined => {
+  const v = required ? text(raw, key, where) : optionalText(raw, key, where);
+  if (v !== undefined && v.trim().length < min) throw new Error(`${where}"${key}" is shorter than minNoteLength (${min}): say it in words`);
+  return v;
+};
+
+/** `minNoteLength`: the fewest characters, trimmed, an exemption reason or note may have. Required. */
+export const minNoteLength = (raw: Raw): number => {
+  const v = raw['minNoteLength'];
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) throw new Error('"minNoteLength" must be a whole number of at least 1');
+  return v;
+};
+
+/**
+ * A key every config must name, whose `null` opts its check out. Absence is
+ * refused: a forgotten key would drop a check silently. The opt-out is recorded
+ * in `skipped`, which the run prints as not checked.
+ */
+export const required = <T>(raw: Raw, key: string, where: string, skipped: string[], parse: () => T): T | undefined => {
+  if (!(key in raw)) throw new Error(`${where}"${key}" is required (null opts its check out)`);
+  if (raw[key] === null) {
+    skipped.push(`${where.replace(/: $/, '.')}${key}`);
+    return undefined;
+  }
+  return parse();
+};
+
+export interface FindingIds {
+  /** The pattern every `motivatedBy` must match, or undefined when not checked. */
+  readonly motivatedBy: RegExp | undefined;
+  /** The pattern every example fixture's finding id must match, or undefined when not checked. */
+  readonly example: RegExp | undefined;
+}
+
+/** `findingIds: { motivatedBy, example }`, each a regex or null. */
+export const parseFindingIds = (raw: Raw, skipped: string[]): FindingIds => {
+  const v = required(raw, 'findingIds', '', skipped, () => object(raw, 'findingIds', ''));
+  if (v === undefined) return { motivatedBy: undefined, example: undefined };
+  onlyKeys(v, ['motivatedBy', 'example'], 'findingIds: ');
+  return {
+    motivatedBy: required(v, 'motivatedBy', 'findingIds: ', skipped, () => regex(v['motivatedBy'], 'findingIds.motivatedBy')),
+    example: required(v, 'example', 'findingIds: ', skipped, () => regex(v['example'], 'findingIds.example')),
+  };
 };
 
 /** The config text as JSON; throws naming why not. */
@@ -118,8 +165,13 @@ export type Baseline = Readonly<Record<string, readonly string[]>>;
  * The baseline a JSON text holds: exactly the `lists` named, each a list of
  * strings. Throws naming the first list that is wrong, so a malformed
  * baseline fails loudly rather than reading as empty.
+ *
+ * `atBase` reads the baseline as the merge base holds it, against today's
+ * lists: a list the base lacks (a list added since) is empty, and one the
+ * config no longer names (a list removed since) is ignored, so changing the
+ * lists is never an unreadable base. A list it does hold must still be well formed.
  */
-export const parseBaseline = (source: string, lists: readonly string[], where: string, noun: string): Baseline => {
+export const parseBaseline = (source: string, lists: readonly string[], where: string, noun: string, atBase = false): Baseline => {
   let raw: unknown;
   try {
     raw = JSON.parse(source);
@@ -128,10 +180,10 @@ export const parseBaseline = (source: string, lists: readonly string[], where: s
   }
   if (!isRecord(raw)) throw new Error(`${where}: must be an object with ${lists.map((l) => `"${l}"`).join(' and ')} lists`);
   const extra = Object.keys(raw).find((k) => !lists.includes(k));
-  if (extra !== undefined) throw new Error(`${where}: unknown list "${extra}"`);
+  if (extra !== undefined && !atBase) throw new Error(`${where}: unknown list "${extra}"`);
   const out: Record<string, string[]> = {};
   for (const name of lists) {
-    const v = raw[name];
+    const v = atBase && raw[name] === undefined ? [] : raw[name];
     if (!Array.isArray(v) || !v.every((s) => typeof s === 'string')) throw new Error(`${where}: "${name}" must be a list of ${noun}`);
     out[name] = v;
   }
@@ -238,13 +290,16 @@ export interface Examples {
   readonly fixtures: Readonly<Record<string, { readonly example: string; readonly test: string }>>;
 }
 
-/** The `examples` key of a config. */
-export const parseExamples = (raw: Raw): Examples | undefined => {
-  if (raw['examples'] === undefined) return undefined;
-  const v = object(raw, 'examples', '');
-  onlyKeys(v, ['catalogue', 'slice', 'fixtures'], 'examples: ');
-  if ((v['catalogue'] === undefined) !== (v['slice'] === undefined)) throw new Error('examples: "catalogue" and "slice" go together');
-  const catalogue = v['catalogue'] === undefined ? undefined : { path: path(v, 'catalogue', 'examples: '), slice: text(v, 'slice', 'examples: ') };
+/** The `examples` key of a config: required, `null` to opt out, its `catalogue` likewise. */
+export const parseExamples = (raw: Raw, skipped: string[]): Examples | undefined => {
+  const v = required(raw, 'examples', '', skipped, () => object(raw, 'examples', ''));
+  if (v === undefined) return undefined;
+  onlyKeys(v, ['catalogue', 'fixtures'], 'examples: ');
+  const catalogue = required(v, 'catalogue', 'examples: ', skipped, () => {
+    const c = object(v, 'catalogue', 'examples: ');
+    onlyKeys(c, ['path', 'slice'], 'examples.catalogue: ');
+    return { path: path(c, 'path', 'examples.catalogue: '), slice: text(c, 'slice', 'examples.catalogue: ') };
+  });
   const fixturesRaw = object(v, 'fixtures', 'examples: ');
   const fixtures: Record<string, { example: string; test: string }> = {};
   for (const [id, entry] of Object.entries(fixturesRaw)) {
@@ -308,8 +363,15 @@ export const checkFindingIds = (pattern: RegExp | undefined, ids: ReadonlyArray<
   if (bad !== undefined) throw new Error(`${bad[0]}: "${String(bad[1])}" is not a finding id (${pattern.source})`);
 };
 
-/** The verdict: findings on stderr, then what to do; a one-line summary on stdout when there are none. */
-export const formatOutcome = (prefix: string, findings: readonly string[], summary: string, hint: string): { ok: boolean; out: string[]; err: string[] } =>
-  findings.length === 0
-    ? { ok: true, out: [`${prefix} ${summary}`], err: [] }
-    : { ok: false, out: [], err: [...findings.map((f) => `${prefix} ${f}`), `${prefix} ${findings.length} problem(s). ${hint}`] };
+/**
+ * The verdict: findings on stderr, then what to do; a one-line summary on
+ * stdout when there are none. Whatever the config opted out of, and a growth
+ * comparison not made, is printed on stdout either way, so a pass says what
+ * it did not check.
+ */
+export const formatOutcome = (prefix: string, findings: readonly string[], summary: string, hint: string, notChecked: readonly string[] = []): { ok: boolean; out: string[]; err: string[] } => {
+  const skipped = notChecked.length === 0 ? [] : [`${prefix} not checked: ${notChecked.join(', ')}`];
+  return findings.length === 0
+    ? { ok: true, out: [`${prefix} ${summary}`, ...skipped], err: [] }
+    : { ok: false, out: skipped, err: [...findings.map((f) => `${prefix} ${f}`), `${prefix} ${findings.length} problem(s). ${hint}`] };
+};

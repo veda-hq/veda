@@ -53,6 +53,9 @@ const config = (over: Record<string, unknown> = {}): Record<string, unknown> => 
   handParsers: [{ source: 'scripts/md.ts', formats: ['markdown'], suite: 'scripts/md.differential.properties.test.ts', outOfModel: 'lists' }],
   pairs: [{ id: 'scripts/row.ts#writeRow->readRow', kind: 'round-trip', suite: 'scripts/row.roundtrip.properties.test.ts' }],
   exempt: [],
+  minNoteLength: 1,
+  examples: null,
+  findingIds: null,
   ...over,
 });
 const parsed = (over: Record<string, unknown> = {}): Config => parseConfig(JSON.stringify(config(over)));
@@ -274,9 +277,24 @@ describe('the config', () => {
     assert.equal(c.library, 'fast-check');
     assert.equal(c.handParsers[0]?.lfOnly, undefined);
     assert.equal(c.examples, undefined);
-    assert.equal(c.findingId, undefined);
+    assert.deepEqual(c.findingIds, { motivatedBy: undefined, example: undefined });
+    assert.deepEqual(c.skipped, ['examples', 'findingIds']);
     assert.equal(parsed({ library: 'fc' }).library, 'fc');
-    assert.equal(parsed({ surfaces: undefined }).surfaces.length, 0);
+  });
+
+  it('opts out of the surface check only by an explicit null, which it records', () => {
+    const c = parsed({ surfaces: null });
+    assert.equal(c.surfaces, undefined);
+    assert.deepEqual(c.skipped, ['surfaces', 'examples', 'findingIds']);
+  });
+
+  it('holds motivations and examples to their own finding-id patterns', () => {
+    // For example: a motivation is an M finding, an example an M or V one.
+    const ids = { findingIds: { motivatedBy: '^M\\d{10}$', example: '^[MV]\\d{10}$' } };
+    const fixtures = { catalogue: null, fixtures: { E: { example: 'V3586514538', test: 'scripts/e.test.ts' } } };
+    assert.equal(parsed({ ...ids, examples: fixtures }).findingIds.example?.source, '^[MV]\\d{10}$');
+    const vMotivation = { ...ids, pairs: [{ id: 'a.ts#digest', kind: 'golden', suite: 's.ts', motivatedBy: 'V3586514538' }] };
+    assert.throws(() => parsed(vMotivation), /pairs a\.ts#digest: motivatedBy: "V3586514538" is not a finding id \(\^M\\d\{10\}\$\)/);
   });
 
   const refusals: Array<[string, Record<string, unknown>, RegExp]> = [
@@ -284,24 +302,32 @@ describe('the config', () => {
     ['an unknown format in oracles', { oracles: { json: 'x' } }, /oracles: "json" is not a format discovery reads/],
     ['an oracle that names no module', { oracles: { yaml: '' } }, /oracles\.yaml must be a module name/],
     ['no oracles', { oracles: {}, handParsers: [] }, /"oracles" is empty/],
+    ['no surfaces key, which would drop the surface check', { surfaces: undefined }, /"surfaces" is required \(null opts its check out\)/],
+    ['an empty surface list', { surfaces: [] }, /"surfaces" is empty; name the globs a property suite must sit on, or null/],
     ['an empty surface glob', { surfaces: [''] }, /surfaces\[0\] must be a non-empty glob/],
+    ['no examples key', { examples: undefined }, /"examples" is required/],
+    ['no findingIds key', { findingIds: undefined }, /"findingIds" is required/],
+    ['no minNoteLength', { minNoteLength: undefined }, /"minNoteLength" must be a whole number of at least 1/],
     ['an unknown marker', { markers: { seed: 'a', lineEndings: 'b', golden: 'c', other: 'd' } }, /markers: unknown key "other"/],
     ['a missing marker', { markers: { seed: 'a', lineEndings: 'b' } }, /markers: "golden" must be a non-empty string/],
     ['a hand parser with no formats', { handParsers: [{ source: 'a.ts', formats: [], suite: 's.ts', outOfModel: 'x' }] }, /handParsers\[0\]: "formats" must be a non-empty list/],
     ['a hand parser in a format with no oracle', { oracles: { yaml: 'js-yaml' } }, /handParsers\[0\]: "markdown" has no entry in "oracles"/],
     ['a hand parser saying nothing of what it leaves out', { handParsers: [{ source: 'a.ts', formats: ['yaml'], suite: 's.ts' }] }, /handParsers\[0\]: "outOfModel" must be a non-empty string/],
+    ['an outOfModel shorter than minNoteLength', { minNoteLength: 21, handParsers: [{ source: 'a.ts', formats: ['yaml'], suite: 's.ts', outOfModel: 'lists' }] }, /handParsers\[0\]: "outOfModel" is shorter than minNoteLength \(21\)/],
     ['an LF-only suite with no reason', { handParsers: [{ source: 'a.ts', formats: ['yaml'], suite: 's.ts', outOfModel: 'x', lfOnly: ' ' }] }, /handParsers\[0\]: "lfOnly" must be a non-empty string/],
+    ['an lfOnly shorter than minNoteLength', { minNoteLength: 21, handParsers: [{ source: 'a.ts', formats: ['yaml'], suite: 's.ts', outOfModel: 'x'.repeat(21), lfOnly: 'bash' }] }, /handParsers\[0\]: "lfOnly" is shorter than minNoteLength \(21\)/],
     ['an unknown hand-parser key', { handParsers: [{ source: 'a.ts', formats: ['yaml'], suite: 's.ts', outOfModel: 'x', why: 'y' }] }, /handParsers\[0\]: unknown key "why"/],
     ['a pair id of no known shape', { pairs: [{ id: 'a.ts#write', kind: 'round-trip', suite: 's.ts' }] }, /pairs\[0\]: "a\.ts#write" is not path#producer->consumer or path#digest/],
     ['a pair of no known kind', { pairs: [{ id: 'a.ts#digest', kind: 'other', suite: 's.ts' }] }, /pairs\[0\]: "kind" must be "round-trip" or "golden"/],
     ['an exemption without a reason', { exempt: [{ id: 'a.ts#yaml' }] }, /exempt\[0\]: an exemption needs a reason/],
     ['an exemption with a blank reason', { exempt: [{ id: 'a.ts#yaml', reason: '  ' }] }, /exempt\[0\]: an exemption needs a reason/],
+    ['an exemption reason shorter than minNoteLength', { minNoteLength: 21, handParsers: [], exempt: [{ id: 'a.ts#yaml', reason: 'not csv' }] }, /exempt\[0\]: "reason" is shorter than minNoteLength \(21\)/],
     ['an exemption naming no id', { exempt: [{ id: 'a.ts', reason: 'r' }] }, /exempt\[0\]: "a\.ts" is not path#format or a pair id/],
     ['an id registered and exempt', { exempt: [{ id: 'scripts/md.ts#markdown', reason: 'r' }] }, /"scripts\/md\.ts#markdown" is registered or exempt more than once/],
-    ['a motivation that is not a finding id', { findingId: '^M\\d+$', pairs: [{ id: 'a.ts#digest', kind: 'golden', suite: 's.ts', motivatedBy: 'X1' }] }, /pairs a\.ts#digest: motivatedBy: "X1" is not a finding id/],
-    ['a hand-parser motivation that is not a finding id', { findingId: '^M\\d+$', handParsers: [{ source: 'a.ts', formats: ['yaml'], suite: 's.ts', outOfModel: 'x', motivatedBy: 'X1' }] }, /handParsers a\.ts: motivatedBy/],
-    ['an example that is not a finding id', { findingId: '^M\\d+$', examples: { fixtures: { E: { example: 'X1', test: 'scripts/e.test.ts' } } } }, /examples\.fixtures\.E: example: "X1"/],
-    ['a bad finding pattern', { findingId: '(' }, /"findingId": "\(" is not a regular expression/],
+    ['a motivation that is not a finding id', { findingIds: { motivatedBy: '^M\\d+$', example: null }, pairs: [{ id: 'a.ts#digest', kind: 'golden', suite: 's.ts', motivatedBy: 'X1' }] }, /pairs a\.ts#digest: motivatedBy: "X1" is not a finding id/],
+    ['a hand-parser motivation that is not a finding id', { findingIds: { motivatedBy: '^M\\d+$', example: null }, handParsers: [{ source: 'a.ts', formats: ['yaml'], suite: 's.ts', outOfModel: 'x', motivatedBy: 'X1' }] }, /handParsers a\.ts: motivatedBy/],
+    ['an example that is not a finding id', { findingIds: { motivatedBy: null, example: '^M\\d+$' }, examples: { catalogue: null, fixtures: { E: { example: 'X1', test: 'scripts/e.test.ts' } } } }, /examples\.fixtures\.E: example: "X1"/],
+    ['a bad finding pattern', { findingIds: { motivatedBy: '(', example: null } }, /findingIds\.motivatedBy: "\(" is not a regular expression/],
     ['no roots', { roots: [] }, /"roots" is empty/],
     ['no collected paths', { collected: [] }, /"collected" is empty/],
     ['no baseline', { baseline: undefined }, /"baseline" must be a non-empty string/],
@@ -340,11 +366,11 @@ describe('suite wiring', () => {
   it('refuses each part a hand-parser suite lacks', () => {
     const root = make({ 'scripts/md.differential.properties.test.ts': "import { F } from '../other/md.ts';\n" });
     assert.deepEqual(checkWiring(root, parsed()), [
-      'EDGE-12 scripts/md.ts: scripts/md.differential.properties.test.ts does not import scripts/md.ts',
-      'EDGE-12 scripts/md.ts: scripts/md.differential.properties.test.ts does not import fast-check',
-      'EDGE-12 scripts/md.ts: scripts/md.differential.properties.test.ts does not import mdast-util-from-markdown, the markdown reference',
-      'EDGE-12 scripts/md.ts: scripts/md.differential.properties.test.ts runs no fixed seed (seed: SEED)',
-      'EDGE-12 scripts/md.ts: scripts/md.differential.properties.test.ts runs LF only; run CRLF too (LINE_ENDINGS) or give lfOnly a reason',
+      'hand parser scripts/md.ts: scripts/md.differential.properties.test.ts does not import scripts/md.ts',
+      'hand parser scripts/md.ts: scripts/md.differential.properties.test.ts does not import fast-check',
+      'hand parser scripts/md.ts: scripts/md.differential.properties.test.ts does not import mdast-util-from-markdown, the markdown reference',
+      'hand parser scripts/md.ts: scripts/md.differential.properties.test.ts runs no fixed seed (seed: SEED)',
+      'hand parser scripts/md.ts: scripts/md.differential.properties.test.ts runs LF only; run CRLF too (LINE_ENDINGS) or give lfOnly a reason',
     ]);
   });
 
@@ -361,11 +387,11 @@ describe('suite wiring', () => {
     rmSync(join(root, 'scripts/row.roundtrip.properties.test.ts'));
     const c = parsed({ handParsers: [{ source: 'scripts/md.ts', formats: ['markdown'], suite: 'docs/md.test.ts', outOfModel: 'x' }] });
     assert.deepEqual(checkWiring(root, c), [
-      'EDGE-12 scripts/md.ts: docs/md.test.ts is not on a property-suite surface (scripts/**/*.{differential,roundtrip}.properties.test.ts)',
-      'EDGE-12 scripts/md.ts: scripts/md.ts does not exist',
-      'EDGE-12 scripts/md.ts: no runner collects docs/md.test.ts',
-      'EDGE-12 scripts/md.ts: the suite docs/md.test.ts does not exist',
-      'CONTRACT-10 scripts/row.ts#writeRow->readRow: the suite scripts/row.roundtrip.properties.test.ts does not exist',
+      'hand parser scripts/md.ts: docs/md.test.ts is not on a property-suite surface (scripts/**/*.{differential,roundtrip}.properties.test.ts)',
+      'hand parser scripts/md.ts: scripts/md.ts does not exist',
+      'hand parser scripts/md.ts: no runner collects docs/md.test.ts',
+      'hand parser scripts/md.ts: the suite docs/md.test.ts does not exist',
+      'pair scripts/row.ts#writeRow->readRow: the suite scripts/row.roundtrip.properties.test.ts does not exist',
     ]);
   });
 
@@ -373,21 +399,26 @@ describe('suite wiring', () => {
     const root = make({ 'scripts/row.test.ts': "import { writeRow } from './row.ts';\n" });
     const c = parsed({ pairs: [{ id: 'scripts/row.ts#writeRow->readRow', kind: 'round-trip', suite: 'scripts/row.test.ts' }] });
     assert.deepEqual(checkWiring(root, c), [
-      'CONTRACT-10 scripts/row.ts#writeRow->readRow: scripts/row.test.ts is not on a property-suite surface (scripts/**/*.{differential,roundtrip}.properties.test.ts)',
-      'CONTRACT-10 scripts/row.ts#writeRow->readRow: scripts/row.test.ts does not import fast-check',
-      'CONTRACT-10 scripts/row.ts#writeRow->readRow: scripts/row.test.ts runs no fixed seed (seed: SEED)',
+      'pair scripts/row.ts#writeRow->readRow: scripts/row.test.ts is not on a property-suite surface (scripts/**/*.{differential,roundtrip}.properties.test.ts)',
+      'pair scripts/row.ts#writeRow->readRow: scripts/row.test.ts does not import fast-check',
+      'pair scripts/row.ts#writeRow->readRow: scripts/row.test.ts runs no fixed seed (seed: SEED)',
     ]);
   });
 
   it('holds a golden to its assertion only, on any surface', () => {
     const root = make({ 'scripts/digest.ts': '', 'scripts/digest.test.ts': "import { key } from './digest.ts';\nassertGolden(key());\n", 'scripts/bare.test.ts': "import { key } from './digest.ts';\n" });
     assert.deepEqual(checkWiring(root, parsed({ pairs: [{ id: 'scripts/digest.ts#digest', kind: 'golden', suite: 'scripts/digest.test.ts' }] })), []);
-    assert.deepEqual(checkWiring(root, parsed({ pairs: [{ id: 'scripts/digest.ts#digest', kind: 'golden', suite: 'scripts/bare.test.ts' }] })), ['CONTRACT-10 scripts/digest.ts#digest: scripts/bare.test.ts pins no golden (assertGolden)']);
+    assert.deepEqual(checkWiring(root, parsed({ pairs: [{ id: 'scripts/digest.ts#digest', kind: 'golden', suite: 'scripts/bare.test.ts' }] })), ['pair scripts/digest.ts#digest: scripts/bare.test.ts pins no golden (assertGolden)']);
   });
 
-  it('puts a suite anywhere when no surface is named', () => {
+  it('puts a suite anywhere when the surface check is opted out with null', () => {
     const root = make({ 'scripts/row.test.ts': PAIR });
-    assert.deepEqual(checkWiring(root, parsed({ surfaces: [], pairs: [{ id: 'scripts/row.ts#writeRow->readRow', kind: 'round-trip', suite: 'scripts/row.test.ts' }] })), []);
+    assert.deepEqual(checkWiring(root, parsed({ surfaces: null, pairs: [{ id: 'scripts/row.ts#writeRow->readRow', kind: 'round-trip', suite: 'scripts/row.test.ts' }] })), []);
+  });
+
+  it('names no repository’s check ids in its messages, only the kind', () => {
+    const root = make({ 'scripts/md.differential.properties.test.ts': '' });
+    for (const line of checkWiring(root, parsed())) assert.match(line, /^(?:hand parser|pair) scripts\//);
   });
 });
 
@@ -407,15 +438,19 @@ describe('findings', () => {
   });
 
   it('checks the catalogue examples when the config names them', () => {
-    const withExamples = parsed({ handParsers: [], pairs: [], examples: { fixtures: { 'EDGE-12': { example: 'V1', test: 'scripts/e.test.ts' } } } });
+    const withExamples = parsed({ handParsers: [], pairs: [], examples: { catalogue: null, fixtures: { 'EDGE-12': { example: 'V1', test: 'scripts/e.test.ts' } } } });
     assert.deepEqual(findings(root, withExamples, { handParsers: [], pairs: [] }, { handParsers: [], pairs: [] }, []), ['scripts/e.test.ts: the EDGE-12 example suite does not exist']);
   });
 
-  it('summarises a clean run and lists a failing one', () => {
+  it('summarises a clean run, says what it did not check, and lists a failing one', () => {
     const found = { handParsers: ['a#yaml'], pairs: ['b#digest'] };
-    assert.deepEqual(formatFindings([], found, { handParsers: ['a#yaml'], pairs: [] }).out, [
+    assert.deepEqual(formatFindings([], found, { handParsers: ['a#yaml'], pairs: [] }, [], true).out, [
       'pariksha codec-registry: 1 hand parser(s) and 1 pair(s) discovered, each registered, exempt or among the 1 baselined; the baseline does not grow',
     ]);
-    assert.deepEqual(formatFindings(['x'], found, {}).err, ['pariksha codec-registry: x', 'pariksha codec-registry: 1 problem(s). Register a suite for a discovered parser or pair, or exempt it with a reason; the baseline only shrinks.']);
+    assert.deepEqual(formatFindings([], found, { handParsers: [], pairs: [] }, ['surfaces', 'baseline growth (--no-base)'], false).out, [
+      'pariksha codec-registry: 1 hand parser(s) and 1 pair(s) discovered, each registered, exempt or among the 0 baselined',
+      'pariksha codec-registry: not checked: surfaces, baseline growth (--no-base)',
+    ]);
+    assert.deepEqual(formatFindings(['x'], found, {}, [], true).err, ['pariksha codec-registry: x', 'pariksha codec-registry: 1 problem(s). Register a suite for a discovered parser or pair, or exempt it with a reason; the baseline only shrinks.']);
   });
 });

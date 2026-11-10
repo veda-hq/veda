@@ -4,8 +4,8 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.5.10 <check> [flags]
-npx @veda-hq/pariksha@0.5.10 --version
+npx @veda-hq/pariksha@0.5.11 <check> [flags]
+npx @veda-hq/pariksha@0.5.11 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
@@ -477,7 +477,9 @@ is the permission baseline every repository agents work in keeps:
 - deny: `Bash(*--no-verify*)`;
 - ask: every push that rewrites or deletes published history (`--force`,
   `-f`, `--mirror`, `--delete`, `-d`, `--prune`, a `+` or empty-source `:`
-  refspec, and the abbreviations git accepts), `git branch -D`, and the
+  refspec, and the abbreviations git accepts), a forced branch delete
+  (`git branch -D`, `--delete --force` either way round, `-df`, `-fd`,
+  `-d -f`, `-f -d`), and the
   dependency commands `pnpm add`, `remove`, `update`, `npm install`,
   `uninstall`, `update`, `yarn add` and `remove`. Ask beats allow, so these
   hold inside the allowed `git push -u origin` and `git branch`. An edit of a

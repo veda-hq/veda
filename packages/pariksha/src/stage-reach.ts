@@ -247,7 +247,11 @@ export const runnablePatterns = (prefixes: readonly string[], extensions: readon
   const alternatives = [...prefixes].sort((a, b) => b.length - a.length).map((p) => `${folder(p)}\\/`);
   const patterns = [new RegExp(`(?<![\\w./-])((?:\\.\\.?\\/)*(?:${alternatives.join('|')})[\\w./-]*[\\w-]\\.(?:${extensions.map(escape).join('|')}))(?![\\w])`, 'g')];
   if (bin !== undefined) {
-    patterns.push(new RegExp(`(?:^|[;&|(!]|\\b(?:if|elif|else|then|do|while|until|exec)\\b)[^\\S\\n]*(?:\\w+=\\S*[^\\S\\n]+)*["']?((?:\\.\\.?\\/)*${escape(bin)}\\/[\\w-]+)(?![\\w./-])`, 'gm'));
+    // Before the command word a shell takes assignments and redirections in
+    // any order (`FOO=1 2>/dev/null bin x`, `>out bin x`); a redirection's
+    // target is a word of its own, so `> bin` writes to it and runs nothing.
+    const prefix = `(?:(?:\\w+=\\S*|\\d*(?:&>>?|<<<|<>|>>|<|>)&?[^\\S\\n]*[^\\s;&|<>]+)[^\\S\\n]+)*`;
+    patterns.push(new RegExp(`(?:^|[;&|(!]|\\b(?:if|elif|else|then|do|while|until|exec)\\b)[^\\S\\n]*${prefix}["']?((?:\\.\\.?\\/)*${escape(bin)}\\/[\\w-]+)(?![\\w./-])`, 'gm'));
   }
   return patterns;
 };

@@ -4,8 +4,8 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.5.6 <check> [flags]
-npx @veda-hq/pariksha@0.5.6 --version
+npx @veda-hq/pariksha@0.5.7 <check> [flags]
+npx @veda-hq/pariksha@0.5.7 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something

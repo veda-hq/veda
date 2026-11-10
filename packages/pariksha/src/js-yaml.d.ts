@@ -1,8 +1,9 @@
-// js-yaml 4 ships no types; this is the part doc-identifiers.ts and its tests use.
+// js-yaml 4 ships no declarations; this is the part pariksha and its tests call.
 declare module 'js-yaml' {
   export interface LoadOptions {
     readonly schema?: unknown;
   }
   export const FAILSAFE_SCHEMA: unknown;
-  export function load(text: string, options?: LoadOptions): unknown;
+  /** Parses one YAML document; throws a YAMLException when it does not parse. */
+  export function load(source: string, options?: LoadOptions): unknown;
 }

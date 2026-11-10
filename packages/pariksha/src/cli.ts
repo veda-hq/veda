@@ -13,7 +13,10 @@ import { diskReads, formatReads, listFiles, needsTypescript, parseConfig as pars
 import { loadTypescript, typescriptLoaders, type Ts } from './typescript.ts';
 import { checkExportDeletions, formatReport } from './export-deletions.ts';
 import { findMissing, formatFindings, parseRequirements } from './required-settings.ts';
-import { BASE_CANDIDATES, gitAt, gitAtTop, must, resolveBase, topOf } from './git.ts';
+import { BASE_CANDIDATES, gitAt, gitAtTop, must, resolveBase, topOf, trackedUnder } from './git.ts';
+import { discover as discoverCodecs, findings as codecFindings, formatFindings as formatCodecFindings, parseBaseline as parseCodecBaseline, parseConfig as parseCodecConfig, type Config as CodecConfig, type Discovery, type Format } from './codec-registry.ts';
+import { discoverGroup, findings as faultFindings, formatFindings as formatFaultFindings, parseBaseline as parseFaultBaseline, parseConfig as parseFaultConfig, type Config as FaultConfig } from './fault-injection-registry.ts';
+import { emptyRoots, growthSince, readBaseline, type Baseline } from './registry-ratchet.ts';
 
 export interface Io {
   readonly out: (line: string) => void;
@@ -31,11 +34,13 @@ export const DENY_FILE = '.veda/deny.sha256';
 const USAGE = [
   'usage: pariksha authority-citations [--mode staged|tree] [--authority <a,b>] [--issue-prefix <A,B>] [--adr-dir <dir>] [--root <dir>]',
   '       pariksha boundary [--root <dir>] [--deny <file>]',
+  '       pariksha codec-registry --config <file> [--base <ref>] [--root <dir>]',
   '       pariksha coverage-by-type [--config <file>] [--files-from <file>|-] [--root <dir>]',
   '       pariksha coverage-exemptions --config <file> [--package <dir>] [--root <dir>]',
   '       pariksha doc-budgets --table <file> [--section <name>] [--root <dir>]',
   '       pariksha env-gate-switches --config <file> [--mode staged|tree] [--root <dir>]',
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
+  '       pariksha fault-injection-registry --config <file> [--base <ref>] [--root <dir>]',
   '       pariksha required-settings --require <file> [--settings <file>] [--root <dir>]',
   '       pariksha hash <word>',
   '       pariksha --version',
@@ -341,6 +346,100 @@ const envGateSwitches = (f: Map<string, string>, io: Io): number => {
   return result.ok ? 0 : 1;
 };
 
+/** What a registry ratchet plugs into the shared run: its config, discovery, findings and verdict. */
+interface Ratchet<C extends { readonly baseline: string }> {
+  readonly name: string;
+  readonly parse: (source: string) => C;
+  readonly parseBaseline: (source: string, where: string, config: C) => Baseline;
+  /** The roots discovery reads, all of them. */
+  readonly roots: (config: C) => readonly string[];
+  /** What discovery finds among the tracked files under the roots, as baseline-shaped lists. */
+  readonly discover: (root: string, files: readonly string[], config: C, ts: () => Ts) => Baseline;
+  /** A message when the discovered lists would make a vacuous pass, else undefined. */
+  readonly vacuous: (found: Baseline, config: C) => string | undefined;
+  readonly findings: (root: string, config: C, found: Baseline, baseline: Baseline, grown: readonly string[]) => string[];
+  readonly format: (list: readonly string[], found: Baseline, baseline: Baseline) => { ok: boolean; out: string[]; err: string[] };
+}
+
+/** Thrown when TypeScript cannot be loaded; carries the loader's message. */
+class NoTypescript extends Error {}
+
+const runRatchet = <C extends { readonly baseline: string }>(spec: Ratchet<C>, f: Map<string, string>, io: Io): number => {
+  const P = `pariksha ${spec.name}:`;
+  const configPath = f.get('--config');
+  if (configPath === undefined) {
+    io.err(USAGE);
+    return 2;
+  }
+  const dir = resolve(f.get('--root') ?? '.');
+  const root = topOf(dir);
+  if (root === undefined) {
+    io.err(`${P} ${dir} is not in a git repository`);
+    return 2;
+  }
+  const git = gitAt(root);
+  try {
+    const config = spec.parse(readFileSync(resolve(root, configPath), 'utf8'));
+    const parseBaseline = (source: string, where: string): Baseline => spec.parseBaseline(source, where, config);
+    const baseline = readBaseline(root, config.baseline, parseBaseline);
+    const roots = spec.roots(config);
+    const files = trackedUnder(git, root, roots);
+    const empty = emptyRoots(files, roots);
+    if (empty.length > 0) throw new Error(`no tracked file lies under ${empty.join(', ')}, so discovery there would read nothing`);
+    const ts = (): Ts => {
+      const loaded = (io.typescript ?? (() => loadTypescript(typescriptLoaders(root))))();
+      if (typeof loaded === 'string') throw new NoTypescript(loaded);
+      return loaded;
+    };
+    const found = spec.discover(root, files, config, ts);
+    const vacuous = spec.vacuous(found, config);
+    if (vacuous !== undefined) throw new Error(vacuous);
+    const asked = f.get('--base');
+    const base = asked === undefined ? resolveBase(git) : resolveBase(git, [asked]);
+    if (base === undefined) {
+      throw new Error(asked === undefined ? `none of ${BASE_CANDIDATES.join(', ')} names a commit, so the baseline cannot be held to its merge base; fetch one or pass --base` : `--base ${asked} names no commit`);
+    }
+    const grown = growthSince(git, base, config.baseline, baseline, parseBaseline);
+    const result = spec.format(spec.findings(root, config, found, baseline, grown), found, baseline);
+    result.out.forEach(io.out);
+    result.err.forEach(io.err);
+    return result.ok ? 0 : 1;
+  } catch (e) {
+    io.err(e instanceof NoTypescript ? `${P} ${e.message}` : `${P} ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+};
+
+const CODEC_REGISTRY: Ratchet<CodecConfig> = {
+  name: 'codec-registry',
+  parse: parseCodecConfig,
+  parseBaseline: (source, where) => parseCodecBaseline(source, where),
+  roots: (config) => config.roots,
+  discover: (root, files, config, ts) => discoverCodecs(ts(), root, files, new Set(Object.keys(config.oracles) as Format[])),
+  vacuous: (found, config) =>
+    Object.values(found).flat().length === 0 ? `discovery finds no hand parser or pair under ${config.roots.join(', ')}, so nothing would be checked` : undefined,
+  findings: (root, config, found, baseline, grown) => codecFindings(root, config, found as Discovery, baseline, grown),
+  format: (list, found, baseline) => formatCodecFindings(list, found as Discovery, baseline),
+};
+
+const FAULT_INJECTION_REGISTRY: Ratchet<FaultConfig> = {
+  name: 'fault-injection-registry',
+  parse: parseFaultConfig,
+  parseBaseline: parseFaultBaseline,
+  roots: (config) => [...new Set(Object.values(config.discover).flatMap((g) => g.roots))],
+  discover: (root, files, config) =>
+    Object.fromEntries(Object.entries(config.discover).map(([name, group]) => [name, discoverGroup(root, files.filter((file) => group.roots.some((r) => file === r || file.startsWith(`${r}/`))), group)])),
+  vacuous: (found, config) => {
+    const none = Object.entries(found).find(([, sources]) => sources.length === 0)?.[0];
+    return none === undefined ? undefined : `discovery finds no ${none} source under ${(config.discover[none]?.roots ?? []).join(', ')}, so nothing would be checked`;
+  },
+  findings: faultFindings,
+  format: formatFaultFindings,
+};
+
+const codecRegistry = (f: Map<string, string>, io: Io): number => runRatchet(CODEC_REGISTRY, f, io);
+const faultInjectionRegistry = (f: Map<string, string>, io: Io): number => runRatchet(FAULT_INJECTION_REGISTRY, f, io);
+
 export const DEFAULT_SETTINGS = '.claude/settings.json';
 
 const requiredSettings = (f: Map<string, string>, io: Io): number => {
@@ -386,7 +485,9 @@ const requiredSettings = (f: Map<string, string>, io: Io): number => {
 };
 
 const COMMANDS: Record<string, { allowed: readonly string[]; run: (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv) => number }> = {
+  'codec-registry': { allowed: ['--config', '--base', '--root'], run: codecRegistry },
   'coverage-exemptions': { allowed: ['--config', '--package', '--root'], run: coverageExemptions },
+  'fault-injection-registry': { allowed: ['--config', '--base', '--root'], run: faultInjectionRegistry },
   'authority-citations': { allowed: ['--mode', '--authority', '--issue-prefix', '--adr-dir', '--root'], run: authorityCitations },
   boundary: { allowed: ['--root', '--deny'], run: boundary },
   'coverage-by-type': { allowed: ['--config', '--files-from', '--root'], run: coverageByType },

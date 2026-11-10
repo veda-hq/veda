@@ -62,6 +62,83 @@ the repository's deny list.
 - Binary files (any NUL byte) are skipped. Untracked files are not read.
   Line 0 in a finding is the file's path.
 
+## `codec-registry`
+
+```sh
+pariksha codec-registry --config <file> [--base <ref>] [--root <dir>]
+```
+
+A module that parses markdown with its own regexes passes every example its
+author thought of, and misses the setext heading nobody did. So every module
+that hand-parses a format must be held by a property suite to the format's
+reference parser, and every exported writer/reader pair (`writeX`/`readX`,
+`renderX`/`parseX`, `formatX`/`loadX`…) by a suite that feeds real writer
+output through the real reader. Discovery reads tracked source under `roots`
+as a TypeScript syntax tree (tests, declarations, fixtures and mocks are not
+read):
+
+- a hand parser is a regex literal that reads a format's syntax (an ATX
+  heading or a fence, a frontmatter delimiter, a tag, an import statement), a
+  string literal that delimits one by itself (`---`, a fence, `<script`), a
+  comma split in a module that says `csv`, or a tokenizer tracking both quote
+  kinds and the backslash in a module about shell commands: one id per module
+  and format, `path#format`, in the formats `oracles` names only;
+- a pair is an exported producer and consumer of the same stem,
+  `path#writeRow->readRow` (an `export { … }` list counts; a class, a constant
+  or a type-only export does not), and `path#digest` for a module that calls
+  `createHash` beside a numeric `*SCHEMA*` export or a `'schema'` argument.
+
+Each id is registered, exempt with a reason, or listed in the baseline, and
+the baseline lists exactly what is still unregistered. The JSON `--config`
+(relative to the root):
+
+```json
+{
+  "baseline": "scripts/codec-registry.baseline.json",
+  "roots": ["scripts", "src"],
+  "oracles": { "markdown": "mdast-util-from-markdown", "yaml": "js-yaml" },
+  "collected": ["^scripts/.+\\.test\\.ts$"],
+  "surfaces": ["scripts/**/*.{differential,roundtrip}.properties.test.ts"],
+  "library": "fast-check",
+  "markers": { "seed": "seed: SEED", "lineEndings": "LINE_ENDINGS", "golden": "assertGolden" },
+  "handParsers": [{ "source": "scripts/doc.ts", "formats": ["markdown"], "suite": "scripts/doc.differential.properties.test.ts", "outOfModel": "lists and block quotes" }],
+  "pairs": [{ "id": "scripts/rows.ts#writeRow->readRow", "kind": "round-trip", "suite": "scripts/rows.roundtrip.properties.test.ts" }],
+  "exempt": [{ "id": "scripts/main.ts#csv", "reason": "a comma list in an env var, not CSV" }],
+  "examples": { "catalogue": "checks.json", "slice": "C-20", "fixtures": { "EDGE-12": { "example": "V3586514538", "test": "scripts/edge-12.examples.test.ts" } } },
+  "findingId": "^[MV]\\d{10}$"
+}
+```
+
+- A hand-parser suite sits where a `collected` pattern matches it and on a
+  `surfaces` glob (none named: anywhere), imports its module by a relative
+  specifier that resolves to it, imports `library` (default `fast-check`),
+  names each format's oracle module, holds the `seed` marker, and holds the
+  `lineEndings` marker unless `lfOnly` says why the suite runs LF only.
+  `outOfModel` (what the generators leave out) is required.
+- A `round-trip` pair suite does the same less the oracle and line endings; a
+  `golden` one needs only its module and the `golden` marker.
+- `examples` (optional) holds a fixture per check: its suite exists, is
+  collected and names the finding id; with `catalogue` and `slice`, the
+  fixtures cover exactly the catalogue's checks for that slice (a JSON
+  `{ "checks": [{ "id", "slice", "example" }] }`, each example opening with
+  `<finding id>:`). `findingId` (optional) holds every `motivatedBy` and
+  example id to a pattern.
+
+Refused (exit 1): a discovered id that is unaccounted; a registered or exempt
+id discovery does not find; a suite that is missing, uncollected, off the
+surface or missing any part above; a baseline entry that is registered,
+exempt or gone; and a baseline entry the merge base of HEAD and the base did
+not have, unless its file only moved (git's rename detection over the
+working tree). Without `--base`, the base is the first of `origin/main`,
+`origin/develop`, `origin/master` and `main` that exists.
+
+Exit 2, since nothing was checked: a config with an unknown or bad key, an
+exemption or `lfOnly` without a reason, an id registered twice; a baseline
+(here or at the merge base) that is missing, not `{ "handParsers": [ids],
+"pairs": [ids] }`, or holds another list; a root holding no tracked file, or
+discovery finding nothing; no base; a git call that fails. Needs
+`typescript`, as `coverage-by-type` does.
+
 ## `coverage-by-type`
 
 ```sh
@@ -251,6 +328,63 @@ renames, colour, external diff tools and textconv in a user's git config
 do not change what it reads. With no base, or when git cannot read the
 range (no merge base, a shallow clone), it exits 2: nothing was checked,
 so it is not a pass.
+
+## `fault-injection-registry`
+
+```sh
+pariksha fault-injection-registry --config <file> [--base <ref>] [--root <dir>]
+```
+
+A CLI whose ledger write fails after it published a plan, or a service whose
+best-effort cache write fails after its database commit, behaves in a way no
+happy-path test reaches. So every such unit runs under the repository's
+fault-injection harness, which fails its dependencies call by call, and its
+suite asserts each declared check (an exit contract, containment, rerun
+convergence) held to zero violations. Discovery reads the tracked files under
+each `discover` group's `roots` that match its `include` and are not tests,
+declarations or under a `fixtures/` folder, and keeps those whose text
+matches its `marker`. Each found source is registered, exempt with a reason,
+or in the baseline, which has one list per group and lists exactly what is
+still unregistered. The JSON `--config` (relative to the root):
+
+```json
+{
+  "baseline": "scripts/fault-injection.baseline.json",
+  "discover": {
+    "cli": { "roots": ["scripts"], "include": "\\.(ts|mjs)$", "marker": { "pattern": "isCliEntry\\(|process\\.argv\\b|^main\\(", "flags": "m" } },
+    "server": { "roots": ["apps/api/src"], "include": "\\.ts$", "marker": { "pattern": "best[- ]effort|fire-and-forget", "flags": "i" } }
+  },
+  "collected": ["^scripts/.+\\.test\\.ts$", "^apps/api/src/.+\\.test\\.ts$"],
+  "harness": {
+    "module": "packages/test-utils/src/fault-injection/index.ts",
+    "imports": ["@acme/test-utils/fault-injection"],
+    "checks": { "ERR-09": "checkExitContract", "ERR-10": "checkContainment", "STATE-11": "checkRerunConvergence" },
+    "heldBy": "assertNoViolations"
+  },
+  "consumers": [{ "source": "scripts/publish.ts", "unit": "main", "checks": ["ERR-09", "STATE-11"], "test": "scripts/publish.faults.test.ts", "uncovered": "the entry block" }],
+  "exempt": [{ "source": "scripts/report.ts", "reason": "writes no file and holds no state" }],
+  "examples": { "catalogue": "checks.json", "slice": "C-18", "fixtures": { "ERR-09": { "example": "M3933356096", "test": "packages/test-utils/src/fault-injection/err-09.examples.test.ts" } } },
+  "findingId": "^[MV]\\d{10}$"
+}
+```
+
+- The harness module exists and exports (by its text: an `export` statement
+  naming it) each `checks` function and `heldBy`; it is never imported.
+- A consumer's suite exists where a `collected` pattern matches it, imports
+  the harness (a relative specifier resolving to `module` or its folder, or
+  one of `imports`) and the consumer's source, calls each declared check's
+  function and `heldBy`, and the name `unit` opens with appears in the source.
+- `examples` works as in `codec-registry`, and each fixture suite also calls
+  its check's function.
+
+Refused (exit 1): a discovered source that is unaccounted; an exemption
+discovery does not find; a harness or consumer suite missing any part above;
+a stale baseline entry; and growth against the merge base, as in
+`codec-registry` (same `--base`). Exit 2: a bad config (an unknown key, a
+check not in `checks`, an exemption without a reason, a source registered
+twice), a missing or malformed baseline, a root holding no tracked file, a
+group discovering nothing, no base, or a failed git call. Needs no
+TypeScript.
 
 ## `required-settings`
 

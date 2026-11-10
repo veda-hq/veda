@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { age, replies, waitingSessions } from '../hooks/register'
+import { age, isAskless, replies, waitingSessions } from '../hooks/register'
 
 const BAND = {
   plugin: 'needs-you',
@@ -93,6 +93,77 @@ test('pressing a reply sends it and clears the line', async ($, on) => {
   await ui.press({ key: String(button?.key) })
   expect(sent).toEqual(['Archive'])
   expect(await ui.find({ type: 'Text', text: /Archive S-4/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a wrap-up is askless only when blocked with no question', () => {
+  expect(isAskless({ blocked: true })).toBe(true)
+  expect(isAskless({ blocked: true, ask: '' })).toBe(true)
+  expect(isAskless({ blocked: true, ask: '   ' })).toBe(true)
+  expect(isAskless({ blocked: true, ask: 42 })).toBe(true)
+  expect(isAskless({ blocked: true, ask: 'Approve W-47?' })).toBe(false)
+  expect(isAskless({ ask: 'Approve W-47?' })).toBe(false)
+  expect(isAskless({ blocked: false })).toBe(false)
+  expect(isAskless({ recap: 'Done.' })).toBe(false)
+})
+
+test('a blocked wrap-up with no question is refused before it runs, and the band stays empty', async ($, on) => {
+  mock.clock(on)
+  on('ui.log', () => ({ value: undefined }))
+  on('mcp.call', sessions([]))
+  const ran: unknown[] = []
+  on('tool.call', (_, e) => {
+    ran.push(e.tool)
+    return { result: {} }
+  })
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
+
+  for (const ask of [undefined, '', '  ']) {
+    const refused = await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'Waiting on the token.', blocked: true, ask })
+    expect(refused.deny).toContain('needs-you: this turn waits on the person (blocked: true), but the wrap-up has no ask')
+    expect(refused.deny).toContain('Call wrap_up again, keeping blocked: true, with ask')
+  }
+  expect(ran).toEqual([])
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /engine/ }))?.text).toBe('engine')
+  await ui.unmount()
+})
+
+test('a blocked wrap-up with its question runs and shows in the band; one with neither runs and shows nothing', async ($, on) => {
+  mock.clock(on)
+  on('ui.log', () => ({ value: undefined }))
+  on('mcp.call', sessions([]))
+  const ran: unknown[] = []
+  on('tool.call', (_, e) => {
+    ran.push(e.tool)
+    return { result: {} }
+  })
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
+
+  const plain = await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'Merged.' })
+  expect(plain.deny).toBeUndefined()
+  const empty = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect((await empty.find({ type: 'Text', text: /engine/ }))?.text).toBe('engine')
+  await empty.unmount()
+
+  const asked = await $.tool.call({
+    tool: 'mcp__ccd_turn__wrap_up',
+    recap: 'Waiting on the token.',
+    blocked: true,
+    ask: '  Token saved as NPM_TOKEN?  ',
+    actions: [{ label: 'Done' }, { label: 'Not yet' }],
+  })
+  expect(asked.deny).toBeUndefined()
+  expect(ran).toEqual(['mcp__ccd_turn__wrap_up', 'mcp__ccd_turn__wrap_up'])
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /Token saved/ }))?.text).toBe('● Token saved as NPM_TOKEN?')
+  expect(await ui.find({ type: 'Button', text: /^Done$/ })).toBeDefined()
   await ui.unmount()
 })
 

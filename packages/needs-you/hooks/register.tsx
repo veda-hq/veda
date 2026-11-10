@@ -58,6 +58,23 @@ export const replies = (actions: unknown): string[] =>
     .filter(action => action.action === undefined && typeof action.label === 'string')
     .map(action => String(action.label))
 
+/** A wrap-up's question: its `ask`, trimmed; empty when it has none. */
+export const askOf = (args: Record<string, unknown>): string => (typeof args.ask === 'string' ? args.ask.trim() : '')
+
+/**
+ * A wrap-up that says the turn waits on the person (`blocked: true`) but asks
+ * nothing: the band would stay empty while the chat waits. The app's own
+ * contract for `blocked` is that the work stops until the person answers, so
+ * such a call always has a question to ask.
+ */
+export const isAskless = (args: Record<string, unknown>): boolean => args.blocked === true && askOf(args) === ''
+
+/** What the model reads when its askless wrap-up is refused. */
+export const ASKLESS =
+  'this turn waits on the person (blocked: true), but the wrap-up has no ask, so the band above the prompt shows nothing and the person cannot see that this chat needs them. ' +
+  'Call wrap_up again, keeping blocked: true, with ask (the one question, in a sentence) and actions (reply buttons that answer it). ' +
+  'If the turn does not wait on the person, leave blocked out instead.'
+
 /** This session's id, read once per load. */
 let selfId: string | null = null
 /** The asks this turn added, given the turn's page when it ends. */
@@ -144,12 +161,15 @@ export const register: Register = on => {
         await update($, asks, current => current.filter(ask => !ask.id.startsWith(`${e.tool_use_id}:`)))
       }
     }
+    const isWrapUp = name === 'mcp__ccd_turn__wrap_up'
+    if (isWrapUp && isAskless(args)) return { deny: `${$.plugin.name}: ${ASKLESS}` }
     const result = await next(e)
-    if (name === 'mcp__ccd_turn__wrap_up' && typeof args.ask === 'string' && args.ask !== '') {
+    const question = askOf(args)
+    if (isWrapUp && question !== '') {
       const ask: Ask = {
         id: e.tool_use_id,
         from: 'chat',
-        text: args.ask,
+        text: question,
         page: PAGE.exec(`${args.ask} ${String(args.recap)}`)?.[0] ?? null,
         answers: replies(args.actions),
         since: await $.clock.now(),

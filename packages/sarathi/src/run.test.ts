@@ -5,17 +5,17 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { parseConfig, type Config } from './config.ts';
-import { kavachDir, plan, runAll, runPlan } from './run.ts';
+import { hooksDir, kavachDir, plan, runAll, runPlan } from './run.ts';
 
 const config = (kavach: Record<string, string> = {}): Config => parseConfig(JSON.stringify({ kavach, hooks: {} }), 'sarathi.json', '/project');
 
 describe('plan', () => {
   it('runs a command through sh with its timeout', () => {
-    assert.deepEqual(plan({ command: 'echo hi', timeout: 5 }, config()), {
+    assert.deepEqual(plan({ command: 'echo hi', timeout: 5 }, config(), () => '/kavach', () => '/sarathi/hooks'), {
       label: 'echo hi',
       file: '/bin/sh',
       args: ['-c', 'echo hi'],
-      env: {},
+      env: { SARATHI_HOOKS: '/sarathi/hooks' },
       timeoutMs: 5000,
       failClosed: false,
     });
@@ -40,6 +40,13 @@ describe('plan', () => {
   it('finds kavach’s guards in its own dependency', () => {
     assert.ok(existsSync(join(kavachDir(), 'worktree_guard.py')));
     assert.ok(existsSync(join(kavachDir(), 'command_guard.py')));
+  });
+
+  it('gives every command SARATHI_HOOKS, the folder of sarathi’s own handlers', () => {
+    for (const name of ['arch-guard.sh', 'code-quality-guard.sh', 'format-before-write.sh', 'format-on-edit.sh', 'session-dedupe-guard.sh', 'lib/session-root.sh']) {
+      assert.ok(existsSync(join(hooksDir(), name)), name);
+    }
+    assert.deepEqual(plan({ command: 'x' }, config()).env, { SARATHI_HOOKS: hooksDir() });
   });
 });
 

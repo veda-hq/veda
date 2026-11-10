@@ -6,6 +6,7 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { DEFAULT_TIMEOUT_SECONDS, type Config, type Entry, type Guard } from './config.ts';
 
@@ -41,8 +42,13 @@ export interface Plan {
   readonly failClosed: boolean;
 }
 
-/** How one entry runs: a command through `sh -c`, a guard through the configured Python. */
-export function plan(entry: Entry, config: Config, guardDir: () => string = kavachDir): Plan {
+/** The folder holding sarathi's own handlers (hooks/), given to every command as SARATHI_HOOKS. */
+export function hooksDir(): string {
+  return fileURLToPath(new URL('../hooks', import.meta.url));
+}
+
+/** How one entry runs: a command through `sh -c` with SARATHI_HOOKS set, a guard through the configured Python. */
+export function plan(entry: Entry, config: Config, guardDir: () => string = kavachDir, handlers: () => string = hooksDir): Plan {
   const timeoutMs = (entry.timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000;
   if (entry.guard !== undefined) {
     const env: Record<string, string> = config.kavach.config === undefined ? {} : { KAVACH_CONFIG: config.kavach.config };
@@ -56,7 +62,7 @@ export function plan(entry: Entry, config: Config, guardDir: () => string = kava
     };
   }
   const command = entry.command ?? '';
-  return { label: command, file: '/bin/sh', args: ['-c', command], env: {}, timeoutMs, failClosed: entry.failClosed === true };
+  return { label: command, file: '/bin/sh', args: ['-c', command], env: { SARATHI_HOOKS: handlers() }, timeoutMs, failClosed: entry.failClosed === true };
 }
 
 /** Runs one plan with `input` on stdin. Never rejects: a handler that cannot start ends with code `null`. */

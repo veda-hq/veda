@@ -71,6 +71,30 @@ sarathi for every event the list names, with a matcher that lets every
 handler fire and a timeout at least the longest handler's. Run it in the
 project's tests.
 
+### Handlers it carries
+
+Every `command` runs with `SARATHI_HOOKS` set to the package's `hooks/`
+folder, which holds handlers any TypeScript repository can list:
+
+```json
+{ "matcher": "Edit|Write", "command": "bash \"$SARATHI_HOOKS\"/code-quality-guard.sh" }
+```
+
+| Handler | Event | What it does |
+| --- | --- | --- |
+| `format-before-write.sh` | PreToolUse, `Edit\|Write` | Hands the tool prettier-formatted input, so the file is written formatted and Claude Code has no "hook modified your file" notice to keep in context. Never blocks. |
+| `format-on-edit.sh` | PostToolUse, `Edit\|Write` | Formats the written file with prettier: the net for what the first one skips. Never blocks. |
+| `code-quality-guard.sh` | PostToolUse, `Edit\|Write` | Refuses `@ts-ignore`, `@ts-nocheck`, `eslint-disable`, `any` and skipped tests in a `.ts`/`.tsx` edit. `.claude/`, `.agent/` and `docs/` are exempt. |
+| `arch-guard.sh` | PostToolUse, `Edit\|Write` | Runs the repository's `.dependency-cruiser.js` on a `.ts`/`.tsx` edit that touches imports; refuses what it refuses, and refuses when it cannot run. `scripts/` is exempt too. |
+| `session-dedupe-guard.sh` | PreToolUse, session starts | Refuses starting a session unless the conversation called `list_sessions` successfully in the last 15 minutes. |
+
+They act on the session's checkout, the git toplevel of the event's `cwd`:
+the desktop app runs a worktree session's hooks with `$CLAUDE_PROJECT_DIR`
+set to the main checkout. They use that checkout's prettier and
+dependency-cruiser, and the project checkout's prettier when a fresh worktree
+has none installed. They need `bash`, `jq` and `git`;
+`session-dedupe-guard.sh` runs `HOOK_PYTHON`, or `python3`.
+
 ### Forbidden variables
 
 Some switches turn a session's tooling off from the environment, where no

@@ -17,6 +17,7 @@ import { BASE_CANDIDATES, gitAt, gitAtTop, must, resolveBase, topOf, trackedUnde
 import { discover as discoverCodecs, fileOf as codecFileOf, findings as codecFindings, formatFindings as formatCodecFindings, parseBaseline as parseCodecBaseline, parseConfig as parseCodecConfig, type Config as CodecConfig, type Discovery, type Format } from './codec-registry.ts';
 import { discoverGroup, findings as faultFindings, formatFindings as formatFaultFindings, parseBaseline as parseFaultBaseline, parseConfig as parseFaultConfig, type Config as FaultConfig } from './fault-injection-registry.ts';
 import { emptyRoots, growthSince, readBaseline, wholeId, type Baseline } from './registry-ratchet.ts';
+import { checkClaims, formatOutcome, loadEslint, parseConfig as parseClaimsConfig, type LinterClass } from './enforcement-claims.ts';
 
 export interface Io {
   readonly out: (line: string) => void;
@@ -27,6 +28,8 @@ export interface Io {
   readonly typescript?: () => Ts | string;
   /** How env-gate-switches reads the repository at a root; git and the disk by default. */
   readonly gateReads?: (root: string) => Reads;
+  /** How enforcement-claims gets ESLint's class; the `eslint` peer beside pariksha by default. */
+  readonly eslint?: () => Promise<LinterClass | string>;
 }
 
 export const DENY_FILE = '.veda/deny.sha256';
@@ -38,6 +41,7 @@ const USAGE = [
   '       pariksha coverage-by-type [--config <file>] [--files-from <file>|-] [--root <dir>]',
   '       pariksha coverage-exemptions --config <file> [--package <dir>] [--root <dir>]',
   '       pariksha doc-budgets --table <file> [--section <name>] [--root <dir>]',
+  '       pariksha enforcement-claims --config <file> [--root <dir>]',
   '       pariksha env-gate-switches --config <file> [--mode staged|tree] [--root <dir>]',
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
   '       pariksha fault-injection-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
@@ -139,6 +143,32 @@ const docBudgets = (f: Map<string, string>, io: Io): number => {
   outcome.out.forEach(io.out);
   outcome.err.forEach(io.err);
   return outcome.ok ? 0 : 1;
+};
+
+const enforcementClaims = async (f: Map<string, string>, io: Io): Promise<number> => {
+  const configPath = f.get('--config');
+  if (configPath === undefined) {
+    io.err(USAGE);
+    return 2;
+  }
+  const root = resolve(f.get('--root') ?? '.');
+  let P = 'pariksha enforcement-claims:';
+  try {
+    const config = parseClaimsConfig(readFileSync(resolve(root, configPath), 'utf8'));
+    if (config.id !== undefined) P = `pariksha enforcement-claims (${config.id}):`;
+    const ESLint = await (io.eslint ?? loadEslint)();
+    if (typeof ESLint === 'string') {
+      io.err(`${P} ${ESLint}`);
+      return 2;
+    }
+    const result = formatOutcome(P, await checkClaims(root, config, ESLint));
+    result.out.forEach(io.out);
+    result.err.forEach(io.err);
+    return result.ok ? 0 : 1;
+  } catch (e) {
+    io.err(`${P} ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
 };
 
 const exportDeletions = (f: Map<string, string>, io: Io): number => {
@@ -505,7 +535,7 @@ const requiredSettings = (f: Map<string, string>, io: Io): number => {
   return result.ok ? 0 : 1;
 };
 
-const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly string[]; run: (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv) => number }> = {
+const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly string[]; run: (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv) => number | Promise<number> }> = {
   'codec-registry': { allowed: ['--config', '--base', '--root'], switches: ['--no-base'], run: codecRegistry },
   'coverage-exemptions': { allowed: ['--config', '--package', '--root'], run: coverageExemptions },
   'fault-injection-registry': { allowed: ['--config', '--base', '--root'], switches: ['--no-base'], run: faultInjectionRegistry },
@@ -513,12 +543,14 @@ const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly
   boundary: { allowed: ['--root', '--deny'], run: boundary },
   'coverage-by-type': { allowed: ['--config', '--files-from', '--root'], run: coverageByType },
   'doc-budgets': { allowed: ['--table', '--section', '--root'], run: docBudgets },
+  'enforcement-claims': { allowed: ['--config', '--root'], run: enforcementClaims },
   'env-gate-switches': { allowed: ['--config', '--mode', '--root'], run: envGateSwitches },
   'export-deletions': { allowed: ['--base', '--root'], run: exportDeletions },
   'required-settings': { allowed: ['--require', '--settings', '--root'], run: requiredSettings },
 };
 
-export const run = (args: readonly string[], io: Io, version: string = ownVersion(), env: NodeJS.ProcessEnv = process.env): number => {
+/** The exit code; a Promise of it for the one check that is asynchronous (enforcement-claims, which loads ESLint). */
+export const run = (args: readonly string[], io: Io, version: string = ownVersion(), env: NodeJS.ProcessEnv = process.env): number | Promise<number> => {
   const [command, ...rest] = args;
   if (command === '--version' && rest.length === 0) {
     io.out(version);
@@ -543,7 +575,7 @@ const isMain = (): boolean => {
 };
 
 if (isMain()) {
-  process.exitCode = run(process.argv.slice(2), {
+  process.exitCode = await run(process.argv.slice(2), {
     out: (line) => console.info(line),
     err: (line) => console.error(line),
   });

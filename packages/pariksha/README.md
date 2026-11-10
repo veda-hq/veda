@@ -4,8 +4,8 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.5.10 <check> [flags]
-npx @veda-hq/pariksha@0.5.10 --version
+npx @veda-hq/pariksha@0.5.11 <check> [flags]
+npx @veda-hq/pariksha@0.5.11 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
@@ -262,6 +262,99 @@ Refuses a file over its budget, a budgeted file that does not exist, and a
 row that is not `` | `path` | bytes | ``, since nothing would enforce it.
 The table file is read on every check too, so it must budget itself: a row
 for its own path (relative to `--root`) is required.
+
+## `enforcement-claims`
+
+```sh
+pariksha enforcement-claims --config <file> [--root <dir>]
+```
+
+A standard that says how it is enforced is believed, and nothing else checks
+it: a standard can claim an ESLint rule that was never configured, or one
+configured only in a workspace it does not apply to, or a validator nothing
+runs, and the corpus reads as enforced while nothing runs. This check holds
+each claim to the repository's real configuration. The JSON `--config`
+(relative to the root) names every repository-specific path:
+
+```json
+{
+  "id": "STD-001",
+  "standards": "docs/standards",
+  "workspaces": [
+    { "dir": ".", "probes": ["scripts/probe.ts", "scripts/probe.test.ts"] },
+    { "dir": "apps/api", "probes": ["src/probe.ts", "src/probe.test.ts"] }
+  ],
+  "dispatcher": { "path": "scripts/run-validation.sh" },
+  "packageRunner": { "path": "scripts/validate-package.sh", "call": "run_validator", "validatorsDir": "scripts/validators" },
+  "stageRoots": { "hooks": [".husky"], "workflows": [".github/workflows"], "actions": [".github/actions"] },
+  "runnable": { "prefixes": ["scripts/", ".claude/scripts/", "apps/*/scripts/"], "extensions": ["sh", "ts", "mjs", "js"], "bin": "node_modules/.bin" },
+  "workspaceList": { "pnpm": "pnpm-workspace.yaml", "turbo": "turbo.json" },
+  "tests": { "file": "\\.test\\.tsx?$", "runner": "\\bvitest\\b|\\s--test\\b" }
+}
+```
+
+The standards are the `.md` files under `standards`, read recursively; their
+YAML frontmatter is the contract:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | the standard's id, printed with its problems |
+| `enforcement` | `eslint-rule` and `validator` are checked; other values (`guidance`, …) claim no gate. A file with none is not a standard |
+| `enforcement_config` | for `eslint-rule`, the rules, comma-separated; for `validator`, may cite `<dispatcher file name> <target>` |
+| `partial_gates` | rules that gate part of a standard, on any `enforcement`; checked like `enforcement_config` |
+| `applies_to` | workspace paths or prefixes, a list or one string |
+| `enforcement_script` | for `validator`, the script or test file the claim runs |
+| `status: deprecated` | a retired standard claims nothing |
+
+Frontmatter is parsed as YAML (block lists, multiline flow lists and a bare
+scalar `applies_to` all read as lists); frontmatter that does not parse is
+skipped, not counted.
+
+- **eslint-rule.** Each workspace's flat config is resolved through ESLint
+  (`new ESLint({ cwd: dir }).calculateConfigForFile` on each probe, so
+  plugins load from the repository), and a rule is on at error or warn; `off`
+  is a false claim. A rule name is one token (`eqeqeq`, `no-console`,
+  `@scope/plugin/rule`; a parenthetical is dropped), so prose names nothing,
+  and a claim naming no rule is refused. `linterOptions.noInlineConfig` may
+  be claimed like a rule. Each named rule must be on in EVERY workspace an
+  `applies_to` target covers: a prefix covers every workspace under it, and
+  a path under none is the root workspace's (`.`).
+- **validator.** A cited `<dispatcher> <target>` must be a case of the
+  dispatcher, a shell `case` whose lines read `name)` or `a|b)` (any alias
+  counts). Then the script (`enforcement_script`, and the paths the target's
+  case names) must exist and be reached from a stage: the files directly in
+  each `hooks` folder (not those starting with `_`) and each workflow under
+  `workflows`, with the local actions they `uses: ./<actions folder>/<name>`.
+  The walk follows a path a command names under a `runnable.prefixes`
+  folder (a `*` segment is one folder) with one of its `extensions`, resolved
+  from the caller's folder; a `<bin>/<name>` binary in command position (not
+  `test -x <bin>/<name>`); a dispatcher call, to that target's case only (the
+  dispatcher file is never followed whole); a package runner's `<call> "X"`,
+  to `<validatorsDir>/X.sh`; `pnpm [run] <script>`, to the calling
+  workspace's script (workspaces from the pnpm file's `packages:`, `dir/*`
+  expanded); and `turbo run <task>`, to every workspace's script of that name
+  and the root's when the turbo config names `//#<task>`. Shell scripts and
+  hooks are followed; nothing else is (TypeScript included). In a workflow
+  only `run:` steps are read, not `paths:` filters or `name:` fields, and in
+  shell, comment lines and `echo`/`printf` lines are not calls. A cited test
+  file (`tests.file`) counts as run when a reached script of its workspace
+  matches `tests.runner`.
+
+`id` is optional and only labels the output. `packageRunner`, `bin` and
+`turbo` are optional (absent or `null`: none, so less is reached). Exit 0
+prints `pariksha enforcement-claims (<id>): every eslint-rule claim is real
+and every validator claim runs at a stage (<eslint-rule> + <validator> of
+<standards> rule(s))`. Exit 1 prints one line per problem, ``<file> (<id>):
+`<rule or path>` <reason>``, and a count. Exit 2: a bad config (an unknown,
+missing or bad key, a path that is not a normalized root-relative POSIX path,
+a prefix that is not a folder path, a workspace listed twice), no standard
+declaring an enforcement (the scan failed), a missing standards folder,
+dispatcher, workspace folder or workspace file, a workspace whose every probe
+fails to resolve a config, a workflow that is not YAML or a `package.json`
+that is not JSON, or no `eslint`.
+
+Needs `eslint` `>=9.24 <10` installed beside pariksha (an optional peer
+dependency: only this check loads it).
 
 ## `env-gate-switches`
 

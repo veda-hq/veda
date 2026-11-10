@@ -280,6 +280,28 @@ test('a failing read logs once in a session, and again only after a read has suc
   expect(logged[1]).toBe(logged[0])
 })
 
+test('an unusable answer between two failures is no successful read: the failure stays logged once', async ($, on) => {
+  const clock = mock.clock(on)
+  const logged: string[] = []
+  on('ui.log', (_, e) => {
+    logged.push(e.text)
+    return { value: undefined }
+  })
+  // Polls alternate: nothing answers (a rejection), then `self` comes back as plain text.
+  let reads = 0
+  on('mcp.call', async (_, e, next) => {
+    reads += 1
+    return reads % 2 === 1 ? next(e) : answer('No session matches "self".')
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start(START)
+  await clock.settle()
+  for (let poll = 0; poll < 5; poll += 1) await clock.advance(60_000)
+  expect(reads).toBe(6)
+  expect(logged).toHaveLength(1)
+})
+
 test('with nothing waiting the band is the engine’s', async ($, on) => {
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)

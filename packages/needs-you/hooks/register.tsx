@@ -97,15 +97,16 @@ let reading = true
 /** The failure logged last, so a repeat stays out of the transcript until a read succeeds. */
 let lastLogged: string | null = null
 
-/** Lists the side sessions this chat started that wait on the person. */
-async function syncSessions($: Engine): Promise<void> {
+/** Lists the side sessions this chat started that wait on the person; true when the list was read. */
+async function syncSessions($: Engine): Promise<boolean> {
     if (selfId === null) {
       const self = jsonOf(await $.mcp.call('ccd_session_mgmt', 'get_session', { session_id: 'self' }))
       selfId = isRecord(self) && typeof self.sessionId === 'string' ? self.sessionId : null
     }
-    if (selfId === null) return
+    if (selfId === null) return false
     const listed = await $.mcp.call('ccd_session_mgmt', 'list_sessions', { linked: true })
-    if (listed.isError) return
+    // An error says nothing about the list: keep the rows shown until a read succeeds.
+    if (listed.isError) return false
     // Plain text ("No sessions …") lists nothing.
     const waiting = waitingSessions(jsonOf(listed), selfId)
     const now = await $.clock.now()
@@ -125,6 +126,7 @@ async function syncSessions($: Engine): Promise<void> {
       })
       return [...kept, ...fresh]
     })
+    return true
 }
 
 /** The one line a session without the app's session tools gets. */
@@ -148,8 +150,8 @@ export const afterFailure = (
 function poll($: Engine): void {
   if (!reading) return
   syncSessions($).then(
-    () => {
-      lastLogged = null
+    read => {
+      if (read) lastLogged = null
     },
     (error: unknown) => {
       const after = afterFailure(error, lastLogged)

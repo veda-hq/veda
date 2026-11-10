@@ -160,7 +160,7 @@ describe('registry helpers', () => {
 
   it('refuses a malformed baseline, its lists named by the discovery groups', () => {
     const c = parsed();
-    assert.deepEqual(parseBaseline('{"cli": ["a.ts"], "server": ["s.ts"]}', 'b.json', c), { cli: ['a.ts'], server: ['s.ts'] });
+    assert.deepEqual({ ...parseBaseline('{"cli": ["a.ts"], "server": ["s.ts"]}', 'b.json', c) }, { cli: ['a.ts'], server: ['s.ts'] });
     assert.throws(() => parseBaseline('{"cli": "x", "server": []}', 'b.json', c), /"cli" must be a list of paths/);
     assert.throws(() => parseBaseline('{"cli": [], "server": [1]}', 'b.json', c), /"server" must be a list of paths/);
     assert.throws(() => parseBaseline('[]', 'b.json', c), /b\.json: must be an object with "cli" and "server" lists/);
@@ -174,6 +174,15 @@ describe('registry helpers', () => {
 });
 
 describe('the config', () => {
+  it('keeps a group named __proto__ or constructor as a group, never the prototype', () => {
+    const text = JSON.stringify(config({ exemptIn: ['constructor'] })).replace('"cli":{', '"constructor":{').replace('"server":{', '"__proto__":{');
+    const c = parseConfig(text);
+    assert.deepEqual(Object.keys(c.discover), ['constructor', '__proto__']);
+    assert.equal(Object.getPrototypeOf(c.discover), null);
+    assert.deepEqual(c.discover['__proto__']?.roots, ['apps/server/src']);
+    assert.deepEqual({ ...parseBaseline('{"constructor": ["a.ts"], "__proto__": ["s.ts"]}', 'b.json', c) }, JSON.parse('{"constructor": ["a.ts"], "__proto__": ["s.ts"]}'));
+  });
+
   it('reads a valid config', () => {
     const c = parsed();
     assert.equal(c.discover['cli']?.marker.flags, 'm');
@@ -198,6 +207,10 @@ describe('the config', () => {
     ['an unknown harness key', { harness: { module: 'h.ts', checks: { A: 'a' }, heldBy: 'h', path: 'x' } }, /harness: unknown key "path"/],
     ['a consumer with no checks', { consumers: [{ source: 'a.ts', unit: 'main', checks: [], test: 'a.test.ts' }] }, /consumers\[0\]: "checks" must be a non-empty list of check ids/],
     ['a consumer declaring an unknown check', { consumers: [{ source: 'a.ts', unit: 'main', checks: ['ERR-99'], test: 'a.test.ts' }] }, /consumers\[0\]: "ERR-99" is not a check in harness\.checks/],
+    // Not inherited members: no check is called constructor, no group toString.
+    ['a consumer declaring a check by an inherited name', { consumers: [{ source: 'a.ts', unit: 'main', checks: ['constructor'], test: 'a.test.ts' }] }, /consumers\[0\]: "constructor" is not a check in harness\.checks/],
+    ['an exemptIn naming an inherited member', { exemptIn: ['toString'] }, /exemptIn\[0\]: "toString" is not a group in "discover"/],
+    ['an example for an inherited check name', { examples: { catalogue: null, fixtures: { constructor: { example: 'M1', test: 'a.test.ts' } } } }, /examples\.fixtures\.constructor: not a check in harness\.checks/],
     ['a consumer with an unknown key', { consumers: [{ source: 'a.ts', unit: 'main', checks: ['ERR-09'], test: 'a.test.ts', note: 'x' }] }, /consumers\[0\]: unknown key "note"/],
     ['a consumer with a blank uncovered note', { consumers: [{ source: 'a.ts', unit: 'main', checks: ['ERR-09'], test: 'a.test.ts', uncovered: '' }] }, /consumers\[0\]: "uncovered" must be a non-empty string/],
     ['an exemption without a reason', { exempt: [{ source: 'scripts/x.ts' }] }, /exempt\[0\]: an exemption needs a reason/],
@@ -223,8 +236,13 @@ describe('the config', () => {
 });
 
 describe('the harness and the registered consumers', () => {
+  const made: string[] = [];
+  after(() => {
+    for (const root of made) rmSync(root, { recursive: true, force: true });
+  });
   const make = (files: Record<string, string>): string => {
     const root = mkdtempSync(join(tmpdir(), 'pariksha-fault-wiring-'));
+    made.push(root);
     put(root, { 'packages/h/src/fault/index.ts': HARNESS, 'packages/h/src/fault/checks.ts': CHECKS, 'scripts/tool.ts': 'export async function main() {}\n', 'scripts/tool.faults.test.ts': SUITE, ...files });
     return root;
   };
@@ -233,18 +251,22 @@ describe('the harness and the registered consumers', () => {
   it('passes a suite that imports the harness and the unit and asserts each check held to zero violations', () => {
     const root = make({});
     assert.deepEqual(checkHarness(ts, root, parsed()), []);
-    assert.deepEqual(checkConsumers(root, parsed()), []);
+    assert.deepEqual(checkConsumers(ts, root, parsed()), []);
   });
 
   it('takes the harness by its package specifier, or by its folder', () => {
     const root = make({ 'scripts/tool.faults.test.ts': SUITE.replace('../packages/h/src/fault/index.ts', '@acme/h/fault'), 'scripts/two.faults.test.ts': SUITE.replace('index.ts', '').replace('./tool.ts', './tool') });
     const two = { source: 'scripts/tool.ts', unit: 'main', checks: ['ERR-09'], test: 'scripts/two.faults.test.ts' };
-    assert.deepEqual(checkConsumers(root, parsed()), []);
-    assert.deepEqual(checkConsumers(root, parsed({ consumers: [two] })), []);
+    assert.deepEqual(checkConsumers(ts, root, parsed()), []);
+    assert.deepEqual(checkConsumers(ts, root, parsed({ consumers: [two] })), []);
   });
 
   it('follows export * and a local name bound by an import to the declarations', () => {
     assert.deepEqual(harnessOf("export * from './checks';\n"), []);
+    // A default export, re-exported under the check's name, is followed to its declaration.
+    const viaDefault = "export { default as checkContainment } from './contain';\nexport { checkExitContract, checkRerunConvergence, assertNoViolations } from './checks';\n";
+    assert.deepEqual(checkHarness(ts, make({ 'packages/h/src/fault/index.ts': viaDefault, 'packages/h/src/fault/contain.ts': 'export default async function contain() {}\n' }), parsed()), []);
+    assert.deepEqual(checkHarness(ts, make({ 'packages/h/src/fault/index.ts': viaDefault, 'packages/h/src/fault/contain.ts': 'export default { run: 1 };\n' }), parsed()), ['harness: packages/h/src/fault/index.ts exports checkContainment as a value, not a function']);
     assert.deepEqual(harnessOf("import { checkContainment as contain, checkExitContract, checkRerunConvergence, assertNoViolations } from './checks.js';\nexport { contain as checkContainment, checkExitContract, checkRerunConvergence, assertNoViolations };\n"), []);
   });
 
@@ -276,7 +298,7 @@ describe('the harness and the registered consumers', () => {
 
   it('refuses a suite that does not import the harness or the unit, skips a check, or holds nothing to zero', () => {
     const root = make({ 'scripts/tool.faults.test.ts': "import { main } from '../other/tool.ts';\n// fault-injection\ncheckExitContract(main);\n" });
-    assert.deepEqual(checkConsumers(root, parsed()), [
+    assert.deepEqual(checkConsumers(ts, root, parsed()), [
       'scripts/tool.ts: scripts/tool.faults.test.ts does not import the harness (packages/h/src/fault/index.ts or @acme/h/fault)',
       'scripts/tool.ts: scripts/tool.faults.test.ts does not import scripts/tool.ts',
       'scripts/tool.ts: scripts/tool.faults.test.ts declares STATE-11 but never calls checkRerunConvergence(',
@@ -294,7 +316,7 @@ describe('the harness and the registered consumers', () => {
         { source: 'scripts/tool.ts#2', unit: 'run', checks: ['ERR-09'], test: 'docs/tool.test.ts' },
       ],
     });
-    assert.deepEqual(checkConsumers(root, c), [
+    assert.deepEqual(checkConsumers(ts, root, c), [
       'scripts/tool.ts: the suite scripts/tool.faults.test.ts does not exist',
       'scripts/gone.ts: the registered source does not exist',
       'scripts/gone.ts: no runner collects docs/tool.test.ts',
@@ -304,9 +326,9 @@ describe('the harness and the registered consumers', () => {
       'scripts/tool.ts#2: docs/tool.test.ts does not import scripts/tool.ts#2',
     ]);
     const unnamed = parsed({ consumers: [{ source: 'scripts/tool.ts', unit: 'runSafely', checks: ['ERR-09'], test: 'docs/tool.test.ts' }] });
-    assert.ok(checkConsumers(root, unnamed).includes('scripts/tool.ts: unit runSafely is not named in the source'));
+    assert.ok(checkConsumers(ts, root, unnamed).includes('scripts/tool.ts: unit runSafely is not named in the source'));
     const nameless = parsed({ consumers: [{ source: 'scripts/tool.ts', unit: '(entry)', checks: ['ERR-09'], test: 'docs/tool.test.ts' }] });
-    assert.ok(checkConsumers(root, nameless).includes('scripts/tool.ts: unit "(entry)" opens with no name'));
+    assert.ok(checkConsumers(ts, root, nameless).includes('scripts/tool.ts: unit "(entry)" opens with no name'));
   });
 });
 
@@ -320,7 +342,7 @@ describe('findings', () => {
     assert.deepEqual(findings(ts, root, c, { cli: ['scripts/a.ts'], server: [] }, { cli: ['scripts/old.ts'], server: [] }, ['scripts/old.ts']), [
       'scripts/gone.ts: exempt, but discovery does not find it in cli; drop the exemption',
       'scripts/a.ts: discovered and unaccounted; register it with a fault-injection suite, or exempt it with a reason',
-      'scripts/old.ts: in baseline.json, but registered, exempt, renamed or gone; remove it from the baseline',
+      'scripts/old.ts: in baseline.json, but registered, exempt, renamed, gone or in the wrong list; remove it from the baseline',
       'scripts/old.ts: added to baseline.json since the merge base; the baseline only shrinks, so register a suite instead',
     ]);
   });

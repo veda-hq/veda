@@ -104,7 +104,7 @@ the baseline lists exactly what is still unregistered. The JSON `--config`
   "handParsers": [{ "source": "scripts/doc.ts", "formats": ["markdown"], "suite": "scripts/doc.differential.properties.test.ts", "outOfModel": "lists and block quotes", "motivatedBy": "M1234567890" }],
   "pairs": [{ "id": "scripts/rows.ts#writeRow->readRow", "kind": "round-trip", "suite": "scripts/rows.roundtrip.properties.test.ts" }],
   "exempt": [{ "id": "scripts/main.ts#csv", "reason": "a comma list in an env var, not CSV" }],
-  "minNoteLength": 1,
+  "minNoteLength": 21,
   "examples": { "catalogue": { "path": "checks.json", "slice": "C-20" }, "fixtures": { "EDGE-12": { "example": "V3586514538", "test": "scripts/edge-12.examples.test.ts" } } },
   "findingIds": { "motivatedBy": "^M\\d{10}$", "example": "^[MV]\\d{10}$" }
 }
@@ -116,10 +116,16 @@ the baseline lists exactly what is still unregistered. The JSON `--config`
   module, holds the `seed` marker, and holds the `lineEndings` marker unless
   `lfOnly` says why the suite runs LF only. `outOfModel` (what the generators
   leave out) is required.
-- A `round-trip` pair suite does the same less the oracle and line endings; a
-  `golden` one needs only its module and the `golden` marker.
+- A pair's `kind` follows from its id and is refused otherwise: a
+  `producer->consumer` pair is `round-trip`, a `#digest` is `golden`. A
+  `round-trip` suite does what a hand-parser suite does less the oracle and
+  line endings; a `golden` one needs only its module and the `golden` marker.
+- A suite's imports are read from its syntax tree: import declarations,
+  `export … from` and `import('…')` of a literal. A specifier in a comment
+  or another string, or a type-only import, is no import.
 - `minNoteLength` is the fewest characters (trimmed) an exemption `reason`,
-  an `outOfModel` or an `lfOnly` may have, so `"reason": "x"` is not a reason.
+  an `outOfModel` or an `lfOnly` may have: at 21, as here, `"reason": "not
+  csv"` is refused and the reason above passes. At 1 only a blank is refused.
 - `examples` holds a fixture per check: its suite exists, is collected and
   names the finding id; with a `catalogue`, the fixtures cover exactly that
   JSON's checks for its `slice` (`{ "checks": [{ "id", "slice", "example" }]
@@ -136,9 +142,11 @@ the baseline lists exactly what is still unregistered. The JSON `--config`
 Refused (exit 1): a discovered id that is unaccounted; a registered or exempt
 id discovery does not find; a suite that is missing, uncollected, off the
 surface or missing any part above; a baseline entry that is registered,
-exempt or gone; and a baseline entry the merge base of HEAD and the base did
-not have, unless its file only moved (git's rename detection over the
-working tree). Without `--base`, the base is the first of `origin/main`,
+exempt, gone or in the wrong list (each list is held to what discovery finds
+of its kind); and a baseline entry the merge base of HEAD and the base did
+not have, in any list, unless its file only moved (git's rename detection
+over the working tree; the file is the id before its last `#`, so a path may
+hold one). Without `--base`, the base is the first of `origin/main`,
 `origin/develop`, `origin/master` and `main` that exists.
 
 Growth is read against the merge base, so growth committed on the branch is
@@ -153,8 +161,9 @@ no base; the run prints `not checked: baseline growth (--no-base)`. `--base`
 with `--no-base`, and an empty `--base ""`, are usage errors.
 
 Exit 2, since nothing was checked: a config with an unknown, missing or bad
-key, an exemption, `outOfModel` or `lfOnly` shorter than `minNoteLength`, an
-id registered twice; a baseline that is missing or not `{ "handParsers":
+key, a path that is not a normalized root-relative POSIX path (a backslash or
+a NUL included), a pair `kind` its id does not fit, an exemption,
+`outOfModel` or `lfOnly` shorter than `minNoteLength`, an id registered twice; a baseline that is missing or not `{ "handParsers":
 [ids], "pairs": [ids] }` with no other list; a merge-base baseline whose
 lists are malformed; a root holding no tracked file; discovery finding no
 hand parser, or no pair, since a kind found nowhere is checked nowhere; no
@@ -394,16 +403,18 @@ still unregistered. The JSON `--config` (relative to the root):
 
 - The harness module exists and exports each `checks` function and `heldBy`
   as a function. Its exports are read with TypeScript: `export { … } from`,
-  `export *` and a local name bound by an import are followed through
-  relative specifiers to the declaration, which must be a function (a
-  declaration, or a constant holding an arrow or function expression), not a
-  type or another value. A package specifier is not followed, and a name it
+  `export *` and a local name bound by an import (a default import, or
+  `export { default as … }`, follows the module's default export) are
+  followed through relative specifiers to the declaration, which must be a
+  function (a declaration, or a constant holding an arrow or function
+  expression), not a type or another value. A package specifier is not followed, and a name it
   would have to supply is refused, naming what was not followed. The harness
   is never imported or run.
 - A consumer's suite exists where a `collected` pattern matches it, imports
   the harness (a relative specifier resolving to `module` or its folder, or
-  one of `imports`) and the consumer's source, calls each declared check's
-  function and `heldBy`, and the name `unit` opens with appears in the source.
+  one of `imports`) and the consumer's source, its imports read from its
+  syntax tree as in `codec-registry`, calls each declared check's function and
+  `heldBy`, and the name `unit` opens with appears in the source.
 - `exemptIn` names the groups an exemption may sit in: an exempt source must
   be discovered in one of them, so a source only another group finds (here a
   best-effort server step) cannot be exempted away.
@@ -415,11 +426,13 @@ still unregistered. The JSON `--config` (relative to the root):
 
 Refused (exit 1): a discovered source that is unaccounted; an exemption
 discovery does not find in an `exemptIn` group; a harness or consumer suite
-missing any part above; a stale baseline entry; and growth against the merge
-base, read as in `codec-registry` (the same `--base`, `--base HEAD`,
+missing any part above; a stale baseline entry, or one in the list of a group
+that does not discover it; and growth against the merge base, read as in
+`codec-registry` (the same `--base`, `--base HEAD`,
 `--no-base`, first introduction and merge-base lists). Exit 2: a bad config
-(an unknown, missing or bad key, a check not in `checks`, an `exemptIn`
-group `discover` lacks, a reason or `uncovered` shorter than
+(an unknown, missing or bad key, a path that is not a normalized
+root-relative POSIX path, a check not in `checks`, an `exemptIn` group
+`discover` lacks, a reason or `uncovered` shorter than
 `minNoteLength`, a source registered twice), a missing or malformed
 baseline, a root holding no tracked file, a group discovering nothing, no
 base without `--no-base`, a failed git call, or no `typescript`.

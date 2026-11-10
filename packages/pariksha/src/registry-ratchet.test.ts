@@ -13,6 +13,7 @@ import {
   formatOutcome,
   grownEntries,
   growthSince,
+  importSpecifiers,
   importsModule,
   importsPackage,
   isCollected,
@@ -36,7 +37,13 @@ import {
   regex,
   regexes,
   text,
+  type Examples,
 } from './registry-ratchet.ts';
+import { loadTypescript, type Ts } from './typescript.ts';
+
+const loaded = loadTypescript();
+if (typeof loaded === 'string') throw new Error(loaded);
+const ts: Ts = loaded;
 
 const ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
 const sh = (cwd: string, ...args: string[]): string => execFileSync('git', args, { cwd, env: ENV, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 });
@@ -46,6 +53,8 @@ const put = (root: string, files: Record<string, string>): void => {
     writeFileSync(join(root, p), body);
   }
 };
+/** An Examples value with plain objects, for a strict deep comparison. */
+const plainExamples = (e: Examples | undefined) => (e === undefined ? undefined : { catalogue: e.catalogue, fixtures: { ...e.fixtures } });
 const LONG = `${'x'.repeat(80)}.json`;
 
 describe('config helpers', () => {
@@ -56,6 +65,9 @@ describe('config helpers', () => {
     assert.throws(() => optionalText({ a: '' }, 'a', ''), /"a" must be a non-empty string/);
     assert.equal(path({ a: 'x/y.ts' }, 'a', ''), 'x/y.ts');
     for (const bad of ['/abs', '../up', 'a/./b', 'a/', '.']) assert.throws(() => path({ a: bad }, 'a', ''), /is not a normalized root-relative path/);
+    // A backslash is a separator to Windows path operations, so `..\x` or `a\..\..\x` could leave the root; a NUL truncates.
+    for (const bad of ['..\\up', 'a\\..\\..\\up', 'a\\b.ts', 'C:\\x', 'a\0b']) assert.throws(() => path({ a: bad }, 'a', ''), /is not a normalized root-relative path/);
+    assert.equal(path({ a: 'a#b.ts' }, 'a', ''), 'a#b.ts');
     assert.deepEqual(paths({ a: ['x', 'y/z.ts'] }, 'a', ''), ['x', 'y/z.ts']);
     assert.throws(() => paths({}, 'a', ''), /"a" is empty, so nothing would be read/);
     assert.throws(() => paths({ a: [1] }, 'a', ''), /a\[0\]: 1 is not a normalized root-relative path/);
@@ -132,7 +144,7 @@ describe('config helpers', () => {
 
 describe('the baseline', () => {
   it('reads a well-formed baseline and names the list a malformed one breaks', () => {
-    assert.deepEqual(parseBaseline('{"cli": ["a.ts"], "server": ["s.ts"]}', ['cli', 'server'], 'b.json', 'paths'), { cli: ['a.ts'], server: ['s.ts'] });
+    assert.deepEqual({ ...parseBaseline('{"cli": ["a.ts"], "server": ["s.ts"]}', ['cli', 'server'], 'b.json', 'paths') }, { cli: ['a.ts'], server: ['s.ts'] });
     assert.throws(() => parseBaseline('{"cli": "x", "server": []}', ['cli', 'server'], 'b.json', 'paths'), /^Error: b\.json: "cli" must be a list of paths$/);
     assert.throws(() => parseBaseline('{"cli": [], "server": [1]}', ['cli', 'server'], 'b.json', 'paths'), /"server" must be a list of paths/);
     assert.throws(() => parseBaseline('{"cli": []}', ['cli', 'server'], 'b.json', 'paths'), /"server" must be a list of paths/);
@@ -143,9 +155,9 @@ describe('the baseline', () => {
 
   it('reads the merge base’s baseline against today’s lists: one added since is empty, one removed since is ignored', () => {
     // A group added since the merge base: the base has no list for it.
-    assert.deepEqual(parseBaseline('{"cli": ["a.ts"]}', ['cli', 'server'], 'b.json', 'paths', true), { cli: ['a.ts'], server: [] });
+    assert.deepEqual({ ...parseBaseline('{"cli": ["a.ts"]}', ['cli', 'server'], 'b.json', 'paths', true) }, { cli: ['a.ts'], server: [] });
     // A group removed since: its list at the base is not read.
-    assert.deepEqual(parseBaseline('{"cli": ["a.ts"], "server": ["s.ts"]}', ['cli'], 'b.json', 'paths', true), { cli: ['a.ts'] });
+    assert.deepEqual({ ...parseBaseline('{"cli": ["a.ts"], "server": ["s.ts"]}', ['cli'], 'b.json', 'paths', true) }, { cli: ['a.ts'] });
     // A list it does hold must still be well formed.
     assert.throws(() => parseBaseline('{"cli": "x"}', ['cli'], 'b.json', 'paths', true), /"cli" must be a list of paths/);
     assert.throws(() => parseBaseline('[]', ['cli'], 'b.json', 'paths', true), /must be an object/);
@@ -154,6 +166,24 @@ describe('the baseline', () => {
   it('audits what must be baselined against what is', () => {
     assert.deepEqual(audit({ a: ['x', 'y'], b: ['z'] }, { a: ['y', 'gone'], b: [] }), { unaccounted: ['x', 'z'], stale: ['gone'] });
     assert.deepEqual(audit({ a: ['x'] }, { a: ['x'] }), { unaccounted: [], stale: [] });
+  });
+
+  it('audits list by list: an id in the wrong list is unaccounted in its own and stale in the other', () => {
+    assert.deepEqual(audit({ cli: ['a.ts'], server: [] }, { cli: [], server: ['a.ts'] }), { unaccounted: ['a.ts'], stale: ['a.ts'] });
+    // A list one side lacks reads as empty.
+    assert.deepEqual(audit({ cli: ['a.ts'] }, { cli: ['a.ts'], tools: ['t.ts'] }), { unaccounted: [], stale: ['t.ts'] });
+    assert.deepEqual(audit({ cli: [], tools: ['t.ts'] }, { cli: [] }), { unaccounted: ['t.ts'], stale: [] });
+  });
+
+  it('reads a list named __proto__ or constructor as a list, never the prototype', () => {
+    const b = parseBaseline('{"__proto__": ["p.ts"], "constructor": ["c.ts"]}', ['__proto__', 'constructor'], 'b.json', 'paths');
+    assert.deepEqual(Object.keys(b), ['__proto__', 'constructor']);
+    assert.deepEqual(b['__proto__'], ['p.ts']);
+    assert.equal(Object.getPrototypeOf(b), null);
+    // A list the text lacks is not read from the prototype.
+    assert.throws(() => parseBaseline('{}', ['constructor'], 'b.json', 'paths'), /"constructor" must be a list of paths/);
+    assert.deepEqual({ ...parseBaseline('{}', ['constructor'], 'b.json', 'paths', true) }, { constructor: [] });
+    assert.deepEqual(audit({ constructor: ['c.ts'] }, {}), { unaccounted: ['c.ts'], stale: [] });
   });
 
   it('reports only entries added since the base', () => {
@@ -169,8 +199,22 @@ describe('the baseline', () => {
       ['new/m.ts', 'old/m.ts'],
       ['new/p.ts', 'old/p.ts'],
     ]);
-    assert.deepEqual(grownEntries(base, head, renamed), ['new/m.ts#json', 'q.ts']);
-    assert.deepEqual(grownEntries(base, head), ['new/m.ts#yaml', 'new/m.ts#json', 'new/p.ts', 'q.ts']);
+    const beforeHash = (id: string): string => id.slice(0, id.lastIndexOf('#') === -1 ? id.length : id.lastIndexOf('#'));
+    assert.deepEqual(grownEntries(base, head, renamed, beforeHash), ['new/m.ts#json', 'q.ts']);
+    assert.deepEqual(grownEntries(base, head, new Map(), beforeHash), ['new/m.ts#yaml', 'new/m.ts#json', 'new/p.ts', 'q.ts']);
+  });
+
+  it('looks a moved file up by the whole id unless told where its path ends, so a path may hold a #', () => {
+    // A fault id is a path, and a path may hold a #: the whole id is looked up.
+    assert.deepEqual(grownEntries({ cli: ['old/a#b.ts'] }, { cli: ['new/a#b.ts'] }, new Map([['new/a#b.ts', 'old/a#b.ts']])), []);
+    // The first # is not the split: a codec id's path ends at its last #.
+    const renamed = new Map([['new/a#b.ts', 'old/a#b.ts']]);
+    assert.deepEqual(grownEntries({ handParsers: ['old/a#b.ts#yaml'] }, { handParsers: ['new/a#b.ts#yaml'] }, renamed, (id) => id.slice(0, id.lastIndexOf('#'))), []);
+    assert.deepEqual(grownEntries({ handParsers: ['old/a#b.ts#yaml'] }, { handParsers: ['new/a#b.ts#yaml'] }, renamed), ['new/a#b.ts#yaml']);
+  });
+
+  it('counts an entry that only changed list as no growth', () => {
+    assert.deepEqual(grownEntries({ cli: ['a.ts'], server: [] }, { cli: [], server: ['a.ts'] }), []);
   });
 
   it('names a root no tracked file lies under', () => {
@@ -179,30 +223,62 @@ describe('the baseline', () => {
 });
 
 describe('suite wiring', () => {
+  const imports = (source: string, file = 'scripts/x.test.ts'): string[] => importSpecifiers(ts, file, source);
+
+  it('reads the imports from the syntax tree: declarations, re-exports and literal dynamic imports', () => {
+    const source = [
+      "import { a } from './a.ts';",
+      "import b from './b';",
+      "import * as c from './c.js';",
+      "import './side-effect';",
+      "export { d } from './d';",
+      "export * from './e';",
+      "const f = await import('./f.ts');",
+      'const g = await import(`./g.ts`);',
+      "import fc from 'fast-check';",
+    ].join('\n');
+    assert.deepEqual(imports(source), ['./a.ts', './b', './c.js', './side-effect', './d', './e', './f.ts', './g.ts', 'fast-check']);
+  });
+
+  it('takes no specifier from a comment, another string, a type-only import or a computed import', () => {
+    const source = [
+      "// import { a } from './target.ts';",
+      "/* } from './target.ts' */",
+      "const s = \"from './target.ts'\";",
+      "const t = `from 'fast-check'`;",
+      "import type { T } from './target.ts';",
+      "export type { U } from './target.ts';",
+      "const name = './target.ts'; await import(name);",
+    ].join('\n');
+    assert.deepEqual(imports(source), []);
+    assert.equal(importsModule('scripts/x.test.ts', imports(source), 'scripts/target.ts'), false);
+    assert.equal(importsPackage(imports(source), 'fast-check'), false);
+  });
+
   it('resolves a relative specifier against the suite, extension or not', () => {
     const suite = 'scripts/validations/records/paths.differential.properties.test.ts';
     const target = 'scripts/validations/records/paths.ts';
-    assert.equal(importsModule(suite, "import { a } from './paths.ts';", target), true);
-    assert.equal(importsModule(suite, "} from '../records/paths';", target), true);
-    assert.equal(importsModule(suite, 'import { a } from "./paths.js";', target), true);
+    assert.equal(importsModule(suite, ['./paths.ts'], target), true);
+    assert.equal(importsModule(suite, ['../records/paths'], target), true);
+    assert.equal(importsModule(suite, ['./paths.js'], target), true);
     // Same basename, another directory: not the registered source.
-    assert.equal(importsModule(suite, "import { a } from '../documentation/paths.ts';", target), false);
-    assert.equal(importsModule(suite, "import { a } from 'paths';", target), false);
+    assert.equal(importsModule(suite, ['../documentation/paths.ts'], target), false);
+    assert.equal(importsModule(suite, ['paths'], target), false);
   });
 
   it('takes a folder import as its index module', () => {
     const target = 'packages/h/src/fault/index.ts';
-    assert.equal(importsModule('scripts/x.test.ts', "from '../packages/h/src/fault/index.ts'", target), true);
-    assert.equal(importsModule('scripts/x.test.ts', "from '../packages/h/src/fault'", target), true);
-    assert.equal(importsModule('scripts/x.test.ts', "from '../packages/h/src/fault/'", target), true);
-    assert.equal(importsModule('scripts/x.test.ts', "from '../packages/h/src/faults'", target), false);
-    assert.equal(importsModule('scripts/x.test.ts', "from './index'", 'scripts/y.ts'), false);
+    assert.equal(importsModule('scripts/x.test.ts', ['../packages/h/src/fault/index.ts'], target), true);
+    assert.equal(importsModule('scripts/x.test.ts', ['../packages/h/src/fault'], target), true);
+    assert.equal(importsModule('scripts/x.test.ts', ['../packages/h/src/fault/'], target), true);
+    assert.equal(importsModule('scripts/x.test.ts', ['../packages/h/src/faults'], target), false);
+    assert.equal(importsModule('scripts/x.test.ts', ['./index'], 'scripts/y.ts'), false);
   });
 
-  it('reads a package import and a quoted module name in either quote', () => {
-    assert.equal(importsPackage("import fc from 'fast-check';", 'fast-check'), true);
-    assert.equal(importsPackage('import fc from "fast-check";', 'fast-check'), true);
-    assert.equal(importsPackage("import fc from 'fast-check/x';", 'fast-check'), false);
+  it('reads a package import by its exact specifier, and a quoted module name in either quote', () => {
+    assert.equal(importsPackage(imports("import fc from 'fast-check';"), 'fast-check'), true);
+    assert.equal(importsPackage(imports('import fc from "fast-check";'), 'fast-check'), true);
+    assert.equal(importsPackage(imports("import fc from 'fast-check/x';"), 'fast-check'), false);
     assert.equal(namesModule("await import('parse5')", 'parse5'), true);
     assert.equal(namesModule('const m = "parse5";', 'parse5'), true);
     assert.equal(namesModule('parse5 is mentioned', 'parse5'), false);
@@ -232,7 +308,7 @@ describe('catalogue examples', () => {
     assert.equal(parseExamples({ examples: null }, skipped), undefined);
     assert.deepEqual(skipped, ['examples']);
     const fixtures = { 'A-1': { example: 'M1', test: 'scripts/a.test.ts' } };
-    assert.deepEqual(parseExamples({ examples: { catalogue: { path: 'cat.json', slice: 'S' }, fixtures } }, []), { catalogue: { path: 'cat.json', slice: 'S' }, fixtures });
+    assert.deepEqual(plainExamples(parseExamples({ examples: { catalogue: { path: 'cat.json', slice: 'S' }, fixtures } }, [])), { catalogue: { path: 'cat.json', slice: 'S' }, fixtures });
     const noCatalogue: string[] = [];
     assert.equal(parseExamples({ examples: { catalogue: null, fixtures } }, noCatalogue)?.catalogue, undefined);
     assert.deepEqual(noCatalogue, ['examples.catalogue']);
@@ -243,6 +319,17 @@ describe('catalogue examples', () => {
     assert.throws(() => parseExamples({ examples: { catalogue: null, fixtures: { a: 1 } } }, []), /examples\.fixtures\.a must be an object/);
     assert.throws(() => parseExamples({ examples: { catalogue: null, fixtures: { a: { example: 'M1', test: 'a.ts', extra: 1 } } } }, []), /examples\.fixtures\.a: unknown key "extra"/);
     assert.throws(() => parseExamples({ examples: { other: 1 } }, []), /examples: unknown key "other"/);
+  });
+
+  it('keeps a fixture keyed __proto__ as a fixture, and finds no fixture a catalogue id names only by inheritance', () => {
+    const raw = JSON.parse('{"examples": {"catalogue": null, "fixtures": {"__proto__": {"example": "M1", "test": "scripts/a.test.ts"}}}}') as Record<string, unknown>;
+    const parsed = parseExamples(raw, []);
+    assert.deepEqual(Object.keys(parsed?.fixtures ?? {}), ['__proto__']);
+    assert.equal(Object.getPrototypeOf(parsed?.fixtures), null);
+    put(root, { 'proto.json': JSON.stringify({ checks: [{ id: 'constructor', slice: 'P', example: 'M1: x' }, { id: 'toString', slice: 'P', example: 'M2: y' }] }) });
+    const examples = parseExamples({ examples: { catalogue: { path: 'proto.json', slice: 'P' }, fixtures: { A: { example: 'M1', test: 'scripts/a.test.ts' } } } }, []);
+    assert.ok(examples !== undefined);
+    assert.deepEqual(checkExamples(root, examples, [/^scripts\//]).slice(0, 2), ['proto.json: constructor (slice P) has no example fixture', 'proto.json: toString (slice P) has no example fixture']);
   });
 
   it('passes fixtures that cover the slice, each from its own example, collected and naming it', () => {
@@ -294,7 +381,7 @@ describe('catalogue examples', () => {
   it('reads a baseline file, refusing one that is missing', () => {
     put(root, { 'base.json': '{"a":["x"]}' });
     const parse = (s: string, w: string) => parseBaseline(s, ['a'], w, 'ids');
-    assert.deepEqual(readBaseline(root, 'base.json', parse), { a: ['x'] });
+    assert.deepEqual({ ...readBaseline(root, 'base.json', parse) }, { a: ['x'] });
     assert.throws(() => readBaseline(root, 'none.json', parse), /the baseline none\.json is not a readable file/);
   });
 });

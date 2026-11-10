@@ -17,6 +17,7 @@ import {
   checkExamples,
   checkFindingIds,
   formatOutcome,
+  importSpecifiers,
   importsModule,
   importsPackage,
   isCollected,
@@ -95,6 +96,16 @@ export interface Config {
 
 const PAIR_ID = /^[^#]+#(?:[A-Za-z_$][\w$]*->[A-Za-z_$][\w$]*|digest)$/;
 
+/**
+ * The file an id names. An id is `path#format`, `path#producer->consumer` or
+ * `path#digest`, and no suffix holds a `#`, so the path is everything before
+ * the last one: a path may itself hold a `#`.
+ */
+export const fileOf = (id: string): string => {
+  const hash = id.lastIndexOf('#');
+  return hash === -1 ? id : id.slice(0, hash);
+};
+
 const isFormat = (f: unknown): f is Format => typeof f === 'string' && (FORMATS as readonly string[]).includes(f);
 
 /** The config a JSON text names; throws naming the first bad key. */
@@ -143,6 +154,11 @@ export const parseConfig = (source: string): Config => {
     if (!PAIR_ID.test(id)) throw new Error(`${where}"${id}" is not path#producer->consumer or path#digest`);
     const kind = e['kind'];
     if (kind !== 'round-trip' && kind !== 'golden') throw new Error(`${where}"kind" must be "round-trip" or "golden"`);
+    // The id's shape names the kind, so a pair cannot skip the checks its
+    // kind needs: a producer->consumer pair round-trips under the property
+    // library and a seed; a digest pins a golden.
+    const shaped = id.endsWith('#digest') ? 'golden' : 'round-trip';
+    if (kind !== shaped) throw new Error(`${where}"kind" is "${kind}", but "${id}" is ${shaped === 'golden' ? 'a digest, which is "golden"' : 'a producer->consumer pair, which is "round-trip"'}`);
     return { id, kind, suite: path(e, 'suite', where), motivatedBy: optionalText(e, 'motivatedBy', where) };
   });
   const exempt = records(list(raw, 'exempt', ''), 'exempt').map(({ raw: e, where }) => {
@@ -262,7 +278,8 @@ export const scanSource = (ts: Ts, file: string, source: string): Scan => {
       if (isExported(node)) exported.push(node.name.text);
     } else if (ts.isExportDeclaration(node) && !node.isTypeOnly && node.moduleSpecifier === undefined && node.exportClause !== undefined && ts.isNamedExports(node.exportClause)) {
       // `export { writeEntry, readEntry as read }`: read once every binding is known, below.
-      for (const element of node.exportClause.elements) listed.push([(element.propertyName ?? element.name).text, element.name.text]);
+      // `export { type writeEntry }` exports no value, so it makes no pair.
+      for (const element of node.exportClause.elements) if (!element.isTypeOnly) listed.push([(element.propertyName ?? element.name).text, element.name.text]);
     } else if (ts.isVariableStatement(node)) {
       for (const declaration of node.declarationList.declarations) {
         if (!ts.isIdentifier(declaration.name)) continue;
@@ -339,11 +356,11 @@ export const expectedBaseline = (found: Discovery, cover: ReadonlySet<string>): 
 });
 
 /** Findings about the registered suites: each exists where a runner collects it and holds what its kind needs. */
-export const checkWiring = (root: string, config: Config): string[] => {
+export const checkWiring = (ts: Ts, root: string, config: Config): string[] => {
   const out: string[] = [];
   const surfaces = config.surfaces ?? [];
   const onSurface = (suite: string): boolean => config.surfaces === undefined || surfaces.some((g) => matchesGlob(suite, g));
-  const common = (what: string, source: string, suite: string): string | undefined => {
+  const common = (what: string, source: string, suite: string): { body: string; imports: string[] } | undefined => {
     if (!isFile(root, source)) out.push(`${what}: ${source} does not exist`);
     if (!isCollected(config.collected, suite)) out.push(`${what}: no runner collects ${suite}`);
     const body = readText(root, suite);
@@ -351,15 +368,17 @@ export const checkWiring = (root: string, config: Config): string[] => {
       out.push(`${what}: the suite ${suite} does not exist`);
       return undefined;
     }
-    if (!importsModule(suite, body, source)) out.push(`${what}: ${suite} does not import ${source}`);
-    return body;
+    const imports = importSpecifiers(ts, suite, body);
+    if (!importsModule(suite, imports, source)) out.push(`${what}: ${suite} does not import ${source}`);
+    return { body, imports };
   };
   for (const entry of config.handParsers) {
     const what = `hand parser ${entry.source}`;
     if (!onSurface(entry.suite)) out.push(`${what}: ${entry.suite} is not on a property-suite surface (${surfaces.join(', ')})`);
-    const body = common(what, entry.source, entry.suite);
-    if (body === undefined) continue;
-    if (!importsPackage(body, config.library)) out.push(`${what}: ${entry.suite} does not import ${config.library}`);
+    const suite = common(what, entry.source, entry.suite);
+    if (suite === undefined) continue;
+    const { body, imports } = suite;
+    if (!importsPackage(imports, config.library)) out.push(`${what}: ${entry.suite} does not import ${config.library}`);
     for (const format of entry.formats) {
       const oracle = config.oracles[format] ?? '';
       if (!namesModule(body, oracle)) out.push(`${what}: ${entry.suite} does not import ${oracle}, the ${format} reference`);
@@ -369,31 +388,32 @@ export const checkWiring = (root: string, config: Config): string[] => {
   }
   for (const pair of config.pairs) {
     const what = `pair ${pair.id}`;
-    const source = pair.id.slice(0, pair.id.indexOf('#'));
+    const source = fileOf(pair.id);
     if (pair.kind === 'round-trip' && !onSurface(pair.suite)) out.push(`${what}: ${pair.suite} is not on a property-suite surface (${surfaces.join(', ')})`);
-    const body = common(what, source, pair.suite);
-    if (body === undefined) continue;
+    const suite = common(what, source, pair.suite);
+    if (suite === undefined) continue;
+    const { body, imports } = suite;
     if (pair.kind === 'golden') {
       if (!body.includes(config.markers.golden)) out.push(`${what}: ${pair.suite} pins no golden (${config.markers.golden})`);
       continue;
     }
-    if (!importsPackage(body, config.library)) out.push(`${what}: ${pair.suite} does not import ${config.library}`);
+    if (!importsPackage(imports, config.library)) out.push(`${what}: ${pair.suite} does not import ${config.library}`);
     if (!body.includes(config.markers.seed)) out.push(`${what}: ${pair.suite} runs no fixed seed (${config.markers.seed})`);
   }
   return out;
 };
 
 /** Every finding: wiring, examples, accounting against the baseline, and growth when `grown` is given. */
-export const findings = (root: string, config: Config, found: Discovery, baseline: Baseline, grown: readonly string[]): string[] => {
+export const findings = (ts: Ts, root: string, config: Config, found: Discovery, baseline: Baseline, grown: readonly string[]): string[] => {
   const cover = covered(config);
   const { unaccounted, stale } = audit(expectedBaseline(found, cover), baseline);
   const discovered = new Set([...found.handParsers, ...found.pairs]);
   return [
-    ...checkWiring(root, config),
+    ...checkWiring(ts, root, config),
     ...(config.examples === undefined ? [] : checkExamples(root, config.examples, config.collected)),
     ...[...cover].filter((id) => !discovered.has(id)).map((id) => `${id}: registered or exempt, but discovery does not find it; drop the entry, or fix what it names`),
     ...unaccounted.map((id) => `${id}: discovered and unaccounted; register a suite for it, or exempt it with a reason`),
-    ...stale.map((id) => `${id}: in ${config.baseline}, but registered, exempt or gone; remove it from the baseline`),
+    ...stale.map((id) => `${id}: in ${config.baseline}, but registered, exempt, gone or in the wrong list; remove it from the baseline`),
     ...grown.map((id) => `${id}: added to ${config.baseline} since the merge base; the baseline only shrinks, so register a suite instead`),
   ];
 };

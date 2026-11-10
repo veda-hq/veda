@@ -9,14 +9,28 @@
 // runner must collect.
 import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, posix } from 'node:path';
+import type * as TS from 'typescript';
 import { fileAt, mergeBaseOf, renamesSince, type Git } from './git.ts';
+import type { Ts } from './typescript.ts';
 
 export type Raw = Record<string, unknown>;
 
 export const isRecord = (v: unknown): v is Raw => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** A normalized relative POSIX path that stays inside the root. */
-export const isRepoPath = (p: string): boolean => !isAbsolute(p) && posix.normalize(p) === p && p !== '.' && p !== '..' && !p.startsWith('../') && !p.endsWith('/');
+/**
+ * A normalized relative POSIX path that stays inside the root. A backslash
+ * (a separator to Windows path operations, so `..\x` could leave the root) and
+ * a NUL are refused before any host path operation sees the path.
+ */
+export const isRepoPath = (p: string): boolean =>
+  !/[\\\0]/.test(p) && !isAbsolute(p) && !posix.isAbsolute(p) && posix.normalize(p) === p && p !== '.' && p !== '..' && !p.startsWith('../') && !p.endsWith('/');
+
+/**
+ * An empty dictionary with no prototype, for keys a config or a file names: a
+ * key such as `__proto__` or `constructor` is then an entry like any other,
+ * never the prototype or an inherited member.
+ */
+export const dict = <T>(): Record<string, T> => Object.create(null) as Record<string, T>;
 
 /** Throws naming the first key of `raw` that `allowed` lacks. */
 export const onlyKeys = (raw: Raw, allowed: readonly string[], where: string): void => {
@@ -181,9 +195,10 @@ export const parseBaseline = (source: string, lists: readonly string[], where: s
   if (!isRecord(raw)) throw new Error(`${where}: must be an object with ${lists.map((l) => `"${l}"`).join(' and ')} lists`);
   const extra = Object.keys(raw).find((k) => !lists.includes(k));
   if (extra !== undefined && !atBase) throw new Error(`${where}: unknown list "${extra}"`);
-  const out: Record<string, string[]> = {};
+  const out = dict<string[]>();
   for (const name of lists) {
-    const v = atBase && raw[name] === undefined ? [] : raw[name];
+    const held = Object.hasOwn(raw, name) ? raw[name] : undefined;
+    const v = atBase && held === undefined ? [] : held;
     if (!Array.isArray(v) || !v.every((s) => typeof s === 'string')) throw new Error(`${where}: "${name}" must be a list of ${noun}`);
     out[name] = v;
   }
@@ -192,23 +207,38 @@ export const parseBaseline = (source: string, lists: readonly string[], where: s
 
 const all = (baseline: Baseline): string[] => Object.values(baseline).flat();
 
-/** `unaccounted`: discovered, uncovered and not baselined. `stale`: baselined and not owed. */
-export const audit = (expected: Baseline, actual: Baseline): { unaccounted: string[]; stale: string[] } => {
-  const want = all(expected);
-  const have = all(actual);
-  return { unaccounted: want.filter((id) => !have.includes(id)), stale: have.filter((id) => !want.includes(id)) };
-};
+const listOf = (baseline: Baseline, name: string): readonly string[] => (Object.hasOwn(baseline, name) ? (baseline[name] as readonly string[]) : []);
 
 /**
- * Entries the head baseline has that the base did not. An id is a path, or a
- * path then `#` and what in it is owed; when its file was renamed (`renamed`:
- * new path to old path) it counts under its old path, so a move is not growth.
+ * List by list: `unaccounted`, discovered and uncovered but not in its list;
+ * `stale`, in a list that does not owe it. An id in the wrong list is both.
  */
-export const grownEntries = (base: Baseline, head: Baseline, renamed: ReadonlyMap<string, string> = new Map()): string[] => {
+export const audit = (expected: Baseline, actual: Baseline): { unaccounted: string[]; stale: string[] } => {
+  const unaccounted: string[] = [];
+  const stale: string[] = [];
+  for (const name of new Set([...Object.keys(expected), ...Object.keys(actual)])) {
+    const want = listOf(expected, name);
+    const have = listOf(actual, name);
+    unaccounted.push(...want.filter((id) => !have.includes(id)));
+    stale.push(...have.filter((id) => !want.includes(id)));
+  }
+  return { unaccounted, stale };
+};
+
+/** The file an id names, when the id is the path itself. */
+export const wholeId = (id: string): string => id;
+
+/**
+ * Entries the head baseline has that the base did not, across its lists (an
+ * entry that only changed list is not growth). `fileOf` reads the file an id
+ * names (the whole id for a path; the part before a suffix for `path#suffix`);
+ * when that file was renamed (`renamed`: new path to old path) the id counts
+ * under its old path, so a move is not growth.
+ */
+export const grownEntries = (base: Baseline, head: Baseline, renamed: ReadonlyMap<string, string> = new Map(), fileOf: (id: string) => string = wholeId): string[] => {
   const before = new Set(all(base));
   const asBefore = (id: string): string => {
-    const hash = id.indexOf('#');
-    const file = hash === -1 ? id : id.slice(0, hash);
+    const file = fileOf(id);
     const old = renamed.get(file);
     return old === undefined ? id : old + id.slice(file.length);
   };
@@ -220,11 +250,11 @@ export const grownEntries = (base: Baseline, head: Baseline, renamed: ReadonlyMa
  * and `base`: empty when the merge base has no baseline yet. A git failure,
  * or a baseline the merge base holds malformed, throws.
  */
-export const growthSince = (git: Git, base: string, baselinePath: string, head: Baseline, parse: (source: string, where: string) => Baseline): string[] => {
+export const growthSince = (git: Git, base: string, baselinePath: string, head: Baseline, parse: (source: string, where: string) => Baseline, fileOf: (id: string) => string = wholeId): string[] => {
   const commit = mergeBaseOf(git, base);
   const before = fileAt(git, commit, baselinePath);
   if (before === null) return [];
-  return grownEntries(parse(before, `${baselinePath} at the merge base ${commit.slice(0, 12)}`), head, renamesSince(git, commit));
+  return grownEntries(parse(before, `${baselinePath} at the merge base ${commit.slice(0, 12)}`), head, renamesSince(git, commit), fileOf);
 };
 
 /** The roots among `roots` under which none of `files` lies: a typo'd root reads nothing and would pass. */
@@ -241,26 +271,46 @@ export const readBaseline = (root: string, at: string, parse: (source: string, w
 
 const EXTENSION = /\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
 
-/** The relative specifiers a module imports from (`from './x'`, either quote). */
-const relativeSpecifiers = (source: string): string[] => [...source.matchAll(/\bfrom\s*(['"])(\.{1,2}\/[^'"\n]+)\1/g)].map((m) => m[2] ?? '');
+/**
+ * The module specifiers a suite imports, read from its syntax tree: each
+ * import declaration that brings in a value (`import { a } from`, a default
+ * or namespace import, `import './x'`), each `export … from`, and each
+ * `import('…')` of a literal. A specifier in a comment or another string, or
+ * a type-only import, is no import.
+ */
+export const importSpecifiers = (ts: Ts, file: string, source: string): string[] => {
+  const out: string[] = [];
+  const visit = (node: TS.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && node.importClause?.isTypeOnly !== true) out.push(node.moduleSpecifier.text);
+    else if (ts.isExportDeclaration(node) && !node.isTypeOnly && node.moduleSpecifier !== undefined && ts.isStringLiteral(node.moduleSpecifier)) out.push(node.moduleSpecifier.text);
+    else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const first = node.arguments[0];
+      if (first !== undefined && ts.isStringLiteralLike(first)) out.push(first.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true));
+  return out;
+};
 
 /**
- * Whether the suite at `suite` (its text `source`) imports the module at
+ * Whether the suite at `suite`, importing `specifiers`, imports the module at
  * `target` by a relative specifier: each specifier is resolved against the
  * suite's folder, so a same-named module elsewhere does not count. A folder's
  * `index` module may be imported by the folder.
  */
-export const importsModule = (suite: string, source: string, target: string): boolean => {
+export const importsModule = (suite: string, specifiers: readonly string[], target: string): boolean => {
   const want = target.replace(EXTENSION, '');
   const folder = posix.basename(want) === 'index' ? posix.dirname(want) : undefined;
-  return relativeSpecifiers(source).some((specifier) => {
+  return specifiers.some((specifier) => {
+    if (!specifier.startsWith('./') && !specifier.startsWith('../')) return false;
     const got = posix.join(posix.dirname(suite), specifier).replace(EXTENSION, '').replace(/\/$/, '');
     return got === want || got === folder;
   });
 };
 
-/** Whether the text imports a bare module specifier (`from 'fast-check'`, either quote). */
-export const importsPackage = (source: string, specifier: string): boolean => source.includes(`from '${specifier}'`) || source.includes(`from "${specifier}"`);
+/** Whether `specifiers` (a suite's imports) include the bare module specifier. */
+export const importsPackage = (specifiers: readonly string[], specifier: string): boolean => specifiers.includes(specifier);
 
 /** Whether the text names a module specifier as a string, either quote. */
 export const namesModule = (source: string, specifier: string): boolean => source.includes(`'${specifier}'`) || source.includes(`"${specifier}"`);
@@ -301,7 +351,7 @@ export const parseExamples = (raw: Raw, skipped: string[]): Examples | undefined
     return { path: path(c, 'path', 'examples.catalogue: '), slice: text(c, 'slice', 'examples.catalogue: ') };
   });
   const fixturesRaw = object(v, 'fixtures', 'examples: ');
-  const fixtures: Record<string, { example: string; test: string }> = {};
+  const fixtures = dict<{ example: string; test: string }>();
   for (const [id, entry] of Object.entries(fixturesRaw)) {
     const where = `examples.fixtures.${id}: `;
     if (!isRecord(entry)) throw new Error(`examples.fixtures.${id} must be an object`);

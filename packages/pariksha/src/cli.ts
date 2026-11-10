@@ -14,9 +14,9 @@ import { loadTypescript, typescriptLoaders, type Ts } from './typescript.ts';
 import { checkExportDeletions, formatReport } from './export-deletions.ts';
 import { findMissing, formatFindings, parseRequirements } from './required-settings.ts';
 import { BASE_CANDIDATES, gitAt, gitAtTop, must, resolveBase, topOf, trackedUnder } from './git.ts';
-import { discover as discoverCodecs, findings as codecFindings, formatFindings as formatCodecFindings, parseBaseline as parseCodecBaseline, parseConfig as parseCodecConfig, type Config as CodecConfig, type Discovery, type Format } from './codec-registry.ts';
+import { discover as discoverCodecs, fileOf as codecFileOf, findings as codecFindings, formatFindings as formatCodecFindings, parseBaseline as parseCodecBaseline, parseConfig as parseCodecConfig, type Config as CodecConfig, type Discovery, type Format } from './codec-registry.ts';
 import { discoverGroup, findings as faultFindings, formatFindings as formatFaultFindings, parseBaseline as parseFaultBaseline, parseConfig as parseFaultConfig, type Config as FaultConfig } from './fault-injection-registry.ts';
-import { emptyRoots, growthSince, readBaseline, type Baseline } from './registry-ratchet.ts';
+import { emptyRoots, growthSince, readBaseline, wholeId, type Baseline } from './registry-ratchet.ts';
 
 export interface Io {
   readonly out: (line: string) => void;
@@ -369,6 +369,8 @@ interface Ratchet<C extends { readonly baseline: string; readonly skipped: reado
   readonly discover: (root: string, files: readonly string[], config: C, ts: () => Ts) => Baseline;
   /** What one discovered list is, for a vacuity message: its noun and the roots it was read under. */
   readonly kind: (list: string, config: C) => { readonly noun: string; readonly roots: readonly string[] };
+  /** The file an id names, for rename detection: the whole id, or its path before a suffix. */
+  readonly fileOf: (id: string) => string;
   readonly findings: (root: string, config: C, found: Baseline, baseline: Baseline, grown: readonly string[], ts: () => Ts) => string[];
   readonly format: (list: readonly string[], found: Baseline, baseline: Baseline, notChecked: readonly string[], compared: boolean) => { ok: boolean; out: string[]; err: string[] };
 }
@@ -418,7 +420,7 @@ const runRatchet = <C extends { readonly baseline: string; readonly skipped: rea
       if (base === undefined) {
         throw new Error(asked === undefined ? `none of ${BASE_CANDIDATES.join(', ')} names a commit, so the baseline cannot be held to its merge base; fetch one, pass --base, or pass --no-base` : `--base ${asked} names no commit`);
       }
-      grown = growthSince(git, base, config.baseline, baseline, (source, where) => spec.parseBaseline(source, where, config, true));
+      grown = growthSince(git, base, config.baseline, baseline, (source, where) => spec.parseBaseline(source, where, config, true), spec.fileOf);
     }
     const notChecked = [...config.skipped, ...(noBase ? ['baseline growth (--no-base)'] : [])];
     const result = spec.format(spec.findings(root, config, found, baseline, grown, ts), found, baseline, notChecked, !noBase);
@@ -438,7 +440,8 @@ const CODEC_REGISTRY: Ratchet<CodecConfig> = {
   roots: (config) => config.roots,
   discover: (root, files, config, ts) => discoverCodecs(ts(), root, files, new Set(Object.keys(config.oracles) as Format[])),
   kind: (list, config) => ({ noun: list === 'handParsers' ? 'hand parser' : 'producer/consumer pair', roots: config.roots }),
-  findings: (root, config, found, baseline, grown) => codecFindings(root, config, found as Discovery, baseline, grown),
+  fileOf: codecFileOf,
+  findings: (root, config, found, baseline, grown, ts) => codecFindings(ts(), root, config, found as Discovery, baseline, grown),
   format: (list, found, baseline, notChecked, compared) => formatCodecFindings(list, found as Discovery, baseline, notChecked, compared),
 };
 
@@ -450,6 +453,7 @@ const FAULT_INJECTION_REGISTRY: Ratchet<FaultConfig> = {
   discover: (root, files, config) =>
     Object.fromEntries(Object.entries(config.discover).map(([name, group]) => [name, discoverGroup(root, files.filter((file) => group.roots.some((r) => file === r || file.startsWith(`${r}/`))), group)])),
   kind: (list, config) => ({ noun: `${list} source`, roots: config.discover[list]?.roots ?? [] }),
+  fileOf: wholeId,
   findings: (root, config, found, baseline, grown, ts) => faultFindings(ts(), root, config, found, baseline, grown),
   format: formatFaultFindings,
 };

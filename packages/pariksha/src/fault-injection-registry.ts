@@ -15,7 +15,9 @@ import {
   audit,
   checkExamples,
   checkFindingIds,
+  dict,
   formatOutcome,
+  importSpecifiers,
   importsModule,
   importsPackage,
   isCollected,
@@ -101,7 +103,7 @@ export const parseConfig = (source: string): Config => {
   const raw = parseJson(source);
   onlyKeys(raw, ['baseline', 'discover', 'collected', 'harness', 'consumers', 'exempt', 'exemptIn', 'minNoteLength', 'examples', 'findingIds'], '');
   const groupsRaw = object(raw, 'discover', '');
-  const discover: Record<string, Group> = {};
+  const discover = dict<Group>();
   for (const [name, group] of Object.entries(groupsRaw)) {
     const where = `discover.${name}: `;
     if (!LIST_NAME.test(name)) throw new Error(`discover: "${name}" is not a baseline list name`);
@@ -121,7 +123,7 @@ export const parseConfig = (source: string): Config => {
     return s;
   });
   const checksRaw = object(harnessRaw, 'checks', 'harness: ');
-  const checks: Record<string, string> = {};
+  const checks = dict<string>();
   for (const [id, fn] of Object.entries(checksRaw)) {
     if (typeof fn !== 'string' || !IDENTIFIER.test(fn)) throw new Error(`harness.checks.${id} must be a function name`);
     checks[id] = fn;
@@ -224,7 +226,7 @@ export const checkHarness = (ts: Ts, root: string, config: Config): string[] => 
 };
 
 /** Findings about the registered consumers: each suite runs every declared check through the harness. */
-export const checkConsumers = (root: string, config: Config): string[] => {
+export const checkConsumers = (ts: Ts, root: string, config: Config): string[] => {
   const out: string[] = [];
   const { harness } = config;
   for (const consumer of config.consumers) {
@@ -237,8 +239,9 @@ export const checkConsumers = (root: string, config: Config): string[] => {
       out.push(`${what}: the suite ${consumer.test} does not exist`);
       continue;
     }
-    if (!importsModule(consumer.test, suite, harness.module) && !harness.imports.some((s) => importsPackage(suite, s))) out.push(`${what}: ${consumer.test} does not import the harness (${[harness.module, ...harness.imports].join(' or ')})`);
-    if (!importsModule(consumer.test, suite, consumer.source)) out.push(`${what}: ${consumer.test} does not import ${consumer.source}`);
+    const imports = importSpecifiers(ts, consumer.test, suite);
+    if (!importsModule(consumer.test, imports, harness.module) && !harness.imports.some((s) => importsPackage(imports, s))) out.push(`${what}: ${consumer.test} does not import the harness (${[harness.module, ...harness.imports].join(' or ')})`);
+    if (!importsModule(consumer.test, imports, consumer.source)) out.push(`${what}: ${consumer.test} does not import ${consumer.source}`);
     for (const check of consumer.checks) {
       const fn = harness.checks[check] ?? '';
       if (!suite.includes(`${fn}(`)) out.push(`${what}: ${consumer.test} declares ${check} but never calls ${fn}(`);
@@ -262,11 +265,11 @@ export const findings = (ts: Ts, root: string, config: Config, found: Baseline, 
   };
   return [
     ...checkHarness(ts, root, config),
-    ...checkConsumers(root, config),
+    ...checkConsumers(ts, root, config),
     ...(config.examples === undefined ? [] : checkExamples(root, config.examples, config.collected, callsCheck)),
     ...config.exempt.filter((e) => !exemptable.has(e.source)).map((e) => `${e.source}: exempt, but discovery does not find it in ${config.exemptIn.join(' or ')}; drop the exemption`),
     ...unaccounted.map((s) => `${s}: discovered and unaccounted; register it with a fault-injection suite, or exempt it with a reason`),
-    ...stale.map((s) => `${s}: in ${config.baseline}, but registered, exempt, renamed or gone; remove it from the baseline`),
+    ...stale.map((s) => `${s}: in ${config.baseline}, but registered, exempt, renamed, gone or in the wrong list; remove it from the baseline`),
     ...grown.map((s) => `${s}: added to ${config.baseline} since the merge base; the baseline only shrinks, so register a suite instead`),
   ];
 };

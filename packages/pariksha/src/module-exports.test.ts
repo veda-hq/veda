@@ -65,11 +65,10 @@ describe('moduleExports', () => {
       'export interface I {}',
       'export type T = string;',
       'export default function d() {}',
-      'export default class D {}',
       'function local() {}',
     ].join('\n');
     assert.deepEqual(of({ 'm.ts': source }), {
-      exports: { f: 'function', g: 'function', h: 'function', n: 'value', p: 'function', q: 'function', s: 'function', v: 'value', C: 'value', E: 'value', I: 'type', T: 'type' },
+      exports: { f: 'function', g: 'function', h: 'function', n: 'value', p: 'function', q: 'function', s: 'function', v: 'value', C: 'value', E: 'value', I: 'type', T: 'type', default: 'function' },
       unfollowed: [],
     });
   });
@@ -85,7 +84,7 @@ describe('moduleExports', () => {
       'export { aa, B, c, D, ns, tns, def, Tdef, later, missing, later as renamed };',
       'function later() {}',
     ].join('\n');
-    const x = 'export function a() {}\nexport type B = 1;\nexport const c = 1;\nexport type D = 2;\n';
+    const x = 'export function a() {}\nexport type B = 1;\nexport const c = 1;\nexport type D = 2;\nexport default class K {}\n';
     assert.deepEqual(of({ 'm.ts': source, 'x.ts': x }).exports, {
       aa: 'function',
       B: 'type',
@@ -132,6 +131,38 @@ describe('moduleExports', () => {
   it('ends a cycle of re-exports, keeping what each module declares', () => {
     const files = { 'm.ts': "export * from './x';\nexport function m() {}\n", 'x.ts': "export * from './m';\nexport function x() {}\n" };
     assert.deepEqual(of(files).exports, { m: 'function', x: 'function' });
+  });
+
+  it('records each default export’s kind and follows it, re-exported or imported', () => {
+    const kinds = {
+      'fn.ts': 'export default function () {}\n',
+      'named-fn.ts': 'export default function impl() {}\n',
+      'arrow.ts': 'export default async () => {};\n',
+      'cls.ts': 'export default class {}\n',
+      'local.ts': 'const run = () => 1;\nexport default run;\n',
+      'later.ts': 'export default run;\nfunction run() {}\n',
+      'obj.ts': 'export default { a: 1 };\n',
+      'list.ts': 'function go() {}\nexport { go as default };\n',
+      'eq.ts': 'export = 1;\n',
+    };
+    const source = [
+      "export { default as fn } from './fn';",
+      "export { default as namedFn } from './named-fn';",
+      "export { default as arrow } from './arrow';",
+      "export { default as cls } from './cls';",
+      "export { default as local } from './local';",
+      "export { default as later } from './later';",
+      "export { default as obj } from './obj';",
+      "export { default as list } from './list';",
+      "export { default as eq } from './eq';",
+      "import imported from './fn';",
+      "import pkg from '@acme/pkg';",
+      'export { imported, pkg };',
+    ].join('\n');
+    assert.deepEqual(of({ 'm.ts': source, ...kinds }), {
+      exports: { fn: 'function', namedFn: 'function', arrow: 'function', cls: 'value', local: 'function', later: 'function', obj: 'value', list: 'function', eq: 'unresolved', imported: 'function', pkg: 'unresolved' },
+      unfollowed: ["m.ts: '@acme/pkg'"],
+    });
   });
 
   it('reads a module that does not exist as one exporting nothing', () => {

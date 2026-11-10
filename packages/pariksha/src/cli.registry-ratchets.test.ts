@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { run } from './cli.ts';
 
 const ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
@@ -22,9 +22,16 @@ const capture = () => {
   return { io: { out: (l: string) => out.push(l), err: (l: string) => err.push(l) }, out, err };
 };
 
+/** Every repository a test made, removed once the file's tests are done. */
+const made: string[] = [];
+after(() => {
+  for (const root of made) rmSync(root, { recursive: true, force: true });
+});
+
 /** A repository whose `main` holds `files`, with HEAD on a branch `work` cut from it. */
 const repo = (files: Record<string, string>): string => {
   const root = mkdtempSync(join(tmpdir(), 'pariksha-ratchets-'));
+  made.push(root);
   git(root, 'init', '-q', '-b', 'main');
   put(root, files);
   git(root, 'add', '-A');
@@ -142,7 +149,7 @@ describe('run codec-registry', () => {
     stage(root, { 'scripts/old.ts': null });
     const r = codec(root);
     assert.equal(r.code, 1);
-    assert.deepEqual(r.err[0], `${P} scripts/old.ts#yaml: in codec.baseline.json, but registered, exempt or gone; remove it from the baseline`);
+    assert.deepEqual(r.err[0], `${P} scripts/old.ts#yaml: in codec.baseline.json, but registered, exempt, gone or in the wrong list; remove it from the baseline`);
   });
 
   it('refuses a baseline that grew since the merge base, but not one whose file only moved', () => {
@@ -154,6 +161,15 @@ describe('run codec-registry', () => {
     git(moved, 'mv', 'scripts/old.ts', 'scripts/moved.ts');
     stage(moved, { 'codec.baseline.json': '{"handParsers":["scripts/moved.ts#yaml"],"pairs":[]}\n' });
     assert.equal(codec(moved).code, 0);
+  });
+
+  it('takes a baselined file that only moved as no growth when its path holds a #', () => {
+    const files = { ...CODEC_FILES, 'scripts/old#v1.ts': `${"export const D = '---';\n".repeat(20)}`, 'codec.baseline.json': '{"handParsers":["scripts/old#v1.ts#yaml","scripts/old.ts#yaml"],"pairs":[]}\n' };
+    const moved = repo(files);
+    git(moved, 'mv', 'scripts/old#v1.ts', 'scripts/new#v1.ts');
+    stage(moved, { 'codec.baseline.json': '{"handParsers":["scripts/new#v1.ts#yaml","scripts/old.ts#yaml"],"pairs":[]}\n' });
+    const r = codec(moved);
+    assert.equal(r.code, 0, r.err.join('\n'));
   });
 
   it('refuses growth committed on the branch, since it compares with the merge base, not HEAD', () => {
@@ -383,9 +399,22 @@ describe('run fault-injection-registry', () => {
     assert.equal(r.code, 1);
     assert.deepEqual(r.err.slice(0, 3), [
       `${F} scripts/report.ts: exempt, but discovery does not find it in cli; drop the exemption`,
-      `${F} scripts/old.ts: in fault.baseline.json, but registered, exempt, renamed or gone; remove it from the baseline`,
+      `${F} scripts/old.ts: in fault.baseline.json, but registered, exempt, renamed, gone or in the wrong list; remove it from the baseline`,
       `${F} scripts/new.ts: added to fault.baseline.json since the merge base; the baseline only shrinks, so register a suite instead`,
     ]);
+  });
+
+  it('refuses a baselined source in a list other than the group that discovers it', () => {
+    const root = repo(FAULT_FILES);
+    stage(root, { 'fault.baseline.json': '{"cli":["scripts/old.ts","server/a.service.ts"],"server":[]}' });
+    const r = fault(root);
+    assert.equal(r.code, 1);
+    // Moving an entry between lists adds no debt, so it is not growth.
+    assert.deepEqual(r.err.slice(0, 2), [
+      `${F} server/a.service.ts: discovered and unaccounted; register it with a fault-injection suite, or exempt it with a reason`,
+      `${F} server/a.service.ts: in fault.baseline.json, but registered, exempt, renamed, gone or in the wrong list; remove it from the baseline`,
+    ]);
+    assert.equal(r.err.length, 3);
   });
 
   it('refuses an exemption of a source only a group outside exemptIn discovers', () => {

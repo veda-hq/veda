@@ -73,9 +73,17 @@ export const moduleExports = (ts: Ts, root: string, file: string): ModuleExports
     const stars: string[] = [];
     const named: Array<() => void> = [];
     for (const statement of tree.statements) {
-      if (ts.isFunctionDeclaration(statement) && statement.name !== undefined) {
-        locals.set(statement.name.text, { kind: 'function' });
-        if (hasExport(ts, statement) && !hasDefault(ts, statement)) out.set(statement.name.text, 'function');
+      if (ts.isFunctionDeclaration(statement)) {
+        if (statement.name !== undefined) locals.set(statement.name.text, { kind: 'function' });
+        // `export default function` exports `default`, a function, named or not.
+        if (hasExport(ts, statement) && hasDefault(ts, statement)) out.set('default', 'function');
+        else if (hasExport(ts, statement) && statement.name !== undefined) out.set(statement.name.text, 'function');
+      } else if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
+        // `export default <expression>`: a function expression, or a local resolved once every local is known.
+        const e = statement.expression;
+        if (isFunctionInit(ts, e)) out.set('default', 'function');
+        else if (ts.isIdentifier(e)) named.push(() => out.set('default', kindOfLocal(e.text)));
+        else out.set('default', 'value');
       } else if (ts.isVariableStatement(statement)) {
         for (const d of statement.declarationList.declarations) {
           if (!ts.isIdentifier(d.name)) continue;
@@ -83,16 +91,20 @@ export const moduleExports = (ts: Ts, root: string, file: string): ModuleExports
           locals.set(d.name.text, { kind });
           if (hasExport(ts, statement)) out.set(d.name.text, kind);
         }
-      } else if ((ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) && statement.name !== undefined) {
-        locals.set(statement.name.text, { kind: 'value' });
-        if (hasExport(ts, statement) && !hasDefault(ts, statement)) out.set(statement.name.text, 'value');
+      } else if (ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) {
+        // An enum always has a name; a default class may not.
+        const name = statement.name?.text;
+        if (name !== undefined) locals.set(name, { kind: 'value' });
+        if (hasExport(ts, statement) && hasDefault(ts, statement)) out.set('default', 'value');
+        else if (hasExport(ts, statement) && name !== undefined) out.set(name, 'value');
       } else if (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) {
         locals.set(statement.name.text, { kind: 'type' });
         if (hasExport(ts, statement)) out.set(statement.name.text, 'type');
       } else if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier) && statement.importClause !== undefined) {
         const clause = statement.importClause;
         const specifier = statement.moduleSpecifier.text;
-        if (clause.name !== undefined) locals.set(clause.name.text, clause.isTypeOnly ? { kind: 'type' } : { kind: 'value' });
+        // A default import is the module's `default` export, followed like a named one.
+        if (clause.name !== undefined) locals.set(clause.name.text, clause.isTypeOnly ? { kind: 'type' } : { from: undefined, specifier, name: 'default' });
         const bindings = clause.namedBindings;
         if (bindings !== undefined && ts.isNamespaceImport(bindings)) locals.set(bindings.name.text, { kind: clause.isTypeOnly ? 'type' : 'value' });
         if (bindings !== undefined && ts.isNamedImports(bindings)) {

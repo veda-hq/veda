@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { covered, discover, expectedBaseline, FORMATS, findings, formatFindings, checkWiring, pairsIn, parseBaseline, parseConfig, type Config, type Discovery } from './codec-registry.ts';
+import { covered, discover, expectedBaseline, fileOf, FORMATS, findings, formatFindings, checkWiring, pairsIn, parseBaseline, parseConfig, type Config, type Discovery } from './codec-registry.ts';
 import { gitAt, trackedUnder } from './git.ts';
 import { audit } from './registry-ratchet.ts';
 import { loadTypescript, type Ts } from './typescript.ts';
@@ -174,6 +174,17 @@ describe('discovery: what counts', () => {
     );
   });
 
+  it('makes no pair of a name an export list marks type-only', () => {
+    assert.deepEqual(scan('function writeRow() {}\nfunction readRow() {}\nexport { type writeRow, readRow };\n').pairs, []);
+    assert.deepEqual(scan('function writeRow() {}\nfunction readRow() {}\nexport { writeRow, readRow };\n').pairs, ['scripts/x.ts#writeRow->readRow']);
+  });
+
+  it('reads the file of an id as the path before its last #', () => {
+    assert.equal(fileOf('scripts/a.ts#yaml'), 'scripts/a.ts');
+    assert.equal(fileOf('scripts/a#b.ts#writeRow->readRow'), 'scripts/a#b.ts');
+    assert.equal(fileOf('scripts/a.ts'), 'scripts/a.ts');
+  });
+
   it('scans the source trees in scope and nothing else, and source files only', () => {
     const yaml = "export const D = '---';\n";
     const roots = ['scripts', '.claude/scripts', 'apps/server/src', 'apps/web/src', 'apps/mobile/src', 'packages'];
@@ -223,7 +234,7 @@ describe('guard removal flips it', () => {
   it('a malformed baseline fails loudly rather than reading as empty', () => {
     assert.throws(() => parseBaseline('{"handParsers":[1],"pairs":[]}', 'b.json'), /"handParsers" must be a list of ids/);
     assert.throws(() => parseBaseline('{"handParsers":[]}', 'b.json'), /"pairs"/);
-    assert.deepEqual(parseBaseline('{"handParsers":["a#yaml"],"pairs":["b#digest"]}', 'b.json'), { handParsers: ['a#yaml'], pairs: ['b#digest'] });
+    assert.deepEqual({ ...parseBaseline('{"handParsers":["a#yaml"],"pairs":["b#digest"]}', 'b.json') }, { handParsers: ['a#yaml'], pairs: ['b#digest'] });
   });
 });
 
@@ -319,6 +330,9 @@ describe('the config', () => {
     ['an unknown hand-parser key', { handParsers: [{ source: 'a.ts', formats: ['yaml'], suite: 's.ts', outOfModel: 'x', why: 'y' }] }, /handParsers\[0\]: unknown key "why"/],
     ['a pair id of no known shape', { pairs: [{ id: 'a.ts#write', kind: 'round-trip', suite: 's.ts' }] }, /pairs\[0\]: "a\.ts#write" is not path#producer->consumer or path#digest/],
     ['a pair of no known kind', { pairs: [{ id: 'a.ts#digest', kind: 'other', suite: 's.ts' }] }, /pairs\[0\]: "kind" must be "round-trip" or "golden"/],
+    // The kind follows from the id, so a pair cannot skip the checks its kind needs.
+    ['a producer->consumer pair registered as a golden', { pairs: [{ id: 'a.ts#writeRow->readRow', kind: 'golden', suite: 's.ts' }] }, /pairs\[0\]: "kind" is "golden", but "a\.ts#writeRow->readRow" is a producer->consumer pair, which is "round-trip"/],
+    ['a digest registered as a round-trip', { pairs: [{ id: 'a.ts#digest', kind: 'round-trip', suite: 's.ts' }] }, /pairs\[0\]: "kind" is "round-trip", but "a\.ts#digest" is a digest, which is "golden"/],
     ['an exemption without a reason', { exempt: [{ id: 'a.ts#yaml' }] }, /exempt\[0\]: an exemption needs a reason/],
     ['an exemption with a blank reason', { exempt: [{ id: 'a.ts#yaml', reason: '  ' }] }, /exempt\[0\]: an exemption needs a reason/],
     ['an exemption reason shorter than minNoteLength', { minNoteLength: 21, handParsers: [], exempt: [{ id: 'a.ts#yaml', reason: 'not csv' }] }, /exempt\[0\]: "reason" is shorter than minNoteLength \(21\)/],
@@ -347,8 +361,13 @@ describe('the config', () => {
 describe('suite wiring', () => {
   const SUITE = "import { F } from './md.ts';\nimport fc from 'fast-check';\nimport { fromMarkdown } from 'mdast-util-from-markdown';\nconst opts = { seed: SEED };\nfor (const eol of LINE_ENDINGS) {}\n";
   const PAIR = "import { writeRow, readRow } from './row.ts';\nimport fc from 'fast-check';\nconst opts = { seed: SEED };\n";
+  const made: string[] = [];
+  after(() => {
+    for (const root of made) rmSync(root, { recursive: true, force: true });
+  });
   const make = (files: Record<string, string>): string => {
     const root = mkdtempSync(join(tmpdir(), 'pariksha-codec-wiring-'));
+    made.push(root);
     put(root, {
       'scripts/md.ts': 'export const F = /^```/;\n',
       'scripts/md.differential.properties.test.ts': SUITE,
@@ -360,12 +379,12 @@ describe('suite wiring', () => {
   };
 
   it('passes a suite that imports its module, the library and the oracle, with a seed and both line endings', () => {
-    assert.deepEqual(checkWiring(make({}), parsed()), []);
+    assert.deepEqual(checkWiring(ts, make({}), parsed()), []);
   });
 
   it('refuses each part a hand-parser suite lacks', () => {
     const root = make({ 'scripts/md.differential.properties.test.ts': "import { F } from '../other/md.ts';\n" });
-    assert.deepEqual(checkWiring(root, parsed()), [
+    assert.deepEqual(checkWiring(ts, root, parsed()), [
       'hand parser scripts/md.ts: scripts/md.differential.properties.test.ts does not import scripts/md.ts',
       'hand parser scripts/md.ts: scripts/md.differential.properties.test.ts does not import fast-check',
       'hand parser scripts/md.ts: scripts/md.differential.properties.test.ts does not import mdast-util-from-markdown, the markdown reference',
@@ -374,11 +393,19 @@ describe('suite wiring', () => {
     ]);
   });
 
+  it('reads the imports of a suite, not a comment or a string that looks like one', () => {
+    const commented = SUITE.replace("import { F } from './md.ts';", "// import { F } from './md.ts';").replace("import fc from 'fast-check';", "const note = \"from 'fast-check'\";");
+    assert.deepEqual(checkWiring(ts, make({ 'scripts/md.differential.properties.test.ts': commented }), parsed()), [
+      'hand parser scripts/md.ts: scripts/md.differential.properties.test.ts does not import scripts/md.ts',
+      'hand parser scripts/md.ts: scripts/md.differential.properties.test.ts does not import fast-check',
+    ]);
+  });
+
   it('lets an LF-only suite with a reason go without CRLF, and no other', () => {
     const root = make({ 'scripts/md.differential.properties.test.ts': SUITE.replace('LINE_ENDINGS', 'LF') });
-    assert.equal(checkWiring(root, parsed()).length, 1);
+    assert.equal(checkWiring(ts, root, parsed()).length, 1);
     const lfOnly = parsed({ handParsers: [{ source: 'scripts/md.ts', formats: ['markdown'], suite: 'scripts/md.differential.properties.test.ts', outOfModel: 'x', lfOnly: 'bash reads CR as a word' }] });
-    assert.deepEqual(checkWiring(root, lfOnly), []);
+    assert.deepEqual(checkWiring(ts, root, lfOnly), []);
   });
 
   it('refuses a missing source, a missing suite, an uncollected one and one off the surface', () => {
@@ -386,7 +413,7 @@ describe('suite wiring', () => {
     rmSync(join(root, 'scripts/md.ts'));
     rmSync(join(root, 'scripts/row.roundtrip.properties.test.ts'));
     const c = parsed({ handParsers: [{ source: 'scripts/md.ts', formats: ['markdown'], suite: 'docs/md.test.ts', outOfModel: 'x' }] });
-    assert.deepEqual(checkWiring(root, c), [
+    assert.deepEqual(checkWiring(ts, root, c), [
       'hand parser scripts/md.ts: docs/md.test.ts is not on a property-suite surface (scripts/**/*.{differential,roundtrip}.properties.test.ts)',
       'hand parser scripts/md.ts: scripts/md.ts does not exist',
       'hand parser scripts/md.ts: no runner collects docs/md.test.ts',
@@ -398,7 +425,7 @@ describe('suite wiring', () => {
   it('refuses a round-trip suite with no library or seed, or off the surface', () => {
     const root = make({ 'scripts/row.test.ts': "import { writeRow } from './row.ts';\n" });
     const c = parsed({ pairs: [{ id: 'scripts/row.ts#writeRow->readRow', kind: 'round-trip', suite: 'scripts/row.test.ts' }] });
-    assert.deepEqual(checkWiring(root, c), [
+    assert.deepEqual(checkWiring(ts, root, c), [
       'pair scripts/row.ts#writeRow->readRow: scripts/row.test.ts is not on a property-suite surface (scripts/**/*.{differential,roundtrip}.properties.test.ts)',
       'pair scripts/row.ts#writeRow->readRow: scripts/row.test.ts does not import fast-check',
       'pair scripts/row.ts#writeRow->readRow: scripts/row.test.ts runs no fixed seed (seed: SEED)',
@@ -407,18 +434,18 @@ describe('suite wiring', () => {
 
   it('holds a golden to its assertion only, on any surface', () => {
     const root = make({ 'scripts/digest.ts': '', 'scripts/digest.test.ts': "import { key } from './digest.ts';\nassertGolden(key());\n", 'scripts/bare.test.ts': "import { key } from './digest.ts';\n" });
-    assert.deepEqual(checkWiring(root, parsed({ pairs: [{ id: 'scripts/digest.ts#digest', kind: 'golden', suite: 'scripts/digest.test.ts' }] })), []);
-    assert.deepEqual(checkWiring(root, parsed({ pairs: [{ id: 'scripts/digest.ts#digest', kind: 'golden', suite: 'scripts/bare.test.ts' }] })), ['pair scripts/digest.ts#digest: scripts/bare.test.ts pins no golden (assertGolden)']);
+    assert.deepEqual(checkWiring(ts, root, parsed({ pairs: [{ id: 'scripts/digest.ts#digest', kind: 'golden', suite: 'scripts/digest.test.ts' }] })), []);
+    assert.deepEqual(checkWiring(ts, root, parsed({ pairs: [{ id: 'scripts/digest.ts#digest', kind: 'golden', suite: 'scripts/bare.test.ts' }] })), ['pair scripts/digest.ts#digest: scripts/bare.test.ts pins no golden (assertGolden)']);
   });
 
   it('puts a suite anywhere when the surface check is opted out with null', () => {
     const root = make({ 'scripts/row.test.ts': PAIR });
-    assert.deepEqual(checkWiring(root, parsed({ surfaces: null, pairs: [{ id: 'scripts/row.ts#writeRow->readRow', kind: 'round-trip', suite: 'scripts/row.test.ts' }] })), []);
+    assert.deepEqual(checkWiring(ts, root, parsed({ surfaces: null, pairs: [{ id: 'scripts/row.ts#writeRow->readRow', kind: 'round-trip', suite: 'scripts/row.test.ts' }] })), []);
   });
 
   it('names no repository’s check ids in its messages, only the kind', () => {
     const root = make({ 'scripts/md.differential.properties.test.ts': '' });
-    for (const line of checkWiring(root, parsed())) assert.match(line, /^(?:hand parser|pair) scripts\//);
+    for (const line of checkWiring(ts, root, parsed())) assert.match(line, /^(?:hand parser|pair) scripts\//);
   });
 });
 
@@ -429,17 +456,17 @@ describe('findings', () => {
 
   it('names a registered or exempt id discovery no longer finds, the unaccounted, the stale and the grown', () => {
     const found = { handParsers: ['scripts/a.ts#yaml'], pairs: [] };
-    assert.deepEqual(findings(root, c, found, { handParsers: ['scripts/old.ts#yaml'], pairs: [] }, ['scripts/old.ts#yaml']), [
+    assert.deepEqual(findings(ts, root, c, found, { handParsers: ['scripts/old.ts#yaml'], pairs: [] }, ['scripts/old.ts#yaml']), [
       'scripts/gone.ts#yaml: registered or exempt, but discovery does not find it; drop the entry, or fix what it names',
       'scripts/a.ts#yaml: discovered and unaccounted; register a suite for it, or exempt it with a reason',
-      'scripts/old.ts#yaml: in baseline.json, but registered, exempt or gone; remove it from the baseline',
+      'scripts/old.ts#yaml: in baseline.json, but registered, exempt, gone or in the wrong list; remove it from the baseline',
       'scripts/old.ts#yaml: added to baseline.json since the merge base; the baseline only shrinks, so register a suite instead',
     ]);
   });
 
   it('checks the catalogue examples when the config names them', () => {
     const withExamples = parsed({ handParsers: [], pairs: [], examples: { catalogue: null, fixtures: { 'EDGE-12': { example: 'V1', test: 'scripts/e.test.ts' } } } });
-    assert.deepEqual(findings(root, withExamples, { handParsers: [], pairs: [] }, { handParsers: [], pairs: [] }, []), ['scripts/e.test.ts: the EDGE-12 example suite does not exist']);
+    assert.deepEqual(findings(ts, root, withExamples, { handParsers: [], pairs: [] }, { handParsers: [], pairs: [] }, []), ['scripts/e.test.ts: the EDGE-12 example suite does not exist']);
   });
 
   it('summarises a clean run, says what it did not check, and lists a failing one', () => {

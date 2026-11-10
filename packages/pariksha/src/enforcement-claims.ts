@@ -188,7 +188,8 @@ export const readStandards = (root: string, dir: string): Standard[] => {
  * `curly`); prose is a sentence. An empty claim names nothing.
  */
 export const claimedRules = (claim: string): string[] =>
-  (claim.match(/[^,]+/g) ?? []).map((part) => part.replace(/\(.*?\)/g, '').trim()).filter((part) => /^[@a-z][\w@/.-]*$/i.test(part));
+  // Parentheticals go first: `no-restricted-globals (Buffer, process)` is one rule.
+  (claim.replace(/\([^)]*\)/g, '').match(/[^,]+/g) ?? []).map((part) => part.trim()).filter((part) => /^[@a-z][\w@/.-]*$/i.test(part));
 
 /** Is one resolved rule setting on (error or warn), as a number or a word, bare or an options array's head? */
 export const ruleIsOn = (setting: unknown): boolean => {

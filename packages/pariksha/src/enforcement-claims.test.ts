@@ -180,7 +180,9 @@ describe('readStandards', () => {
   });
 
   it('skips frontmatter that is not valid YAML, rather than counting it as a standard that passed', () => {
-    assert.deepEqual(read(['id: BP-PROBE-107', 'applies_to: [unbalanced'].join('\n')), []);
+    // It declares an enforcement, so only the parse failure can skip it.
+    assert.deepEqual(read(['id: BP-PROBE-107', 'enforcement: guidance', 'applies_to: [unbalanced'].join('\n')), []);
+    assert.equal(read(['id: BP-PROBE-107', 'enforcement: guidance', 'applies_to: [balanced]'].join('\n')).length, 1);
   });
 
   it('reads only .md files, only under the folder, recursively and sorted, CRLF included', () => {
@@ -210,6 +212,8 @@ describe('claimedRules', () => {
     assert.deepEqual(claimedRules('vitest/no-disabled-tests, @scope/plugin/rule'), ['vitest/no-disabled-tests', '@scope/plugin/rule']);
     // A parenthetical narrows a rule rather than naming another one.
     assert.deepEqual(claimedRules('no-restricted-globals (Buffer)'), ['no-restricted-globals']);
+    // A comma inside a parenthetical does not split the rule.
+    assert.deepEqual(claimedRules('no-restricted-globals (Buffer, process), eqeqeq'), ['no-restricted-globals', 'eqeqeq']);
     assert.deepEqual(claimedRules('Reviewer confirms a determinism unit test exists'), []);
     assert.deepEqual(claimedRules(`${NO_INLINE_CONFIG}, no-console`), [NO_INLINE_CONFIG, 'no-console']);
     assert.deepEqual(claimedRules(''), []);

@@ -113,39 +113,83 @@ export const codeLines = (text: string): string =>
 
 const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&');
 
-/** What a workflow or action executes: its `run:` steps, and the local actions it `uses:`. */
-export const yamlCommands = (text: string, actionDirs: readonly string[]): { runs: string; actions: string[] } => {
-  const runs: string[] = [];
+type Node = Record<string, unknown>;
+const isNode = (v: unknown): v is Node => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * A `working-directory` as a root-relative folder (GitHub resolves it against
+ * the checkout); `fallback` when there is none, or when it is an expression,
+ * absolute, or climbs out of the root.
+ */
+const workingDir = (value: unknown, fallback: string): string => {
+  if (typeof value !== 'string' || value.trim() === '' || value.includes('${{') || posix.isAbsolute(value.trim())) return fallback;
+  const dir = posix.normalize(value.trim()).replace(/\/$/, '');
+  return dir === '..' || dir.startsWith('../') ? fallback : dir;
+};
+
+/** A workflow's or job's `defaults.run.working-directory`, else `fallback`. */
+const defaultsDir = (node: Node, fallback: string): string => {
+  const defaults = node['defaults'];
+  const run = isNode(defaults) ? defaults['run'] : undefined;
+  return isNode(run) ? workingDir(run['working-directory'], fallback) : fallback;
+};
+
+/** One `run:` step: its script, and the folder it runs in. */
+export interface RunStep {
+  readonly text: string;
+  readonly dir: string;
+}
+
+/**
+ * What a workflow or action executes: the `run:` of each step (an entry of a
+ * `steps` list, in the folder its `working-directory` or the enclosing
+ * `defaults.run.working-directory` names), and the local actions a step
+ * `uses:`. A `run` or `uses` anywhere else (an action input under `with:`, an
+ * env value) executes nothing.
+ */
+export const yamlCommands = (text: string, actionDirs: readonly string[]): { runs: RunStep[]; actions: string[] } => {
+  const runs: RunStep[] = [];
   const actions: string[] = [];
   const local = actionDirs.map((dir) => new RegExp(`\\./(${escape(dir)}/[\\w-]+)`));
-  const walk = (node: unknown, key?: string): void => {
-    if (typeof node === 'string') {
-      if (key === 'run') runs.push(node);
-      if (key === 'uses') {
-        for (const pattern of local) {
-          const hit = pattern.exec(node);
-          if (hit !== null) actions.push(hit[1] as string);
-        }
+  const step = (s: Node, dir: string): void => {
+    if (typeof s['run'] === 'string') runs.push({ text: s['run'], dir: workingDir(s['working-directory'], dir) });
+    const uses = s['uses'];
+    if (typeof uses !== 'string') return;
+    for (const pattern of local) {
+      const hit = pattern.exec(uses);
+      if (hit !== null) actions.push(hit[1] as string);
+    }
+  };
+  const walk = (node: unknown, key: string | undefined, dir: string): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        if (key === 'steps' && isNode(item)) step(item, dir);
+        walk(item, undefined, dir);
       }
       return;
     }
-    if (typeof node === 'object' && node !== null) {
-      for (const [child, value] of Object.entries(node)) walk(value, child);
-    }
+    if (!isNode(node)) return;
+    const here = defaultsDir(node, dir);
+    for (const [child, value] of Object.entries(node)) walk(value, child, here);
   };
-  walk(load(text));
-  return { runs: runs.join('\n'), actions };
+  walk(load(text), undefined, ROOT_DIR);
+  return { runs, actions };
 };
 
-/** The workspace directories the pnpm workspace file declares, `dir/*` globs expanded to the folders holding a package.json. */
+/**
+ * The workspace directories the pnpm workspace file declares: a literal folder,
+ * or `dir/*` expanded to its folders holding a package.json; an exclusion
+ * (`!dir` or `!dir/*`) removes what it names. Other globs match nothing.
+ */
 export const workspaceDirs = (root: string, workspaceFile: string): string[] => {
   const parsed = load(read(root, workspaceFile));
-  const packages = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>)['packages'] : undefined;
+  const packages = isNode(parsed) ? parsed['packages'] : undefined;
   if (!Array.isArray(packages)) return [];
+  const patterns = packages.filter((p): p is string => typeof p === 'string');
+  const matches = (pattern: string, dir: string): boolean => (pattern.endsWith('/*') ? dir.startsWith(pattern.slice(0, -1)) && !dir.slice(pattern.length - 1).includes('/') : dir === pattern);
+  const excluded = patterns.filter((p) => p.startsWith('!')).map((p) => p.slice(1));
   const dirs: string[] = [];
-  for (const pattern of packages) {
-    // An exclusion (`!dir`) names no workspace.
-    if (typeof pattern !== 'string' || pattern.startsWith('!')) continue;
+  for (const pattern of patterns.filter((p) => !p.startsWith('!'))) {
     if (!pattern.endsWith('/*')) {
       dirs.push(pattern);
       continue;
@@ -157,7 +201,7 @@ export const workspaceDirs = (root: string, workspaceFile: string): string[] => 
       if (existsSync(posix.join(full, entry, 'package.json'))) dirs.push(`${parent}/${entry}`);
     }
   }
-  return dirs;
+  return dirs.filter((dir) => !excluded.some((pattern) => matches(pattern, dir)));
 };
 
 const scriptsOf = (root: string, dir: string): Record<string, string> => {
@@ -260,7 +304,8 @@ export const resolveStageReach = (root: string, config: StageConfig): StageReach
       for (const action of commands.actions) {
         for (const name of ['action.yml', 'action.yaml']) visitFile(`${action}/${name}`, ROOT_DIR);
       }
-      visitText(commands.runs, cwd);
+      // A workflow or action runs from the checkout, so a step's folder is root-relative.
+      for (const step of commands.runs) visitText(step.text, step.dir);
       return;
     }
     if (!path.endsWith('.sh') && !isHook(path, config.hooks)) return;

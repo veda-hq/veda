@@ -143,6 +143,7 @@ describe('run enforcement-claims', () => {
     assert.equal(missing.code, 2);
     assert.match(missing.err[0] ?? '', /^pariksha enforcement-claims: ENOENT.*; nothing was checked, so this is not a pass$/);
     const bad = await claims(repo({}, {}, { ...CONFIG, extra: true }));
+    assert.equal(bad.code, 2);
     assert.deepEqual(bad.err, [`${P} unknown key "extra"; nothing was checked, so this is not a pass`]);
   });
 

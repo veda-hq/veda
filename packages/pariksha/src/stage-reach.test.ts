@@ -173,7 +173,81 @@ describe('yamlCommands', () => {
         ].join('\n'),
         ['.github/actions'],
       ),
-      { runs: 'bash scripts/a.sh\nbash scripts/b.sh\n', actions: ['.github/actions/setup'] },
+      {
+        runs: [
+          { text: 'bash scripts/a.sh', dir: '.' },
+          { text: 'bash scripts/b.sh\n', dir: '.' },
+        ],
+        actions: ['.github/actions/setup'],
+      },
+    );
+  });
+
+  it('reads run and uses only on a step, never an action input or another key that names them', () => {
+    assert.deepEqual(
+      yamlCommands(
+        [
+          'run: bash scripts/top.sh',
+          'jobs:',
+          '  a:',
+          '    uses: ./.github/actions/job-level',
+          '    steps:',
+          '      - uses: ./.github/actions/setup',
+          '        with:',
+          '          run: bash scripts/input.sh',
+          '          uses: ./.github/actions/input',
+          '      - name: steps in an input',
+          '        with:',
+          '          steps:',
+          '            - run: bash scripts/nested.sh',
+          '      - plain string step',
+        ].join('\n'),
+        ['.github/actions'],
+      ),
+      { runs: [{ text: 'bash scripts/nested.sh', dir: '.' }], actions: ['.github/actions/setup'] },
+    );
+  });
+
+  it("runs each step in its working-directory, else its job's or workflow's default", () => {
+    const { runs } = yamlCommands(
+      [
+        'defaults:',
+        '  run:',
+        '    working-directory: apps/web',
+        'jobs:',
+        '  a:',
+        '    steps:',
+        '      - run: a',
+        '      - run: b',
+        '        working-directory: ./apps/api/',
+        '      - run: c',
+        '        working-directory: ${{ inputs.dir }}',
+        '      - run: d',
+        '        working-directory: ../outside',
+        '      - run: e',
+        '        working-directory: /abs',
+        '  b:',
+        '    defaults:',
+        '      run:',
+        '        working-directory: tools',
+        '    steps:',
+        '      - run: f',
+        '  c:',
+        '    defaults:',
+        '      run: {}',
+        '    steps:',
+        '      - run: g',
+        '  d:',
+        '    defaults: plain',
+        '    steps:',
+        '      - run: h',
+        '        working-directory: .',
+      ].join('\n'),
+      [],
+    );
+    assert.deepEqual(
+      runs.map((r) => `${r.text}@${r.dir}`),
+      ['a@apps/web', 'b@apps/api', 'c@apps/web', 'd@apps/web', 'e@apps/web', 'f@tools', 'g@apps/web', 'h@.'],
     );
   });
 
@@ -182,19 +256,29 @@ describe('yamlCommands', () => {
   });
 
   it('reads nothing from an empty document', () => {
-    assert.deepEqual(yamlCommands('', ['.github/actions']), { runs: '', actions: [] });
+    assert.deepEqual(yamlCommands('', ['.github/actions']), { runs: [], actions: [] });
   });
 });
 
 describe('workspaceDirs', () => {
   it('expands dir/* to the subdirectories with a package.json, sorted, and keeps literals', () => {
     const root = tree({
-      'pnpm-workspace.yaml': 'packages:\n  - "apps/*"\n  - packages/one\n  - "!apps/b"\n  - 3\n  - "gone/*"\n\nother:\n  - nope\n',
+      'pnpm-workspace.yaml': 'packages:\n  - "apps/*"\n  - packages/one\n  - 3\n  - "gone/*"\n\nother:\n  - nope\n',
       'apps/b/package.json': '{}',
       'apps/a/package.json': '{}',
       'apps/c/readme.md': '',
     });
     assert.deepEqual(workspaceDirs(root, 'pnpm-workspace.yaml'), ['apps/a', 'apps/b', 'packages/one']);
+  });
+
+  it('removes what an exclusion names, a folder or a dir/* glob', () => {
+    const root = tree({
+      'pnpm-workspace.yaml': 'packages:\n  - "apps/*"\n  - "tools/*"\n  - packages/one\n  - "!apps/b"\n  - "!tools/*"\n  - "!packages/on"\n',
+      'apps/a/package.json': '{}',
+      'apps/b/package.json': '{}',
+      'tools/x/package.json': '{}',
+    });
+    assert.deepEqual(workspaceDirs(root, 'pnpm-workspace.yaml'), ['apps/a', 'packages/one']);
   });
 
   it('reads none when the file declares no packages, or is not a mapping', () => {
@@ -378,6 +462,18 @@ describe('resolveStageReach', () => {
   it('follows pnpm inside a workspace script to that workspace', () => {
     const root = tree({ ...REPO, '.husky/pre-commit': 'pnpm turbo run test:cov\n' });
     assert.deepEqual([...resolveStageReach(root, STAGES).scripts.keys()].sort(), ['apps/server\ttest:cov', 'apps/server\ttest:unit']);
+  });
+
+  it("walks a workflow step's commands from its working-directory", () => {
+    const root = tree({
+      ...REPO,
+      '.husky/pre-commit': '',
+      '.github/workflows/ci.yml': 'jobs:\n  a:\n    steps:\n      - run: pnpm test && bash scripts/local.sh\n        working-directory: apps/web\n',
+      'apps/web/scripts/local.sh': 'exit 0\n',
+    });
+    const reach = resolveStageReach(root, STAGES);
+    assert.deepEqual([...reach.scripts.keys()], ['apps/web\ttest']);
+    assert.equal(reach.files.has('apps/web/scripts/local.sh'), true);
   });
 
   it('reads a script name only as the package.json names it, never an inherited member', () => {

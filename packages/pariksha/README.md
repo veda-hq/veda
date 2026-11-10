@@ -321,8 +321,9 @@ skipped, not counted.
   a path under none is the root workspace's (`.`).
 - **validator.** A cited `<dispatcher> <target>` must be a case of the
   dispatcher, a shell `case` whose lines read `name)` or `a|b)` (any alias
-  counts). Then the script (`enforcement_script`, and the paths the target's
-  case names) must exist and be reached from a stage: the files directly in
+  counts). Then every path the claim names (`enforcement_script`, and the
+  paths the target's case names) must exist, and at least one of them must be
+  reached from a stage: the files directly in
   each `hooks` folder (not those starting with `_`) and each workflow under
   `workflows`, with the local actions they `uses: ./<actions folder>/<name>`.
   The walk follows a path a command names under a `runnable.prefixes`
@@ -332,11 +333,14 @@ skipped, not counted.
   dispatcher file is never followed whole); a package runner's `<call> "X"`,
   to `<validatorsDir>/X.sh`; `pnpm [run] <script>`, to the calling
   workspace's script (workspaces from the pnpm file's `packages:`, `dir/*`
-  expanded); and `turbo run <task>`, to every workspace's script of that name
-  and the root's when the turbo config names `//#<task>`. Shell scripts and
-  hooks are followed; nothing else is (TypeScript included). In a workflow
-  only `run:` steps are read, not `paths:` filters or `name:` fields, and in
-  shell, comment lines and `echo`/`printf` lines are not calls. A cited test
+  expanded, `!` exclusions removed); and `turbo run <task>`, to every
+  workspace's script of that name and the root's when the turbo config names
+  `//#<task>`. Shell scripts and hooks are followed; nothing else is
+  (TypeScript included). In a workflow or action only a step's `run:` and
+  `uses:` are read (not `paths:` filters, `name:` fields or `with:` inputs),
+  each run from the step's `working-directory`, else the job's or workflow's
+  `defaults.run.working-directory`, else the root; in shell, comment lines and
+  `echo`/`printf` lines are not calls. A cited test
   file (`tests.file`) counts as run when a reached script of its workspace
   matches `tests.runner`.
 
@@ -349,9 +353,11 @@ and every validator claim runs at a stage (<eslint-rule> + <validator> of
 missing or bad key, a path that is not a normalized root-relative POSIX path,
 a prefix that is not a folder path, a workspace listed twice), no standard
 declaring an enforcement (the scan failed), a missing standards folder,
-dispatcher, workspace folder or workspace file, a workspace whose every probe
-fails to resolve a config, a workflow that is not YAML or a `package.json`
-that is not JSON, or no `eslint`.
+dispatcher or workspace folder, a workspace whose every probe fails to
+resolve a config, or no `eslint`. The stage walk runs only when some live
+standard claims `validator`; then a missing pnpm workspace file or turbo
+config, a workflow that is not YAML and a `package.json` that is not JSON
+exit 2 too.
 
 Needs `eslint` `>=9.24 <10` installed beside pariksha (an optional peer
 dependency: only this check loads it).

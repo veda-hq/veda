@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { age, isAskless, replies, waitingSessions } from '../hooks/register'
+import { NOT_SHOWN, afterFailure, age, isAskless, jsonOf, replies, waitingSessions } from '../hooks/register'
 
 const BAND = {
   plugin: 'needs-you',
@@ -197,6 +197,109 @@ test('a side session filed with ✋ shows with an Open session button', async ($
   await ui.press({ key: String(buttons[0]?.key) })
   expect(opened).toEqual([{ session_id: 'local_side', target: 'split' }])
   await ui.unmount()
+})
+
+/** An MCP answer of one text block. */
+const answer = (text: string, isError = false) => ({ value: { content: [{ type: 'text' as const, text }], isError } })
+
+const START = { cwd: '/', surface: 'desktop', isInteractive: true } as const
+
+test('an answer is JSON only when it is not an error and parses', () => {
+  expect(jsonOf(answer('[{"sessionId":"a"}]').value)).toEqual([{ sessionId: 'a' }])
+  expect(jsonOf(answer('No session matches "self".').value)).toBeUndefined()
+  expect(jsonOf(answer('Session local_x not found.', true).value)).toBeUndefined()
+  expect(jsonOf(answer('{"sessionId":"a"}', true).value)).toBeUndefined()
+})
+
+test('a plain-text or error answer reads as no session and logs nothing', async ($, on) => {
+  const clock = mock.clock(on)
+  const logged: string[] = []
+  on('ui.log', (_, e) => {
+    logged.push(e.text)
+    return { value: undefined }
+  })
+  const reads: string[] = []
+  on('mcp.call', (_, e) => {
+    reads.push(e.tool)
+    if (e.tool === 'get_session' && reads.length === 1) return answer('No session matches "self".')
+    if (e.tool === 'get_session' && reads.length === 2) return answer('Session self not found.', true)
+    if (e.tool === 'get_session') return answer(JSON.stringify({ sessionId: SELF }))
+    return reads.length === 4 ? answer('No sessions found.') : answer('Not available right now.', true)
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start(START)
+  await clock.settle()
+  for (let poll = 0; poll < 3; poll += 1) await clock.advance(60_000)
+  expect(reads).toEqual(['get_session', 'get_session', 'get_session', 'list_sessions', 'list_sessions'])
+  expect(logged).toEqual([])
+})
+
+test('without the app session tools, reading stops after one line', () => {
+  const missing = 'HooksError: needs-you: $.mcp.call: no connected MCP tool "get_session" on a server named "ccd_session_mgmt"'
+  expect(afterFailure(missing, null)).toEqual({ reading: false, lastLogged: missing, line: NOT_SHOWN })
+})
+
+test('a repeated failure logs nothing; a different one logs its line', () => {
+  const error = 'SyntaxError: JSON Parse error: Unexpected identifier "No"'
+  const first = afterFailure(error, null)
+  expect(first).toEqual({ reading: true, lastLogged: error, line: `needs-you: side sessions not read (${error})` })
+  expect(afterFailure(error, first.lastLogged)).toEqual({ reading: true, lastLogged: error, line: null })
+  expect(afterFailure('Error: timed out', first.lastLogged).line).toBe('needs-you: side sessions not read (Error: timed out)')
+})
+
+test('a failing read logs once in a session, and again only after a read has succeeded', async ($, on) => {
+  const clock = mock.clock(on)
+  const logged: string[] = []
+  on('ui.log', (_, e) => {
+    logged.push(e.text)
+    return { value: undefined }
+  })
+  // While failing, nothing beneath answers the call, so it rejects as a dropped server's would.
+  let failing = true
+  let reads = 0
+  on('mcp.call', async (_, e, next) => {
+    reads += 1
+    if (failing) return next(e)
+    return sessions([])(_, e)
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start(START)
+  await clock.settle()
+  for (let poll = 0; poll < 5; poll += 1) await clock.advance(60_000)
+  expect(reads).toBe(6)
+  expect(logged).toHaveLength(1)
+  expect(logged[0]).toContain('needs-you: side sessions not read (')
+
+  failing = false
+  await clock.advance(60_000)
+  failing = true
+  for (let poll = 0; poll < 3; poll += 1) await clock.advance(60_000)
+  expect(logged).toHaveLength(2)
+  expect(logged[1]).toBe(logged[0])
+})
+
+test('an unusable answer between two failures is no successful read: the failure stays logged once', async ($, on) => {
+  const clock = mock.clock(on)
+  const logged: string[] = []
+  on('ui.log', (_, e) => {
+    logged.push(e.text)
+    return { value: undefined }
+  })
+  // Polls alternate: nothing answers (a rejection), then `self` comes back as plain text.
+  let reads = 0
+  on('mcp.call', async (_, e, next) => {
+    reads += 1
+    return reads % 2 === 1 ? next(e) : answer('No session matches "self".')
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start(START)
+  await clock.settle()
+  for (let poll = 0; poll < 5; poll += 1) await clock.advance(60_000)
+  expect(reads).toBe(6)
+  expect(logged).toHaveLength(1)
 })
 
 test('with nothing waiting the band is the engine’s', async ($, on) => {

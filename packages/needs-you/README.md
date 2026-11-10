@@ -29,7 +29,13 @@ written only in the chat message, with neither `blocked` nor `ask`, is not
 caught.
 
 Side sessions are read every minute through the desktop app's session tools,
-so that line shows only where those tools are connected.
+so that line shows only where those tools are connected. Where they are not
+(a terminal session), the plugin says so in one line and stops asking until
+the session starts again. A failed read is logged once: the same failure
+again is not, until a read of the list has succeeded; a different failure is
+logged when it first happens. So a failure repeating every minute never fills
+the transcript; an answer that is plain text rather than JSON (`Session …
+not found.`) is read as no session and logged nowhere.
 
 ## Install
 

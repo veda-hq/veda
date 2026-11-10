@@ -25,7 +25,7 @@ export interface Io {
   readonly run?: (entries: Parameters<typeof runAll>[0], config: Config, input: string, cwd: string) => Promise<Outcome[]>;
 }
 
-export const VERSION = '0.4.0';
+export const VERSION = '0.5.6';
 
 const USAGE = `usage: sarathi hook <Event> [--config <file>]
        sarathi check [--config <file>] [--settings <file>]

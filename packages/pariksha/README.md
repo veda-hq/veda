@@ -478,8 +478,10 @@ is the permission baseline every repository agents work in keeps:
 - ask: every push that rewrites or deletes published history (`--force`,
   `-f`, `--mirror`, `--delete`, `-d`, `--prune`, a `+` or empty-source `:`
   refspec, and the abbreviations git accepts), a forced branch delete
-  (`git branch -D`, `--delete --force` either way round, `-df`, `-fd`,
-  `-d -f`, `-f -d`), and the
+  (`git branch -D`, `-df`, `-fd`, and any `-d`/`--delete` with
+  `-f`/`--force` in either order: the two globs `*-d*-f*` and `*-f*-d*`
+  also ask for a plain `-d` of a branch whose name holds `-f`, which errs
+  on the side of asking), and the
   dependency commands `pnpm add`, `remove`, `update`, `npm install`,
   `uninstall`, `update`, `yarn add` and `remove`. Ask beats allow, so these
   hold inside the allowed `git push -u origin` and `git branch`. An edit of a

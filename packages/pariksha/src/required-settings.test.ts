@@ -133,8 +133,7 @@ describe('baselines/claude-settings.json', () => {
   const ask = [
     'Bash(*git push*--force*)', 'Bash(*git push* -f*)', 'Bash(*git push*--for*)', 'Bash(*git push*--mi*)',
     'Bash(*git push*--de*)', 'Bash(*git push*--pru*)', 'Bash(*git push* -d *)', 'Bash(*git push* +*)', 'Bash(*git push* :*)',
-    'Bash(*git branch* -D*)', 'Bash(*git branch*--delete*--force*)', 'Bash(*git branch*--force*--delete*)',
-    'Bash(*git branch* -df*)', 'Bash(*git branch* -fd*)', 'Bash(*git branch* -d -f*)', 'Bash(*git branch* -f -d*)',
+    'Bash(*git branch* -D*)', 'Bash(*git branch*-d*-f*)', 'Bash(*git branch*-f*-d*)', 'Bash(*git branch* -df*)', 'Bash(*git branch* -fd*)',
     'Bash(pnpm add:*)', 'Bash(pnpm remove:*)', 'Bash(pnpm update:*)',
     'Bash(npm install:*)', 'Bash(npm uninstall:*)', 'Bash(npm update:*)', 'Bash(yarn add:*)', 'Bash(yarn remove:*)',
   ];

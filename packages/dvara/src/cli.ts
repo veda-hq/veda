@@ -3,7 +3,18 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig } from "./config.ts";
+import { configName, loadConfig } from "./config.ts";
+import {
+  frozen,
+  parseArgs as parseFrozenArgs,
+  USAGE as FROZEN_USAGE,
+} from "./records/frozen.ts";
+import {
+  parseArgs as parseRecordsArgs,
+  records,
+  USAGE as RECORDS_USAGE,
+} from "./records/gate.ts";
+import { runner } from "./records/git.ts";
 import { supervise, type Options } from "./supervisor.ts";
 
 export interface Io {
@@ -15,6 +26,10 @@ export const USAGE = [
   "usage: dvara run <hook-file> [hook args…]   run a git hook under the supervisor",
   "       dvara stages <hook>                  the hook stages the config lists, one per line",
   "       dvara shell <stages|keep-going>      the path of a shell helper to source",
+  "       dvara records <--staged | --all [--base REF] [--write-baseline | --survey] | --base REF>",
+  "                                            the record gate: no new non-durable paths, a baseline that only falls",
+  "       dvara frozen <--staged | --base REF [--head REF]>",
+  "                                            refuse changes to the frozen paths",
   "       dvara --version",
 ].join("\n");
 
@@ -37,6 +52,41 @@ export interface Context {
   readonly options?: Partial<Options>;
 }
 
+/**
+ * `dvara records` or `dvara frozen` at the root `cwd`: 2 on bad arguments, a
+ * config it cannot read, or git failing.
+ */
+const checkCommand = (
+  command: "records" | "frozen",
+  args: readonly string[],
+  { io, cwd, env }: Context,
+): number => {
+  const parsed =
+    command === "records" ? parseRecordsArgs(args) : parseFrozenArgs(args);
+  if ("error" in parsed) {
+    io.err(`dvara ${command}: ${parsed.error}`);
+    io.err(command === "records" ? RECORDS_USAGE : FROZEN_USAGE);
+    return 2;
+  }
+  try {
+    const config = loadConfig(cwd, env);
+    const repo = { cwd, env };
+    if ("mode" in parsed)
+      return records(parsed, repo, io.out, {
+        records: config.records,
+        baseRefs: config.baseRefs,
+        own: [configName(env)],
+      });
+    const result = frozen(parsed, runner(repo), config.records.frozen, env);
+    for (const line of result.stdout) io.out(line);
+    for (const line of result.stderr) io.err(line);
+    return result.code;
+  } catch (error) {
+    io.err(`dvara ${command}: ${(error as Error).message}`);
+    return 2;
+  }
+};
+
 /** Runs one command; resolves with the process's exit code. */
 export const run = async (
   argv: readonly string[],
@@ -56,6 +106,8 @@ export const run = async (
     io.out(shellHelper(rest[0] ?? ""));
     return 0;
   }
+  if (command === "records" || command === "frozen")
+    return checkCommand(command, rest, context);
   if (
     (command === "run" && rest.length > 0) ||
     (command === "stages" && rest.length === 1)

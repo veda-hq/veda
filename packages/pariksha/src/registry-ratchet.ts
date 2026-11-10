@@ -1,0 +1,427 @@
+// The engine the registry ratchets share (codec-registry, fault-injection-registry).
+//
+// A registry ratchet holds three things to account. Discovery finds every
+// item that owes a suite. The config registers an item with its suite, or
+// exempts it with a reason. The baseline lists the items still owed, and only
+// shrinks: an entry the merge base did not have is growth, unless its file
+// only moved. Everything here is the shared part: config validation helpers,
+// the baseline's shape, the audit, the growth check and the suite wiring a
+// runner must collect.
+import { readFileSync, statSync } from 'node:fs';
+import { isAbsolute, join, posix } from 'node:path';
+import type * as TS from 'typescript';
+import { fileAt, mergeBaseOf, renamesSince, type Git } from './git.ts';
+import type { Ts } from './typescript.ts';
+
+export type Raw = Record<string, unknown>;
+
+export const isRecord = (v: unknown): v is Raw => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * A normalized relative POSIX path that stays inside the root. A backslash
+ * (a separator to Windows path operations, so `..\x` could leave the root) and
+ * a NUL are refused before any host path operation sees the path.
+ */
+export const isRepoPath = (p: string): boolean =>
+  !/[\\\0]/.test(p) && !isAbsolute(p) && !posix.isAbsolute(p) && posix.normalize(p) === p && p !== '.' && p !== '..' && !p.startsWith('../') && !p.endsWith('/');
+
+/**
+ * An empty dictionary with no prototype, for keys a config or a file names: a
+ * key such as `__proto__` or `constructor` is then an entry like any other,
+ * never the prototype or an inherited member.
+ */
+export const dict = <T>(): Record<string, T> => Object.create(null) as Record<string, T>;
+
+/** Throws naming the first key of `raw` that `allowed` lacks. */
+export const onlyKeys = (raw: Raw, allowed: readonly string[], where: string): void => {
+  const extra = Object.keys(raw).find((k) => !allowed.includes(k));
+  if (extra !== undefined) throw new Error(`${where}unknown key "${extra}"`);
+};
+
+/** The object at `raw[key]`; throws when it is not one. */
+export const object = (raw: Raw, key: string, where: string): Raw => {
+  const v = raw[key];
+  if (!isRecord(v)) throw new Error(`${where}"${key}" must be an object`);
+  return v;
+};
+
+/** A required non-blank string. */
+export const text = (raw: Raw, key: string, where: string): string => {
+  const v = raw[key];
+  if (typeof v !== 'string' || v.trim() === '') throw new Error(`${where}"${key}" must be a non-empty string`);
+  return v;
+};
+
+/** An optional string, non-blank when present. */
+export const optionalText = (raw: Raw, key: string, where: string): string | undefined => (raw[key] === undefined ? undefined : text(raw, key, where));
+
+/** A required root-relative path. */
+export const path = (raw: Raw, key: string, where: string): string => {
+  const v = text(raw, key, where);
+  if (!isRepoPath(v)) throw new Error(`${where}"${key}": "${v}" is not a normalized root-relative path`);
+  return v;
+};
+
+/** A list, empty when absent; throws when present and not a list. */
+export const list = (raw: Raw, key: string, where: string): unknown[] => {
+  const v = raw[key] ?? [];
+  if (!Array.isArray(v)) throw new Error(`${where}"${key}" must be a list`);
+  return v;
+};
+
+/** A non-empty list of root-relative paths. */
+export const paths = (raw: Raw, key: string, where: string): string[] => {
+  const v = list(raw, key, where);
+  if (v.length === 0) throw new Error(`${where}"${key}" is empty, so nothing would be read`);
+  return v.map((p, i) => {
+    if (typeof p !== 'string' || !isRepoPath(p)) throw new Error(`${where}${key}[${i}]: ${JSON.stringify(p)} is not a normalized root-relative path`);
+    return p;
+  });
+};
+
+/** A regular expression from its source text. */
+export const regex = (source: unknown, where: string, flags = ''): RegExp => {
+  if (typeof source !== 'string' || source === '') throw new Error(`${where} must be a non-empty regular expression`);
+  try {
+    return new RegExp(source, flags);
+  } catch (e) {
+    throw new Error(`${where}: "${source}" is not a regular expression: ${(e as Error).message}`);
+  }
+};
+
+/** A non-empty list of regular expressions. */
+export const regexes = (raw: Raw, key: string, where: string): RegExp[] => {
+  const v = list(raw, key, where);
+  if (v.length === 0) throw new Error(`${where}"${key}" is empty, so nothing would match`);
+  return v.map((s, i) => regex(s, `${where}${key}[${i}]`));
+};
+
+/** Each entry of `items` is a record; `where` names it in a message. */
+export const records = (items: readonly unknown[], key: string): Array<{ raw: Raw; where: string }> =>
+  items.map((raw, i) => {
+    const where = `${key}[${i}]: `;
+    if (!isRecord(raw)) throw new Error(`${key}[${i}] must be an object`);
+    return { raw, where };
+  });
+
+/** An exemption must say why, in words a reviewer reads: at least `min` characters, trimmed. */
+export const reason = (raw: Raw, where: string, min = 1): string => {
+  const v = raw['reason'];
+  if (typeof v !== 'string' || v.trim() === '') throw new Error(`${where}an exemption needs a reason`);
+  if (v.trim().length < min) throw new Error(`${where}"reason" is shorter than minNoteLength (${min}): say why in words`);
+  return v;
+};
+
+/** A note (what a suite leaves out, why it runs LF only…): optional or required, at least `min` characters trimmed when present. */
+export const note = (raw: Raw, key: string, where: string, min: number, required: boolean): string | undefined => {
+  const v = required ? text(raw, key, where) : optionalText(raw, key, where);
+  if (v !== undefined && v.trim().length < min) throw new Error(`${where}"${key}" is shorter than minNoteLength (${min}): say it in words`);
+  return v;
+};
+
+/** `minNoteLength`: the fewest characters, trimmed, an exemption reason or note may have. Required. */
+export const minNoteLength = (raw: Raw): number => {
+  const v = raw['minNoteLength'];
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) throw new Error('"minNoteLength" must be a whole number of at least 1');
+  return v;
+};
+
+/**
+ * A key every config must name, whose `null` opts its check out. Absence is
+ * refused: a forgotten key would drop a check silently. The opt-out is recorded
+ * in `skipped`, which the run prints as not checked.
+ */
+export const required = <T>(raw: Raw, key: string, where: string, skipped: string[], parse: () => T): T | undefined => {
+  if (!(key in raw)) throw new Error(`${where}"${key}" is required (null opts its check out)`);
+  if (raw[key] === null) {
+    skipped.push(`${where.replace(/: $/, '.')}${key}`);
+    return undefined;
+  }
+  return parse();
+};
+
+export interface FindingIds {
+  /** The pattern every `motivatedBy` must match, or undefined when not checked. */
+  readonly motivatedBy: RegExp | undefined;
+  /** The pattern every example fixture's finding id must match, or undefined when not checked. */
+  readonly example: RegExp | undefined;
+}
+
+/** `findingIds: { motivatedBy, example }`, each a regex or null. */
+export const parseFindingIds = (raw: Raw, skipped: string[]): FindingIds => {
+  const v = required(raw, 'findingIds', '', skipped, () => object(raw, 'findingIds', ''));
+  if (v === undefined) return { motivatedBy: undefined, example: undefined };
+  onlyKeys(v, ['motivatedBy', 'example'], 'findingIds: ');
+  return {
+    motivatedBy: required(v, 'motivatedBy', 'findingIds: ', skipped, () => regex(v['motivatedBy'], 'findingIds.motivatedBy')),
+    example: required(v, 'example', 'findingIds: ', skipped, () => regex(v['example'], 'findingIds.example')),
+  };
+};
+
+/** The config text as JSON; throws naming why not. */
+export const parseJson = (source: string): Raw => {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(source);
+  } catch (e) {
+    throw new Error(`not JSON: ${(e as Error).message}`);
+  }
+  if (!isRecord(raw)) throw new Error('the config must be a JSON object');
+  return raw;
+};
+
+// ── the baseline ────────────────────────────────────────────────────────────
+
+/** A baseline: named lists of the ids still owed a suite. Only shrinks. */
+export type Baseline = Readonly<Record<string, readonly string[]>>;
+
+/**
+ * The baseline a JSON text holds: exactly the `lists` named, each a list of
+ * strings. Throws naming the first list that is wrong, so a malformed
+ * baseline fails loudly rather than reading as empty.
+ *
+ * `atBase` reads the baseline as the merge base holds it, against today's
+ * lists: a list the base lacks (a list added since) is empty, and one the
+ * config no longer names (a list removed since) is ignored, so changing the
+ * lists is never an unreadable base. A list it does hold must still be well formed.
+ */
+export const parseBaseline = (source: string, lists: readonly string[], where: string, noun: string, atBase = false): Baseline => {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(source);
+  } catch (e) {
+    throw new Error(`${where}: not JSON: ${(e as Error).message}`);
+  }
+  if (!isRecord(raw)) throw new Error(`${where}: must be an object with ${lists.map((l) => `"${l}"`).join(' and ')} lists`);
+  const extra = Object.keys(raw).find((k) => !lists.includes(k));
+  if (extra !== undefined && !atBase) throw new Error(`${where}: unknown list "${extra}"`);
+  const out = dict<string[]>();
+  for (const name of lists) {
+    const held = Object.hasOwn(raw, name) ? raw[name] : undefined;
+    const v = atBase && held === undefined ? [] : held;
+    if (!Array.isArray(v) || !v.every((s) => typeof s === 'string')) throw new Error(`${where}: "${name}" must be a list of ${noun}`);
+    out[name] = v;
+  }
+  return out;
+};
+
+const all = (baseline: Baseline): string[] => Object.values(baseline).flat();
+
+const listOf = (baseline: Baseline, name: string): readonly string[] => (Object.hasOwn(baseline, name) ? (baseline[name] as readonly string[]) : []);
+
+/**
+ * List by list: `unaccounted`, discovered and uncovered but not in its list;
+ * `stale`, in a list that does not owe it. An id in the wrong list is both.
+ */
+export const audit = (expected: Baseline, actual: Baseline): { unaccounted: string[]; stale: string[] } => {
+  const unaccounted: string[] = [];
+  const stale: string[] = [];
+  for (const name of new Set([...Object.keys(expected), ...Object.keys(actual)])) {
+    const want = listOf(expected, name);
+    const have = listOf(actual, name);
+    unaccounted.push(...want.filter((id) => !have.includes(id)));
+    stale.push(...have.filter((id) => !want.includes(id)));
+  }
+  return { unaccounted, stale };
+};
+
+/** The file an id names, when the id is the path itself. */
+export const wholeId = (id: string): string => id;
+
+/**
+ * Entries the head baseline has that the base did not, across its lists (an
+ * entry that only changed list is not growth). `fileOf` reads the file an id
+ * names (the whole id for a path; the part before a suffix for `path#suffix`);
+ * when that file was renamed (`renamed`: new path to old path) the id counts
+ * under its old path, so a move is not growth.
+ */
+export const grownEntries = (base: Baseline, head: Baseline, renamed: ReadonlyMap<string, string> = new Map(), fileOf: (id: string) => string = wholeId): string[] => {
+  const before = new Set(all(base));
+  const asBefore = (id: string): string => {
+    const file = fileOf(id);
+    const old = renamed.get(file);
+    return old === undefined ? id : old + id.slice(file.length);
+  };
+  return all(head).filter((id) => !before.has(asBefore(id)));
+};
+
+/**
+ * The growth of the baseline at `baselinePath` since the merge base of HEAD
+ * and `base`: empty when the merge base has no baseline yet. A git failure,
+ * or a baseline the merge base holds malformed, throws.
+ */
+export const growthSince = (git: Git, base: string, baselinePath: string, head: Baseline, parse: (source: string, where: string) => Baseline, fileOf: (id: string) => string = wholeId): string[] => {
+  const commit = mergeBaseOf(git, base);
+  const before = fileAt(git, commit, baselinePath);
+  if (before === null) return [];
+  return grownEntries(parse(before, `${baselinePath} at the merge base ${commit.slice(0, 12)}`), head, renamesSince(git, commit), fileOf);
+};
+
+/** The roots among `roots` under which none of `files` lies: a typo'd root reads nothing and would pass. */
+export const emptyRoots = (files: readonly string[], roots: readonly string[]): string[] => roots.filter((r) => !files.some((f) => f === r || f.startsWith(`${r}/`)));
+
+/** The baseline file at `at` under the root, parsed; throws when it is missing or malformed. */
+export const readBaseline = (root: string, at: string, parse: (source: string, where: string) => Baseline): Baseline => {
+  const source = readText(root, at);
+  if (source === undefined) throw new Error(`the baseline ${at} is not a readable file`);
+  return parse(source, at);
+};
+
+// ── suite wiring ────────────────────────────────────────────────────────────
+
+const EXTENSION = /\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
+
+/**
+ * The module specifiers a suite imports, read from its syntax tree: each
+ * import declaration that brings in a value (`import { a } from`, a default
+ * or namespace import, `import './x'`), each `export … from`, and each
+ * `import('…')` of a literal. A specifier in a comment or another string, or
+ * a type-only import, is no import.
+ */
+export const importSpecifiers = (ts: Ts, file: string, source: string): string[] => {
+  const out: string[] = [];
+  const visit = (node: TS.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && node.importClause?.isTypeOnly !== true) out.push(node.moduleSpecifier.text);
+    else if (ts.isExportDeclaration(node) && !node.isTypeOnly && node.moduleSpecifier !== undefined && ts.isStringLiteral(node.moduleSpecifier)) out.push(node.moduleSpecifier.text);
+    else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const first = node.arguments[0];
+      if (first !== undefined && ts.isStringLiteralLike(first)) out.push(first.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true));
+  return out;
+};
+
+/**
+ * Whether the suite at `suite`, importing `specifiers`, imports the module at
+ * `target` by a relative specifier: each specifier is resolved against the
+ * suite's folder, so a same-named module elsewhere does not count. A folder's
+ * `index` module may be imported by the folder.
+ */
+export const importsModule = (suite: string, specifiers: readonly string[], target: string): boolean => {
+  const want = target.replace(EXTENSION, '');
+  const folder = posix.basename(want) === 'index' ? posix.dirname(want) : undefined;
+  return specifiers.some((specifier) => {
+    if (!specifier.startsWith('./') && !specifier.startsWith('../')) return false;
+    const got = posix.join(posix.dirname(suite), specifier).replace(EXTENSION, '').replace(/\/$/, '');
+    return got === want || got === folder;
+  });
+};
+
+/** Whether `specifiers` (a suite's imports) include the bare module specifier. */
+export const importsPackage = (specifiers: readonly string[], specifier: string): boolean => specifiers.includes(specifier);
+
+/** Whether the text names a module specifier as a string, either quote. */
+export const namesModule = (source: string, specifier: string): boolean => source.includes(`'${specifier}'`) || source.includes(`"${specifier}"`);
+
+/** Whether a runner collects a suite at `path`, by the collected-path patterns. */
+export const isCollected = (collected: readonly RegExp[], path: string): boolean => collected.some((p) => p.test(path));
+
+/** Whether `path` is a regular file under `root`. */
+export const isFile = (root: string, path: string): boolean => statSync(join(root, path), { throwIfNoEntry: false })?.isFile() === true;
+
+/** The text of a file under `root`, or undefined when it is not a readable file. */
+export const readText = (root: string, path: string): string | undefined => {
+  if (!isFile(root, path)) return undefined;
+  try {
+    return readFileSync(join(root, path), 'utf8');
+  } catch {
+    return undefined;
+  }
+};
+
+// ── catalogue examples ──────────────────────────────────────────────────────
+
+export interface Examples {
+  /** A JSON catalogue `{ checks: [{ id, slice, example }] }` and the slice whose checks the fixtures must cover. */
+  readonly catalogue: { readonly path: string; readonly slice: string } | undefined;
+  /** Per check id: the finding id its example reproduces and the suite that does. */
+  readonly fixtures: Readonly<Record<string, { readonly example: string; readonly test: string }>>;
+}
+
+/** The `examples` key of a config: required, `null` to opt out, its `catalogue` likewise. */
+export const parseExamples = (raw: Raw, skipped: string[]): Examples | undefined => {
+  const v = required(raw, 'examples', '', skipped, () => object(raw, 'examples', ''));
+  if (v === undefined) return undefined;
+  onlyKeys(v, ['catalogue', 'fixtures'], 'examples: ');
+  const catalogue = required(v, 'catalogue', 'examples: ', skipped, () => {
+    const c = object(v, 'catalogue', 'examples: ');
+    onlyKeys(c, ['path', 'slice'], 'examples.catalogue: ');
+    return { path: path(c, 'path', 'examples.catalogue: '), slice: text(c, 'slice', 'examples.catalogue: ') };
+  });
+  const fixturesRaw = object(v, 'fixtures', 'examples: ');
+  const fixtures = dict<{ example: string; test: string }>();
+  for (const [id, entry] of Object.entries(fixturesRaw)) {
+    const where = `examples.fixtures.${id}: `;
+    if (!isRecord(entry)) throw new Error(`examples.fixtures.${id} must be an object`);
+    onlyKeys(entry, ['example', 'test'], where);
+    fixtures[id] = { example: text(entry, 'example', where), test: path(entry, 'test', where) };
+  }
+  if (Object.keys(fixtures).length === 0) throw new Error('examples: "fixtures" is empty, so nothing would be checked');
+  return { catalogue, fixtures };
+};
+
+/**
+ * Findings about the catalogue examples: the fixtures cover exactly the
+ * catalogue's checks for the slice, each from its own example; each fixture
+ * suite exists where a runner collects it and names its finding id; `extra`
+ * adds what a ratchet asks of a fixture's text. An unreadable catalogue throws.
+ */
+export const checkExamples = (root: string, examples: Examples, collected: readonly RegExp[], extra: (id: string, text: string) => string[] = () => []): string[] => {
+  const out: string[] = [];
+  if (examples.catalogue !== undefined) {
+    const { path: at, slice } = examples.catalogue;
+    const source = readText(root, at);
+    if (source === undefined) throw new Error(`the catalogue ${at} is not a readable file`);
+    let rows: unknown;
+    try {
+      rows = (JSON.parse(source) as { checks?: unknown }).checks;
+    } catch (e) {
+      throw new Error(`the catalogue ${at}: not JSON: ${(e as Error).message}`);
+    }
+    const isRow = (r: unknown): r is { id: string; slice: string; example: string } =>
+      isRecord(r) && typeof r['id'] === 'string' && typeof r['slice'] === 'string' && typeof r['example'] === 'string';
+    if (!Array.isArray(rows) || !rows.every(isRow)) throw new Error(`the catalogue ${at}: "checks" must be a list of { id, slice, example }`);
+    const mine = rows.filter((r) => r.slice === slice);
+    for (const row of mine) {
+      const fixture = examples.fixtures[row.id];
+      if (fixture === undefined) out.push(`${at}: ${row.id} (slice ${slice}) has no example fixture`);
+      else if (!row.example.startsWith(`${fixture.example}:`)) out.push(`examples.fixtures.${row.id}: the catalogue's example is not ${fixture.example} ("${row.example}")`);
+    }
+    for (const id of Object.keys(examples.fixtures)) {
+      if (!mine.some((r) => r.id === id)) out.push(`examples.fixtures.${id}: not a check ${at} gives slice ${slice}`);
+    }
+  }
+  for (const [id, fixture] of Object.entries(examples.fixtures)) {
+    const source = readText(root, fixture.test);
+    if (source === undefined) {
+      out.push(`${fixture.test}: the ${id} example suite does not exist`);
+      continue;
+    }
+    if (!isCollected(collected, fixture.test)) out.push(`${fixture.test}: no runner collects the ${id} example suite`);
+    if (!source.includes(fixture.example)) out.push(`${fixture.test}: the ${id} example suite does not name ${fixture.example}`);
+    out.push(...extra(id, source).map((m) => `${fixture.test}: ${m}`));
+  }
+  return out;
+};
+
+/** Throws when an id a finding pattern must match does not. */
+export const checkFindingIds = (pattern: RegExp | undefined, ids: ReadonlyArray<readonly [string, string | undefined]>): void => {
+  if (pattern === undefined) return;
+  const bad = ids.find(([, id]) => id !== undefined && !pattern.test(id));
+  if (bad !== undefined) throw new Error(`${bad[0]}: "${String(bad[1])}" is not a finding id (${pattern.source})`);
+};
+
+/**
+ * The verdict: findings on stderr, then what to do; a one-line summary on
+ * stdout when there are none. Whatever the config opted out of, and a growth
+ * comparison not made, is printed on stdout either way, so a pass says what
+ * it did not check.
+ */
+export const formatOutcome = (prefix: string, findings: readonly string[], summary: string, hint: string, notChecked: readonly string[] = []): { ok: boolean; out: string[]; err: string[] } => {
+  const skipped = notChecked.length === 0 ? [] : [`${prefix} not checked: ${notChecked.join(', ')}`];
+  return findings.length === 0
+    ? { ok: true, out: [`${prefix} ${summary}`, ...skipped], err: [] }
+    : { ok: false, out: skipped, err: [...findings.map((f) => `${prefix} ${f}`), `${prefix} ${findings.length} problem(s). ${hint}`] };
+};

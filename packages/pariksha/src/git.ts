@@ -1,5 +1,7 @@
 // Git, as the checks read it: a function from arguments to stdout.
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 export interface Git {
   /** Runs git in the repository; stdout, or undefined when git exits non-zero. */
@@ -62,6 +64,51 @@ export const must = (git: Git, args: readonly string[]): string => {
   if (out === undefined) throw new Error(`git ${args.join(' ')} failed`);
   return out;
 };
+
+/** Tracked paths under `roots` (each a literal path: a folder or one file) that still exist in the working tree. */
+export const trackedUnder = (git: Git, root: string, roots: readonly string[]): string[] =>
+  must(git, ['ls-files', '-z', '--', ...roots.map((r) => `:(literal)${r}`)])
+    .split('\0')
+    .filter((path) => path !== '' && existsSync(join(root, path)));
+
+/** The merge base of HEAD and `base`; throws when git cannot name one. */
+export const mergeBaseOf = (git: Git, base: string): string => must(git, ['merge-base', 'HEAD', base]).trim();
+
+/**
+ * `path` as committed at `commit`, or null when the commit does not have it.
+ * `ls-tree` prints nothing for an absent path and fails on a real read
+ * failure, so only a confirmed absence is null.
+ */
+export const fileAt = (git: Git, commit: string, path: string): string | null =>
+  must(git, ['ls-tree', '--name-only', commit, '--', `:(literal)${path}`]) === '' ? null : must(git, ['show', `${commit}:${path}`]);
+
+/**
+ * The renames in `git diff --name-status -z` output, new path to old path.
+ * NUL-separated, so a path arrives as committed. Each entry is a status then
+ * its paths: two for a rename (`R`) or copy (`C`), one otherwise. Only a
+ * rename counts: a copy leaves its source in place.
+ */
+export const parseRenames = (nameStatus: string): Map<string, string> => {
+  const renamed = new Map<string, string>();
+  const fields = nameStatus.split('\0');
+  // How many of the fields that follow are the current entry's paths.
+  let paths = 0;
+  for (const [index, status] of fields.entries()) {
+    if (paths > 0) {
+      paths -= 1;
+      continue;
+    }
+    paths = status.startsWith('R') || status.startsWith('C') ? 2 : 1;
+    const from = fields[index + 1];
+    const to = fields[index + 2];
+    if (status.startsWith('R') && from !== undefined && to !== undefined) renamed.set(to, from);
+  }
+  return renamed;
+};
+
+/** Files renamed between `commit` and the working tree (staged files count), new path to old path, by git's own rename detection. */
+export const renamesSince = (git: Git, commit: string): Map<string, string> =>
+  parseRenames(must(git, ['diff', '--name-status', '-z', '-M', '--no-ext-diff', commit]));
 
 export const BASE_CANDIDATES = ['origin/main', 'origin/develop', 'origin/master', 'main'] as const;
 

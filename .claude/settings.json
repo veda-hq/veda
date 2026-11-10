@@ -40,11 +40,16 @@
       "Bash(*git push*--pru*)",
       "Bash(*git push* -d *)",
       "Bash(*git push* +*)",
+      "Bash(*git push* :*)",
+      "Bash(*git branch* -D*)",
       "Bash(pnpm add:*)",
       "Bash(pnpm remove:*)",
       "Bash(pnpm update:*)",
       "Bash(npm install:*)",
-      "Bash(yarn add:*)"
+      "Bash(npm uninstall:*)",
+      "Bash(npm update:*)",
+      "Bash(yarn add:*)",
+      "Bash(yarn remove:*)"
     ]
   },
   "hooks": {

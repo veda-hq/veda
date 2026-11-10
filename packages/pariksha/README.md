@@ -4,8 +4,8 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.5.9 <check> [flags]
-npx @veda-hq/pariksha@0.5.9 --version
+npx @veda-hq/pariksha@0.5.10 <check> [flags]
+npx @veda-hq/pariksha@0.5.10 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
@@ -465,16 +465,23 @@ exits 2.
 `baselines/claude-settings.json` (`@veda-hq/pariksha/baselines/claude-settings.json`)
 is the permission baseline every repository agents work in keeps:
 
-- allow: edits inside the checkout, read-only git and GitHub commands, a
-  draft pull request (`git push -u origin`, `gh pr create --draft`,
-  `gh pr ready`), the desktop app's pull request tools
-  (`mcp__ccd_pr__bind_pr`, `get_status`, `set_monitor`), reading a browser
-  page, and `send_message` to the session that started this one;
+- allow: edits inside the checkout; selected git commands (`status`,
+  `diff`, `log`, `show`, `branch`, `ls-remote`, `worktree list`) and gh
+  commands (`pr view`, `pr list`, `pr checks`, `run view`, `run list`,
+  `issue list`, and `pr comment`, which posts: agents leave their evidence
+  and thread replies on their own pull requests); a draft pull request
+  (`git push -u origin`, `gh pr create --draft`, `gh pr ready`); the desktop
+  app's pull request tools (`mcp__ccd_pr__bind_pr`, `get_status`,
+  `set_monitor`); reading a browser page; and `send_message` to the session
+  that started this one;
 - deny: `Bash(*--no-verify*)`;
 - ask: every push that rewrites or deletes published history (`--force`,
-  `-f`, `--mirror`, `--delete`, `-d`, `--prune`, a `+` refspec, and the
-  abbreviations git accepts), and every dependency change (`pnpm add`,
-  `remove`, `update`, `npm install`, `yarn add`).
+  `-f`, `--mirror`, `--delete`, `-d`, `--prune`, a `+` or empty-source `:`
+  refspec, and the abbreviations git accepts), `git branch -D`, and the
+  dependency commands `pnpm add`, `remove`, `update`, `npm install`,
+  `uninstall`, `update`, `yarn add` and `remove`. Ask beats allow, so these
+  hold inside the allowed `git push -u origin` and `git branch`. An edit of a
+  manifest is an edit like any other; the commands are what is asked.
 
 Point `--require` at it in the package's install. A repository's own rules
 go in its own requirements file beside it. Permission globs are a coarse backstop: they cannot

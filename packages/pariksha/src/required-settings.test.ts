@@ -132,8 +132,10 @@ describe('baselines/claude-settings.json', () => {
   const deny = ['Bash(*--no-verify*)'];
   const ask = [
     'Bash(*git push*--force*)', 'Bash(*git push* -f*)', 'Bash(*git push*--for*)', 'Bash(*git push*--mi*)',
-    'Bash(*git push*--de*)', 'Bash(*git push*--pru*)', 'Bash(*git push* -d *)', 'Bash(*git push* +*)',
-    'Bash(pnpm add:*)', 'Bash(pnpm remove:*)', 'Bash(pnpm update:*)', 'Bash(npm install:*)', 'Bash(yarn add:*)',
+    'Bash(*git push*--de*)', 'Bash(*git push*--pru*)', 'Bash(*git push* -d *)', 'Bash(*git push* +*)', 'Bash(*git push* :*)',
+    'Bash(*git branch* -D*)',
+    'Bash(pnpm add:*)', 'Bash(pnpm remove:*)', 'Bash(pnpm update:*)',
+    'Bash(npm install:*)', 'Bash(npm uninstall:*)', 'Bash(npm update:*)', 'Bash(yarn add:*)', 'Bash(yarn remove:*)',
   ];
 
   it('holds the permission baseline every agent repository keeps', () => {
@@ -153,8 +155,10 @@ describe('baselines/claude-settings.json', () => {
     for (const list of ['allow', 'deny', 'ask'] as const) {
       const emptied = { permissions: { ...full.permissions, [list]: [] } };
       assert.equal(findMissing(JSON.stringify(emptied), baseline)[0]?.key, `permissions.${list}`);
-      const lastDropped = { permissions: { ...full.permissions, [list]: full.permissions[list].slice(0, -1) } };
-      assert.equal(findMissing(JSON.stringify(lastDropped), baseline)[0]?.key, `permissions.${list}`);
+      full.permissions[list].forEach((rule, at) => {
+        const dropped = { permissions: { ...full.permissions, [list]: full.permissions[list].filter((_, i) => i !== at) } };
+        assert.equal(findMissing(JSON.stringify(dropped), baseline)[0]?.key, `permissions.${list}`, `${rule} dropped`);
+      });
     }
   });
 });

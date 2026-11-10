@@ -44,12 +44,17 @@
       "Bash(*git push*--pru*)",
       "Bash(*git push* -d *)",
       "Bash(*git push* +*)",
+      "Bash(*git push* :*)",
+      "Bash(*git branch* -D*)",
       "Bash(pnpm add:*)",
       "Bash(pnpm remove:*)",
       "Bash(pnpm update:*)",
       "Bash(npm install:*)",
-      "Bash(yarn add:*)"
+      "Bash(npm uninstall:*)",
+      "Bash(npm update:*)",
+      "Bash(yarn add:*)",
+      "Bash(yarn remove:*)"
     ],
-    "why": "a person approves each push that rewrites or deletes published history (a force push, a mirror, a delete, a prune, a + refspec, and their abbreviations) and each change to the dependencies"
+    "why": "a person approves each push that rewrites or deletes published history (a force push, a mirror, a delete, a prune, a + or empty-source refspec, and their abbreviations), each forced delete of a local branch, and each dependency command (add, remove, update)"
   }
 }

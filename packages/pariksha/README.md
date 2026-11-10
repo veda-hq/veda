@@ -4,8 +4,8 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.5.7 <check> [flags]
-npx @veda-hq/pariksha@0.5.7 --version
+npx @veda-hq/pariksha@0.5.9 <check> [flags]
+npx @veda-hq/pariksha@0.5.9 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
@@ -439,10 +439,26 @@ value it must hold and why:
 { "advisorModel": { "value": "fable", "why": "sessions work with the advisor on" } }
 ```
 
+A list the project only adds to, such as a permission list, takes
+`"includes"` instead of `"value"`: the key must be a list holding each entry,
+among any others.
+
 The check refuses a settings file (default `.claude/settings.json`) that lacks
-a key or holds another value, compared as JSON, naming the key, the value and
-the reason. A missing settings file is a refusal; a requirements file it cannot
-read or parse, or one listing no key, exits 2.
+a key, holds another value, or lacks a required list entry, compared as JSON,
+naming the key, what is wrong and the reason. A missing settings file is a
+refusal; a requirements file it cannot read or parse, or one listing no key,
+exits 2.
+
+`baselines/claude-settings.json` (`@veda-hq/pariksha/baselines/claude-settings.json`)
+is the permission baseline every repository agents work in keeps: allow
+`mcp__ccd_pr__set_monitor`, deny `Bash(*--no-verify*)`, ask
+`Bash(*git push*--force*)` and `Bash(*git push* -f*)`. Point `--require` at it
+in the package's install. Permission globs are a coarse backstop: they cannot
+tell `git commit -n` from `git log -n 5`, nor see `git -C dir push --force`.
+Parsing those is the job of a command guard such as kavach's `git_safety`.
+`permissions.defaultMode: "auto"` is not in it: Claude Code ignores `auto` in a
+project's settings and then also skips the user's own `defaultMode`, so it
+belongs in user settings only.
 
 ## markdownlint rules
 

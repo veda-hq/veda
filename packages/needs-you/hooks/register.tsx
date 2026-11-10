@@ -75,22 +75,39 @@ export const ASKLESS =
   'Call wrap_up again, keeping blocked: true, with ask (the one question, in a sentence) and actions (reply buttons that answer it). ' +
   'If the turn does not wait on the person, leave blocked out instead.'
 
+/** An MCP answer's JSON; undefined for an error or plain text, such as "Session … not found.". */
+export const jsonOf = (result: McpToolResult): unknown => {
+  if (result.isError) return undefined
+  try {
+    return JSON.parse(textOf(result))
+  } catch {
+    return undefined
+  }
+}
+
+/** The engine's refusal when this session has no app session tools (a terminal session). */
+const NO_TOOL = /no connected MCP tool/
+
 /** This session's id, read once per load. */
 let selfId: string | null = null
 /** The asks this turn added, given the turn's page when it ends. */
 let addedThisTurn: string[] = []
+/** False once the app's session tools proved absent: no more reads until the session starts again. */
+let reading = true
+/** The failure logged last, so a repeat stays out of the transcript until a read succeeds. */
+let lastLogged: string | null = null
 
 /** Lists the side sessions this chat started that wait on the person. */
 async function syncSessions($: Engine): Promise<void> {
     if (selfId === null) {
-      const self: unknown = JSON.parse(
-        textOf(await $.mcp.call('ccd_session_mgmt', 'get_session', { session_id: 'self' })),
-      )
+      const self = jsonOf(await $.mcp.call('ccd_session_mgmt', 'get_session', { session_id: 'self' }))
       selfId = isRecord(self) && typeof self.sessionId === 'string' ? self.sessionId : null
     }
     if (selfId === null) return
-    const listed = textOf(await $.mcp.call('ccd_session_mgmt', 'list_sessions', { linked: true }))
-    const waiting = waitingSessions(JSON.parse(listed), selfId)
+    const listed = await $.mcp.call('ccd_session_mgmt', 'list_sessions', { linked: true })
+    if (listed.isError) return
+    // Plain text ("No sessions …") lists nothing.
+    const waiting = waitingSessions(jsonOf(listed), selfId)
     const now = await $.clock.now()
     await update($, asks, current => {
       const kept = current.filter(ask => ask.from !== 'session')
@@ -110,11 +127,37 @@ async function syncSessions($: Engine): Promise<void> {
     })
 }
 
-/** One read of the side sessions; a failure is logged, never thrown. */
+/** The one line a session without the app's session tools gets. */
+export const NOT_SHOWN = 'needs-you: side sessions are not shown in this session (no app session tools)'
+
+/** After a failed read: whether to keep reading, the failure now logged last, and the line to log (none for a repeat). */
+export const afterFailure = (
+  error: unknown,
+  logged: string | null,
+): { reading: boolean; lastLogged: string | null; line: string | null } => {
+  const text = String(error)
+  if (NO_TOOL.test(text)) return { reading: false, lastLogged: text, line: NOT_SHOWN }
+  if (text === logged) return { reading: true, lastLogged: logged, line: null }
+  return { reading: true, lastLogged: text, line: `needs-you: side sessions not read (${text})` }
+}
+
+/**
+ * One read of the side sessions; never thrown. A failure is logged once, not on every
+ * read; a session without the app's session tools stops reading after one line.
+ */
 function poll($: Engine): void {
-  syncSessions($).catch((error: unknown) => {
-    $.ui.log(`needs-you: side sessions not read (${String(error)})`)
-  })
+  if (!reading) return
+  syncSessions($).then(
+    () => {
+      lastLogged = null
+    },
+    (error: unknown) => {
+      const after = afterFailure(error, lastLogged)
+      reading = after.reading
+      lastLogged = after.lastLogged
+      if (after.line !== null) $.ui.log(after.line)
+    },
+  )
 }
 
 /** Sends a reply button's label as the person's reply and takes the ask off. */
@@ -134,6 +177,9 @@ function openSession($: Engine, ask: Ask): void {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
+    selfId = null
+    reading = true
+    lastLogged = null
     poll($)
     $.clock.every(POLL_MS, () => poll($))
     return started

@@ -22,6 +22,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -401,6 +402,189 @@ def denial(target: Path, root: Path, primary: Path) -> str:
     return message
 
 
+# A push in progress (0086 P-06). A pre-push hook that runs kavach's
+# `push-marker write <git-dir> <pid>` (`src/rule-checks/live-runs.ts`) leaves
+# one marker per push in the worktree's own git folder and clears it on exit.
+# While one names a live push, the push is checking this tree: an edit now
+# makes it fail at its end ("inputs changed") or check what was not pushed.
+# This reads the markers exactly as `live-runs.ts` does: the same name, the
+# same JSON, and the same rule for an ended push (`isGone`), so a marker a
+# killed push left behind, or one whose pid was reused, blocks nothing. A
+# marker that cannot be read names no push, as there: it guards against a
+# wasted push, not against the agent, whom the boundary above already holds.
+PUSH_MARKER = re.compile(r"kavach-push-in-progress\.\d+\.json")
+START_IDENTITY_FORMAT = "lstart-utc-c/1"
+MAX_SAFE_INTEGER = 2**53 - 1
+
+
+class PushRun:
+    """A push a marker records: its pid, start identity and start time."""
+
+    def __init__(self, pid: int, start_identity: str | None, started_at: str | None):
+        self.pid = pid
+        self.start_identity = start_identity
+        self.started_at = started_at
+
+
+def parse_push_run(raw: str) -> PushRun | None:
+    """A marker's run, as `parseRun` reads it; ``None`` for anything else."""
+
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    pid = value.get("pid")
+    if isinstance(pid, float) and pid.is_integer():
+        pid = int(pid)
+    if isinstance(pid, bool) or not isinstance(pid, int):
+        return None
+    if pid <= 1 or pid > MAX_SAFE_INTEGER:
+        return None
+    identity = value.get("startIdentity")
+    if identity is not None and not isinstance(identity, str):
+        return None
+    started = value.get("startedAt")
+    # Only a plain timestamp is quoted back in a refusal.
+    if not isinstance(started, str) or not re.fullmatch(r"[0-9T:.+Z-]{1,40}", started):
+        started = None
+    return PushRun(pid, identity, started)
+
+
+def ps_field(pid: int, field: str, environment: dict[str, str]) -> str | None:
+    """``ps -o <field>= -p <pid>``, stripped; ``None`` when ps fails."""
+
+    try:
+        result = subprocess.run(
+            ["ps", "-o", f"{field}=", "-p", str(pid)],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=environment,
+        )
+    except OSError:
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def process_alive(pid: int) -> bool:
+    """As `processProbe.isAlive`: only ESRCH or a zombie is dead."""
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # EPERM (someone else's process) or anything else is no evidence.
+        pass
+    state = ps_field(pid, "stat", {**os.environ, "LC_ALL": "C"})
+    return state is None or not state.startswith("Z")
+
+
+def start_identity_of(pid: int) -> str | None:
+    """As `processProbe.startIdentityOf`: `lstart` read in UTC and the C locale."""
+
+    started = ps_field(pid, "lstart", {**os.environ, "TZ": "UTC", "LC_ALL": "C"})
+    return f"{START_IDENTITY_FORMAT} {started}" if started else None
+
+
+def is_current_identity(identity: str | None) -> bool:
+    return identity is not None and identity.startswith(f"{START_IDENTITY_FORMAT} ")
+
+
+def push_is_gone(run: PushRun) -> bool:
+    """As `isGone`: the pid is dead, or now a process that started later."""
+
+    if not process_alive(run.pid):
+        return True
+    if not is_current_identity(run.start_identity):
+        return False
+    current = start_identity_of(run.pid)
+    if current is None:
+        return not process_alive(run.pid)
+    return is_current_identity(current) and current != run.start_identity
+
+
+def git_dir_of(root: Path) -> Path | None:
+    """The worktree's own git folder, from its files first, then from git."""
+
+    try:
+        found = boundary.checkout_from_files(root)
+    except boundary.GitMustAnswer:
+        found = None
+    if found is not None:
+        return found[1]
+    answer = boundary.run_git(root, "rev-parse", "--absolute-git-dir")
+    return Path(answer) if answer else None
+
+
+def live_push(root: Path) -> PushRun | None:
+    """The first live push a marker in the worktree's git folder records."""
+
+    git_dir = git_dir_of(root)
+    if git_dir is None:
+        return None
+    try:
+        names = sorted(name for name in os.listdir(git_dir) if PUSH_MARKER.fullmatch(name))
+    except OSError:
+        return None
+    for name in names:
+        try:
+            raw = (git_dir / name).read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            continue
+        run = parse_push_run(raw)
+        if run is not None and not push_is_gone(run):
+            return run
+    return None
+
+
+def git_ignores(root: Path, target: Path) -> bool:
+    """Whether git ignores ``target`` in the checkout at ``root``.
+
+    A tracked file is never ignored, whatever the patterns say; an answer git
+    cannot give counts as not ignored.
+    """
+
+    relative = os.path.relpath(target, root)
+    result = boundary.run_git_result(root, "check-ignore", "-q", "--", relative)
+    return result.returncode == 0
+
+
+def refuse_during_push(tool: object, targets: list[Path], root: Path) -> None:
+    """Refuse a write into the worktree while its push runs.
+
+    A Bash command that reached here is one the boundary could not prove
+    read-only, and its targets always include the directory it runs in, so
+    any such command run in the worktree waits: what it writes there cannot
+    be told. An Edit, Write or NotebookEdit names its one path, and a path git
+    ignores (a draft, a scratch file) changes nothing a push reads.
+    """
+
+    checkout = root.resolve()
+    inside = [target for target in targets if boundary.is_inside(target.resolve(), checkout)]
+    if not inside:
+        return
+    run = live_push(root)
+    if run is None:
+        return
+    if tool == "Bash":
+        what = "this command may write in it"
+    else:
+        changed = [target for target in inside if not git_ignores(checkout, target.resolve())]
+        if not changed:
+            return
+        what = f"this edits {os.path.relpath(changed[0].resolve(), checkout)}, which git does not ignore"
+    started = f", started {run.started_at}" if run.started_at else ""
+    boundary.deny(
+        f"this worktree's push (pid {run.pid}{started}) is still running, and {what}. "
+        "Wait for the push to end, then retry. Read-only commands still run, "
+        "and files git ignores can still be written with Edit or Write."
+    )
+
+
 def main() -> None:
     # First, so a misread settings file refuses every event, a read-only one
     # included.
@@ -459,6 +643,7 @@ def main() -> None:
         # operand outside both still fails on that operand.
         if not (boundary.is_session_target(target, root, primary) or in_memory(target)):
             boundary.deny(denial(target, root, primary))
+    refuse_during_push(tool, targets, root)
 
 
 def run() -> None:

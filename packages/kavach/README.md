@@ -3,11 +3,11 @@
 कवच, armour. Guards for coding agents: each tool call an agent makes is
 judged before it runs. Part of [Veda](https://github.com/veda-hq/veda).
 
-## v0.3: three guards and a rule-check engine
+## v0.5: three guards and a rule-check engine
 
 | Guard | Refuses | Entry point |
 | --- | --- | --- |
-| Worktree boundary | Any write outside the agent's own git worktree: a Bash command, an Edit or a Write. Read-only commands pass from any checkout. | `python3 python/kavach/worktree_guard.py` |
+| Worktree boundary | Any write outside the agent's own git worktree: a Bash command, an Edit or a Write; and, while a push runs, any write into it (below). Read-only commands pass from any checkout. | `python3 python/kavach/worktree_guard.py` |
 | Command guard | Git-hook bypasses (`--no-verify`, `core.hooksPath`…), history-destroying pushes, and the project's own command rules (settings below). | `python3 python/kavach/command_guard.py` |
 | Rule checks | The project's own checks, written in TypeScript, refusing or warning with the rule's reason. | `kavach-rule-checks` (`dist/rule-checks/cli.js`) |
 
@@ -85,6 +85,31 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
   longer refused for that reason alone (`--no-verify` and the rest still are).
   Keep a CI check behind it: the guard reads one command line, not the files
   other programs change.
+
+## While a push runs
+
+A push's checks read the worktree it was started from, and an edit made
+while they run either fails the push at its end or leaves it checking what
+was not pushed. So while a push runs, the worktree boundary refuses writes
+into that worktree: any Bash command it cannot prove read-only, run there,
+and any Edit or Write of a path git does not ignore. Reads still run, files
+git ignores (drafts, scratch) can still be written, and the refusal names the
+push's pid and start. Commands that only reach the network, such as `gh pr
+comment`, wait too: the guard cannot tell what an unproven command writes.
+
+It knows a push is running from the marker the project's pre-push hook
+writes. Write it when a real push starts and clear it on every exit:
+
+```sh
+kavach-rule-checks push-marker write "$(git rev-parse --absolute-git-dir)" "$$"
+trap 'kavach-rule-checks push-marker clear "$(git rev-parse --absolute-git-dir)" "$$"' EXIT
+```
+
+Each push gets its own marker, `kavach-push-in-progress.<pid>.json` in the
+worktree's own git folder, naming its pid and start. A marker whose pid has
+ended or now belongs to a later process blocks nothing, so a killed push
+leaves no lock behind, and a push in another worktree never blocks this one.
+Without the marker, nothing here changes.
 
 ## Refusal log
 

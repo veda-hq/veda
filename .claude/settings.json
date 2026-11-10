@@ -1,4 +1,27 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "advisorModel": "fable"
+  "advisorModel": "fable",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-}\" in ''|0|false|FALSE) exit 0 ;; esac; echo 'CLAUDE_CODE_DISABLE_ADVISOR_TOOL is set, and work in veda runs with the advisor on. Unset it and start a new session; until then every edit and command is refused.'"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"${CLAUDE_CODE_DISABLE_ADVISOR_TOOL:-}\" in ''|0|false|FALSE) exit 0 ;; esac; echo 'BLOCKED: CLAUDE_CODE_DISABLE_ADVISOR_TOOL is set, and work in veda runs with the advisor on. Unset it and start a new session.' >&2; exit 2"
+          }
+        ]
+      }
+    ]
+  }
 }

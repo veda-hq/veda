@@ -139,7 +139,10 @@ async function hook(io: Io, options: Options): Promise<number> {
   const entries = entriesFor(config, event, matchTarget(parsed as Record<string, unknown>));
   if (entries.length === 0 && forbidden === undefined) return 0;
   const outcomes = entries.length === 0 ? [] : await (io.run ?? runAll)(entries, config, input, io.cwd);
-  const answer = merge(event, forbidden === undefined ? outcomes : [forbidden, ...outcomes]);
+  const merged = merge(event, forbidden === undefined ? outcomes : [forbidden, ...outcomes]);
+  // A handler that blocks drops every JSON answer, the warning among them; keep it in the reason.
+  const warning = forbidden === undefined ? undefined : (JSON.parse(forbidden.stdout) as { systemMessage: string }).systemMessage;
+  const answer = merged.code === 2 && warning !== undefined ? { ...merged, stderr: `${warning}\n${merged.stderr}` } : merged;
   if (answer.stdout !== '') io.out(answer.stdout);
   if (answer.stderr !== '') io.err(answer.stderr);
   return answer.code;

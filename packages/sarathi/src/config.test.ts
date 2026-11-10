@@ -145,6 +145,7 @@ describe('forbidEnv', () => {
 
   it('refuses a list that is not names with reasons', () => {
     refuses({ hooks: {}, forbidEnv: [] }, /"forbidEnv" must be an object/);
+    refuses({ hooks: {}, forbidEnv: null }, /"forbidEnv" must be an object/);
     refuses({ hooks: {}, forbidEnv: { 'A-B': 'x' } }, /"A-B" is not an environment variable name/);
     refuses({ hooks: {}, forbidEnv: { '1A': 'x' } }, /not an environment variable name/);
     refuses({ hooks: {}, forbidEnv: { A: ' ' } }, /forbidEnv A: give why/);
@@ -156,5 +157,12 @@ describe('forbidEnv', () => {
     for (const on of ['1', 'true', 'yes']) assert.equal(isOn(on), true, on);
     const config = parse({ hooks: {}, forbidEnv: { A: 'a', B: 'b', C: 'c' } });
     assert.deepEqual(forbiddenSet(config, { A: '1', B: '0', D: '1' }), [['A', 'a']]);
+  });
+
+  it('keeps names that are object keys, and reads only the environment’s own values', () => {
+    const config = parseConfig('{"hooks":{},"forbidEnv":{"__proto__":"p","toString":"t"}}', 'sarathi.json', ROOT);
+    assert.deepEqual(Object.keys(config.forbidEnv).sort(), ['__proto__', 'toString']);
+    assert.deepEqual(forbiddenSet(config, {}), []);
+    assert.deepEqual(forbiddenSet(config, Object.fromEntries([['toString', '1']])), [['toString', 't']]);
   });
 });

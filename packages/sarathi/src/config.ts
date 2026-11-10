@@ -135,14 +135,17 @@ export function parseConfig(text: string, path: string, root: string): Config {
     if (!Array.isArray(list)) throw new ConfigError(`${path} ${event}: must be a list of entries`);
     hooks[event] = list.map((entry: unknown, index) => parseEntry(entry, `${path} ${event}[${index}]`));
   }
-  const forbidRaw = raw.forbidEnv ?? {};
+  // Only an absent key means none: `null` is malformed, not empty.
+  const forbidRaw = Object.hasOwn(raw, 'forbidEnv') ? raw.forbidEnv : {};
   if (!isRecord(forbidRaw)) throw new ConfigError(`${path}: "forbidEnv" must be an object of variable names`);
-  const forbidEnv: Record<string, string> = {};
+  const forbidden: Array<[string, string]> = [];
   for (const [name, why] of Object.entries(forbidRaw)) {
     if (!ENV_NAME.test(name)) throw new ConfigError(`${path} forbidEnv: "${name}" is not an environment variable name`);
     if (typeof why !== 'string' || why.trim() === '') throw new ConfigError(`${path} forbidEnv ${name}: give why it is forbidden`);
-    forbidEnv[name] = why;
+    forbidden.push([name, why]);
   }
+  // fromEntries defines own properties, so a name like `__proto__` is kept, not sent to the prototype setter.
+  const forbidEnv: Record<string, string> = Object.fromEntries(forbidden);
   const fromRoot = (value: string): string => (isAbsolute(value) ? value : resolve(root, value));
   return {
     forbidEnv,
@@ -194,7 +197,11 @@ export function isOn(value: string | undefined): boolean {
 
 /** The forbidden variables `env` sets, each with why. */
 export function forbiddenSet(config: Config, env: Readonly<Record<string, string | undefined>>): Array<readonly [string, string]> {
-  return Object.entries(config.forbidEnv).filter(([name]) => isOn(env[name]));
+  // Only the environment's own string values: `toString` is a legal name an unset variable must not inherit.
+  return Object.entries(config.forbidEnv).filter(([name]) => {
+    const value = Object.hasOwn(env, name) ? env[name] : undefined;
+    return typeof value === 'string' && isOn(value);
+  });
 }
 
 /** The longest timeout among an event's entries, in seconds. */

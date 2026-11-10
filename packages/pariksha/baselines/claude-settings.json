@@ -8,7 +8,7 @@
     "why": "no git command skips the repository's hooks"
   },
   "permissions.ask": {
-    "includes": ["Bash(*git push*--force*)"],
+    "includes": ["Bash(*git push*--force*)", "Bash(*git push* -f*)"],
     "why": "a force push rewrites published history, so a person approves each one"
   }
 }

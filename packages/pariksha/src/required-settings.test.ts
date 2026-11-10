@@ -127,13 +127,13 @@ describe('baselines/claude-settings.json', () => {
       [
         ['permissions.allow', 'includes', ['mcp__ccd_pr__set_monitor']],
         ['permissions.deny', 'includes', ['Bash(*--no-verify*)']],
-        ['permissions.ask', 'includes', ['Bash(*git push*--force*)']],
+        ['permissions.ask', 'includes', ['Bash(*git push*--force*)', 'Bash(*git push* -f*)']],
       ],
     );
   });
 
   it('refuses settings with any baseline entry removed', () => {
-    const full = { permissions: { allow: ['mcp__ccd_pr__set_monitor'], deny: ['Bash(*--no-verify*)'], ask: ['Bash(*git push*--force*)'] } };
+    const full = { permissions: { allow: ['mcp__ccd_pr__set_monitor'], deny: ['Bash(*--no-verify*)'], ask: ['Bash(*git push*--force*)', 'Bash(*git push* -f*)'] } };
     assert.deepEqual(findMissing(JSON.stringify(full), baseline), []);
     for (const list of ['allow', 'deny', 'ask'] as const) {
       const planted = { permissions: { ...full.permissions, [list]: [] } };

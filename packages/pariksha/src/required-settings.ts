@@ -7,16 +7,17 @@
 // (a permission rule, say) the project requires.
 import { isDeepStrictEqual } from 'node:util';
 
-export interface Requirement {
+interface RequirementBase {
   /** The key, a dotted path for a nested one (`env.FOO`). */
   readonly key: string;
-  /** `value`: the key holds exactly this; `includes`: the key is a list holding each of these. */
-  readonly kind: 'value' | 'includes';
-  /** The value it must hold, or the entries its list must hold, compared as JSON. */
-  readonly expected: unknown;
   /** Why the project requires it; shown when it is missing. */
   readonly why: string;
 }
+
+/** `value`: the key holds exactly `expected`; `includes`: the key is a list holding each entry of `expected`. Compared as JSON. */
+export type Requirement =
+  | (RequirementBase & { readonly kind: 'value'; readonly expected: unknown })
+  | (RequirementBase & { readonly kind: 'includes'; readonly expected: readonly unknown[] });
 
 export interface Finding {
   readonly key: string;
@@ -56,8 +57,13 @@ export function parseRequirements(text: string): Requirement[] {
     const extra = Object.keys(spec).filter((k) => k !== 'value' && k !== 'includes' && k !== 'why');
     if (extra.length > 0) throw new Error(`"${key}": unknown key ${extra.map((k) => `"${k}"`).join(', ')}`);
     if (typeof spec.why !== 'string' || spec.why.trim() === '') throw new Error(`"${key}" needs a "why"`);
-    if (hasIncludes && (!Array.isArray(spec.includes) || spec.includes.length === 0)) throw new Error(`"${key}": "includes" must list at least one entry`);
-    out.push({ key, kind: hasIncludes ? 'includes' : 'value', expected: hasIncludes ? spec.includes : spec.value, why: spec.why });
+    if (!hasIncludes) {
+      out.push({ key, kind: 'value', expected: spec.value, why: spec.why });
+      continue;
+    }
+    const includes: unknown = spec.includes;
+    if (!Array.isArray(includes) || includes.length === 0) throw new Error(`"${key}": "includes" must list at least one entry`);
+    out.push({ key, kind: 'includes', expected: includes, why: spec.why });
   }
   if (out.length === 0) throw new Error('the requirements list no key');
   return out;
@@ -81,7 +87,7 @@ const judge = (settings: unknown, r: Requirement): Finding | undefined => {
     if (got.missing) return { ...base, expected: r.expected };
     return isDeepStrictEqual(got.value, r.expected) ? undefined : { ...base, expected: r.expected, found: got.value };
   }
-  const wanted = r.expected as readonly unknown[];
+  const wanted = r.expected;
   if (got.missing) return { ...base, expected: wanted };
   if (!Array.isArray(got.value)) return { ...base, expected: wanted, found: got.value };
   const list: readonly unknown[] = got.value;

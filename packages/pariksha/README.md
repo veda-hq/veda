@@ -280,7 +280,10 @@ exits 2.
 `baselines/claude-settings.json` (`@veda-hq/pariksha/baselines/claude-settings.json`)
 is the permission baseline every repository agents work in keeps: allow
 `mcp__ccd_pr__set_monitor`, deny `Bash(*--no-verify*)`, ask
-`Bash(*git push*--force*)`. Point `--require` at it in the package's install.
+`Bash(*git push*--force*)` and `Bash(*git push* -f*)`. Point `--require` at it
+in the package's install. Permission globs are a coarse backstop: they cannot
+tell `git commit -n` from `git log -n 5`, nor see `git -C dir push --force`.
+Parsing those is the job of a command guard such as kavach's `git_safety`.
 `permissions.defaultMode: "auto"` is not in it: Claude Code ignores `auto` in a
 project's settings and then also skips the user's own `defaultMode`, so it
 belongs in user settings only.

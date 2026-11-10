@@ -463,10 +463,21 @@ refusal; a requirements file it cannot read or parse, or one listing no key,
 exits 2.
 
 `baselines/claude-settings.json` (`@veda-hq/pariksha/baselines/claude-settings.json`)
-is the permission baseline every repository agents work in keeps: allow
-`mcp__ccd_pr__set_monitor`, deny `Bash(*--no-verify*)`, ask
-`Bash(*git push*--force*)` and `Bash(*git push* -f*)`. Point `--require` at it
-in the package's install. Permission globs are a coarse backstop: they cannot
+is the permission baseline every repository agents work in keeps:
+
+- allow: edits inside the checkout, read-only git and GitHub commands, a
+  draft pull request (`git push -u origin`, `gh pr create --draft`,
+  `gh pr ready`), the desktop app's pull request tools
+  (`mcp__ccd_pr__bind_pr`, `get_status`, `set_monitor`), reading a browser
+  page, and `send_message` to the session that started this one;
+- deny: `Bash(*--no-verify*)`;
+- ask: every push that rewrites or deletes published history (`--force`,
+  `-f`, `--mirror`, `--delete`, `-d`, `--prune`, a `+` refspec, and the
+  abbreviations git accepts), and every dependency change (`pnpm add`,
+  `remove`, `update`, `npm install`, `yarn add`).
+
+Point `--require` at it in the package's install. A repository's own rules
+go in its own requirements file beside it. Permission globs are a coarse backstop: they cannot
 tell `git commit -n` from `git log -n 5`, nor see `git -C dir push --force`.
 Parsing those is the job of a command guard such as kavach's `git_safety`.
 `permissions.defaultMode: "auto"` is not in it: Claude Code ignores `auto` in a

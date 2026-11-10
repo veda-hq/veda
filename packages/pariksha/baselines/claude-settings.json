@@ -1,14 +1,55 @@
 {
   "permissions.allow": {
-    "includes": ["mcp__ccd_pr__set_monitor"],
-    "why": "an agent turns on the desktop app's CI monitor for the pull request it opens without a prompt"
+    "includes": [
+      "Edit(./**)",
+      "Write(./**)",
+      "NotebookEdit(./**)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git ls-remote:*)",
+      "Bash(git worktree list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh pr comment:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh issue list:*)",
+      "Bash(git push -u origin:*)",
+      "Bash(gh pr create --draft:*)",
+      "Bash(gh pr ready:*)",
+      "mcp__ccd_pr__bind_pr",
+      "mcp__ccd_pr__get_status",
+      "mcp__ccd_pr__set_monitor",
+      "mcp__Claude_Browser__get_page_text",
+      "mcp__Claude_Browser__tabs_context",
+      "mcp__claude-code-remote__send_message"
+    ],
+    "why": "an agent edits inside its checkout, reads git and GitHub, publishes a draft pull request, binds it and turns on the desktop app's CI monitor, reads a page and reports to the session that started it, all without a prompt"
   },
   "permissions.deny": {
     "includes": ["Bash(*--no-verify*)"],
     "why": "no git command skips the repository's hooks"
   },
   "permissions.ask": {
-    "includes": ["Bash(*git push*--force*)", "Bash(*git push* -f*)"],
-    "why": "a force push rewrites published history, so a person approves each one"
+    "includes": [
+      "Bash(*git push*--force*)",
+      "Bash(*git push* -f*)",
+      "Bash(*git push*--for*)",
+      "Bash(*git push*--mi*)",
+      "Bash(*git push*--de*)",
+      "Bash(*git push*--pru*)",
+      "Bash(*git push* -d *)",
+      "Bash(*git push* +*)",
+      "Bash(pnpm add:*)",
+      "Bash(pnpm remove:*)",
+      "Bash(pnpm update:*)",
+      "Bash(npm install:*)",
+      "Bash(yarn add:*)"
+    ],
+    "why": "a person approves each push that rewrites or deletes published history (a force push, a mirror, a delete, a prune, a + refspec, and their abbreviations) and each change to the dependencies"
   }
 }

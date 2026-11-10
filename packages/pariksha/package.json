@@ -1,6 +1,6 @@
 {
   "name": "@veda-hq/pariksha",
-  "version": "0.5.12",
+  "version": "0.5.13",
   "description": "Repository checks: doc drift, rule enforcement, test-quality ratchets. Checks: authority-citations, boundary, codec-registry, coverage-by-type, coverage-exemptions, doc-budgets, enforcement-claims, env-gate-switches, export-deletions, fault-injection-registry, required-settings. Also markdownlint rules for Markdown that renders mangled: @veda-hq/pariksha/markdownlint.",
   "keywords": ["repository checks", "lint", "boundary", "ci", "coding agents", "markdownlint"],
   "license": "MIT",

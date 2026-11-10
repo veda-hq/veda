@@ -365,12 +365,18 @@ describe('pathsIn', () => {
           'if node_modules/.bin/n; then x; elif node_modules/.bin/o; then x; else node_modules/.bin/p; fi',
           'while node_modules/.bin/q; do x; done',
           'until node_modules/.bin/r; do x; done',
+          'if 2>/dev/null node_modules/.bin/s; then x; fi',
+          'then >out node_modules/.bin/t',
+          'x; FOO=1 2>&1 > log node_modules/.bin/u',
+          'do &>>all <in node_modules/.bin/v; done',
         ].join('\n'),
         '.',
         RUNNABLE,
       ),
-      'abcdefghijklmnopqr'.split('').map((c) => `node_modules/.bin/${c}`),
+      'abcdefghijklmnopqrstuv'.split('').map((c) => `node_modules/.bin/${c}`),
     );
+    // A redirection's target is written or read, not run.
+    assert.deepEqual(pathsIn(['x; > node_modules/.bin/a', 'then >node_modules/.bin/b', 'cat <node_modules/.bin/c'].join('\n'), '.', RUNNABLE), []);
     // Named, tested or printed, it runs nothing.
     assert.deepEqual(
       pathsIn(

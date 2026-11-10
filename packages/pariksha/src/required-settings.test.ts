@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -7,6 +7,7 @@ import { DEFAULT_SETTINGS, run } from './cli.ts';
 import { findMissing, formatFindings, parseRequirements } from './required-settings.ts';
 
 const REQUIRE = JSON.stringify({ advisorModel: { value: 'fable', why: 'the advisor reviews every session' } });
+const BASELINE = new URL('../baselines/claude-settings.json', import.meta.url);
 
 const capture = () => {
   const out: string[] = [];
@@ -25,10 +26,12 @@ const tree = (files: Record<string, string>): string => {
 };
 
 describe('parseRequirements', () => {
-  it('reads keys, values and reasons, skipping $schema', () => {
-    assert.deepEqual(parseRequirements(JSON.stringify({ $schema: 'x', 'env.A': { value: 1, why: 'w' }, b: { value: null, why: 'v' } })), [
-      { key: 'env.A', value: 1, why: 'w' },
-      { key: 'b', value: null, why: 'v' },
+  it('reads values, lists and reasons, skipping $schema', () => {
+    const text = JSON.stringify({ $schema: 'x', 'env.A': { value: 1, why: 'w' }, b: { value: null, why: 'v' }, 'p.allow': { includes: ['x', { y: 1 }], why: 'u' } });
+    assert.deepEqual(parseRequirements(text), [
+      { key: 'env.A', kind: 'value', expected: 1, why: 'w' },
+      { key: 'b', kind: 'value', expected: null, why: 'v' },
+      { key: 'p.allow', kind: 'includes', expected: ['x', { y: 1 }], why: 'u' },
     ]);
   });
 
@@ -39,31 +42,48 @@ describe('parseRequirements', () => {
     ['an empty key', JSON.stringify({ '': { value: 1, why: 'w' } }), /not a key/],
     ['an empty path part', JSON.stringify({ 'a..b': { value: 1, why: 'w' } }), /not a key/],
     ['a bare value', JSON.stringify({ a: 'fable' }), /needs \{ "value"/],
-    ['no value', JSON.stringify({ a: { why: 'w' } }), /needs \{ "value"/],
+    ['neither value nor includes', JSON.stringify({ a: { why: 'w' } }), /needs \{ "value".* or \{ "includes"/],
+    ['both value and includes', JSON.stringify({ a: { value: 1, includes: [1], why: 'w' } }), /needs \{ "value"/],
     ['an unknown key', JSON.stringify({ a: { value: 1, why: 'w', note: 'n' } }), /unknown key "note"/],
     ['no why', JSON.stringify({ a: { value: 1 } }), /needs a "why"/],
     ['a blank why', JSON.stringify({ a: { value: 1, why: ' ' } }), /needs a "why"/],
+    ['includes that is not a list', JSON.stringify({ a: { includes: 'x', why: 'w' } }), /"includes" must list at least one entry/],
+    ['an empty includes', JSON.stringify({ a: { includes: [], why: 'w' } }), /"includes" must list at least one entry/],
   ] as const) {
     it(`refuses ${name}`, () => assert.throws(() => parseRequirements(text), message));
   }
 });
 
 describe('findMissing', () => {
-  const reqs = parseRequirements(JSON.stringify({ advisorModel: { value: 'fable', why: 'w' }, 'env.X': { value: { a: [1] }, why: 'v' } }));
+  const reqs = parseRequirements(
+    JSON.stringify({
+      advisorModel: { value: 'fable', why: 'w' },
+      'env.X': { value: { a: [1] }, why: 'v' },
+      'permissions.deny': { includes: ['Bash(a)', 'Bash(b)'], why: 'd' },
+    }),
+  );
 
-  it('passes settings that hold every value, nested ones compared as JSON', () => {
-    assert.deepEqual(findMissing(JSON.stringify({ advisorModel: 'fable', env: { X: { a: [1] } }, other: 1 }), reqs), []);
+  it('passes settings that hold every value and every listed entry, among others', () => {
+    const settings = { advisorModel: 'fable', env: { X: { a: [1] } }, permissions: { deny: ['Bash(z)', 'Bash(b)', 'Bash(a)'] }, other: 1 };
+    assert.deepEqual(findMissing(JSON.stringify(settings), reqs), []);
   });
 
-  it('names a missing key and a different value', () => {
-    assert.deepEqual(findMissing(JSON.stringify({ env: { X: { a: [2] } } }), reqs), [
-      { key: 'advisorModel', expected: 'fable', why: 'w' },
-      { key: 'env.X', expected: { a: [1] }, found: { a: [2] }, why: 'v' },
+  it('names a missing key, a different value and the entries a list lacks', () => {
+    assert.deepEqual(findMissing(JSON.stringify({ env: { X: { a: [2] } }, permissions: { deny: ['Bash(a)'] } }), reqs), [
+      { key: 'advisorModel', kind: 'value', expected: 'fable', why: 'w' },
+      { key: 'env.X', kind: 'value', expected: { a: [1] }, found: { a: [2] }, why: 'v' },
+      { key: 'permissions.deny', kind: 'includes', expected: ['Bash(b)'], found: ['Bash(a)'], why: 'd' },
     ]);
   });
 
-  it('treats a path through a non-object as missing', () => {
-    assert.deepEqual(findMissing(JSON.stringify({ advisorModel: 'fable', env: 'flat' }), reqs), [{ key: 'env.X', expected: { a: [1] }, why: 'v' }]);
+  it('treats a path through a non-object as missing, and a list key that is no list as wrong', () => {
+    assert.deepEqual(findMissing(JSON.stringify({ advisorModel: 'fable', env: 'flat', permissions: { deny: 'Bash(a)' } }), reqs), [
+      { key: 'env.X', kind: 'value', expected: { a: [1] }, why: 'v' },
+      { key: 'permissions.deny', kind: 'includes', expected: ['Bash(a)', 'Bash(b)'], found: 'Bash(a)', why: 'd' },
+    ]);
+    assert.deepEqual(findMissing(JSON.stringify({ advisorModel: 'fable', env: { X: { a: [1] } } }), reqs), [
+      { key: 'permissions.deny', kind: 'includes', expected: ['Bash(a)', 'Bash(b)'], why: 'd' },
+    ]);
   });
 
   it('refuses settings that are not a JSON object', () => {
@@ -76,18 +96,49 @@ describe('formatFindings', () => {
   it('says how to fix each finding', () => {
     const result = formatFindings(
       [
-        { key: 'a', expected: 'fable', why: 'w' },
-        { key: 'b', expected: 1, found: 2, why: 'v' },
+        { key: 'a', kind: 'value', expected: 'fable', why: 'w' },
+        { key: 'b', kind: 'value', expected: 1, found: 2, why: 'v' },
+        { key: 'c', kind: 'includes', expected: ['x', 'y'], found: ['z'], why: 'u' },
+        { key: 'd', kind: 'includes', expected: ['x'], why: 't' },
+        { key: 'e', kind: 'includes', expected: ['x'], found: 'x', why: 's' },
       ],
-      2,
+      5,
       's.json',
       'r.json',
     );
     assert.equal(result.ok, false);
+    const tail = 'Put it back; to change the requirement, edit r.json.';
     assert.deepEqual(result.err, [
-      'pariksha required-settings: s.json: "a" is missing; it must be "fable" (w). Put it back; to change the requirement, edit r.json.',
-      'pariksha required-settings: s.json: "b" holds 2; it must be 1 (v). Put it back; to change the requirement, edit r.json.',
+      `pariksha required-settings: s.json: "a" is missing; it must be "fable" (w). ${tail}`,
+      `pariksha required-settings: s.json: "b" holds 2; it must be 1 (v). ${tail}`,
+      `pariksha required-settings: s.json: "c" lacks "x", "y" (u). ${tail}`,
+      `pariksha required-settings: s.json: "d" is missing; it must be a list holding "x" (t). ${tail}`,
+      `pariksha required-settings: s.json: "e" holds "x", not a list; it must be a list holding "x" (s). ${tail}`,
     ]);
+  });
+});
+
+describe('baselines/claude-settings.json', () => {
+  const baseline = parseRequirements(readFileSync(BASELINE, 'utf8'));
+
+  it('holds the permission baseline every agent repository keeps', () => {
+    assert.deepEqual(
+      baseline.map((r) => [r.key, r.kind, r.expected]),
+      [
+        ['permissions.allow', 'includes', ['mcp__ccd_pr__set_monitor']],
+        ['permissions.deny', 'includes', ['Bash(*--no-verify*)']],
+        ['permissions.ask', 'includes', ['Bash(*git push*--force*)']],
+      ],
+    );
+  });
+
+  it('refuses settings with any baseline entry removed', () => {
+    const full = { permissions: { allow: ['mcp__ccd_pr__set_monitor'], deny: ['Bash(*--no-verify*)'], ask: ['Bash(*git push*--force*)'] } };
+    assert.deepEqual(findMissing(JSON.stringify(full), baseline), []);
+    for (const list of ['allow', 'deny', 'ask'] as const) {
+      const planted = { permissions: { ...full.permissions, [list]: [] } };
+      assert.equal(findMissing(JSON.stringify(planted), baseline)[0]?.key, `permissions.${list}`);
+    }
   });
 });
 

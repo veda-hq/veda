@@ -1,6 +1,11 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "advisorModel": "fable",
+  "permissions": {
+    "allow": ["mcp__ccd_pr__set_monitor"],
+    "deny": ["Bash(*--no-verify*)"],
+    "ask": ["Bash(*git push*--force*)"]
+  },
   "hooks": {
     "SessionStart": [
       {

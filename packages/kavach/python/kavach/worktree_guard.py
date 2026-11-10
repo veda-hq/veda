@@ -442,7 +442,10 @@ def parse_push_run(raw: str) -> PushRun | None:
         return None
     if pid <= 1 or pid > MAX_SAFE_INTEGER:
         return None
-    identity = value.get("startIdentity")
+    # A missing key is not JSON's null: `parseRun` refuses it, so this does.
+    if "startIdentity" not in value:
+        return None
+    identity = value["startIdentity"]
     if identity is not None and not isinstance(identity, str):
         return None
     started = value.get("startedAt")
@@ -474,7 +477,9 @@ def process_alive(pid: int) -> bool:
 
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
+    except (ProcessLookupError, OverflowError):
+        # OverflowError: a safe integer past the system's pid range names no
+        # process.
         return False
     except OSError:
         # EPERM (someone else's process) or anything else is no evidence.
@@ -548,7 +553,8 @@ def git_ignores(root: Path, target: Path) -> bool:
     cannot give counts as not ignored.
     """
 
-    relative = os.path.relpath(target, root)
+    # `./` keeps a name such as `:(top)x` from being read as pathspec magic.
+    relative = f"./{os.path.relpath(target, root)}"
     result = boundary.run_git_result(root, "check-ignore", "-q", "--", relative)
     return result.returncode == 0
 
@@ -633,7 +639,9 @@ def main() -> None:
         boundary.tool_command(values), cwd, root, trusted
     ):
         # A script the consumer reviewed and trusts, reached only after
-        # ownership above.
+        # ownership above. What it writes is unproven, so it counts as
+        # writing in the checkout while a push runs.
+        refuse_during_push(tool, [root], root)
         return
     if targets is None:
         boundary.deny("mutation targets could not be resolved")

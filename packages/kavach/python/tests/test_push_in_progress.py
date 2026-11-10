@@ -11,7 +11,8 @@ import subprocess
 from pathlib import Path
 from unittest import mock
 
-from .test_boundary import ADAPTER, BoundaryFixture, git
+from .test_boundary import ADAPTER, BoundaryFixture, git, hermetic_git_env
+from .test_worktree_guard import WORKTREE_SCRIPT, WORKTREE_SETTINGS
 
 
 STARTED = "2026-11-10T03:05:00.000Z"
@@ -131,6 +132,29 @@ class PushInProgressTest(BoundaryFixture):
         (self.git_dir / "kavach-push-in-progress.7.json").write_text("{", encoding="utf-8")
         self.assertEqual(self.write(self.claude / "tracked.txt").returncode, 0)
 
+    def test_a_trusted_command_waits_too(self) -> None:
+        settings = self.external / "kavach.json"
+        settings.write_text(json.dumps(WORKTREE_SETTINGS), encoding="utf-8")
+        environment = hermetic_git_env()
+        environment["KAVACH_CONFIG"] = str(settings)
+        script = self.claude / WORKTREE_SCRIPT
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("", encoding="utf-8")
+        command = "python3 scripts/worktree.py begin --branch claude/next-task"
+        self.assertEqual(self.claude_bash(self.claude, command, environment).returncode, 0)
+        self.mark(self.sleeper.pid)
+        result = self.claude_bash(self.claude, command, environment)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("this command may write in it", result.stderr)
+
+    def test_a_name_git_reads_as_pathspec_magic_is_judged_literally(self) -> None:
+        exclude = self.main / ".git" / "info" / "exclude"
+        exclude.write_text("scratch/\nignored.txt\n", encoding="utf-8")
+        self.mark(self.sleeper.pid)
+        self.assertEqual(self.write(self.claude / "ignored.txt").returncode, 0)
+        result = self.write(self.claude / ":(top)ignored.txt")
+        self.assertEqual(result.returncode, 2, result.stderr)
+
     def test_an_odd_start_time_is_not_quoted(self) -> None:
         self.mark(self.sleeper.pid, started="now; rm -rf /")
         result = self.write(self.claude / "tracked.txt")
@@ -150,6 +174,7 @@ class PushInProgressTest(BoundaryFixture):
             ('{"pid": 9007199254740992, "startIdentity": null}', None),
             ('{"pid": "42", "startIdentity": null}', None),
             ('{"pid": 42, "startIdentity": 7}', None),
+            ('{"pid": 42}', None),
             ("[42]", None),
             ("{", None),
         )
@@ -168,6 +193,8 @@ class PushInProgressTest(BoundaryFixture):
                 self.assertTrue(ADAPTER.process_alive(4242))
         with mock.patch.object(ADAPTER.os, "kill", side_effect=ProcessLookupError):
             self.assertFalse(ADAPTER.process_alive(4242))
+        # A safe integer past the system's pid range names no process.
+        self.assertFalse(ADAPTER.process_alive(ADAPTER.MAX_SAFE_INTEGER))
         with mock.patch.object(ADAPTER.subprocess, "run", side_effect=OSError):
             self.assertIsNone(ADAPTER.ps_field(4242, "stat", {}))
         self.assertIsNone(ADAPTER.start_identity_of(self.dead_pid()))

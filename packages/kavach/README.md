@@ -91,11 +91,13 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
 A push's checks read the worktree it was started from, and an edit made
 while they run either fails the push at its end or leaves it checking what
 was not pushed. So while a push runs, the worktree boundary refuses writes
-into that worktree: any Bash command it cannot prove read-only, run there,
-and any Edit or Write of a path git does not ignore. Reads still run, files
-git ignores (drafts, scratch) can still be written, and the refusal names the
-push's pid and start. Commands that only reach the network, such as `gh pr
-comment`, wait too: the guard cannot tell what an unproven command writes.
+into that worktree: any Bash command it cannot prove read-only, run there
+(a trusted command included), and any Edit, Write or NotebookEdit of a path
+git does not ignore. Reads still run, and the file tools can still write
+files git ignores (drafts, scratch); a Bash command that writes one is still
+refused. The refusal names the push's pid and start. Commands that only reach
+the network, such as `gh pr comment`, wait too: the guard cannot tell what an
+unproven command writes.
 
 It knows a push is running from the marker the project's pre-push hook
 writes. Write it when a real push starts and clear it on every exit:

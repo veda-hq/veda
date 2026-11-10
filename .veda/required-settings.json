@@ -1,0 +1,6 @@
+{
+  "advisorModel": {
+    "value": "fable",
+    "why": "every session in this repository works with the advisor on, set to fable; a cloud session reads only this committed file"
+  }
+}

@@ -12,6 +12,7 @@ import { checkBudgets } from './doc-budgets.ts';
 import { diskReads, formatReads, listFiles, needsTypescript, parseConfig as parseGateConfig, readerFor, readGate, type Reads } from './env-gate-switches.ts';
 import { loadTypescript, typescriptLoaders, type Ts } from './typescript.ts';
 import { checkExportDeletions, formatReport } from './export-deletions.ts';
+import { findMissing, formatFindings, parseRequirements } from './required-settings.ts';
 import { BASE_CANDIDATES, gitAt, gitAtTop, must, resolveBase, topOf } from './git.ts';
 
 export interface Io {
@@ -35,6 +36,7 @@ const USAGE = [
   '       pariksha doc-budgets --table <file> [--section <name>] [--root <dir>]',
   '       pariksha env-gate-switches --config <file> [--mode staged|tree] [--root <dir>]',
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
+  '       pariksha required-settings --require <file> [--settings <file>] [--root <dir>]',
   '       pariksha hash <word>',
   '       pariksha --version',
 ].join('\n');
@@ -339,6 +341,50 @@ const envGateSwitches = (f: Map<string, string>, io: Io): number => {
   return result.ok ? 0 : 1;
 };
 
+export const DEFAULT_SETTINGS = '.claude/settings.json';
+
+const requiredSettings = (f: Map<string, string>, io: Io): number => {
+  const P = 'pariksha required-settings:';
+  const requirePath = f.get('--require');
+  if (requirePath === undefined) {
+    io.err(USAGE);
+    return 2;
+  }
+  const root = resolve(f.get('--root') ?? '.');
+  const settingsPath = f.get('--settings') ?? DEFAULT_SETTINGS;
+  const read = (path: string, what: string): string | undefined => {
+    try {
+      return readFileSync(resolve(root, path), 'utf8');
+    } catch {
+      io.err(`${P} cannot read the ${what} ${resolve(root, path)}; nothing was checked, so this is not a pass`);
+      return undefined;
+    }
+  };
+  const requireText = read(requirePath, 'requirements');
+  if (requireText === undefined) return 2;
+  let requirements: ReturnType<typeof parseRequirements>;
+  try {
+    requirements = parseRequirements(requireText);
+  } catch (e) {
+    io.err(`${P} ${requirePath}: ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+  const settingsText = read(settingsPath, 'settings');
+  // A missing settings file lacks every required key: a refusal, not a usage error.
+  if (settingsText === undefined) return 1;
+  let findings: ReturnType<typeof findMissing>;
+  try {
+    findings = findMissing(settingsText, requirements);
+  } catch (e) {
+    io.err(`${P} ${settingsPath}: ${(e as Error).message}`);
+    return 1;
+  }
+  const result = formatFindings(findings, requirements.length, settingsPath, requirePath);
+  result.out.forEach(io.out);
+  result.err.forEach(io.err);
+  return result.ok ? 0 : 1;
+};
+
 const COMMANDS: Record<string, { allowed: readonly string[]; run: (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv) => number }> = {
   'coverage-exemptions': { allowed: ['--config', '--package', '--root'], run: coverageExemptions },
   'authority-citations': { allowed: ['--mode', '--authority', '--issue-prefix', '--adr-dir', '--root'], run: authorityCitations },
@@ -347,6 +393,7 @@ const COMMANDS: Record<string, { allowed: readonly string[]; run: (f: Map<string
   'doc-budgets': { allowed: ['--table', '--section', '--root'], run: docBudgets },
   'env-gate-switches': { allowed: ['--config', '--mode', '--root'], run: envGateSwitches },
   'export-deletions': { allowed: ['--base', '--root'], run: exportDeletions },
+  'required-settings': { allowed: ['--require', '--settings', '--root'], run: requiredSettings },
 };
 
 export const run = (args: readonly string[], io: Io, version: string = ownVersion(), env: NodeJS.ProcessEnv = process.env): number => {

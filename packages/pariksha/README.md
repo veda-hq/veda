@@ -4,8 +4,8 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.5.5 <check> [flags]
-npx @veda-hq/pariksha@0.5.5 --version
+npx @veda-hq/pariksha@0.5.6 <check> [flags]
+npx @veda-hq/pariksha@0.5.6 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
@@ -251,6 +251,26 @@ renames, colour, external diff tools and textconv in a user's git config
 do not change what it reads. With no base, or when git cannot read the
 range (no merge base, a shallow clone), it exits 2: nothing was checked,
 so it is not a pass.
+
+## `required-settings`
+
+```sh
+pariksha required-settings --require <file> [--settings <file>] [--root <dir>]
+```
+
+A setting a project depends on, such as Claude Code's `advisorModel`, is one
+committed line, and one edit deletes it without any test noticing. The
+requirements file lists each key (a dotted path for a nested one) with the
+value it must hold and why:
+
+```json
+{ "advisorModel": { "value": "fable", "why": "sessions work with the advisor on" } }
+```
+
+The check refuses a settings file (default `.claude/settings.json`) that lacks
+a key or holds another value, compared as JSON, naming the key, the value and
+the reason. A missing settings file is a refusal; a requirements file it cannot
+read or parse, or one listing no key, exits 2.
 
 ## markdownlint rules
 

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { main, matchTarget, runsSarathiFor, VERSION, type Io } from './cli.ts';
+import { forbidOutcome, main, matchTarget, runsSarathiFor, VERSION, type Io } from './cli.ts';
 import type { Outcome } from './run.ts';
 
 interface Result {
@@ -93,6 +93,49 @@ describe('sarathi hook', () => {
   it('needs exactly one event', async () => {
     assert.equal((await run(['hook'])).code, 1);
     assert.equal((await run(['hook', 'A', 'B'])).code, 1);
+  });
+});
+
+describe('sarathi hook with forbidEnv', () => {
+  const WHY = 'the advisor stays on';
+  const forbid = { forbidEnv: { NO_ADVISOR: WHY } };
+  const ok: Outcome = { label: 'h', code: 0, stdout: '{"hookSpecificOutput":{"additionalContext":"handler"}}', stderr: '', timedOut: false, failClosed: false };
+
+  it('refuses every PreToolUse call while the variable is set, before any handler runs', async () => {
+    const dir = project({ PreToolUse: [{ matcher: 'Edit', command: 'exit 0' }] }, forbid);
+    const result = await run(['hook', 'PreToolUse'], { dir, stdin: bash('ls'), env: { CLAUDE_PROJECT_DIR: dir, NO_ADVISOR: '1' }, ran: [ok] });
+    assert.equal(result.code, 2);
+    assert.equal(result.out, '');
+    assert.equal(result.err, `BLOCKED: sarathi: NO_ADVISOR is set, and this project forbids it: ${WHY}. Unset NO_ADVISOR and start a new session; until then sarathi refuses every tool call.\n`);
+  });
+
+  it('warns Claude and the user at SessionStart and UserPromptSubmit, keeping the handlers’ answers', async () => {
+    const dir = project({ UserPromptSubmit: [{ command: 'x' }] }, forbid);
+    const env = { CLAUDE_PROJECT_DIR: dir, NO_ADVISOR: 'true' };
+    const prompt = await run(['hook', 'UserPromptSubmit'], { dir, env, ran: [ok] });
+    assert.equal(prompt.code, 0);
+    const answer = JSON.parse(prompt.out) as { systemMessage: string; hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+    assert.match(answer.systemMessage, /^sarathi: NO_ADVISOR is set, and this project forbids it: the advisor stays on\./);
+    assert.equal(answer.hookSpecificOutput.hookEventName, 'UserPromptSubmit');
+    assert.match(answer.hookSpecificOutput.additionalContext, /NO_ADVISOR is set[\s\S]*\n\nhandler$/);
+    const start = await run(['hook', 'SessionStart'], { dir, env });
+    assert.equal(start.code, 0);
+    assert.match(start.out, /"hookEventName":"SessionStart"/);
+  });
+
+  it('says nothing on other events, and nothing when the variable is off', async () => {
+    const dir = project({ Stop: [] }, forbid);
+    assert.deepEqual(await run(['hook', 'Stop'], { dir, env: { CLAUDE_PROJECT_DIR: dir, NO_ADVISOR: '1' } }), { code: 0, out: '', err: '' });
+    assert.deepEqual(await run(['hook', 'PreToolUse'], { dir, stdin: bash('ls'), env: { CLAUDE_PROJECT_DIR: dir, NO_ADVISOR: '0' } }), { code: 0, out: '', err: '' });
+  });
+
+  it('names every forbidden variable set', () => {
+    const outcome = forbidOutcome('PreToolUse', [
+      ['A', 'a'],
+      ['B', 'b'],
+    ]);
+    assert.match(outcome?.stderr ?? '', /A is set, and this project forbids it: a; B is set, and this project forbids it: b\. Unset A and B /);
+    assert.equal(forbidOutcome('PreToolUse', []), undefined);
   });
 });
 

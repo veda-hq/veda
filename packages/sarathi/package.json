@@ -1,6 +1,6 @@
 {
   "name": "@veda-hq/sarathi",
-  "version": "0.5.7",
+  "version": "0.5.15",
   "description": "Runs a project's Claude Code hooks from one entry per event, with kavach's guards built in, and carries the sarathi plugin's agents.",
   "keywords": ["coding agents", "claude code", "hooks", "plugin", "guard"],
   "license": "MIT",
@@ -23,13 +23,14 @@
   },
   "files": [
     "dist",
+    "hooks",
     "!dist/**/*.test.js"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts --test-coverage-exclude=src/bin.ts src/**/*.test.ts",
-    "smoke": "node dist/bin.js --version && node dist/bin.js check --config test/fixture/sarathi.json --settings test/fixture/settings.json",
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude='src/**/*.test.ts' --test-coverage-exclude=src/bin.ts 'src/**/*.test.ts'",
+    "smoke": "node dist/bin.js --version && node dist/bin.js check --config test/fixture/sarathi.json --settings test/fixture/settings.json && echo {} | bash hooks/format-before-write.sh",
     "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
   },
   "dependencies": {

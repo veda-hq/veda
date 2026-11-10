@@ -1,0 +1,14 @@
+{
+  "permissions.allow": {
+    "includes": ["mcp__ccd_pr__set_monitor"],
+    "why": "an agent turns on the desktop app's CI monitor for the pull request it opens without a prompt"
+  },
+  "permissions.deny": {
+    "includes": ["Bash(*--no-verify*)"],
+    "why": "no git command skips the repository's hooks"
+  },
+  "permissions.ask": {
+    "includes": ["Bash(*git push*--force*)", "Bash(*git push* -f*)"],
+    "why": "a force push rewrites published history, so a person approves each one"
+  }
+}

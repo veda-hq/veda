@@ -124,7 +124,7 @@ class PushInProgressTest(BoundaryFixture):
         pid = self.sleeper.pid
         for name in (
             f"kavach-push-in-progress.{pid}.json.tmp",
-            f"athya-push-in-progress.{pid}.json",
+            f"other-push-in-progress.{pid}.json",
             f"xkavach-push-in-progress.{pid}.json",
         ):
             self.mark(pid, name=name)

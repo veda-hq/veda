@@ -21,6 +21,13 @@ waited, and links the page it is about (a claude.ai artifact) when it names
 one. `hide` folds the band to a single line with the count; `show` brings it
 back. With nothing waiting, the band is not drawn.
 
+A turn that ends waiting on you always reaches the band: a wrap-up marked
+`blocked: true` whose `ask` is missing or blank is refused before it runs,
+and Claude is told to call it again with the question and its reply buttons
+(or to leave `blocked` out when the turn does not wait on you). A question
+written only in the chat message, with neither `blocked` nor `ask`, is not
+caught.
+
 Side sessions are read every minute through the desktop app's session tools,
 so that line shows only where those tools are connected.
 

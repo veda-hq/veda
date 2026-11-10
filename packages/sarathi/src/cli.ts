@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-import { ConfigError, compileMatcher, entriesFor, loadConfig, longestTimeout, settingsMatcher, type Config } from './config.ts';
+import { ConfigError, compileMatcher, entriesFor, forbiddenSet, loadConfig, longestTimeout, settingsMatcher, type Config } from './config.ts';
 import { merge } from './merge.ts';
 import { runAll, type Outcome } from './run.ts';
 
@@ -25,7 +25,7 @@ export interface Io {
   readonly run?: (entries: Parameters<typeof runAll>[0], config: Config, input: string, cwd: string) => Promise<Outcome[]>;
 }
 
-export const VERSION = '0.5.6';
+export const VERSION = '0.5.7';
 
 const USAGE = `usage: sarathi hook <Event> [--config <file>]
        sarathi check [--config <file>] [--settings <file>]
@@ -81,6 +81,30 @@ export function matchTarget(event: Record<string, unknown>): string {
   return '';
 }
 
+/** Events where a forbidden variable is told to the session and the user. */
+const WARNED_EVENTS = new Set(['SessionStart', 'UserPromptSubmit']);
+
+/**
+ * What sarathi answers, beside the handlers, when the session sets a variable
+ * the project forbids: PreToolUse refuses, SessionStart and UserPromptSubmit
+ * warn both Claude and the user, other events say nothing.
+ */
+export function forbidOutcome(event: string, set: ReadonlyArray<readonly [string, string]>): Outcome | undefined {
+  if (set.length === 0) return undefined;
+  const lines = set.map(([name, why]) => `${name} is set, and this project forbids it: ${why}`);
+  const fix = `Unset ${set.map(([name]) => name).join(' and ')} and start a new session; until then sarathi refuses every tool call.`;
+  const base = { label: 'sarathi forbidEnv', timedOut: false, failClosed: true } as const;
+  if (GUARDED_EVENTS.has(event)) return { ...base, code: 2, stdout: '', stderr: `BLOCKED: sarathi: ${lines.join('; ')}. ${fix}\n` };
+  if (!WARNED_EVENTS.has(event)) return undefined;
+  const message = `sarathi: ${lines.join('; ')}. ${fix}`;
+  return {
+    ...base,
+    code: 0,
+    stdout: JSON.stringify({ systemMessage: message, hookSpecificOutput: { hookEventName: event, additionalContext: message } }),
+    stderr: '',
+  };
+}
+
 async function hook(io: Io, options: Options): Promise<number> {
   const event = options.positional[1];
   if (event === undefined || options.positional.length > 2) {
@@ -107,10 +131,18 @@ async function hook(io: Io, options: Options): Promise<number> {
     io.err(`${refuse ? 'BLOCKED: ' : ''}sarathi cannot use its hook list: ${message}. No ${event} handler ran.\n`);
     return refuse ? 2 : 1;
   }
+  const forbidden = forbidOutcome(event, forbiddenSet(config, io.env));
+  if (forbidden?.code === 2) {
+    io.err(forbidden.stderr);
+    return 2;
+  }
   const entries = entriesFor(config, event, matchTarget(parsed as Record<string, unknown>));
-  if (entries.length === 0) return 0;
-  const outcomes = await (io.run ?? runAll)(entries, config, input, io.cwd);
-  const answer = merge(event, outcomes);
+  if (entries.length === 0 && forbidden === undefined) return 0;
+  const outcomes = entries.length === 0 ? [] : await (io.run ?? runAll)(entries, config, input, io.cwd);
+  const merged = merge(event, forbidden === undefined ? outcomes : [forbidden, ...outcomes]);
+  // A handler that blocks drops every JSON answer, the warning among them; keep it in the reason.
+  const warning = forbidden === undefined ? undefined : (JSON.parse(forbidden.stdout) as { systemMessage: string }).systemMessage;
+  const answer = merged.code === 2 && warning !== undefined ? { ...merged, stderr: `${warning}\n${merged.stderr}` } : merged;
   if (answer.stdout !== '') io.out(answer.stdout);
   if (answer.stderr !== '') io.err(answer.stderr);
   return answer.code;

@@ -71,6 +71,22 @@ sarathi for every event the list names, with a matcher that lets every
 handler fire and a timeout at least the longest handler's. Run it in the
 project's tests.
 
+### Forbidden variables
+
+Some switches turn a session's tooling off from the environment, where no
+committed file can see them: `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` turns the
+advisor off whatever the settings say. The hook list's top-level `forbidEnv`
+names each such variable with why:
+
+```json
+{ "forbidEnv": { "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "this project works with the advisor on" } }
+```
+
+While one is set (anything but empty, `0` or `false`), `sarathi hook` refuses
+every `PreToolUse` call before any handler runs, and at `SessionStart` and
+`UserPromptSubmit` tells both Claude and the user why and how to fix it. Other
+events are left alone. It acts only on events the settings route to sarathi.
+
 ## The plugin
 
 `sarathi@veda`, from this repository's marketplace, carries two agents:

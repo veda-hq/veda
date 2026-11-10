@@ -8,6 +8,8 @@ import {
   ConfigError,
   compileMatcher,
   entriesFor,
+  forbiddenSet,
+  isOn,
   loadConfig,
   longestTimeout,
   parseConfig,
@@ -132,5 +134,35 @@ describe('entriesFor, settingsMatcher, longestTimeout', () => {
     assert.equal(longestTimeout(config, 'PreToolUse'), 120);
     assert.equal(longestTimeout(config, 'Stop'), 60);
     assert.equal(longestTimeout(config, 'Empty'), 0);
+  });
+});
+
+describe('forbidEnv', () => {
+  it('reads names with why, empty when absent', () => {
+    assert.deepEqual(parse({ hooks: {} }).forbidEnv, {});
+    assert.deepEqual(parse({ hooks: {}, forbidEnv: { NO_ADVISOR: 'the advisor stays on' } }).forbidEnv, { NO_ADVISOR: 'the advisor stays on' });
+  });
+
+  it('refuses a list that is not names with reasons', () => {
+    refuses({ hooks: {}, forbidEnv: [] }, /"forbidEnv" must be an object/);
+    refuses({ hooks: {}, forbidEnv: null }, /"forbidEnv" must be an object/);
+    refuses({ hooks: {}, forbidEnv: { 'A-B': 'x' } }, /"A-B" is not an environment variable name/);
+    refuses({ hooks: {}, forbidEnv: { '1A': 'x' } }, /not an environment variable name/);
+    refuses({ hooks: {}, forbidEnv: { A: ' ' } }, /forbidEnv A: give why/);
+    refuses({ hooks: {}, forbidEnv: { A: 1 } }, /forbidEnv A: give why/);
+  });
+
+  it('counts a variable set unless absent, empty, 0 or false', () => {
+    for (const off of [undefined, '', ' ', '0', 'false', 'FALSE']) assert.equal(isOn(off), false, String(off));
+    for (const on of ['1', 'true', 'yes']) assert.equal(isOn(on), true, on);
+    const config = parse({ hooks: {}, forbidEnv: { A: 'a', B: 'b', C: 'c' } });
+    assert.deepEqual(forbiddenSet(config, { A: '1', B: '0', D: '1' }), [['A', 'a']]);
+  });
+
+  it('keeps names that are object keys, and reads only the environment’s own values', () => {
+    const config = parseConfig('{"hooks":{},"forbidEnv":{"__proto__":"p","toString":"t"}}', 'sarathi.json', ROOT);
+    assert.deepEqual(Object.keys(config.forbidEnv).sort(), ['__proto__', 'toString']);
+    assert.deepEqual(forbiddenSet(config, {}), []);
+    assert.deepEqual(forbiddenSet(config, Object.fromEntries([['toString', '1']])), [['toString', 't']]);
   });
 });

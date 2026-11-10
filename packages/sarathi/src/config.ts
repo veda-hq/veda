@@ -37,12 +37,19 @@ export interface Config {
     readonly python: string;
   };
   readonly hooks: Readonly<Record<string, readonly Entry[]>>;
+  /**
+   * Environment variables the project's sessions must not set, each with why:
+   * set, sarathi refuses every PreToolUse call and warns at SessionStart and
+   * UserPromptSubmit, whatever the handlers say.
+   */
+  readonly forbidEnv: Readonly<Record<string, string>>;
 }
 
 export const DEFAULT_TIMEOUT_SECONDS = 60;
 
 const ENTRY_KEYS = new Set(['matcher', 'command', 'guard', 'timeout', 'failClosed']);
-const TOP_KEYS = new Set(['$schema', 'kavach', 'hooks']);
+const TOP_KEYS = new Set(['$schema', 'kavach', 'hooks', 'forbidEnv']);
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const KAVACH_KEYS = new Set(['config', 'python']);
 const PLAIN = /^[\w|-]+$/;
 
@@ -128,8 +135,20 @@ export function parseConfig(text: string, path: string, root: string): Config {
     if (!Array.isArray(list)) throw new ConfigError(`${path} ${event}: must be a list of entries`);
     hooks[event] = list.map((entry: unknown, index) => parseEntry(entry, `${path} ${event}[${index}]`));
   }
+  // Only an absent key means none: `null` is malformed, not empty.
+  const forbidRaw = Object.hasOwn(raw, 'forbidEnv') ? raw.forbidEnv : {};
+  if (!isRecord(forbidRaw)) throw new ConfigError(`${path}: "forbidEnv" must be an object of variable names`);
+  const forbidden: Array<[string, string]> = [];
+  for (const [name, why] of Object.entries(forbidRaw)) {
+    if (!ENV_NAME.test(name)) throw new ConfigError(`${path} forbidEnv: "${name}" is not an environment variable name`);
+    if (typeof why !== 'string' || why.trim() === '') throw new ConfigError(`${path} forbidEnv ${name}: give why it is forbidden`);
+    forbidden.push([name, why]);
+  }
+  // fromEntries defines own properties, so a name like `__proto__` is kept, not sent to the prototype setter.
+  const forbidEnv: Record<string, string> = Object.fromEntries(forbidden);
   const fromRoot = (value: string): string => (isAbsolute(value) ? value : resolve(root, value));
   return {
+    forbidEnv,
     path,
     root,
     kavach: {
@@ -169,6 +188,20 @@ export function settingsMatcher(config: Config, event: string): string | undefin
     for (const name of matcher.split('|')) names.add(name);
   }
   return [...names].sort().join('|');
+}
+
+/** Is a variable set, as a switch reads it? Absent, empty, `0` and `false` are off. */
+export function isOn(value: string | undefined): boolean {
+  return value !== undefined && !['', '0', 'false'].includes(value.trim().toLowerCase());
+}
+
+/** The forbidden variables `env` sets, each with why. */
+export function forbiddenSet(config: Config, env: Readonly<Record<string, string | undefined>>): Array<readonly [string, string]> {
+  // Only the environment's own string values: `toString` is a legal name an unset variable must not inherit.
+  return Object.entries(config.forbidEnv).filter(([name]) => {
+    const value = Object.hasOwn(env, name) ? env[name] : undefined;
+    return typeof value === 'string' && isOn(value);
+  });
 }
 
 /** The longest timeout among an event's entries, in seconds. */

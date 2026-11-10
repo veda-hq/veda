@@ -1,5 +1,13 @@
 # Agents in veda
 
+## The advisor
+
+Sessions here run with the advisor on, set to fable (`advisorModel` in
+`.claude/settings.json`; `pariksha required-settings` refuses its removal).
+Call it before an approach is fixed, before every push, and when stuck: two
+failed attempts at the same thing, or a result that does not fit. Make the
+work durable (written, committed) before the call.
+
 ## Merging
 
 Right after `gh pr create`, turn on auto-merge: `gh pr merge --auto --squash`

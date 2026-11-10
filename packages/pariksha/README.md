@@ -4,8 +4,8 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.5.13 <check> [flags]
-npx @veda-hq/pariksha@0.5.13 --version
+npx @veda-hq/pariksha@0.5.14 <check> [flags]
+npx @veda-hq/pariksha@0.5.14 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
@@ -262,6 +262,137 @@ Refuses a file over its budget, a budgeted file that does not exist, and a
 row that is not `` | `path` | bytes | ``, since nothing would enforce it.
 The table file is read on every check too, so it must budget itself: a row
 for its own path (relative to `--root`) is required.
+
+## `doc-references`
+
+```sh
+pariksha doc-references --config <file> --staged [--checks <ids>] [--root <dir>]
+pariksha doc-references --config <file> --base <ref> [--head <ref>] [--checks <ids>] [--root <dir>]
+pariksha doc-references --config <file> --all [--update-baseline | --write-baseline] [--checks <ids>] [--root <dir>]
+```
+
+A doc that names a file, a script or a function the repository no longer
+has reads as true and sends its reader into a broken step. Three checks read
+the docs and code comments the config's `files` select:
+
+- `DOC-DRIFT-01`, paths and links. A path in backticks (in prose, a shell
+  fence, frontmatter or a code comment), a glob, or `file.ts:12` resolves
+  beside the doc, above it, at the root or from a workspace; a cited line
+  exists, and a backticked symbol beside it is near that line. Relative
+  Markdown links and their `#anchor`s are checked by
+  [lychee](https://lychee.cli.rs), offline, which must be on `PATH` (set
+  `links` to `null` to leave links out). A path the tracked `.gitignore`
+  rules cover is out of scope.
+- `DOC-DRIFT-02`, commands. A `pnpm <script>` exists in the scope it runs
+  from (a workspace script needs `--filter`; bins in `node_modules/.bin`
+  count everywhere), and a verification step does not run a script that
+  rewrites the tree (`mutating`). A command a doc shows runs as written:
+  `--filter` before the script name, every `--flag` read by the script it
+  reaches (through a package script or an interpreter), required argparse
+  flags present, enum values and first-positional actions the script
+  accepts, and, with `typescriptRunner` set, a `.ts` file started through it.
+- `DOC-DRIFT-04`, identifiers. A single-identifier code span in prose
+  (`DATABASE_URL`, `parseArgs()`, `OrderService`) occurs as a whole word in
+  the tracked code, or in the file the doc cites for it ("`x` in `y.ts`").
+  Optional kinds: Prisma `Model.field`, `@@unique([…])`, migration folders and
+  `@Roles(…)` values; routes (`GET /stores/:id`) against controller
+  decorators; CI jobs ("the `build` job"); packages against workspace names
+  and the lockfile.
+
+A line ending in `<!-- doc-ref-ok: <why> -->` (in code, a comment holding
+`doc-ref-ok: <why>`; the word is the config's `exemptMarker`) names
+something absent on purpose. Placeholders (`<id>`, `NNN`) and illustrative
+names (`src/foo.ts`) are never references.
+
+Modes. `--staged` (a commit) reads the index: staged docs and comments,
+and any doc naming a path the commit deletes or renames, under
+DOC-DRIFT-01 and -02. During a merge, what the merge took unchanged from the
+merged branch is that branch's to judge. `--base` (a push, CI) reads the
+`--head` tree (default `HEAD`) against its merge base with `--base`: changed
+docs, and docs naming a deleted or renamed path, a changed file by
+`name:line`, or an identifier, script or `--flag` the diff removed, under
+all three checks; a finding the merge base already had is not this push's.
+`--all` reads every reference file in the worktree; it alone may lower the
+baseline (`--update-baseline`) or seed it (`--write-baseline`). `--checks`
+takes a comma-separated subset (`01,02`).
+
+The baseline is a JSON file of per-file counts, `{ "version": 1, "files":
+{ "docs/old.md": { "DOC-DRIFT-01": 3 } } }`, for references that predate
+the check. A checked file may not exceed its count; a file a change touches
+must lower a count it no longer needs; the baseline may only lose entries or
+lower counts against the merge base; an entry for a file the change removed
+must go. The JSON `--config` (relative to the root):
+
+```json
+{
+  "baseline": "scripts/doc-references-baseline.json",
+  "exemptMarker": "doc-ref-ok",
+  "files": {
+    "markdown": ["\\.(md|mdx)$"],
+    "html": ["^(?:.*/)?docs/.*\\.html$"],
+    "code": ["\\.(ts|tsx|js|mjs|sh|py)$"],
+    "codeExclude": ["\\.(test|spec)\\.[jt]sx?$"],
+    "exclude": ["(^|/)node_modules/", "(^|/)fixtures?/", "^docs/history/"],
+    "hashComments": "\\.(sh|py)$"
+  },
+  "placeholder": "[<>${}%…]|\\.\\.\\.|NNN",
+  "paths": {
+    "extensions": ["ts", "js", "json", "md", "sh", "py", "yml", "yaml"],
+    "examples": { "pattern": "(^|/)(foo|bar|example)(\\.[\\w.]+)?$", "flags": "i" },
+    "untracked": [".claude/worktrees/"],
+    "workspaces": "^(apps|packages)/[^/]+/package\\.json$",
+    "layouts": [{ "pattern": "^evidence/[A-Z]-\\d{2}", "except": "^docs/work/" }]
+  },
+  "links": { "include": "\\.md$" },
+  "scripts": {
+    "manifests": ["package.json", "apps/api/package.json"],
+    "mutating": { "lint": "lint:ci", "format": "format:check" },
+    "verification": { "pattern": "verif|check|gate", "flags": "i" },
+    "wrappers": []
+  },
+  "commands": { "typescriptRunner": "pnpm exec tsx", "nested": ["vitest", "turbo", "git"] },
+  "identifiers": {
+    "notIdentifiers": ["GitHub", "TypeScript"],
+    "searchExclude": ["\\.(md|mdx|html)$", "^docs/", "^pnpm-lock\\.yaml$"],
+    "diffExclude": ["*.md", "docs/**"],
+    "prisma": { "schemas": "^apps/api/prisma/.*\\.prisma$", "migrations": "apps/api/prisma/migrations", "roles": { "schema": "apps/api/prisma/schema.prisma", "enum": "Role" } },
+    "routes": { "controllers": "^apps/api/src/.*\\.controller\\.ts$", "prefixes": "^(api|v\\d+)$" },
+    "jobs": { "workflows": "^\\.github/workflows/[^/]+\\.ya?ml$" },
+    "packages": { "manifests": "^(?!(?:.*/)?node_modules/)(?:.*/)?package\\.json$", "lockfile": "pnpm-lock.yaml", "ownScopes": ["@acme/"] }
+  }
+}
+```
+
+- `files`: what a tracked path is, first match winning after `exclude`:
+  Markdown (and Markdown-like XML), HTML pages, or code whose comments are
+  read (`codeExclude` drops tests and fixtures, which name absent paths on
+  purpose). `hashComments` is the code whose comments start with `#`.
+- `paths`: the extensions a backticked path may end in; `examples` and
+  `untracked` names that are never a tracked file; `workspaces`, the
+  manifests whose folders (and `src`) a path also resolves from;
+  `layouts`, paths that name a folder layout rather than a file outside the
+  docs `except` matches.
+- `scripts.wrappers`: repository scripts that run the rest of a line as a
+  command (`pnpm dev:exec pnpm x`). `commands.nested`: programs a wrapper
+  script hands its remaining words to, so they are not its own flags.
+- `identifiers.searchExclude`: tracked text that defines no name (prose,
+  data, sources that quote wrong names on purpose); binaries and the
+  baseline are never read. `diffExclude`: pathspecs the removed-identifier
+  diff leaves out.
+- `links`, `commands.typescriptRunner`, and each of `identifiers.prisma`
+  (and its `migrations` and `roles`), `routes`, `jobs`, `packages` (and its
+  `lockfile`) may be `null`, which leaves that part unchecked and says so on
+  stdout. Absent, each is refused.
+
+On a pass, stdout has one line, `pariksha doc-references: <n> reference
+file(s) checked (<staged|pushed|all>), no new problem; the baseline does not
+grow`. Each refusal is a stderr line, `pariksha doc-references:
+<file>:<line>: [<check>] <ref>: <reason>`, then what to do. Refused (exit 1):
+a reference over its file's count, a count a touched file no longer needs,
+baseline growth, and an entry for a removed file. Exit 2: a bad flag set or
+config (an unknown, missing or bad key or pattern), a malformed baseline, no
+`node_modules/.bin` (DOC-DRIFT-02 would know no bin), a missing or failing
+lychee, a `--base` with no merge base, or a failed git call.
 
 ## `enforcement-claims`
 

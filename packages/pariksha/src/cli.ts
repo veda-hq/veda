@@ -9,6 +9,10 @@ import { findDenied, hash, isText, parseDenyList, type TrackedFile } from './bou
 import { DEFAULT_CONFIG, findGaps, formatGaps, listedPaths, parseConfig, treePaths, type Config } from './coverage-by-type.ts';
 import { checkBuild, checkPackage, checkVitest, formatViolations, loaderFailure, loadVitestExclude, missingConfigs, ownedBy, parseConfig as parseExemptions } from './coverage-exemptions.ts';
 import { checkBudgets } from './doc-budgets.ts';
+import { lycheeRunner, type LinkRunner } from './doc-links.ts';
+import { parseConfig as parseDocReferencesConfig, type Config as DocReferencesConfig } from './doc-references-config.ts';
+import { formatReport as formatDocReferences, runGate, type GateMode, type GateReport } from './doc-references-gate.ts';
+import { CHECK_IDS, type CheckId } from './doc-references.ts';
 import { diskReads, formatReads, listFiles, needsTypescript, parseConfig as parseGateConfig, readerFor, readGate, type Reads } from './env-gate-switches.ts';
 import { loadTypescript, typescriptLoaders, type Ts } from './typescript.ts';
 import { checkExportDeletions, formatReport } from './export-deletions.ts';
@@ -28,6 +32,8 @@ export interface Io {
   readonly typescript?: () => Ts | string;
   /** How env-gate-switches reads the repository at a root; git and the disk by default. */
   readonly gateReads?: (root: string) => Reads;
+  /** How doc-references checks links; lychee on PATH by default. */
+  readonly links?: LinkRunner;
   /** How enforcement-claims gets ESLint's class; the `eslint` peer beside pariksha by default. */
   readonly eslint?: () => Promise<LinterClass | string>;
 }
@@ -41,6 +47,7 @@ const USAGE = [
   '       pariksha coverage-by-type [--config <file>] [--files-from <file>|-] [--root <dir>]',
   '       pariksha coverage-exemptions --config <file> [--package <dir>] [--root <dir>]',
   '       pariksha doc-budgets --table <file> [--section <name>] [--root <dir>]',
+  '       pariksha doc-references --config <file> (--staged | --base <ref> [--head <ref>] | --all [--update-baseline | --write-baseline]) [--checks <ids>] [--root <dir>]',
   '       pariksha enforcement-claims --config <file> [--root <dir>]',
   '       pariksha env-gate-switches --config <file> [--mode staged|tree] [--root <dir>]',
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
@@ -143,6 +150,55 @@ const docBudgets = (f: Map<string, string>, io: Io): number => {
   outcome.out.forEach(io.out);
   outcome.err.forEach(io.err);
   return outcome.ok ? 0 : 1;
+};
+
+/** `--checks 01,DOC-DRIFT-04` as check ids, or every id that is not one. */
+const checkList = (value: string): CheckId[] | { unknown: string } => {
+  const ids = value.split(',').map((id) => (id.startsWith('DOC-DRIFT-') ? id : `DOC-DRIFT-${id}`));
+  const unknown = ids.filter((id) => !(CHECK_IDS as readonly string[]).includes(id));
+  if (unknown.length === 0) return ids as CheckId[];
+  return { unknown: `${unknown.join(', ')} ${unknown.length === 1 ? 'is not one' : 'are not'} of` };
+};
+
+const docReferences = (f: Map<string, string>, io: Io): number => {
+  const P = 'pariksha doc-references:';
+  const configPath = f.get('--config');
+  const base = f.get('--base');
+  const all = f.has('--all');
+  const baseline = f.has('--update-baseline') ? 'update' : f.has('--write-baseline') ? 'write' : undefined;
+  const modes = [f.has('--staged'), all, base !== undefined].filter(Boolean).length;
+  if (configPath === undefined || modes !== 1 || (f.has('--update-baseline') && f.has('--write-baseline')) || (baseline !== undefined && !all) || (f.has('--head') && base === undefined)) {
+    io.err(USAGE);
+    return 2;
+  }
+  const asked = f.get('--checks');
+  const listed = asked === undefined ? undefined : checkList(asked);
+  if (listed !== undefined && !Array.isArray(listed)) {
+    io.err(`${P} --checks: ${listed.unknown} ${CHECK_IDS.join(', ')}`);
+    return 2;
+  }
+  const dir = resolve(f.get('--root') ?? '.');
+  const root = topOf(dir);
+  if (root === undefined) {
+    io.err(`${P} ${dir} is not in a git repository`);
+    return 2;
+  }
+  const mode: GateMode = base !== undefined ? { kind: 'range', base, head: f.get('--head') ?? 'HEAD' } : all ? { kind: 'all' } : { kind: 'staged' };
+  // The identifier search reads the whole tree: a push and CI, not a commit.
+  const checks: readonly CheckId[] = listed ?? (mode.kind === 'staged' ? ['DOC-DRIFT-01', 'DOC-DRIFT-02'] : [...CHECK_IDS]);
+  let config: DocReferencesConfig;
+  let report: GateReport;
+  try {
+    config = parseDocReferencesConfig(readFileSync(resolve(root, configPath), 'utf8'));
+    report = runGate({ root, config, mode, checks, baseline, links: io.links ?? lycheeRunner() });
+  } catch (e) {
+    io.err(`${P} ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+  const result = formatDocReferences(report, { config, mode, checks }, configPath);
+  result.out.forEach(io.out);
+  result.err.forEach(io.err);
+  return result.ok ? 0 : 1;
 };
 
 const enforcementClaims = async (f: Map<string, string>, io: Io): Promise<number> => {
@@ -543,6 +599,7 @@ const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly
   boundary: { allowed: ['--root', '--deny'], run: boundary },
   'coverage-by-type': { allowed: ['--config', '--files-from', '--root'], run: coverageByType },
   'doc-budgets': { allowed: ['--table', '--section', '--root'], run: docBudgets },
+  'doc-references': { allowed: ['--config', '--base', '--head', '--checks', '--root'], switches: ['--staged', '--all', '--update-baseline', '--write-baseline'], run: docReferences },
   'enforcement-claims': { allowed: ['--config', '--root'], run: enforcementClaims },
   'env-gate-switches': { allowed: ['--config', '--mode', '--root'], run: envGateSwitches },
   'export-deletions': { allowed: ['--base', '--root'], run: exportDeletions },

@@ -33,8 +33,11 @@ file in your repository; dvara runs it.
   names (inside an installed package, say), gives each hook's stage names in
   order. A passing run that marks a stage its hook's list does not have, or
   marks one out of the list's order, is refused (exit 1) with the reason. So is
-  one whose list file cannot be read, so a missing package never lets a push
-  through silently. A stage may be marked again where it stands, a name may
+  a run of a hook in `stageListRequired` (default `pre-push`) that marks a
+  stage and whose list file cannot be read, so a missing package never lets a
+  push that ran its stages through silently; any other hook passes then, with a
+  warning that its stages were not checked. A
+  stage may be marked again where it stands, a name may
   appear more than once in a list, and dvara's own `startup` and
   `runtime-selection` need no entry. A run that marks no stage reads no list.
 
@@ -83,14 +86,15 @@ rename it in its messages (default "preflight" and "Preflight").
 `.dvara.json` at the repository's root, or the file `DVARA_CONFIG` names. Every
 field is optional; an unknown field is an error.
 
-| Field        | Default                                          | Meaning                                                                                           |
-| ------------ | ------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
-| `historyDir` | `.dvara`                                         | where the history, the quiet log and scratch files go                                             |
-| `quietHooks` | `["pre-commit"]`                                 | hooks whose passing output is one line                                                            |
-| `watchdog`   | `null`                                           | a watchdog module, relative to the root                                                           |
-| `baseRefs`   | `origin/main`, `origin/develop`, `origin/master` | the refs tried for the base a run is judged against                                               |
-| `stages`     | `{}`                                             | each hook's stages in order, which a passing run must keep to; `dvara stages <hook>` prints them  |
-| `stageList`  | `null`                                           | a JSON file holding the same map instead, relative to the root and read when a run ends; not both |
+| Field               | Default                                          | Meaning                                                                                           |
+| ------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| `historyDir`        | `.dvara`                                         | where the history, the quiet log and scratch files go                                             |
+| `quietHooks`        | `["pre-commit"]`                                 | hooks whose passing output is one line                                                            |
+| `watchdog`          | `null`                                           | a watchdog module, relative to the root                                                           |
+| `baseRefs`          | `origin/main`, `origin/develop`, `origin/master` | the refs tried for the base a run is judged against                                               |
+| `stages`            | `{}`                                             | each hook's stages in order, which a passing run must keep to; `dvara stages <hook>` prints them  |
+| `stageList`         | `null`                                           | a JSON file holding the same map instead, relative to the root and read when a run ends; not both |
+| `stageListRequired` | `["pre-push"]`                                   | hooks a list file that cannot be read refuses; any other hook passes with a warning               |
 
 `records`, an object, holds the settings of `dvara records` and `dvara frozen`
 (below). Each field is optional; an unknown one is an error.

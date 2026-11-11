@@ -386,7 +386,7 @@ describe("the stage list", () => {
     assert.doesNotMatch(captured.err, /stage list/);
   });
 
-  it("refuses a quiet run whose list file is missing, printing its output and why", async () => {
+  it("refuses a quiet required run whose list file is missing, printing its output and why", async () => {
     const { root, hook } = repo(
       "dvara_stage format\necho formatted",
       "pre-commit",
@@ -394,7 +394,7 @@ describe("the stage list", () => {
     const { opts, captured } = options(
       root,
       {},
-      { stageList: "rules/stages.json" },
+      { stageList: "rules/stages.json", stageListRequired: ["pre-commit"] },
     );
     assert.equal(await supervise([hook], opts), 1);
     assert.match(captured.err, /formatted/);
@@ -403,6 +403,23 @@ describe("the stage list", () => {
       /dvara: cannot read the stage list .*rules\/stages\.json/,
     );
     assert.doesNotMatch(captured.out, /passed/);
+  });
+
+  it("passes a run outside stageListRequired whose list file is missing, saying it was not checked", async () => {
+    const { root, hook } = repo("dvara_stage format", "pre-commit");
+    const { opts, captured } = options(
+      root,
+      {},
+      { stageList: "rules/stages.json" },
+    );
+    assert.equal(await supervise([hook], opts), 0);
+    assert.match(
+      captured.err,
+      /⚠️ {2}dvara: cannot read the stage list .*pre-commit's stages were not checked\./,
+    );
+    const [row] = rows(root);
+    assert.equal(row?.status, "success");
+    assert.match(String(row?.error), /were not checked/);
   });
 
   it("reads the list file when the run ends, after the hook wrote it", async () => {

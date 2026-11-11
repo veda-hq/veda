@@ -88,6 +88,14 @@ describe("stageVerdict", () => {
       },
     );
     assert.deepEqual(
+      stageVerdict("pre-push", ["typo"], () => LISTS, ["pre-push"]),
+      {
+        refusal:
+          'dvara: pre-push marked stage "typo", which its stage list does not have.',
+        warning: null,
+      },
+    );
+    assert.deepEqual(
       stageVerdict("pre-push", ["lint"], () => LISTS, []),
       PASS,
     );

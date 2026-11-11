@@ -33,9 +33,10 @@ file in your repository; dvara runs it.
   names (inside an installed package, say), gives each hook's stage names in
   order. A passing run that marks a stage its hook's list does not have, or
   marks one out of the list's order, is refused (exit 1) with the reason. So is
-  a run of a hook in `stageListRequired` (default `pre-push`) whose list file
-  cannot be read, so a missing package never lets a push through silently; any
-  other hook passes then, with a warning that its stages were not checked. A
+  a run of a hook in `stageListRequired` (default `pre-push`) that marks a
+  stage and whose list file cannot be read, so a missing package never lets a
+  push that ran its stages through silently; any other hook passes then, with a
+  warning that its stages were not checked. A
   stage may be marked again where it stands, a name may
   appear more than once in a list, and dvara's own `startup` and
   `runtime-selection` need no entry. A run that marks no stage reads no list.

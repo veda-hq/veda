@@ -86,6 +86,8 @@ describe("parseStageLists", () => {
   it("keeps each hook's names", () => {
     assert.deepEqual(parseStageLists(LISTS, "x"), LISTS);
     assert.deepEqual(parseStageLists({}, "x"), {});
+    const odd = parseStageLists(JSON.parse('{"__proto__": ["a"]}'), "x");
+    assert.equal(stageViolation("__proto__", ["a"], odd), null);
   });
 
   it("refuses anything but a map of name lists", () => {

@@ -23,13 +23,15 @@ const isStageName = (name: unknown): boolean =>
 export const parseStageLists = (value: unknown, field: string): StageLists => {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     throw new Error(`${field} must map each hook to its stage names`);
-  const lists: Record<string, readonly string[]> = {};
-  for (const [hook, names] of Object.entries(value)) {
-    if (!Array.isArray(names) || !names.every(isStageName))
-      throw new Error(`${field}.${hook} must be a list of stage names`);
-    lists[hook] = names;
-  }
-  return lists;
+  const entries = Object.entries(value).map(
+    ([hook, names]): [string, readonly string[]] => {
+      if (!Array.isArray(names) || !names.every(isStageName))
+        throw new Error(`${field}.${hook} must be a list of stage names`);
+      return [hook, names];
+    },
+  );
+  // fromEntries defines each key as its own, `__proto__` included.
+  return Object.fromEntries(entries);
 };
 
 /** `hook`'s own list, never one inherited from Object's prototype (`toString`). */

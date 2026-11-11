@@ -46,6 +46,8 @@ export interface Config {
   readonly stages: Readonly<Record<string, readonly string[]>>;
   /** A JSON file holding the same map instead, relative to the root and read when a run ends; none by default. */
   readonly stageList: string | null;
+  /** Hooks a stage list that cannot be read refuses; any other hook passes with a warning. */
+  readonly stageListRequired: readonly string[];
   /** The record gate and the frozen-path check. */
   readonly records: RecordsConfig;
 }
@@ -57,6 +59,7 @@ export const DEFAULTS: Config = {
   baseRefs: ["origin/main", "origin/develop", "origin/master"],
   stages: {},
   stageList: null,
+  stageListRequired: ["pre-push"],
   records: {
     baseline: ".dvara/records-baseline.json",
     skip: [],
@@ -238,6 +241,11 @@ export const parseConfig = (text: string): Config => {
       throw new Error("give stages or stageList, not both");
     config.stageList = path;
   }
+  if ("stageListRequired" in entries)
+    config.stageListRequired = strings(
+      entries.stageListRequired,
+      "stageListRequired",
+    );
   if ("records" in entries)
     config.records = parseRecordsConfig(entries.records);
   return config;

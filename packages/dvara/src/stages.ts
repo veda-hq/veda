@@ -97,24 +97,43 @@ export const stageViolation = (
   return null;
 };
 
+export interface StageVerdict {
+  /** Why the passing run is refused, or null. */
+  readonly refusal: string | null;
+  /** What the run could not check, printed and kept; or null. */
+  readonly warning: string | null;
+}
+
+const PASS: StageVerdict = { refusal: null, warning: null };
+
 /**
- * Why a passing run of `hook` that marked `marked` is refused, or null. With
- * no stage marked nothing is read; an unreadable list refuses the run, since
- * a check that cannot run must not pass.
+ * What the stage list says of a passing run of `hook` that marked `marked`.
+ * With no stage of its own marked nothing is read. A list that cannot be read
+ * refuses a hook in `required`, since a check that cannot run must not pass
+ * there; any other hook passes with a warning saying it was not checked.
  */
-export const stageRefusal = (
+export const stageVerdict = (
   hook: string,
   marked: readonly string[],
   lists: () => StageLists | null,
-): string | null => {
-  if (marked.every((name) => OWN_STAGES.has(name))) return null;
+  required: readonly string[],
+): StageVerdict => {
+  if (marked.every((name) => OWN_STAGES.has(name))) return PASS;
   let read: StageLists | null;
   try {
     read = lists();
   } catch (error) {
-    return (error as Error).message;
+    const message = (error as Error).message;
+    return required.includes(hook)
+      ? { refusal: message, warning: null }
+      : {
+          refusal: null,
+          warning: `${message} ${hook}'s stages were not checked.`,
+        };
   }
-  if (read === null) return null;
+  if (read === null) return PASS;
   const violation = stageViolation(hook, marked, read);
-  return violation === null ? null : `dvara: ${violation}.`;
+  return violation === null
+    ? PASS
+    : { refusal: `dvara: ${violation}.`, warning: null };
 };

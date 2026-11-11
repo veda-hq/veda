@@ -31,6 +31,7 @@ describe("parseConfig", () => {
       baseRefs: ["origin/trunk"],
       stages: { "pre-push": ["lint", "test"] },
       stageList: null,
+      stageListRequired: ["pre-push"],
       records: DEFAULTS.records,
     });
     assert.deepEqual(parseConfig("{}"), DEFAULTS);
@@ -44,6 +45,10 @@ describe("parseConfig", () => {
       path,
     );
     assert.equal(parseConfig('{"stageList": null}').stageList, null);
+    assert.deepEqual(
+      parseConfig('{"stageListRequired": []}').stageListRequired,
+      [],
+    );
     assert.equal(
       parseConfig('{"stages": {}, "stageList": null}').stageList,
       null,
@@ -151,6 +156,7 @@ describe("parseConfig", () => {
       ['{"stageList": "../out.json"}', /stageList must be a file path/],
       ['{"stageList": "..\\\\out.json"}', /stageList must be a file path/],
       ['{"stageList": "C:out.json"}', /stageList must be a file path/],
+      ['{"stageListRequired": "pre-push"}', /stageListRequired must be a list/],
       [
         '{"stages": {}, "stageList": "s.json"}',
         /give stages or stageList, not both/,

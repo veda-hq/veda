@@ -2,7 +2,8 @@
 // signals to it, and writes one history row per run. It changes the hook's
 // verdict only to report a signalled run as cancelled, to let an enforcing
 // watchdog's stop decide it, and to refuse a passing run that broke its stage
-// list (stages.ts), or whose list cannot be read. Every other failure of its
+// list (stages.ts), or, for a hook in stageListRequired, whose list cannot be
+// read. Every other failure of its
 // own (telemetry, watchdog, quiet output) is fail-open.
 import {
   execFileSync,
@@ -25,7 +26,7 @@ import type { Config } from "./config.ts";
 import { hookKind, invocationContext, perfLevelNames } from "./context.ts";
 import { isQuiet, successLine, successNotices } from "./quiet.ts";
 import { parseRecords, parseStages, treeUsage } from "./records.ts";
-import { readStageLists, stageRefusal } from "./stages.ts";
+import { readStageLists, stageVerdict } from "./stages.ts";
 
 /** Exit code per signal, shared by the pre-launch path and the exit handler. */
 export const SIGNAL_EXIT_CODES: Readonly<Record<string, number>> = {
@@ -391,17 +392,19 @@ export const supervise = async (
     const ended = Date.now();
     const marks = parseStages(readOrNull(events), bootstrapMs);
     // Only a run that would pass is checked: a failure keeps its own story.
-    const refusal =
+    const { refusal, warning } =
       code === 0 && !imposed && !signal
-        ? stageRefusal(
+        ? stageVerdict(
             hookName,
             marks.map((mark) => mark.name),
             () => readStageLists(root, config),
+            config.stageListRequired,
           )
-        : null;
+        : { refusal: null, warning: null };
     if (refusal !== null) code = 1;
     if (quiet) report(code, ended - started);
     if (refusal !== null) stderr(`${refusal}\n`);
+    if (warning !== null) stderr(`⚠️  ${warning}\n`);
     const { pushed, declared, proof, proofDiagnostics } = parseRecords(
       readOrNull(records),
     );
@@ -439,7 +442,7 @@ export const supervise = async (
           durationMs: ended - started,
           exitCode: code,
           signal,
-          error: error ?? refusal ?? undefined,
+          error: error ?? refusal ?? warning ?? undefined,
           status: verdict(false),
           branch,
           fingerprint,

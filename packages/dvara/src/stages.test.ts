@@ -7,7 +7,7 @@ import { DEFAULTS } from "./config.ts";
 import {
   parseStageLists,
   readStageLists,
-  stageRefusal,
+  stageVerdict,
   stageViolation,
 } from "./stages.ts";
 
@@ -50,34 +50,50 @@ describe("stageViolation", () => {
   });
 });
 
-describe("stageRefusal", () => {
+describe("stageVerdict", () => {
+  const PASS = { refusal: null, warning: null };
+  const unreadable = () => {
+    throw new Error("dvara: cannot read the stage list x.");
+  };
+
   it("reads nothing for a run that marked only its own stages", () => {
-    assert.equal(
-      stageRefusal("post-merge", ["startup"], () => {
-        throw new Error("read");
-      }),
-      null,
+    assert.deepEqual(
+      stageVerdict("pre-push", ["startup"], unreadable, ["pre-push"]),
+      PASS,
     );
   });
 
-  it("refuses a run whose list cannot be read, or that broke it", () => {
-    assert.equal(
-      stageRefusal("pre-push", ["lint"], () => {
-        throw new Error("dvara: cannot read the stage list x");
-      }),
-      "dvara: cannot read the stage list x",
+  it("refuses a required hook whose list cannot be read, and warns for any other", () => {
+    assert.deepEqual(
+      stageVerdict("pre-push", ["lint"], unreadable, ["pre-push"]),
+      { refusal: "dvara: cannot read the stage list x.", warning: null },
     );
-    assert.equal(
-      stageRefusal("pre-push", ["typo"], () => LISTS),
-      'dvara: pre-push marked stage "typo", which its stage list does not have.',
+    assert.deepEqual(
+      stageVerdict("pre-commit", ["lint"], unreadable, ["pre-push"]),
+      {
+        refusal: null,
+        warning:
+          "dvara: cannot read the stage list x. pre-commit's stages were not checked.",
+      },
     );
-    assert.equal(
-      stageRefusal("pre-push", ["lint"], () => LISTS),
-      null,
+  });
+
+  it("refuses a run that broke its list, and passes one that kept to it", () => {
+    assert.deepEqual(
+      stageVerdict("pre-commit", ["typo"], () => LISTS, []),
+      {
+        refusal:
+          'dvara: pre-commit marked stage "typo", but the stage list has no pre-commit list.',
+        warning: null,
+      },
     );
-    assert.equal(
-      stageRefusal("pre-push", ["anything"], () => null),
-      null,
+    assert.deepEqual(
+      stageVerdict("pre-push", ["lint"], () => LISTS, []),
+      PASS,
+    );
+    assert.deepEqual(
+      stageVerdict("pre-push", ["anything"], () => null, []),
+      PASS,
     );
   });
 });

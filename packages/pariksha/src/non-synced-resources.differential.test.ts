@@ -78,9 +78,75 @@ const write = (docs: Record<string, string>): string => {
   return root;
 };
 
+// The oracle resolves a link as `$(cd "$(dirname "$T")" && pwd)/$(basename
+// "$T")`, so its answer depends on the platform's `basename` and `dirname`.
+// macOS and GNU follow POSIX: `basename repo/docs/./` is `.`, the folder
+// itself. uutils, the coreutils of ubuntu-26.04, answers `docs`, so there the
+// original refuses `./`, `.//` and `/./` as the missing `docs/docs`: the
+// original itself refuses differently by platform. The port keeps the POSIX
+// answer, so the oracle runs with POSIX tools: GNU's when the machine has them
+// beside uutils, else the two small POSIX shims below, first on its PATH.
+const POSIX_BASENAME = [
+  '#!/usr/bin/env bash',
+  's=$1',
+  'while [ "${#s}" -gt 1 ] && [ "${s%/}" != "$s" ]; do s=${s%/}; done',
+  'if [ "$s" = / ]; then echo /; exit 0; fi',
+  "printf '%s\\n' \"${s##*/}\"",
+  '',
+].join('\n');
+const POSIX_DIRNAME = [
+  '#!/usr/bin/env bash',
+  's=$1',
+  'while [ "${#s}" -gt 1 ] && [ "${s%/}" != "$s" ]; do s=${s%/}; done',
+  'case $s in */*) ;; *) echo .; exit 0 ;; esac',
+  's=${s%/*}',
+  'while [ "${#s}" -gt 1 ] && [ "${s%/}" != "$s" ]; do s=${s%/}; done',
+  "printf '%s\\n' \"${s:-/}\"",
+  '',
+].join('\n');
+
+const run = (command: string, args: readonly string[]): string | undefined => {
+  const r = spawnSync(command, args, { encoding: 'utf8' });
+  return r.status === 0 ? r.stdout.trim() : undefined;
+};
+
+/** The PATH the oracle runs with: the machine's own when its `basename` is POSIX. */
+const oraclePath = ((): string => {
+  const path = process.env['PATH'] ?? '';
+  if (run('basename', ['a/./']) === '.' && run('dirname', ['a/./']) === 'a') return path;
+  const tools = mkdtempSync(join(tmpdir(), 'pariksha-posix-tools-'));
+  for (const [name, shim] of [
+    ['basename', POSIX_BASENAME],
+    ['dirname', POSIX_DIRNAME],
+  ] as const) {
+    const gnu = ['gnu', 'g'].map((prefix) => run('bash', ['-c', `command -v ${prefix}${name}`])).find((found) => found !== undefined && found !== '');
+    if (gnu !== undefined) symlinkSync(gnu, join(tools, name));
+    else writeFileSync(join(tools, name), shim, { mode: 0o755 });
+  }
+  return `${tools}:${path}`;
+})();
+
+describe('the POSIX tools the oracle runs with', () => {
+  it('answer as POSIX does', () => {
+    const env = { ...process.env, PATH: oraclePath };
+    const ask = (name: string, arg: string) => spawnSync(name, [arg], { encoding: 'utf8', env }).stdout.trim();
+    const cases: [string, string, string][] = [
+      ['basename', 'repo/docs/./', '.'],
+      ['basename', 'repo/docs/.//', '.'],
+      ['basename', 'repo/b.md', 'b.md'],
+      ['basename', '/', '/'],
+      ['dirname', 'repo/docs/.//', 'repo/docs'],
+      ['dirname', 'b.md', '.'],
+      ['dirname', '/b.md', '/'],
+      ['dirname', 'repo//b.md/', 'repo'],
+    ];
+    for (const [name, arg, expected] of cases) assert.equal(ask(name, arg), expected, `${name} ${arg}`);
+  });
+});
+
 /** The oracle's exit code and stdout lines on `files`, run from `root`. */
 const oracle = (root: string, files: readonly string[]): { code: number | null; out: string[] } => {
-  const r = spawnSync('bash', [ORACLE, '--files', ...files], { cwd: root, encoding: 'utf8', timeout: 120_000 });
+  const r = spawnSync('bash', [ORACLE, '--files', ...files], { cwd: root, encoding: 'utf8', timeout: 120_000, env: { ...process.env, PATH: oraclePath } });
   return { code: r.status, out: r.stdout.replace(/\n$/, '').split('\n') };
 };
 

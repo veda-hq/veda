@@ -2,6 +2,7 @@
 // DVARA_CONFIG names (relative to the root). Every field is optional.
 import { readFileSync } from "node:fs";
 import { isAbsolute, posix, resolve } from "node:path";
+import { parseStageLists } from "./stages.ts";
 
 /** Paths no file under which is added, changed or deleted. */
 export interface FrozenPaths {
@@ -41,8 +42,10 @@ export interface Config {
   readonly watchdog: string | null;
   /** Refs tried in order for the base a run is judged against. */
   readonly baseRefs: readonly string[];
-  /** Each hook's stages, in the order they run; a hook not listed is not checked. */
+  /** Each hook's stages, in the order they run; a passing run must keep to them (stages.ts). */
   readonly stages: Readonly<Record<string, readonly string[]>>;
+  /** A JSON file holding the same map instead, relative to the root and read when a run ends; none by default. */
+  readonly stageList: string | null;
   /** The record gate and the frozen-path check. */
   readonly records: RecordsConfig;
 }
@@ -53,6 +56,7 @@ export const DEFAULTS: Config = {
   watchdog: null,
   baseRefs: ["origin/main", "origin/develop", "origin/master"],
   stages: {},
+  stageList: null,
   records: {
     baseline: ".dvara/records-baseline.json",
     skip: [],
@@ -213,14 +217,23 @@ export const parseConfig = (text: string): Config => {
   }
   if ("baseRefs" in entries)
     config.baseRefs = strings(entries.baseRefs, "baseRefs");
-  if ("stages" in entries) {
-    const stages = entries.stages;
-    if (typeof stages !== "object" || stages === null || Array.isArray(stages))
-      throw new Error("stages must map each hook to its stage names");
-    const out: Record<string, readonly string[]> = {};
-    for (const [hook, names] of Object.entries(stages))
-      out[hook] = strings(names, `stages.${hook}`);
-    config.stages = out;
+  if ("stages" in entries)
+    config.stages = parseStageLists(entries.stages, "stages");
+  if ("stageList" in entries) {
+    const path = entries.stageList;
+    if (
+      path !== null &&
+      (typeof path !== "string" ||
+        path === "" ||
+        isAbsolute(path) ||
+        escapes(path))
+    )
+      throw new Error(
+        "stageList must be a file path inside the repository, or null",
+      );
+    if (path !== null && "stages" in entries)
+      throw new Error("give stages or stageList, not both");
+    config.stageList = path;
   }
   if ("records" in entries)
     config.records = parseRecordsConfig(entries.records);

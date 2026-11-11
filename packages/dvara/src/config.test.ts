@@ -30,10 +30,24 @@ describe("parseConfig", () => {
       watchdog: "tools/watchdog.mjs",
       baseRefs: ["origin/trunk"],
       stages: { "pre-push": ["lint", "test"] },
+      stageList: null,
       records: DEFAULTS.records,
     });
     assert.deepEqual(parseConfig("{}"), DEFAULTS);
     assert.equal(parseConfig('{"watchdog": null}').watchdog, null);
+  });
+
+  it("reads a stage list path, or none", () => {
+    const path = "node_modules/@acme/rules/dvara/stages.json";
+    assert.equal(
+      parseConfig(JSON.stringify({ stageList: path })).stageList,
+      path,
+    );
+    assert.equal(parseConfig('{"stageList": null}').stageList, null);
+    assert.equal(
+      parseConfig('{"stages": {}, "stageList": null}').stageList,
+      null,
+    );
   });
 
   it("lays the given record settings over theirs", () => {
@@ -130,6 +144,15 @@ describe("parseConfig", () => {
       ['{"stages": []}', /stages must map/],
       ['{"stages": null}', /stages must map/],
       ['{"stages": {"pre-push": "lint"}}', /stages.pre-push must be a list/],
+      ['{"stages": {"pre-push": [""]}}', /stages.pre-push must be a list/],
+      ['{"stageList": 1}', /stageList must be a file path/],
+      ['{"stageList": ""}', /stageList must be a file path/],
+      ['{"stageList": "/abs.json"}', /stageList must be a file path/],
+      ['{"stageList": "../out.json"}', /stageList must be a file path/],
+      [
+        '{"stages": {}, "stageList": "s.json"}',
+        /give stages or stageList, not both/,
+      ],
     ] as const)
       assert.throws(() => parseConfig(text), message, text);
   });

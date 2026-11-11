@@ -357,6 +357,64 @@ describe("what a run is judged against", () => {
   });
 });
 
+describe("the stage list", () => {
+  const lists = { "pre-push": ["lint", "test"], "pre-commit": ["format"] };
+
+  it("passes a run that keeps to its list", async () => {
+    const { root, hook } = repo("dvara_stage lint\ndvara_stage test");
+    const { opts, captured } = options(root, {}, { stages: lists });
+    assert.equal(await supervise([hook], opts), 0);
+    assert.equal(rows(root)[0]?.status, "success");
+    assert.equal(captured.err, "");
+  });
+
+  it("refuses a passing run that marked a stage out of order, and says why", async () => {
+    const { root, hook } = repo("dvara_stage test\ndvara_stage lint");
+    const { opts, captured } = options(root, {}, { stages: lists });
+    assert.equal(await supervise([hook], opts), 1);
+    const [row] = rows(root);
+    assert.equal(row?.status, "failure");
+    assert.equal(row?.exitCode, 1);
+    assert.match(String(row?.error), /"lint" after "test", out of/);
+    assert.match(captured.err, /dvara: pre-push marked stage "lint" after/);
+  });
+
+  it("keeps a failing run's own code", async () => {
+    const { root, hook } = repo("dvara_stage typo\nexit 4");
+    const { opts, captured } = options(root, {}, { stages: lists });
+    assert.equal(await supervise([hook], opts), 4);
+    assert.doesNotMatch(captured.err, /stage list/);
+  });
+
+  it("refuses a quiet run whose list file is missing, printing its output and why", async () => {
+    const { root, hook } = repo(
+      "dvara_stage format\necho formatted",
+      "pre-commit",
+    );
+    const { opts, captured } = options(
+      root,
+      {},
+      { stageList: "rules/stages.json" },
+    );
+    assert.equal(await supervise([hook], opts), 1);
+    assert.match(captured.err, /formatted/);
+    assert.match(
+      captured.err,
+      /dvara: cannot read the stage list .*rules\/stages\.json/,
+    );
+    assert.doesNotMatch(captured.out, /passed/);
+  });
+
+  it("reads the list file when the run ends, after the hook wrote it", async () => {
+    const { root, hook } = repo(
+      `dvara_stage format\nmkdir -p rules\necho '${JSON.stringify(lists)}' > rules/stages.json`,
+      "pre-commit",
+    );
+    const { opts } = options(root, {}, { stageList: "rules/stages.json" });
+    assert.equal(await supervise([hook], opts), 0);
+  });
+});
+
 describe("quiet output", () => {
   it("prints the warnings and one line on success, keeping the full output", async () => {
     const { root, hook } = repo(

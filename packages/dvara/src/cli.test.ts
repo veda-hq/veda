@@ -68,6 +68,29 @@ describe("dvara", () => {
     assert.deepEqual(out, ["lint", "test"]);
   });
 
+  it("lists a hook stages from the stage list file, and refuses one it cannot read", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dvara-cli-"));
+    writeFileSync(
+      join(root, ".dvara.json"),
+      JSON.stringify({ stageList: "stages.json" }),
+    );
+    const { io, out, err } = capture();
+    assert.equal(
+      await run(["stages", "pre-push"], { io, cwd: root, env: {} }),
+      2,
+    );
+    assert.match(err[0] ?? "", /cannot read the stage list .*stages\.json/);
+    writeFileSync(
+      join(root, "stages.json"),
+      JSON.stringify({ "pre-push": ["lint"] }),
+    );
+    assert.equal(
+      await run(["stages", "pre-push"], { io, cwd: root, env: {} }),
+      0,
+    );
+    assert.deepEqual(out, ["lint"]);
+  });
+
   it("hands a run to the supervisor with the config", async () => {
     const root = mkdtempSync(join(tmpdir(), "dvara-cli-"));
     writeFileSync(join(root, ".dvara.json"), '{"historyDir": "h"}');

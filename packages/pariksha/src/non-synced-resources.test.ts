@@ -1,14 +1,20 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { parseDocConfig } from './doc-files.ts';
 import { basenameOf, checkDoc, checkNonSyncedResources, DEFAULT_GUIDANCE, dirnameOf, linkPath, linkTargets, nameOnDisk } from './non-synced-resources.ts';
 
-/** A folder with these files written, its real path returned (as git's top folder is). */
+const temps: string[] = [];
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
+
+/** A folder with these files written, its real path returned (as git's top folder is); removed when this file's tests end. */
 const tree = (files: Record<string, string>): string => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-nsr-')));
+  temps.push(root);
   for (const [path, body] of Object.entries(files)) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     writeFileSync(join(root, path), body);

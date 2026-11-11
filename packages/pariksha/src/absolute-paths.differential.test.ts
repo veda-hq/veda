@@ -12,12 +12,23 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { checkAbsolutePaths } from './absolute-paths.ts';
 import { parseDocConfig } from './doc-files.ts';
+
+const temps: string[] = [];
+/** A fresh temporary directory, removed when this file's tests end. */
+const temp = (prefix: string): string => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  temps.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 
 const SEED = 20_089;
 const RUNS = 120;
@@ -89,7 +100,7 @@ const sample = (): { docs: Record<string, string>; drawn: Set<string> } => {
 };
 
 const write = (docs: Record<string, string>): string => {
-  const root = mkdtempSync(join(tmpdir(), 'pariksha-absdiff-'));
+  const root = temp('pariksha-absdiff-');
   for (const [path, body] of Object.entries(docs)) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     writeFileSync(join(root, path), body);

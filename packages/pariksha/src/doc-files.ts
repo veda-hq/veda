@@ -34,7 +34,8 @@ export const parseDocConfig = (text: string | undefined, defaultGuidance: readon
   if (!isRecord(raw)) throw new Error('the config must be a JSON object');
   const unknown = Object.keys(raw).find((k) => k !== 'include' && k !== 'guidance');
   if (unknown !== undefined) throw new Error(`unknown key "${unknown}"`);
-  const include = raw['include'] ?? DEFAULT_INCLUDE;
+  // Absent takes the default; a present `null` is refused like any other wrong value.
+  const include = 'include' in raw ? raw['include'] : DEFAULT_INCLUDE;
   if (typeof include !== 'string' || include === '') throw new Error('"include" must be a non-empty regex string');
   let pattern: RegExp;
   try {
@@ -42,7 +43,7 @@ export const parseDocConfig = (text: string | undefined, defaultGuidance: readon
   } catch (e) {
     throw new Error(`"include" is not a regex: ${(e as Error).message}`);
   }
-  const guidance = raw['guidance'] ?? defaultGuidance;
+  const guidance = 'guidance' in raw ? raw['guidance'] : defaultGuidance;
   if (!Array.isArray(guidance) || guidance.some((line) => typeof line !== 'string')) throw new Error('"guidance" must be a list of lines');
   return { include: pattern, guidance: guidance as string[] };
 };

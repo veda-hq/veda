@@ -2,11 +2,22 @@
 // what each reads, what it prints, and its exit codes.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { run } from './cli.ts';
+
+const temps: string[] = [];
+/** A fresh temporary directory, removed when this file's tests end. */
+const temp = (prefix: string): string => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  temps.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 
 const capture = (stdin?: string) => {
   const out: string[] = [];
@@ -19,7 +30,7 @@ const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd,
 
 /** A folder with these files written, a git repository when `tracked`; its real path. */
 const tree = (files: Record<string, string>, tracked = true): string => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-cli-docs-')));
+  const root = realpathSync(temp('pariksha-cli-docs-'));
   if (tracked) git(root, 'init', '-q');
   for (const [path, body] of Object.entries(files)) {
     mkdirSync(dirname(join(root, path)), { recursive: true });

@@ -6,17 +6,23 @@
  * line for line, the rule id in its messages replaced by the config's `id`.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { run } from './cli.ts';
+
+const temps: string[] = [];
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 
 const CONFIG = { id: 'CI-001', nonGating: ['detect-changes'] };
 const WHY = 'The merge queue checks only the gate. A job absent from its `needs:` cannot\nblock a merge however it fails — and a failure upstream turns into a SKIP\ndownstream, which the gate then accepts.\n';
 
 const ported = (workflow: string): { code: number; out: string[]; err: string[] } => {
   const root = mkdtempSync(join(tmpdir(), 'pariksha-gate-parity-'));
+  temps.push(root);
   mkdirSync(join(root, '.github', 'workflows'), { recursive: true });
   writeFileSync(join(root, '.github', 'workflows', 'probe.yml'), workflow);
   writeFileSync(join(root, 'gate.json'), JSON.stringify(CONFIG));
@@ -46,7 +52,9 @@ describe('aggregate-gate-needs refuses what its original refuses', () => {
   });
 
   it('a workflow that does not parse', () => {
-    assert.deepEqual(ported('jobs:\n  - [unbalanced\n').err.slice(1, 3), [' .github/workflows/probe.yml → job "(unparseable)"', '   not depended on: <file did not parse>\n']);
+    const result = ported('jobs:\n  - [unbalanced\n');
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.err.slice(1, 3), [' .github/workflows/probe.yml → job "(unparseable)"', '   not depended on: <file did not parse>\n']);
   });
 
   it('and passes the gate that depends on every job', () => {

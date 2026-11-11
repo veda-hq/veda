@@ -9,10 +9,10 @@
  */
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { run } from './cli.ts';
 import {
   DEFAULT_GATE_COMMANDS,
@@ -46,8 +46,19 @@ const PRODUCT: MaskedConfig = {
 
 const PRODUCT_JSON = JSON.stringify({ id: PRODUCT.id, gateCommands: PRODUCT.gateCommands, hookDirs: PRODUCT.hookDirs, pipefailScope: PRODUCT.pipefailScope.map((r) => r.source) });
 
+/** Every temporary root this suite makes, removed once it ends. */
+const ROOTS: string[] = [];
+const scratch = (prefix: string): string => {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  ROOTS.push(root);
+  return root;
+};
+after(() => {
+  for (const root of ROOTS.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
 const fixture = (files: Record<string, string>): { root: string; names: string[] } => {
-  const root = mkdtempSync(join(tmpdir(), 'pariksha-masked-'));
+  const root = scratch('pariksha-masked-');
   for (const [name, body] of Object.entries(files)) {
     mkdirSync(join(root, dirname(name)), { recursive: true });
     writeFileSync(join(root, name), body);
@@ -582,10 +593,18 @@ describe('masked-exit-codes: the command', () => {
   it('refuses a bad config, or no repository, as unchecked', () => {
     const root = repo({ 'gate.sh': CLEAN, 'bad.json': '{"gates": []}' });
     assert.deepEqual(cli(['--root', root, '--config', 'bad.json']), { code: 2, out: [], err: ['pariksha masked-exit-codes: unknown key "gates"; nothing was checked, so this is not a pass'] });
-    const bare = mkdtempSync(join(tmpdir(), 'pariksha-masked-bare-'));
+    const bare = scratch('pariksha-masked-bare-');
     const outside = cli(['--root', bare]);
     assert.equal(outside.code, 2);
     assert.match(outside.err.join('\n'), /^pariksha masked-exit-codes: .*nothing was checked, so this is not a pass$/s);
+  });
+});
+
+describe('masked-exit-codes: the suite cleans up', () => {
+  it('registers every temporary root it makes, so the suite removes it at the end', () => {
+    const { root } = fixture({ 'a.sh': '#!/bin/bash\n' });
+    assert.ok(existsSync(root));
+    assert.ok(ROOTS.includes(root));
   });
 });
 

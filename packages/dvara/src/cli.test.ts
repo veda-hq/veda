@@ -65,6 +65,10 @@ describe("dvara", () => {
       await run(["stages", "pre-commit"], { io, cwd: root, env: {} }),
       0,
     );
+    assert.equal(
+      await run(["stages", "toString"], { io, cwd: root, env: {} }),
+      0,
+    );
     assert.deepEqual(out, ["lint", "test"]);
   });
 

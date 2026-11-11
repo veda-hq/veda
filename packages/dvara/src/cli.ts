@@ -15,7 +15,7 @@ import {
   USAGE as RECORDS_USAGE,
 } from "./records/gate.ts";
 import { runner } from "./records/git.ts";
-import { readStageLists } from "./stages.ts";
+import { listFor, readStageLists } from "./stages.ts";
 import { supervise, type Options } from "./supervisor.ts";
 
 export interface Io {
@@ -129,7 +129,8 @@ export const run = async (
         io.err((error as Error).message);
         return 2;
       }
-      for (const name of lists?.[rest[0] ?? ""] ?? []) io.out(name);
+      for (const name of lists ? (listFor(lists, rest[0] ?? "") ?? []) : [])
+        io.out(name);
       return 0;
     }
     return (context.supervise ?? supervise)(rest, {

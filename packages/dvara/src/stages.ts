@@ -15,21 +15,29 @@ export const OWN_STAGES: ReadonlySet<string> = new Set([
   "runtime-selection",
 ]);
 
+/** A name a stage file line can carry: not empty, no tab or line break (records.ts splits on them). */
+const isStageName = (name: unknown): boolean =>
+  typeof name === "string" && name !== "" && !/[\t\r\n]/.test(name);
+
 /** Each hook's names, from `value`; anything else is an error naming `field`. */
 export const parseStageLists = (value: unknown, field: string): StageLists => {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     throw new Error(`${field} must map each hook to its stage names`);
   const lists: Record<string, readonly string[]> = {};
   for (const [hook, names] of Object.entries(value)) {
-    if (
-      !Array.isArray(names) ||
-      !names.every((name) => typeof name === "string" && name !== "")
-    )
+    if (!Array.isArray(names) || !names.every(isStageName))
       throw new Error(`${field}.${hook} must be a list of stage names`);
     lists[hook] = names;
   }
   return lists;
 };
+
+/** `hook`'s own list, never one inherited from Object's prototype (`toString`). */
+export const listFor = (
+  lists: StageLists,
+  hook: string,
+): readonly string[] | undefined =>
+  Object.hasOwn(lists, hook) ? lists[hook] : undefined;
 
 /**
  * The lists a run is checked against: the file `stageList` names, else
@@ -70,7 +78,7 @@ export const stageViolation = (
 ): string | null => {
   const names = marked.filter((name) => !OWN_STAGES.has(name));
   if (names.length === 0) return null;
-  const list = lists[hook];
+  const list = listFor(lists, hook);
   if (list === undefined)
     return `${hook} marked stage "${names[0]}", but the stage list has no ${hook} list`;
   let at = 0;

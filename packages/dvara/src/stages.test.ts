@@ -43,6 +43,10 @@ describe("stageViolation", () => {
       stageViolation("pre-commit", ["startup", "format"], LISTS),
       'pre-commit marked stage "format", but the stage list has no pre-commit list',
     );
+    assert.equal(
+      stageViolation("toString", ["format"], LISTS),
+      'toString marked stage "format", but the stage list has no toString list',
+    );
   });
 });
 
@@ -85,7 +89,16 @@ describe("parseStageLists", () => {
   });
 
   it("refuses anything but a map of name lists", () => {
-    for (const value of [null, [], "a", { a: "b" }, { a: [1] }, { a: [""] }])
+    for (const value of [
+      null,
+      [],
+      "a",
+      { a: "b" },
+      { a: [1] },
+      { a: [""] },
+      { a: ["x\ty"] },
+      { a: ["x\ny"] },
+    ])
       assert.throws(
         () => parseStageLists(value, "the stage list"),
         /the stage list/,

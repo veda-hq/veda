@@ -149,6 +149,8 @@ describe("parseConfig", () => {
       ['{"stageList": ""}', /stageList must be a file path/],
       ['{"stageList": "/abs.json"}', /stageList must be a file path/],
       ['{"stageList": "../out.json"}', /stageList must be a file path/],
+      ['{"stageList": "..\\\\out.json"}', /stageList must be a file path/],
+      ['{"stageList": "C:out.json"}', /stageList must be a file path/],
       [
         '{"stages": {}, "stageList": "s.json"}',
         /give stages or stageList, not both/,

@@ -226,10 +226,13 @@ export const parseConfig = (text: string): Config => {
       (typeof path !== "string" ||
         path === "" ||
         isAbsolute(path) ||
-        escapes(path))
+        escapes(path) ||
+        // Read with the platform's resolve: on Windows `..\x` and `C:x` leave the root.
+        path.includes("\\") ||
+        /^[A-Za-z]:/.test(path))
     )
       throw new Error(
-        "stageList must be a file path inside the repository, or null",
+        "stageList must be a file path inside the repository, with / separators, or null",
       );
     if (path !== null && "stages" in entries)
       throw new Error("give stages or stageList, not both");

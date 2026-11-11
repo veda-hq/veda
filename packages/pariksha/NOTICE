@@ -1,0 +1,6 @@
+@veda-hq/pariksha includes third-party code:
+
+- src/semver-range.ts (dist/semver-range.js) is ported from semver 7.8.1
+  (npm `semver`, https://github.com/npm/node-semver), ISC licence,
+  Copyright (c) Isaac Z. Schlueter and Contributors. The licence text is in
+  the file's header.

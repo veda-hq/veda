@@ -4,14 +4,85 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.5.14 <check> [flags]
-npx @veda-hq/pariksha@0.5.14 --version
+npx @veda-hq/pariksha@0.5.17 <check> [flags]
+npx @veda-hq/pariksha@0.5.17 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
 (each finding on stderr, with how to fix it), and 2 on a usage or input
 error. `--root <dir>` (default: the current directory) names the repository.
 Node 24 or later. MIT.
+
+## `absolute-paths`
+
+```sh
+pariksha absolute-paths [--config <file>] [--files-from <file>|-] [--root <dir>]
+```
+
+A document that points at `/Users/me/notes.md` points at something only its
+writer has. This refuses a line naming a path on a local machine: `file://`,
+`/Users/`, `/home/<name>/`, `/tmp/<x>`, `/var/<x>`, `/private/var`, `~/`, or a
+drive (`C:\x`). Not refused: a line inside a fenced block (between lines that
+start with three backticks), a path in an inline code span, and a line that
+says it is an example (`forbidden`, `example`, `not allowed`, `should not`,
+`must not`, in any case). Only the first path on a line is tested for a code
+span, and a `/tmp/<x>` or `/var/<x>` path runs to the next `/`, so
+`` `/tmp/x` `` alone on a line is refused: the shell check this was ported
+from read it so.
+
+The documents are the ones `--files-from` lists, one path per line (a file,
+or `-` for stdin; relative paths are read from the root), or with no list
+every file git tracks; a listed path that is not a regular file is dropped.
+The JSON `--config` (relative to the root) is optional:
+
+```json
+{
+  "include": "\\.(md|mdx)$",
+  "guidance": ["Please use relative paths only.", "See docs/WRITING.md."]
+}
+```
+
+- `include` (default `\.(md|mdx)$`) is the regex a listed path must match to
+  be a document.
+- `guidance` (default one line asking for relative paths) is printed after a
+  refusal.
+
+The report goes to stdout: `→ Checking …`, `Checking N documentation
+file(s)...`, then each finding as `file:line:text`. It exits 1 on a finding,
+0 with none or nothing to check, and 2 on a bad config, an unreadable list,
+or no list outside a git repository.
+
+## `aggregate-gate-needs`
+
+```sh
+pariksha aggregate-gate-needs [--config <file>] [--root <dir>]
+```
+
+A merge queue that requires one aggregate status, a workflow's "CI Gate",
+lets through any job that gate does not wait on: a job missing from its
+`needs:` cannot block a merge however it fails, and an upstream failure turns
+into a skip downstream that the gate accepts. Each shows a green required
+check. In every `.yml` and `.yaml` workflow, a gate (a job whose `name:`, or
+id, matches `gateName`) is refused when its `needs:` leaves out a job other
+than another gate or a `nonGating` one, or when it reads a job's result
+without declaring it: `needs.<id>` or `needs['<id>']` in the job's `if:`, a
+step's `if:`, or any `${{ … }}` in the job, outside quoted literals. Text in
+a `run:` script and an action input named `if` are not reads. A non-gating
+job (a change detector) need not be gated, but must be declared once read.
+
+```json
+{ "id": "CI-001", "workflowsDir": ".github/workflows", "gateName": "gate$", "nonGating": ["detect-changes"] }
+```
+
+- `id` (default `aggregate-gate-needs`) names the check in its messages: a
+  project's rule id, say.
+- `workflowsDir` (default `.github/workflows`, relative to the root).
+- `gateName` (default `gate$`) is a regex, matched case-insensitively.
+- `nonGating` (default none) lists job ids that gate nothing.
+
+A workflow that does not parse is reported as a gap, never passed. No
+workflow to read exits 1 (`no workflow files found — the lookup failed`),
+as the original did; a bad config exits 2.
 
 ## `authority-citations`
 
@@ -666,6 +737,75 @@ root-relative POSIX path, a check not in `checks`, an `exemptIn` group
 `minNoteLength`, a source registered twice), a missing or malformed
 baseline, a root holding no tracked file, a group discovering nothing, no
 base without `--no-base`, a failed git call, or no `typescript`.
+
+## `non-synced-resources`
+
+```sh
+pariksha non-synced-resources [--config <file>] [--files-from <file>|-] [--root <dir>]
+```
+
+A link to a file that was never committed works for its writer and for
+nobody else. Every `[text](dest)` and `![alt](dest)` on a line of a document
+(inside code blocks too) is read, except `http(s)://`, `mailto:` and `#`
+links. The destination loses its `#fragment` and `?query`, then is the text
+inside `<…>` or the text before a space (a title); one starting with `/` is
+read from the repository's top folder. It is refused when its folder does
+not exist, when it lands outside the repository, when nothing is there, or
+when the name on disk differs in case (macOS opens `./README.MD` as
+`./readme.md`; Linux and CI do not). An image over 1 MiB is warned about,
+never refused. Paths are joined and split as the shell check this was ported
+from joined them (`dirname`, `basename`, `cd && pwd`), so what counts as
+inside the repository is unchanged.
+
+The documents, the config (`include`, `guidance`) and the report on stdout
+are as for [`absolute-paths`](#absolute-paths); a document listed by absolute
+path has its links read from its own folder. A repository is needed only
+when there is a document to read.
+
+## `pnpm-settings`
+
+```sh
+pariksha pnpm-settings [--config <file>] [--root <dir>]
+```
+
+pnpm 11 stopped reading the `pnpm` field of package.json without a warning
+(pnpm/pnpm#11536): an `overrides` or `patchedDependencies` left there gives a
+green install in which every security pin has reverted and every patch has
+stopped applying. A green install proves nothing, so this reads the resolved
+`pnpm-lock.yaml` (the last of its YAML documents, which pnpm 12 writes after
+its own) and refuses:
+
+1. a setting pnpm 11 ignores still in `package.json#pnpm`;
+2. an override in `pnpm-workspace.yaml` the lockfile does not record, records
+   differently, or still records after it was removed;
+3. the same for a patch, a patch file that is not on disk, or one whose
+   sha256 is not the one the lockfile records;
+4. a resolved version inside the range an override excludes
+   (`tar@<=7.5.20`), or, for a bare-name override (`tar: '>=7.5.21'`),
+   outside the range it forces. Prereleases count: `7.5.20-beta.1` is inside
+   `<=7.5.20`;
+5. a `minimumReleaseAgeExclude` entry that is not one exact version the
+   lockfile still resolves, or whose list has no comment right above it, no
+   `EXPIRES: <ISO-8601>` line, or an expiry already past. `ownScopes` entries
+   are standing and exempt.
+
+```json
+{ "id": "CFG-005", "ownScopes": ["@your-scope/*"] }
+```
+
+- `id` (default `pnpm-settings`) names the check in its messages.
+- `ownScopes` (default none) lists `minimumReleaseAgeExclude` entries asked
+  for no expiry or exact version: a project's own scopes, released by its own
+  CI.
+
+Ranges are read by pariksha's own matcher, a port of the `semver` package's
+range reading (strict mode, prereleases included): comparator sets joined by
+`||`, comparators joined by spaces, and the same sugar (`^`, `~`, `1.x`,
+`*`, partial versions such as `<8`, hyphen ranges). A range `semver` would
+refuse is not passed: it is printed as a selector not version-checked.
+`semver`'s loose mode is not read. Notes and failures go to stderr, the clean
+line to stdout; a missing input file is a failure (exit 1), a bad config or
+an unreadable `package.json` exits 2.
 
 ## `required-settings`
 

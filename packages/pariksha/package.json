@@ -1,7 +1,7 @@
 {
   "name": "@veda-hq/pariksha",
-  "version": "0.5.17",
-  "description": "Repository checks: doc drift, rule enforcement, test-quality ratchets. Checks: absolute-paths, aggregate-gate-needs, authority-citations, boundary, codec-registry, coverage-by-type, coverage-exemptions, doc-budgets, doc-references, enforcement-claims, env-gate-switches, export-deletions, fault-injection-registry, non-synced-resources, pnpm-settings, required-settings. Also markdownlint rules for Markdown that renders mangled: @veda-hq/pariksha/markdownlint.",
+  "version": "0.5.18",
+  "description": "Repository checks: doc drift, rule enforcement, test-quality ratchets. Checks: absolute-paths, aggregate-gate-needs, authority-citations, boundary, codec-registry, coverage-by-type, coverage-exemptions, doc-budgets, doc-references, enforcement-claims, env-gate-switches, export-deletions, fault-injection-registry, masked-exit-codes, non-synced-resources, pnpm-settings, required-settings, shell-gates. Also markdownlint rules for Markdown that renders mangled: @veda-hq/pariksha/markdownlint.",
   "keywords": ["repository checks", "lint", "boundary", "ci", "coding agents", "markdownlint"],
   "license": "MIT",
   "type": "module",

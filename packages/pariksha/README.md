@@ -4,8 +4,8 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.5.17 <check> [flags]
-npx @veda-hq/pariksha@0.5.17 --version
+npx @veda-hq/pariksha@0.5.18 <check> [flags]
+npx @veda-hq/pariksha@0.5.18 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
@@ -738,6 +738,60 @@ root-relative POSIX path, a check not in `checks`, an `exemptIn` group
 baseline, a root holding no tracked file, a group discovering nothing, no
 base without `--no-base`, a failed git call, or no `typescript`.
 
+## `masked-exit-codes`
+
+```sh
+pariksha masked-exit-codes [--config <file>] [--staged] [--root <dir>]
+```
+
+A gate that keeps reporting success after it stopped checking passes
+everything: a hook that runs a commit-message linter and then `exit 0`, a
+review step whose failures read as "no issues found", a baseline read with
+`2>/dev/null || true`. `|| true` has honest uses (an optional tool, grep's
+"no matches"), so this refuses only the shapes that silence a gate command's
+verdict:
+
+1. `exit 0` at the end of a script that ran a gate, with no branch on the
+   gate's status;
+2. `|| true`, a `||` handler that does not exit non-zero, or `2>/dev/null`
+   with the status unchecked, on a gate command, also in a script the line
+   hands a shell (`eval '…'`, `bash -c '…'`, what `echo`/`printf` pipes
+   into `sh`) and inside `$( … )`;
+3. in a file `pipefailScope` matches, `echo`/`printf` of a variable piped
+   into a reader that stops early (`grep -q`, `-m`, `-l`, `head`): under
+   pipefail the writer can fail after the match, which reads as a miss.
+
+The files are those git tracks under the root ending `.sh` or under a hook
+directory, outside `node_modules/`, read from the working tree, or the index
+with `--staged`. Comments, quoted text, heredoc bodies and continuation lines
+are read as bash reads them. The JSON `--config` (relative to the root) is
+optional:
+
+```json
+{
+  "id": "SH-001",
+  "gateCommands": ["eslint", "tsc", "vitest", "prettier --check", "commitlint", "run-validation.sh"],
+  "hookDirs": [".husky/"],
+  "pipefailScope": ["^\\.husky/", "^scripts/lib/.+\\.sh$"]
+}
+```
+
+- `id` (default `masked-exit-codes`) names the check in its messages.
+- `gateCommands` (default `eslint`, `tsc`, `vitest`, `prettier --check`,
+  `commitlint`, `cubic review`, `gitleaks`, `actionlint`, `shellcheck`,
+  `depcruise`, `stryker`) are the commands whose status is a verdict; one of
+  several words must appear whole. Keep it narrow: a broad list fires on
+  every optional-tool probe.
+- `hookDirs` (default `.husky/`) are path prefixes whose files are shell
+  whatever their name.
+- `pipefailScope` (default `^\.husky/`) are path regexes: the files that run
+  under `set -o pipefail`.
+
+A clean run prints `✅ <id>: no masked exit codes (N shell file(s) scanned)`
+to stdout; each finding goes to stderr with its line and why, and exits 1.
+No shell file at all exits 1 (`the file lookup failed`), as the original
+did; a bad config or a failed git call exits 2.
+
 ## `non-synced-resources`
 
 ```sh
@@ -864,6 +918,93 @@ Parsing those is the job of a command guard such as kavach's `git_safety`.
 `permissions.defaultMode: "auto"` is not in it: Claude Code ignores `auto` in a
 project's settings and then also skips the user's own `defaultMode`, so it
 belongs in user settings only.
+
+## `shell-gates`
+
+```sh
+pariksha shell-gates [--config <file>] [--staged | --all | --base <ref> | --files-from <file>|-] [--only <checks>] [--root <dir>]
+```
+
+A shell script that works on its writer's Mac can fail on Linux CI, and a
+git hook that picks up whatever `node` is on PATH can run a check under the
+wrong runtime. This runs three gates over the shell files a change writes:
+
+1. ShellCheck, a binary on PATH (install it: <https://www.shellcheck.net>),
+   once per pass, by default `--severity=warning`, then `--severity=info
+   --include=SC2086,SC2013,SC2015` (an unquoted expansion, `for x in $(cat
+   f)`, `a && b || c`). Its targets are `*.sh`, `*.bash`, the hooks
+   directory's direct children without an extension, and extensionless
+   files whose first line is a sh, bash, dash or ksh `#!`. Staged mode
+   writes the index's copy of each to a temporary directory and judges
+   that; base mode judges the HEAD commit's copy of what the branch changed
+   since its merge base with `<ref>`; `--all` judges the working tree; files
+   mode passes the listed paths as they are.
+2. The hook preamble, over the hooks directory's direct children without an
+   extension. A hook must source `selectScript` and call `selectFunction`
+   (with `|| exit 1`, or a branch that exits) before it runs a runtime
+   (`runtimes`, by default `node`, `npx`, `pnpm`, `npm`, `tsx`, `corepack`,
+   `yarn`), here or in a function it calls; an opt-out (`[ "$X" = 0 ] &&
+   exit 0`) comes before that selection; it never edits PATH or drives
+   nvm, fnm or mise itself; it never `exec sh <hook>`s (that ignores the
+   target's shebang); and an INT, TERM, HUP or QUIT trap's handler ends in
+   `exit`, or bash resumes after it and a cancelled hook carries on.
+3. The pitfalls, over every shell target: `grep -E` or `egrep` with `\s`,
+   `\S`, `\d` or `\D` (not POSIX ERE: BSD grep matches nothing); GNU-only
+   `xargs -d`/`-r`; `xargs` without `-0` fed a file list; file operands
+   after `xargs`, or a list expansion to grep, without `--`; `<( … )` in a
+   file `validatorPaths` matches; a literal `/tmp/<name>` (use `mktemp`);
+   an unguarded `/opt/homebrew` or `/Users/` literal, a fixed `-avd
+   <name>`, a personal device name; `NVM_DIR` set without honouring an
+   existing one; `lockf` without `-k`; `$(( … ))` over a value from `read`
+   or `date` without `10#` (`08` is bad octal); `dirname "$0"` beside
+   `BASH_SOURCE`; `git worktree list` parsed without `--porcelain`; and
+   `grep -o` over a JSON `"key":`. Comments, quoted text and heredoc bodies
+   are read as bash reads them.
+
+The preamble and pitfalls judge the same kind of target, less `exclude`
+and symlinks: `--staged` (the default) the staged copies, `--base` the
+files changed since the merge base with `<ref>` (read from the working
+tree), `--all` every tracked one, `--files-from` the listed paths (one per
+line or NUL-separated; a file, or `-` for stdin). A change under
+`gateInputs` (staged, or on the branch) re-judges every target, and a
+staged change to a `shellcheck.inputs` path makes ShellCheck judge the
+whole index. `--only preamble,pitfalls` runs
+only those checks, and no ShellCheck. The JSON `--config` (relative to the
+root) is optional:
+
+```json
+{
+  "hooksDir": ".husky/",
+  "exclude": ["node_modules/", ".husky/_/", "vendor/"],
+  "gateInputs": ["scripts/validations/shell/"],
+  "preamble": { "id": "SHELL-06", "selectScript": "scripts/lib/select-node.sh", "selectFunction": "select_node" },
+  "pitfalls": { "id": "SHELL-03", "validatorPaths": ["^scripts/validations/"] },
+  "shellcheck": { "inputs": ["scripts/run-validation.sh"], "install": "run the machine setup (or: brew install shellcheck)" },
+  "guidance": ["", "   SHELL-06 and SHELL-03 are described in docs/shell.md."]
+}
+```
+
+- `hooksDir` (default `.husky/`, ending in `/`) is the git hooks directory.
+- `exclude` (default `node_modules/`, `.husky/_/`) are path prefixes never
+  judged by the preamble and pitfalls; a `/node_modules/` segment never is.
+- `gateInputs` (default none) are path prefixes of the gate's own inputs.
+- `preamble` (default none, which leaves only the pitfalls to run):
+  `selectScript` and `selectFunction` are required; `id` defaults to
+  `hook-preamble`, `runtimes` to the list above.
+- `pitfalls`: `id` (default `shell-pitfalls`) and `validatorPaths` (path
+  regexes, default none).
+- `shellcheck`: `passes` (lists of flags after `--norc`; `[]` runs no
+  ShellCheck), `inputs` (default none) and `install`, the text a missing
+  ShellCheck message gives.
+- `guidance` (default a pointer to this section) is printed after the
+  findings.
+
+ShellCheck's own report comes first, then `✅ Shell gates: N file(s) pass
+<checks>`, or `❌ Shell gates: N finding(s) in M file(s)` on stderr with
+each finding as `file:line  <id> <rule>` and its message, then the
+guidance. It exits 1 on any ShellCheck or rule finding, or when ShellCheck
+is not installed; 2 on a bad config, two modes, an empty list, or a
+selection or git failure, since nothing was checked.
 
 ## markdownlint rules
 

@@ -1,7 +1,9 @@
 // The hook supervisor: runs a git hook under bash, forwards the terminal's
-// signals to it, and writes one history row per run. It never changes the
-// hook's verdict except to report a signalled run as cancelled; every failure
-// of its own (telemetry, watchdog, quiet output) is fail-open.
+// signals to it, and writes one history row per run. It changes the hook's
+// verdict only to report a signalled run as cancelled, to let an enforcing
+// watchdog's stop decide it, and to refuse a passing run that broke its stage
+// list (stages.ts), or whose list cannot be read. Every other failure of its
+// own (telemetry, watchdog, quiet output) is fail-open.
 import {
   execFileSync,
   spawn,
@@ -23,6 +25,7 @@ import type { Config } from "./config.ts";
 import { hookKind, invocationContext, perfLevelNames } from "./context.ts";
 import { isQuiet, successLine, successNotices } from "./quiet.ts";
 import { parseRecords, parseStages, treeUsage } from "./records.ts";
+import { readStageLists, stageRefusal } from "./stages.ts";
 
 /** Exit code per signal, shared by the pre-launch path and the exit handler. */
 export const SIGNAL_EXIT_CODES: Readonly<Record<string, number>> = {
@@ -386,8 +389,19 @@ export const supervise = async (
     const imposed = watchdogModule?.exitDisposition(watchdogSummary) ?? null;
     if (imposed) code = imposed.code;
     const ended = Date.now();
-    if (quiet) report(code, ended - started);
     const marks = parseStages(readOrNull(events), bootstrapMs);
+    // Only a run that would pass is checked: a failure keeps its own story.
+    const refusal =
+      code === 0 && !imposed && !signal
+        ? stageRefusal(
+            hookName,
+            marks.map((mark) => mark.name),
+            () => readStageLists(root, config),
+          )
+        : null;
+    if (refusal !== null) code = 1;
+    if (quiet) report(code, ended - started);
+    if (refusal !== null) stderr(`${refusal}\n`);
     const { pushed, declared, proof, proofDiagnostics } = parseRecords(
       readOrNull(records),
     );
@@ -425,7 +439,7 @@ export const supervise = async (
           durationMs: ended - started,
           exitCode: code,
           signal,
-          error,
+          error: error ?? refusal ?? undefined,
           status: verdict(false),
           branch,
           fingerprint,

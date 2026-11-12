@@ -465,6 +465,44 @@ config (an unknown, missing or bad key or pattern), a malformed baseline, no
 `node_modules/.bin` (DOC-DRIFT-02 would know no bin), a missing or failing
 lychee, a `--base` with no merge base, or a failed git call.
 
+## `duplicate-tests`
+
+```sh
+pariksha duplicate-tests [--config <file>] [--files-from <file>|-] [--root <dir>]
+```
+
+A test copied rather than written: two tests whose matchers, names and
+describe paths score at or above the threshold (default 0.85; across two
+files never below 0.95). The score weighs the matcher set (`expect()` and
+every `.to…()` call in the test, Jaccard) at 50%, the name at 20% and the
+describe path at 30% (edit distance); `describe(X.name)` names its block `X`,
+and two tests in no describe block compare their file stems. A pair is not
+compared when either test has fewer than three matcher calls, either name is
+generic (`should return`, …), the names are opposite cases (an opposite
+pair, other HTTP methods or statuses, other uppercase `AND`/`OR`, another
+endpoint), or, in one file, either name has a word the other lacks or the
+same words come in another order.
+
+Without `--files-from` every tracked file on disk is listed; with it, the
+listed paths (one per line or NUL-separated, relative to the root or
+absolute; `-` reads stdin). A listed path counts when `include` matches it
+relative to the root. A file that cannot be read warns on stderr and is
+skipped; a file that does not parse prints `❌ Parse error:` on stderr and
+gives no tests. The report goes to stdout. The JSON `--config` (relative to
+the root) replaces each default it names:
+
+- `include` (default `\.(test|spec)\.(ts|tsx|js|jsx)$`): which paths are tests.
+- `threshold` (default `0.85`).
+- `commonNames`: names too generic to compare, lowercased.
+- `oppositePairs`: `[word, word]` pairs that mark two names as opposite
+  cases (the default holds fifteen, such as `success`/`failure` and
+  `valid`/`invalid`). Names are lowercased before they are matched, so a pair
+  must be lowercase to match.
+
+Needs `typescript` `>=5.4 <6`, as `coverage-by-type` does. A `.ts` file is
+read as TypeScript and the rest as TSX; a `.ts` file that only parses as
+TSX is read so, and one with a `<T>value` assertion gives no tests.
+
 ## `enforcement-claims`
 
 ```sh
@@ -737,6 +775,34 @@ root-relative POSIX path, a check not in `checks`, an `exemptIn` group
 `minNoteLength`, a source registered twice), a missing or malformed
 baseline, a root holding no tracked file, a group discovering nothing, no
 base without `--no-base`, a failed git call, or no `typescript`.
+
+## `flaky-tests`
+
+```sh
+pariksha flaky-tests [--config <file>] [--files-from <file>|-] [--runs <n>] [--root <dir>]
+```
+
+Runs the test files `--runs` times (default 5, at most 1000) with
+`npx vitest run --reporter=json --passWithNoTests`, the files under each
+package root together from that root and the rest from the repository root,
+and judges every run's JSON report strictly (a report that breaks Vitest's
+contract, or a clean exit with no report or one saying `success: false`, is
+not trusted). The verdicts, each exiting 1 but the last:
+
+1. a run exited non-zero without collecting a test case (an unloadable file,
+   a crashed runner): the runner output is printed, and any flaky test seen
+   in the other runs below it;
+2. a test passed in some runs and failed in others: flaky;
+3. every run failed, or a test failed in every run: not flaky, but broken;
+4. every run passed: `✅ No flaky tests found across N test cases.`
+
+The files are listed as for `duplicate-tests`. The JSON `--config` (relative
+to the root) replaces each default it names:
+
+- `include` (default `\.(test|spec)\.(ts|tsx|js|jsx)$`): which paths are tests.
+- `packageRoots` (default none): directories, relative to the root, whose
+  files Vitest runs from that directory, with its config.
+- `exclude` (default none): globs passed to Vitest as `--exclude`.
 
 ## `masked-exit-codes`
 

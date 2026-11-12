@@ -31,6 +31,7 @@ import { emptyRoots, growthSince, readBaseline, wholeId, type Baseline } from '.
 import { checkClaims, formatOutcome, loadEslint, parseConfig as parseClaimsConfig, type LinterClass } from './enforcement-claims.ts';
 import { parseConfig as parseDuplicateConfig, runDuplicateTests } from './duplicate-tests.ts';
 import { DEFAULT_RUNS, npxVitest, parseConfig as parseFlakyConfig, parseRuns, runFlakyTests, type VitestRunner } from './flaky-tests.ts';
+import { inheritRunner, runPythonFloor, type Options as PythonFloorOptions, type PythonRunner } from './python-floor.ts';
 
 export interface Io {
   readonly out: (line: string) => void;
@@ -51,6 +52,8 @@ export interface Io {
   readonly shellcheck?: ShellcheckRunner;
   /** How flaky-tests runs Vitest; `npx vitest` by default. */
   readonly vitest?: VitestRunner;
+  /** How python-floor runs the named interpreter; a child sharing this process's stdio by default. */
+  readonly python?: PythonRunner;
 }
 
 export const DENY_FILE = '.veda/deny.sha256';
@@ -74,6 +77,7 @@ const USAGE = [
   '       pariksha masked-exit-codes [--config <file>] [--staged] [--root <dir>]',
   '       pariksha non-synced-resources [--config <file>] [--files-from <file>|-] [--root <dir>]',
   '       pariksha pnpm-settings [--config <file>] [--root <dir>]',
+  '       pariksha python-floor --python <interpreter> --floor-file <path> [--exclude <regex>] [--selector <path>] [--root <dir>]',
   '       pariksha required-settings --require <file> [--settings <file>] [--root <dir>]',
   '       pariksha shell-gates [--config <file>] [--staged | --all | --base <ref> | --files-from <file>|-] [--only <checks>] [--root <dir>]',
   '       pariksha hash <word>',
@@ -827,6 +831,27 @@ const flakyTests = (f: Map<string, string>, io: Io): number => {
   return runFlakyTests(selected.config, runs, selected.mode, root, selected.files, io.vitest ?? npxVitest, io.out);
 };
 
+/** python-floor: the packaged script under the `--python` the caller names, its output and exit code passed through. */
+const pythonFloor = (f: Map<string, string>, io: Io): number => {
+  const python = f.get('--python');
+  const floorFile = f.get('--floor-file');
+  if (python === undefined || floorFile === undefined) {
+    io.err(USAGE);
+    return 2;
+  }
+  const root = f.get('--root');
+  const exclude = f.get('--exclude');
+  const selector = f.get('--selector');
+  const options: PythonFloorOptions = {
+    python,
+    floorFile,
+    ...(root === undefined ? {} : { root }),
+    ...(exclude === undefined ? {} : { exclude }),
+    ...(selector === undefined ? {} : { selector }),
+  };
+  return runPythonFloor(options, io.python ?? inheritRunner, io.err);
+};
+
 const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly string[]; run: (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv) => number | Promise<number> }> = {
   'codec-registry': { allowed: ['--config', '--base', '--root'], switches: ['--no-base'], run: codecRegistry },
   'coverage-exemptions': { allowed: ['--config', '--package', '--root'], run: coverageExemptions },
@@ -835,6 +860,7 @@ const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly
   'aggregate-gate-needs': { allowed: ['--config', '--root'], run: aggregateGateNeeds },
   'non-synced-resources': { allowed: ['--config', '--files-from', '--root'], run: nonSyncedResources },
   'pnpm-settings': { allowed: ['--config', '--root'], run: pnpmSettings },
+  'python-floor': { allowed: ['--python', '--floor-file', '--exclude', '--selector', '--root'], run: pythonFloor },
   'authority-citations': { allowed: ['--mode', '--authority', '--issue-prefix', '--adr-dir', '--root'], run: authorityCitations },
   boundary: { allowed: ['--root', '--deny'], run: boundary },
   'coverage-by-type': { allowed: ['--config', '--files-from', '--root'], run: coverageByType },

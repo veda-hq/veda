@@ -29,6 +29,8 @@ import { discover as discoverCodecs, fileOf as codecFileOf, findings as codecFin
 import { discoverGroup, findings as faultFindings, formatFindings as formatFaultFindings, parseBaseline as parseFaultBaseline, parseConfig as parseFaultConfig, type Config as FaultConfig } from './fault-injection-registry.ts';
 import { emptyRoots, growthSince, readBaseline, wholeId, type Baseline } from './registry-ratchet.ts';
 import { checkClaims, formatOutcome, loadEslint, parseConfig as parseClaimsConfig, type LinterClass } from './enforcement-claims.ts';
+import { parseConfig as parseDuplicateConfig, runDuplicateTests } from './duplicate-tests.ts';
+import { DEFAULT_RUNS, npxVitest, parseConfig as parseFlakyConfig, parseRuns, runFlakyTests, type VitestRunner } from './flaky-tests.ts';
 
 export interface Io {
   readonly out: (line: string) => void;
@@ -47,6 +49,8 @@ export interface Io {
   readonly now?: () => number;
   /** How shell-gates runs ShellCheck; `shellcheck` on PATH by default. */
   readonly shellcheck?: ShellcheckRunner;
+  /** How flaky-tests runs Vitest; `npx vitest` by default. */
+  readonly vitest?: VitestRunner;
 }
 
 export const DENY_FILE = '.veda/deny.sha256';
@@ -61,10 +65,12 @@ const USAGE = [
   '       pariksha coverage-exemptions --config <file> [--package <dir>] [--root <dir>]',
   '       pariksha doc-budgets --table <file> [--section <name>] [--root <dir>]',
   '       pariksha doc-references --config <file> (--staged | --base <ref> [--head <ref>] | --all [--update-baseline | --write-baseline]) [--checks <ids>] [--root <dir>]',
+  '       pariksha duplicate-tests [--config <file>] [--files-from <file>|-] [--root <dir>]',
   '       pariksha enforcement-claims --config <file> [--root <dir>]',
   '       pariksha env-gate-switches --config <file> [--mode staged|tree] [--root <dir>]',
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
   '       pariksha fault-injection-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
+  '       pariksha flaky-tests [--config <file>] [--files-from <file>|-] [--runs <n>] [--root <dir>]',
   '       pariksha masked-exit-codes [--config <file>] [--staged] [--root <dir>]',
   '       pariksha non-synced-resources [--config <file>] [--files-from <file>|-] [--root <dir>]',
   '       pariksha pnpm-settings [--config <file>] [--root <dir>]',
@@ -748,6 +754,79 @@ const requiredSettings = (f: Map<string, string>, io: Io): number => {
   return result.ok ? 0 : 1;
 };
 
+/**
+ * The test files duplicate-tests and flaky-tests judge, relative to the root:
+ * those `--files-from` lists (mode `files`; a relative entry is read from the
+ * root), or every tracked file on disk (mode `all`), kept when `include`
+ * matches the root-relative path.
+ */
+const testFiles = (f: Map<string, string>, io: Io, root: string, include: RegExp): { mode: string; files: string[] } => {
+  const from = f.get('--files-from');
+  const listed =
+    from === undefined
+      ? must(gitAt(root), ['ls-files', '-z'])
+          .split('\0')
+          .filter((p) => p && existsSync(join(root, p)))
+      : entries(from === '-' ? (io.stdin ?? (() => readFileSync(0, 'utf8')))() : readFileSync(resolve(from), 'utf8')).map((e) => relative(root, resolve(root, e)));
+  return { mode: from === undefined ? 'all' : 'files', files: listed.filter((p) => include.test(p)) };
+};
+
+/** duplicate-tests: the report on stdout, warnings and parse errors on stderr, as the original printed them. */
+const duplicateTests = (f: Map<string, string>, io: Io): number => {
+  const P = 'pariksha duplicate-tests:';
+  const dir = resolve(f.get('--root') ?? '.');
+  const root = topOf(dir);
+  if (root === undefined) {
+    io.err(`${P} ${dir} is not in a git repository`);
+    return 2;
+  }
+  const ts = (io.typescript ?? (() => loadTypescript(typescriptLoaders(root))))();
+  if (typeof ts === 'string') {
+    io.err(`${P} ${ts}`);
+    return 2;
+  }
+  try {
+    const configPath = f.get('--config');
+    const config = parseDuplicateConfig(configPath === undefined ? undefined : readFileSync(resolve(root, configPath), 'utf8'));
+    const { mode, files } = testFiles(f, io, root, config.include);
+    const listed = files.map((file) => ({ file, path: resolve(root, file), read: () => readFileSync(resolve(root, file), 'utf8') }));
+    const result = runDuplicateTests(ts, config, mode, listed);
+    result.out.forEach(io.out);
+    result.err.forEach(io.err);
+    return result.code;
+  } catch (e) {
+    io.err(`${P} ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+};
+
+/** flaky-tests: `--runs` passes (default 5) of Vitest over the test files, from each package root. */
+const flakyTests = (f: Map<string, string>, io: Io): number => {
+  const P = 'pariksha flaky-tests:';
+  const runsText = f.get('--runs');
+  const runs = runsText === undefined ? DEFAULT_RUNS : parseRuns(runsText);
+  if (runs === null) {
+    io.err('--runs must be an integer from 1 to 1000');
+    return 2;
+  }
+  const dir = resolve(f.get('--root') ?? '.');
+  const root = topOf(dir);
+  if (root === undefined) {
+    io.err(`${P} ${dir} is not in a git repository`);
+    return 2;
+  }
+  let selected: { config: ReturnType<typeof parseFlakyConfig>; mode: string; files: string[] };
+  try {
+    const configPath = f.get('--config');
+    const config = parseFlakyConfig(configPath === undefined ? undefined : readFileSync(resolve(root, configPath), 'utf8'));
+    selected = { config, ...testFiles(f, io, root, config.include) };
+  } catch (e) {
+    io.err(`${P} ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+  return runFlakyTests(selected.config, runs, selected.mode, root, selected.files, io.vitest ?? npxVitest, io.out);
+};
+
 const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly string[]; run: (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv) => number | Promise<number> }> = {
   'codec-registry': { allowed: ['--config', '--base', '--root'], switches: ['--no-base'], run: codecRegistry },
   'coverage-exemptions': { allowed: ['--config', '--package', '--root'], run: coverageExemptions },
@@ -761,7 +840,9 @@ const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly
   'coverage-by-type': { allowed: ['--config', '--files-from', '--root'], run: coverageByType },
   'doc-budgets': { allowed: ['--table', '--section', '--root'], run: docBudgets },
   'doc-references': { allowed: ['--config', '--base', '--head', '--checks', '--root'], switches: ['--staged', '--all', '--update-baseline', '--write-baseline'], run: docReferences },
+  'duplicate-tests': { allowed: ['--config', '--files-from', '--root'], run: duplicateTests },
   'enforcement-claims': { allowed: ['--config', '--root'], run: enforcementClaims },
+  'flaky-tests': { allowed: ['--config', '--files-from', '--runs', '--root'], run: flakyTests },
   'env-gate-switches': { allowed: ['--config', '--mode', '--root'], run: envGateSwitches },
   'export-deletions': { allowed: ['--base', '--root'], run: exportDeletions },
   'masked-exit-codes': { allowed: ['--config', '--root'], switches: ['--staged'], run: maskedExitCodes },

@@ -1,13 +1,20 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { DEFAULT_INCLUDE, isFileAt, linesOf, parseDocConfig, readDoc, selectDocs } from './doc-files.ts';
 
+const temps: string[] = [];
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
+
+/** A folder with these files written, removed when this file's tests end. */
 const tree = (files: Record<string, string>): string => {
   const root = mkdtempSync(join(tmpdir(), 'pariksha-docs-'));
+  temps.push(root);
   for (const [path, body] of Object.entries(files)) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     writeFileSync(join(root, path), body);
@@ -36,6 +43,8 @@ describe('parseDocConfig', () => {
       ['{"exclude": []}', /unknown key "exclude"/],
       ['{"include": ""}', /"include" must be a non-empty regex string/],
       ['{"include": 1}', /"include" must be a non-empty regex string/],
+      ['{"include": null}', /"include" must be a non-empty regex string/],
+      ['{"guidance": null}', /"guidance" must be a list of lines/],
       ['{"include": "("}', /"include" is not a regex/],
       ['{"guidance": "x"}', /"guidance" must be a list of lines/],
       ['{"guidance": [1]}', /"guidance" must be a list of lines/],

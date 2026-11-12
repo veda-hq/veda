@@ -8,11 +8,16 @@
  */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { run } from './cli.ts';
+
+const temps: string[] = [];
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 
 const PATCH = 'diff --git a/x b/x\n';
 const HASH = createHash('sha256').update(PATCH).digest('hex');
@@ -22,6 +27,7 @@ const TAIL = 'A successful `pnpm install` is not evidence here — pnpm 11 drops
 
 const ported = (files: { pkg?: unknown; workspace?: string; lock?: string }) => {
   const root = mkdtempSync(join(tmpdir(), 'pariksha-pnpm-parity-'));
+  temps.push(root);
   writeFileSync(join(root, 'package.json'), JSON.stringify(files.pkg ?? { name: 'fx' }));
   writeFileSync(join(root, 'pnpm-workspace.yaml'), files.workspace ?? WORKSPACE);
   writeFileSync(join(root, 'pnpm-lock.yaml'), files.lock ?? LOCK);

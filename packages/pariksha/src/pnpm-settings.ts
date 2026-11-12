@@ -49,9 +49,10 @@ export const parsePnpmConfig = (text: string): PnpmConfig => {
   if (!isRecord(raw)) throw new Error('the config must be a JSON object');
   const unknown = Object.keys(raw).find((k) => k !== 'id' && k !== 'ownScopes');
   if (unknown !== undefined) throw new Error(`unknown key "${unknown}"`);
-  const id = raw['id'] ?? DEFAULT_PNPM_CONFIG.id;
+  // Absent takes the default; a present `null` is refused like any other wrong value.
+  const id = 'id' in raw ? raw['id'] : DEFAULT_PNPM_CONFIG.id;
   if (typeof id !== 'string' || id.trim() === '') throw new Error('"id" must be a non-empty string');
-  const ownScopes = raw['ownScopes'] ?? [];
+  const ownScopes = 'ownScopes' in raw ? raw['ownScopes'] : [];
   if (!Array.isArray(ownScopes) || ownScopes.some((s) => typeof s !== 'string' || s === '')) throw new Error('"ownScopes" must be a list of entries');
   return { id, ownScopes: ownScopes as string[] };
 };

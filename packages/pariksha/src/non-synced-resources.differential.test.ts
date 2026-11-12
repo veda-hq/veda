@@ -15,12 +15,23 @@
  */
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { parseDocConfig } from './doc-files.ts';
 import { checkNonSyncedResources } from './non-synced-resources.ts';
+
+const temps: string[] = [];
+/** A fresh temporary directory, removed when this file's tests end. */
+const temp = (prefix: string): string => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  temps.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 
 const SEED = 20_089;
 const RUNS = 90;
@@ -66,7 +77,7 @@ const sample = (): { docs: Record<string, string>; drawn: Set<string> } => {
 
 /** The repository: its fixed files, then `docs`; its real path. */
 const write = (docs: Record<string, string>): string => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-nsrdiff-')));
+  const root = realpathSync(temp('pariksha-nsrdiff-'));
   execFileSync('git', ['init', '-q'], { cwd: root });
   const files: Record<string, string> = { 'docs/b.md': '', 'docs/with space.md': '', 'docs/sub/c.md': '', 'docs/small.png': 'x', 'docs/big.png': 'x'.repeat(1_100_000), 'other/t.md': '', 'b.md': '', ...docs };
   for (const [path, body] of Object.entries(files)) {
@@ -114,7 +125,7 @@ const run = (command: string, args: readonly string[]): string | undefined => {
 const oraclePath = ((): string => {
   const path = process.env['PATH'] ?? '';
   if (run('basename', ['a/./']) === '.' && run('dirname', ['a/./']) === 'a') return path;
-  const tools = mkdtempSync(join(tmpdir(), 'pariksha-posix-tools-'));
+  const tools = temp('pariksha-posix-tools-');
   for (const [name, shim] of [
     ['basename', POSIX_BASENAME],
     ['dirname', POSIX_DIRNAME],

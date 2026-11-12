@@ -4,6 +4,11 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkAbsolutePaths, DEFAULT_GUIDANCE as ABSOLUTE_PATHS_GUIDANCE } from './absolute-paths.ts';
+import { checkGates, DEFAULT_GATE_CONFIG, parseGateConfig as parseAggregateConfig } from './aggregate-gate-needs.ts';
+import { parseDocConfig, readDoc, selectDocs } from './doc-files.ts';
+import { checkNonSyncedResources, DEFAULT_GUIDANCE as NON_SYNCED_GUIDANCE } from './non-synced-resources.ts';
+import { checkPnpmSettings, DEFAULT_PNPM_CONFIG, formatParity, parsePnpmConfig } from './pnpm-settings.ts';
 import { adrDirOf, DEFAULTS, findUncited, formatClaims, listAdrs, readOrUndefined, stagedSource, treeSource, type Options } from './authority-citations.ts';
 import { findDenied, hash, isText, parseDenyList, type TrackedFile } from './boundary.ts';
 import { DEFAULT_CONFIG, findGaps, formatGaps, listedPaths, parseConfig, treePaths, type Config } from './coverage-by-type.ts';
@@ -36,12 +41,16 @@ export interface Io {
   readonly links?: LinkRunner;
   /** How enforcement-claims gets ESLint's class; the `eslint` peer beside pariksha by default. */
   readonly eslint?: () => Promise<LinterClass | string>;
+  /** The time pnpm-settings holds an expiry to; the clock by default. */
+  readonly now?: () => number;
 }
 
 export const DENY_FILE = '.veda/deny.sha256';
 
 const USAGE = [
   'usage: pariksha authority-citations [--mode staged|tree] [--authority <a,b>] [--issue-prefix <A,B>] [--adr-dir <dir>] [--root <dir>]',
+  '       pariksha absolute-paths [--config <file>] [--files-from <file>|-] [--root <dir>]',
+  '       pariksha aggregate-gate-needs [--config <file>] [--root <dir>]',
   '       pariksha boundary [--root <dir>] [--deny <file>]',
   '       pariksha codec-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
   '       pariksha coverage-by-type [--config <file>] [--files-from <file>|-] [--root <dir>]',
@@ -52,6 +61,8 @@ const USAGE = [
   '       pariksha env-gate-switches --config <file> [--mode staged|tree] [--root <dir>]',
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
   '       pariksha fault-injection-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
+  '       pariksha non-synced-resources [--config <file>] [--files-from <file>|-] [--root <dir>]',
+  '       pariksha pnpm-settings [--config <file>] [--root <dir>]',
   '       pariksha required-settings --require <file> [--settings <file>] [--root <dir>]',
   '       pariksha hash <word>',
   '       pariksha --version',
@@ -96,6 +107,78 @@ export const flags = (rest: readonly string[], allowed: readonly string[], switc
     i += 2;
   }
   return out;
+};
+
+type Doc = { readonly file: string; readonly text: () => string };
+
+/**
+ * absolute-paths and non-synced-resources: the documents `--files-from`
+ * lists (a file, or `-` for stdin), or every tracked one, each path read
+ * from `--root`; the report goes to stdout, as the shell checks printed it.
+ */
+const docCheck =
+  (name: string, defaultGuidance: readonly string[], check: (docs: readonly Doc[], base: string, guidance: ReturnType<typeof parseDocConfig>) => { ok: boolean; out: string[] }) =>
+  (f: Map<string, string>, io: Io): number => {
+    const P = `pariksha ${name}:`;
+    const base = resolve(f.get('--root') ?? '.');
+    try {
+      const configPath = f.get('--config');
+      const config = parseDocConfig(configPath === undefined ? undefined : readFileSync(resolve(base, configPath), 'utf8'), defaultGuidance);
+      const from = f.get('--files-from');
+      const listed = from === undefined ? undefined : from === '-' ? (io.stdin ?? (() => readFileSync(0, 'utf8')))() : readFileSync(resolve(from), 'utf8');
+      const docs = selectDocs(base, listed, config.include).map((file) => ({ file, text: () => readDoc(base, file) }));
+      const result = check(docs, base, config);
+      result.out.forEach(io.out);
+      return result.ok ? 0 : 1;
+    } catch (e) {
+      io.err(`${P} ${(e as Error).message}; nothing was checked, so this is not a pass`);
+      return 2;
+    }
+  };
+
+const absolutePaths = docCheck('absolute-paths', ABSOLUTE_PATHS_GUIDANCE, (docs, _base, config) => checkAbsolutePaths(docs, config));
+
+const nonSyncedResources = docCheck('non-synced-resources', NON_SYNCED_GUIDANCE, (docs, base, config) =>
+  checkNonSyncedResources(
+    docs,
+    () => {
+      const top = topOf(base);
+      if (top === undefined) throw new Error(`${base} is not in a git repository`);
+      return top;
+    },
+    config,
+  ),
+);
+
+const aggregateGateNeeds = (f: Map<string, string>, io: Io): number => {
+  const root = resolve(f.get('--root') ?? '.');
+  const configPath = f.get('--config');
+  let config = DEFAULT_GATE_CONFIG;
+  try {
+    if (configPath !== undefined) config = parseAggregateConfig(readFileSync(resolve(root, configPath), 'utf8'));
+  } catch (e) {
+    io.err(`pariksha aggregate-gate-needs: ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+  const result = checkGates(root, config);
+  result.out.forEach(io.out);
+  result.err.forEach(io.err);
+  return result.ok ? 0 : 1;
+};
+
+const pnpmSettings = (f: Map<string, string>, io: Io): number => {
+  const root = resolve(f.get('--root') ?? '.');
+  const configPath = f.get('--config');
+  try {
+    const config = configPath === undefined ? DEFAULT_PNPM_CONFIG : parsePnpmConfig(readFileSync(resolve(root, configPath), 'utf8'));
+    const result = formatParity(checkPnpmSettings(root, config, (io.now ?? Date.now)()), config.id);
+    result.err.forEach(io.err);
+    result.out.forEach(io.out);
+    return result.ok ? 0 : 1;
+  } catch (e) {
+    io.err(`pariksha pnpm-settings: ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
 };
 
 const boundary = (f: Map<string, string>, io: Io): number => {
@@ -595,6 +678,10 @@ const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly
   'codec-registry': { allowed: ['--config', '--base', '--root'], switches: ['--no-base'], run: codecRegistry },
   'coverage-exemptions': { allowed: ['--config', '--package', '--root'], run: coverageExemptions },
   'fault-injection-registry': { allowed: ['--config', '--base', '--root'], switches: ['--no-base'], run: faultInjectionRegistry },
+  'absolute-paths': { allowed: ['--config', '--files-from', '--root'], run: absolutePaths },
+  'aggregate-gate-needs': { allowed: ['--config', '--root'], run: aggregateGateNeeds },
+  'non-synced-resources': { allowed: ['--config', '--files-from', '--root'], run: nonSyncedResources },
+  'pnpm-settings': { allowed: ['--config', '--root'], run: pnpmSettings },
   'authority-citations': { allowed: ['--mode', '--authority', '--issue-prefix', '--adr-dir', '--root'], run: authorityCitations },
   boundary: { allowed: ['--root', '--deny'], run: boundary },
   'coverage-by-type': { allowed: ['--config', '--files-from', '--root'], run: coverageByType },

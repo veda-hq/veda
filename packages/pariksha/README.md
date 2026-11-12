@@ -4,8 +4,8 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.5.19 <check> [flags]
-npx @veda-hq/pariksha@0.5.19 --version
+npx @veda-hq/pariksha@0.5.20 <check> [flags]
+npx @veda-hq/pariksha@0.5.20 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
@@ -930,6 +930,47 @@ refuse is not passed: it is printed as a selector not version-checked.
 `semver`'s loose mode is not read. Notes and failures go to stderr, the clean
 line to stdout; a missing input file is a failure (exit 1), a bad config or
 an unreadable `package.json` exits 2.
+
+## `python-floor`
+
+```sh
+pariksha python-floor --python <interpreter> --floor-file <path> [--exclude <regex>] [--selector <path>] [--root <dir>]
+```
+
+Every tracked Python source runs on the Python the repository declares. The
+floor drifts unseen: CI runners ship a new Python, and a PEP 604 union or a
+fresh stdlib import reads as ordinary code until it fails on an older
+interpreter, inside whatever was running it. Sources are `*.py` files, and
+heredocs and single-quoted `python3 -c '...'` payloads in `*.sh` files and
+under `.husky/`, read from the index (the commit being made, not the working
+tree). Each is refused for:
+
+1. syntax the floor cannot parse (`ast` with `feature_version` at the floor);
+2. a stdlib module added after the floor, or removed at or before it;
+3. on a floor below 3.10, a PEP 604 `X | Y` that is evaluated.
+
+A source it cannot read (an unknown encoding, a symlink, conflict stages) is
+refused, never skipped.
+
+- `--python` names the interpreter, at or above the floor; pariksha never
+  chooses or bundles one. Below the floor it refuses to judge (exit 2).
+- `--floor-file` is the file, relative to the root and tracked, holding one
+  `MAJOR.MINOR` (`#` comments allowed).
+- `--exclude` (default none) is a Python regular expression matched from the
+  start of each path; what it matches is not checked. One that does not
+  compile exits 2.
+- `--selector` (default none) names what picks an interpreter at or above
+  the floor in this repository, for the message given when `--python` is
+  below it.
+
+The check is a stdlib-only script shipped in the package
+(`python/python-floor.py`), run as `<interpreter> python/python-floor.py`;
+its stdout (the clean line), stderr (findings) and exit code are passed
+through unchanged. An interpreter that cannot be started, or that is stopped
+by a signal, exits 2. Two input errors exit 1, as the script always has: a
+floor file that is not in the index, not a regular file there, or not one
+`MAJOR.MINOR` (one line on stderr), and a `--root` outside a git repository
+(a Python traceback).
 
 ## `required-settings`
 

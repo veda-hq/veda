@@ -9,9 +9,11 @@ npx @veda-hq/pariksha@0.5.18 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
-(each finding on stderr, with how to fix it), and 2 on a usage or input
-error. `--root <dir>` (default: the current directory) names the repository.
-Node 24 or later. MIT.
+(each finding on stderr, with how to fix it; `absolute-paths` and
+`non-synced-resources` print theirs on stdout, as the shell checks they were
+ported from did), and 2 on a usage or input error. `--root <dir>` (default:
+the current directory) names the repository. Node 24 or later. MIT; one
+ported file is ISC, see `NOTICE`.
 
 ## `absolute-paths`
 
@@ -879,8 +881,10 @@ inside the repository is unchanged.
 
 The documents, the config (`include`, `guidance`) and the report on stdout
 are as for [`absolute-paths`](#absolute-paths); a document listed by absolute
-path has its links read from its own folder. A repository is needed only
-when there is a document to read.
+path has its links read from its own folder. With `--files-from`, a
+repository is needed only when there is a document to read; without it, the
+documents come from `git ls-files`, so a root that is not a repository exits
+2 even when it holds no document.
 
 ## `pnpm-settings`
 

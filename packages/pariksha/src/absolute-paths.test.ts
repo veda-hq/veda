@@ -50,6 +50,7 @@ describe('inBackticks', () => {
 
   it('tests only the first path on the line', () => {
     assert.equal(inBackticks('`/Users/me/x` and /home/me/y'), true);
+    assert.equal(inBackticks('/home/me/y and `/Users/me/x`'), false);
   });
 });
 

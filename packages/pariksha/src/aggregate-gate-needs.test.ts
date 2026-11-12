@@ -1,9 +1,20 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { checkGates, consumedNeeds, DEFAULT_GATE_CONFIG, findGateGaps, parseGateConfig, workflowFiles, type GateConfig } from './aggregate-gate-needs.ts';
+
+const temps: string[] = [];
+/** A fresh temporary directory, removed when this file's tests end. */
+const temp = (prefix: string): string => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  temps.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 
 /**
  * A tree's gates may all be complete, and a check reporting zero looks like a
@@ -14,7 +25,7 @@ const REPO_ROOT = join(import.meta.dirname, '..', '..', '..');
 const CONFIG: GateConfig = { ...DEFAULT_GATE_CONFIG, nonGating: new Set(['detect-changes']) };
 
 const fixture = (body: string): { root: string; names: string[] } => {
-  const root = mkdtempSync(join(tmpdir(), 'pariksha-gate-'));
+  const root = temp('pariksha-gate-');
   const relative = join('.github', 'workflows', 'probe.yml');
   mkdirSync(join(root, dirname(relative)), { recursive: true });
   writeFileSync(join(root, relative), body);
@@ -137,7 +148,7 @@ describe('consumedNeeds', () => {
 
 describe('workflowFiles', () => {
   it('lists .yml and .yaml files only, and none of a missing folder', () => {
-    const root = mkdtempSync(join(tmpdir(), 'pariksha-gate-'));
+    const root = temp('pariksha-gate-');
     mkdirSync(join(root, 'wf'));
     for (const name of ['a.yml', 'b.yaml', 'c.json']) writeFileSync(join(root, 'wf', name), '');
     assert.deepEqual(workflowFiles(root, 'wf').sort(), [join('wf', 'a.yml'), join('wf', 'b.yaml')]);
@@ -168,6 +179,9 @@ describe('parseGateConfig', () => {
       ['{"gateName": "("}', /"gateName" is not a regex/],
       ['{"nonGating": "detect"}', /"nonGating" must be a list of job ids/],
       ['{"nonGating": [""]}', /"nonGating" must be a list of job ids/],
+      ['{"nonGating": null}', /"nonGating" must be a list of job ids/],
+      ['{"workflowsDir": null}', /"workflowsDir" must be a non-empty string/],
+      ['{"gateName": null}', /"gateName" must be a non-empty string/],
     ];
     for (const [text, message] of cases) assert.throws(() => parseGateConfig(text), message, text);
   });
@@ -177,7 +191,7 @@ describe('checkGates', () => {
   const config: GateConfig = { ...CONFIG, id: 'CI-1' };
 
   it('fails when there is no workflow to read', () => {
-    assert.deepEqual(checkGates(mkdtempSync(join(tmpdir(), 'pariksha-gate-')), config), { ok: false, out: [], err: ['❌ CI-1: no workflow files found — the lookup failed'] });
+    assert.deepEqual(checkGates(temp('pariksha-gate-'), config), { ok: false, out: [], err: ['❌ CI-1: no workflow files found — the lookup failed'] });
   });
 
   it('passes complete gates, counting the workflows', () => {

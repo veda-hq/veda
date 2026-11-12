@@ -6,19 +6,30 @@
  */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { run } from './cli.ts';
 import { checkPnpmSettings, DEFAULT_PNPM_CONFIG, parseExclusionExpiry, parsePnpmConfig, parseSelector, releaseAgeExclusionComment, splitNameVersion, type PnpmConfig } from './pnpm-settings.ts';
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..');
 const OWN: PnpmConfig = { id: 'CFG-005', ownScopes: ['@acme/*', '@veda-hq/*'] };
 
+const temps: string[] = [];
+/** A fresh temporary directory, removed when this file's tests end. */
+const temp = (prefix: string): string => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  temps.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
+
 /** A minimal repository root with the three inputs. */
 const fixture = (opts: { pkg?: unknown; workspace?: string; lock?: string; patchFiles?: string[] } = {}): string => {
-  const root = mkdtempSync(join(tmpdir(), 'pariksha-pnpm-'));
+  const root = temp('pariksha-pnpm-');
   writeFileSync(join(root, 'package.json'), JSON.stringify(opts.pkg ?? { name: 'fx' }, null, 2));
   writeFileSync(join(root, 'pnpm-workspace.yaml'), opts.workspace ?? ['overrides:', "  tar@<=7.5.20: '>=7.5.21 <8'", 'patchedDependencies:', '  foo@1.0.0: patches/foo@1.0.0.patch', ''].join('\n'));
   writeFileSync(
@@ -95,7 +106,7 @@ describe('pnpm-settings: single-defect fixtures fail', () => {
   });
 
   it('fails closed when an input file is missing', () => {
-    assert.match(failures(mkdtempSync(join(tmpdir(), 'pariksha-pnpm-empty-'))), /required file missing/);
+    assert.match(failures(temp('pariksha-pnpm-empty-')), /required file missing/);
   });
 
   it('fails cleanly on a malformed pnpm-workspace.yaml rather than throwing', () => {
@@ -445,6 +456,8 @@ describe('parsePnpmConfig', () => {
       ['{"id": " "}', /"id" must be a non-empty string/],
       ['{"ownScopes": "@a/*"}', /"ownScopes" must be a list of entries/],
       ['{"ownScopes": [""]}', /"ownScopes" must be a list of entries/],
+      ['{"id": null}', /"id" must be a non-empty string/],
+      ['{"ownScopes": null}', /"ownScopes" must be a list of entries/],
     ];
     for (const [text, message] of cases) assert.throws(() => parsePnpmConfig(text), message, text);
   });
@@ -514,7 +527,7 @@ describe('pnpm-settings: the CLI', () => {
   });
 
   it('exits 1 on a missing input, as the original did', () => {
-    const r = runCli(['--root', mkdtempSync(join(tmpdir(), 'pariksha-pnpm-none-'))]);
+    const r = runCli(['--root', temp('pariksha-pnpm-none-')]);
     assert.equal(r.code, 1);
     assert.match(r.err[1] ?? '', /required file missing/);
   });

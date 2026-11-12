@@ -55,7 +55,8 @@ export const parseGateConfig = (text: string): GateConfig => {
   const unknown = Object.keys(raw).find((k) => !['id', 'workflowsDir', 'gateName', 'nonGating'].includes(k));
   if (unknown !== undefined) throw new Error(`unknown key "${unknown}"`);
   const text_ = (key: string, fallback: string): string => {
-    const value = raw[key] ?? fallback;
+    // Absent takes the default; a present `null` is refused like any other wrong value.
+    const value = key in raw ? raw[key] : fallback;
     if (typeof value !== 'string' || value.trim() === '') throw new Error(`"${key}" must be a non-empty string`);
     return value;
   };
@@ -68,7 +69,7 @@ export const parseGateConfig = (text: string): GateConfig => {
   } catch (e) {
     throw new Error(`"gateName" is not a regex: ${(e as Error).message}`);
   }
-  const nonGating = raw['nonGating'] ?? [];
+  const nonGating = 'nonGating' in raw ? raw['nonGating'] : [];
   if (!Array.isArray(nonGating) || nonGating.some((j) => typeof j !== 'string' || j === '')) throw new Error('"nonGating" must be a list of job ids');
   return { id, workflowsDir, gateName, nonGating: new Set(nonGating as string[]) };
 };

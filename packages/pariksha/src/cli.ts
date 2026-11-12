@@ -7,11 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { checkAbsolutePaths, DEFAULT_GUIDANCE as ABSOLUTE_PATHS_GUIDANCE } from './absolute-paths.ts';
 import { checkGates, DEFAULT_GATE_CONFIG, parseGateConfig as parseAggregateConfig } from './aggregate-gate-needs.ts';
 import { parseDocConfig, readDoc, selectDocs } from './doc-files.ts';
+import { DEFAULT_MASKED_CONFIG, findMaskedExits, formatMasked, parseMaskedConfig, readerFor as maskedReaderFor, shellFiles } from './masked-exit-codes.ts';
 import { checkNonSyncedResources, DEFAULT_GUIDANCE as NON_SYNCED_GUIDANCE } from './non-synced-resources.ts';
+import { ALL_CHECKS as SHELL_CHECKS, type CheckName as ShellCheckName, parseGatesConfig, runShellGates, shellcheckRunner, type Mode as ShellMode, type ShellcheckRunner } from './shell-gates.ts';
 import { checkPnpmSettings, DEFAULT_PNPM_CONFIG, formatParity, parsePnpmConfig } from './pnpm-settings.ts';
 import { adrDirOf, DEFAULTS, findUncited, formatClaims, listAdrs, readOrUndefined, stagedSource, treeSource, type Options } from './authority-citations.ts';
 import { findDenied, hash, isText, parseDenyList, type TrackedFile } from './boundary.ts';
-import { DEFAULT_CONFIG, findGaps, formatGaps, listedPaths, parseConfig, treePaths, type Config } from './coverage-by-type.ts';
+import { DEFAULT_CONFIG, entries, findGaps, formatGaps, listedPaths, parseConfig, treePaths, type Config } from './coverage-by-type.ts';
 import { checkBuild, checkPackage, checkVitest, formatViolations, loaderFailure, loadVitestExclude, missingConfigs, ownedBy, parseConfig as parseExemptions } from './coverage-exemptions.ts';
 import { checkBudgets } from './doc-budgets.ts';
 import { lycheeRunner, type LinkRunner } from './doc-links.ts';
@@ -43,6 +45,8 @@ export interface Io {
   readonly eslint?: () => Promise<LinterClass | string>;
   /** The time pnpm-settings holds an expiry to; the clock by default. */
   readonly now?: () => number;
+  /** How shell-gates runs ShellCheck; `shellcheck` on PATH by default. */
+  readonly shellcheck?: ShellcheckRunner;
 }
 
 export const DENY_FILE = '.veda/deny.sha256';
@@ -61,9 +65,11 @@ const USAGE = [
   '       pariksha env-gate-switches --config <file> [--mode staged|tree] [--root <dir>]',
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
   '       pariksha fault-injection-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
+  '       pariksha masked-exit-codes [--config <file>] [--staged] [--root <dir>]',
   '       pariksha non-synced-resources [--config <file>] [--files-from <file>|-] [--root <dir>]',
   '       pariksha pnpm-settings [--config <file>] [--root <dir>]',
   '       pariksha required-settings --require <file> [--settings <file>] [--root <dir>]',
+  '       pariksha shell-gates [--config <file>] [--staged | --all | --base <ref> | --files-from <file>|-] [--only <checks>] [--root <dir>]',
   '       pariksha hash <word>',
   '       pariksha --version',
 ].join('\n');
@@ -149,6 +155,74 @@ const nonSyncedResources = docCheck('non-synced-resources', NON_SYNCED_GUIDANCE,
     config,
   ),
 );
+
+/** Standard input, or the file `from` names, read whole. */
+const listFrom = (from: string, io: Io): string => (from === '-' ? (io.stdin ?? (() => readFileSync(0, 'utf8')))() : readFileSync(resolve(from), 'utf8'));
+
+/**
+ * masked-exit-codes: the shell files git tracks under `--root`, read from
+ * the working tree, or the index with `--staged`. The report goes to stdout
+ * when clean and stderr when not, as the original printed it.
+ */
+const maskedExitCodes = (f: Map<string, string>, io: Io): number => {
+  const root = resolve(f.get('--root') ?? '.');
+  try {
+    const configPath = f.get('--config');
+    const config = configPath === undefined ? DEFAULT_MASKED_CONFIG : parseMaskedConfig(readFileSync(resolve(root, configPath), 'utf8'));
+    const files = shellFiles(root, config);
+    const problems = files.length === 0 ? [] : findMaskedExits(root, files, maskedReaderFor(f.has('--staged')), config);
+    const result = formatMasked(problems, files.length, config.id);
+    result.out.forEach(io.out);
+    result.err.forEach(io.err);
+    return result.ok ? 0 : 1;
+  } catch (e) {
+    io.err(`pariksha masked-exit-codes: ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+};
+
+/**
+ * shell-gates: one of `--staged` (the default), `--all`, `--base <ref>` or
+ * `--files-from <file>|-`; `--only` names the checks to run, and then
+ * ShellCheck sits the run out, as the original did.
+ */
+const shellGates = (f: Map<string, string>, io: Io): number => {
+  const P = '❌ Shell gates could not run:';
+  const root = resolve(f.get('--root') ?? '.');
+  const modes = ['--staged', '--all', '--base', '--files-from'].filter((name) => f.has(name));
+  if (modes.length > 1) {
+    io.err(`${P} choose one of --staged, --all, --base, --files-from (got ${modes.join(', ')})`);
+    return 2;
+  }
+  let config: ReturnType<typeof parseGatesConfig>;
+  let mode: ShellMode;
+  try {
+    const configPath = f.get('--config');
+    config = parseGatesConfig(configPath === undefined ? '{}' : readFileSync(resolve(root, configPath), 'utf8'));
+    const base = f.get('--base');
+    const from = f.get('--files-from');
+    if (from !== undefined) {
+      const files = entries(listFrom(from, io));
+      if (files.length === 0) throw new Error('the --files-from list names no file, and a check of nothing is no pass');
+      mode = { kind: 'files', files };
+    } else mode = base !== undefined ? { kind: 'base', base } : f.has('--all') ? { kind: 'all' } : { kind: 'staged' };
+  } catch (e) {
+    io.err(`${P} ${(e as Error).message}`);
+    return 2;
+  }
+  const only = f.get('--only');
+  let checks: ShellCheckName[] = SHELL_CHECKS.filter((name) => name !== 'preamble' || config.preamble !== undefined);
+  if (only !== undefined) {
+    const names = only.split(',').filter(Boolean);
+    const unknown = names.filter((name) => !SHELL_CHECKS.some((check) => check === name));
+    if (names.length === 0 || unknown.length > 0) {
+      io.err(`${P} --only takes ${SHELL_CHECKS.join(',')}; got ${names.join(',') || 'nothing'}`);
+      return 2;
+    }
+    checks = SHELL_CHECKS.filter((name) => names.includes(name));
+  }
+  return runShellGates({ root, mode, checks, only: only !== undefined }, config, { out: io.out, err: io.err, shellcheck: io.shellcheck ?? shellcheckRunner() });
+};
 
 const aggregateGateNeeds = (f: Map<string, string>, io: Io): number => {
   const root = resolve(f.get('--root') ?? '.');
@@ -690,7 +764,9 @@ const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly
   'enforcement-claims': { allowed: ['--config', '--root'], run: enforcementClaims },
   'env-gate-switches': { allowed: ['--config', '--mode', '--root'], run: envGateSwitches },
   'export-deletions': { allowed: ['--base', '--root'], run: exportDeletions },
+  'masked-exit-codes': { allowed: ['--config', '--root'], switches: ['--staged'], run: maskedExitCodes },
   'required-settings': { allowed: ['--require', '--settings', '--root'], run: requiredSettings },
+  'shell-gates': { allowed: ['--config', '--base', '--files-from', '--only', '--root'], switches: ['--staged', '--all'], run: shellGates },
 };
 
 /** The exit code; a Promise of it for the one check that is asynchronous (enforcement-claims, which loads ESLint). */

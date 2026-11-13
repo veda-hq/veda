@@ -26,6 +26,15 @@ const env = { ...process.env, HOME: scratch, PATH: `${bin}${delimiter}${process.
 for (const name of Object.keys(env)) {
   if (name.startsWith('DVARA_') || name.startsWith('GIT_') || name === 'NIYAM_AGENT' || name === 'CLAUDECODE') delete env[name];
 }
+// No automatic maintenance: a commit's detached `git maintenance run --auto`
+// outlives it and can write into the scratch folder while it is removed.
+Object.assign(env, {
+  GIT_CONFIG_COUNT: '2',
+  GIT_CONFIG_KEY_0: 'maintenance.auto',
+  GIT_CONFIG_VALUE_0: 'false',
+  GIT_CONFIG_KEY_1: 'gc.auto',
+  GIT_CONFIG_VALUE_1: '0',
+});
 
 /** @param {string} cwd @param {string[]} args */
 function git(cwd, ...args) {

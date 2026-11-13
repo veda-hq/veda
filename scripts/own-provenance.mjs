@@ -52,6 +52,7 @@ function statementOf(document) {
   try {
     return JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
   } catch {
+    // fail-open: the reason returned is a failure, so the check still fails
     return 'its SLSA provenance is not JSON';
   }
 }
@@ -92,6 +93,7 @@ export async function check(lockText, fetchJson) {
     try {
       document = await fetchJson(attestationsUrl(pkg.name, pkg.version));
     } catch (error) {
+      // fail-open: the error is recorded as a failure, so the check still fails
       failures.push(`${pkg.name}@${pkg.version}: its attestations could not be read (${/** @type {Error} */ (error).message})`);
       continue;
     }

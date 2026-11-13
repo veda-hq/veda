@@ -10,18 +10,29 @@ name: checks
 # - Workflow lint: actionlint over .github/workflows, with ShellCheck behind
 #   it for every `run:` script.
 #
-# Call it from one job, pinned:
+# Call it from one job, pinned. A repository that relies on a check names it
+# in `require`, so losing what the check reads fails rather than skips:
 #
 #   jobs:
 #     veda-checks:
 #       permissions:
 #         contents: read
 #       uses: veda-hq/veda/.github/workflows/checks.yml@<commit>
+#       with:
+#         require: dvara,actionlint
 #
 # The job's result is the verdict: a caller's aggregate gate needs it like
 # any other job.
 on:
   workflow_call:
+    inputs:
+      require:
+        description: >-
+          Comma-separated checks that must run: dvara (needs .dvara.json and an
+          exact @veda-hq/dvara pin), actionlint (needs .github/workflows). Empty
+          runs each check only where its inputs are.
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -42,12 +53,31 @@ jobs:
         with:
           node-version: 24
 
+      # A required check whose inputs are missing fails here, not by skipping.
+      - name: Required checks have what they read
+        env:
+          REQUIRE: ${{ inputs.require }}
+        run: |
+          set -euo pipefail
+          status=0
+          IFS=',' read -ra wanted <<< "$REQUIRE"
+          for check in "${wanted[@]}"; do
+            check="$(echo "$check" | tr -d '[:space:]')"
+            case "$check" in
+              '') ;;
+              dvara) [ -f .dvara.json ] || { echo "::error::dvara is required, but .dvara.json is missing"; status=1; } ;;
+              actionlint) compgen -G '.github/workflows/*.y*ml' > /dev/null || { echo "::error::actionlint is required, but .github/workflows has no workflow"; status=1; } ;;
+              *) echo "::error::require names an unknown check: $check (known: dvara, actionlint)"; status=1 ;;
+            esac
+          done
+          exit "$status"
+
       # What each gate judges. A pull request: its commits since the base
       # branch. A push: the commits since the ref's previous tip; a new
       # branch (an all-zero or unknown `before`) gives every record in the
       # tree, and every commit since it left the default branch.
       - name: Records and frozen folders (dvara)
-        if: ${{ hashFiles('.dvara.json') != '' }}
+        if: ${{ !cancelled() && hashFiles('.dvara.json') != '' }}
         env:
           BASE_REF: ${{ github.base_ref }}
           BEFORE: ${{ github.event.before }}
@@ -69,9 +99,16 @@ jobs:
             records=(--all)
             frozen=(--base "origin/$DEFAULT_BRANCH")
           fi
+          # Installed outside the checkout, so the caller's .npmrc and
+          # lockfile play no part. dvara pins its one dependency exactly; that
+          # dependency's own resolve fresh, unlike the caller's locked install.
+          tool="$RUNNER_TEMP/dvara"
+          (cd "$RUNNER_TEMP" && npm install --prefix "$tool" --no-save --no-audit --no-fund --ignore-scripts "@veda-hq/dvara@$version")
+          dvara="$tool/node_modules/.bin/dvara"
+          "$dvara" --version
           status=0
-          npx --yes "@veda-hq/dvara@$version" records "${records[@]}" || status=1
-          npx --yes "@veda-hq/dvara@$version" frozen "${frozen[@]}" || status=1
+          "$dvara" records "${records[@]}" || status=1
+          "$dvara" frozen "${frozen[@]}" || status=1
           exit "$status"
 
       # Pinned by version and by the sha256 each release publishes, for both

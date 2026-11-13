@@ -66,7 +66,8 @@ no install of the calling repository's dependencies, each only where the caller
 has what it reads: dvara's `records` and `frozen` gates (the caller's
 `.dvara.json`, at the dvara version its `package.json` pins, so its git hooks
 and CI run one release), and actionlint with ShellCheck over its workflows.
-Call it from one job, pinned to a commit:
+Call it from one job, pinned to a commit. Name the checks the repository relies
+on in `require`, so losing what one reads fails instead of skipping:
 
 ```yaml
 jobs:
@@ -74,6 +75,8 @@ jobs:
     permissions:
       contents: read
     uses: veda-hq/veda/.github/workflows/checks.yml@<commit>
+    with:
+      require: dvara,actionlint
 ```
 
 This repository calls it too, from source.

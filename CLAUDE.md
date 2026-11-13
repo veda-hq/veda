@@ -50,9 +50,8 @@ Right after `gh pr create`, turn on auto-merge: `gh pr merge --auto --squash`
 (in the Claude app, the pull request tools' auto-merge does the same). The
 `main` ruleset holds the merge until every required check passes and every
 review thread is resolved. Nobody clicks merge. No AI review runs: veda-hq's
-Cubic trial is used up, and Alok is OK with unreviewed pull requests
-(athya-hq/athya_mono#2768, 2026-11-14). Cubic's check still reports, as
-skipped.
+Cubic trial is used up, and Alok said on 2026-11-14 he is OK with
+unreviewed pull requests. Cubic's check still reports, as skipped.
 
 One exception waits for a person: once the ruleset requires code-owner
 review, a pull request touching a path `.github/CODEOWNERS` gives Alok

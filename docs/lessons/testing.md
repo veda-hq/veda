@@ -95,8 +95,9 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
 - **`testTimeout` cannot interrupt a sync spawn.** `execFileSync` or `spawnSync` blocks the
   worker's event loop, so the timer cannot fire: the test fails only after the child exits past
   the limit, and a real hang never reports a timeout at all. A sync spawn given a large `input`
-  can hang forever under load; pass the data through a temp file path instead. Give every sync
-  spawn a `timeout` below the test timeout plus `killSignal: 'SIGKILL'`, and for long shell-outs
+  can hang forever under load; pass the data through a temp file path instead. Give a sync
+  spawn `killSignal: 'SIGKILL'` with its `timeout` (shuddhi's `spawn-timeout` already refuses a
+  test's sync spawn without a `timeout`), and for long shell-outs
   use async spawn with a per-case budget and a process-group kill. Read such a timeout as a slow
   finish and re-run alone. Telemetry written only when a hook exits hides such hangs, so count
   in-progress runs too.

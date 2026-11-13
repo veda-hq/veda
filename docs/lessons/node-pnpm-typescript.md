@@ -29,9 +29,9 @@ library behaviour that surprised a working change.
   and KILL the group).
 - **Release age and audit fixes.** When `pnpm audit` blocks on a new advisory under a
   `minimumReleaseAge` policy, pin the newest patched version already older than the release age
-  (check `npm view <pkg> time`) and raise the override floor. If `pnpm install` silently adds a
-  `minimumReleaseAgeExclude` entry for a too-new version, revert it and pick an older patch.
-  Check whether the default branch already carries the bump before making it.
+  (check `npm view <pkg> time`) and raise the override floor. Check whether the default branch
+  already carries the bump before making it.
+  <!-- held by: pariksha pnpm-settings (fails a minimumReleaseAgeExclude entry with no comment, no expiry or a non-exact version) -->
 - **A lost patch looks like a code bug.** When pnpm warns that `node_modules` are out of sync
   with the lockfile because the `patchedDependencies` value changed, a patched dependency has
   lost its patch, and its guard test fails exactly like a code bug in a file the diff never

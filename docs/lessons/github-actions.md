@@ -43,8 +43,8 @@ scanning. Each lesson names the symptom and the fix.
 - **A matrix leg cannot skip itself.** The `matrix` context is not available in a job-level
   `if:`. Build `include:` upstream and condition the whole job on the list being non-empty (an
   empty matrix errors). Every job bills at least one minute, so prefer fewer jobs to step-level
-  guards. An aggregate gate must list every job in its workflow: a job missing from the gate
-  leaves the required check green.
+  guards.
+  <!-- held by: pariksha aggregate-gate-needs (refuses an aggregate gate whose needs omit a job) -->
 - **`startup_failure` with no jobs or logs.** actionlint misses both common causes. A job that
   calls a reusable workflow sets a permissions ceiling, so the caller must grant everything the
   called jobs request (for example `pull-requests: read` for `dorny/paths-filter`). A dynamic

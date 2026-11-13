@@ -75,7 +75,8 @@ jobs:
           exit "$status"
 
       # Pinned by version and by the sha256 each release publishes, for both
-      # runner architectures.
+      # runner architectures. Retried for up to 150 s each: GitHub's release
+      # downloads have returned 504 for minutes at a time.
       - name: Install actionlint and ShellCheck
         id: lint-tools
         if: ${{ !cancelled() && hashFiles('.github/workflows/*.yml', '.github/workflows/*.yaml') != '' }}
@@ -96,11 +97,11 @@ jobs:
           dir="$RUNNER_TEMP/lint-tools"
           mkdir -p "$dir"
           al="actionlint_${ACTIONLINT_VERSION}_linux_${AL_ARCH}.tar.gz"
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$al" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${al}"
+          curl -fsSL --retry 10 --retry-all-errors --retry-max-time 150 -o "$RUNNER_TEMP/$al" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${al}"
           echo "$AL_SHA  $RUNNER_TEMP/$al" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$al" -C "$dir" actionlint
           sc="shellcheck-v${SHELLCHECK_VERSION}.linux.${SC_ARCH}.tar.gz"
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$sc" "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${sc}"
+          curl -fsSL --retry 10 --retry-all-errors --retry-max-time 150 -o "$RUNNER_TEMP/$sc" "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${sc}"
           echo "$SC_SHA  $RUNNER_TEMP/$sc" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$sc" -C "$dir" --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
           "$dir/actionlint" -version

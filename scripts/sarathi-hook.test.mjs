@@ -54,6 +54,15 @@ describe('kavach through sarathi, from the pinned install', () => {
     assert.match(stderr, /BLOCKED: '-c core\.hooksPath=\.\.\.' repoints the repository hooks/);
   });
 
+  test('the settings command runs the launcher itself, so it must stay executable', () => {
+    const env = { ...process.env, CLAUDE_PROJECT_DIR: ROOT, KAVACH_REFUSAL_LOG_OFF: '1' };
+    delete env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL;
+    const input = JSON.stringify(bash('git commit --no-verify -m wip'));
+    const result = spawnSync('/bin/sh', ['-c', '"$CLAUDE_PROJECT_DIR"/.claude/hooks/sarathi.sh PreToolUse'], { input, encoding: 'utf8', env, cwd: ROOT });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /--no-verify is forbidden on all git commands/);
+  });
+
   test('a read-only command passes', () => {
     const { code, stderr } = hook('PreToolUse', bash('git status'));
     assert.equal(code, 0, stderr);
@@ -106,6 +115,43 @@ describe('when the pinned sarathi cannot run', () => {
     const { code, stderr } = hook('PreToolUse', bash('git status'), { project: dir });
     assert.equal(code, 2);
     assert.match(stderr, /the workspace's own packages\/sarathi/);
+  });
+
+  test('a cloud session installs the pin at session start; the desktop never does', () => {
+    const bin = join(scratch, 'bin');
+    mkdirSync(bin, { recursive: true });
+    // A stand-in pnpm: lays out a working sarathi where it runs, and leaves a mark.
+    writeFileSync(
+      join(bin, 'pnpm'),
+      [
+        '#!/bin/sh',
+        '[ "$*" = "install --frozen-lockfile" ] || exit 9',
+        'touch installed',
+        '[ -e fail ] && exit 1',
+        'mkdir -p node_modules/@veda-hq/sarathi/dist',
+        'printf \'{\\n  "version": "0.5.15"\\n}\\n\' > node_modules/@veda-hq/sarathi/package.json',
+        'echo "process.stdout.write(\'{}\')" > node_modules/@veda-hq/sarathi/dist/bin.js',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const PATH = `${bin}:${process.env.PATH}`;
+    const start = { hook_event_name: 'SessionStart', source: 'startup' };
+
+    const desktop = project('desktop');
+    assert.equal(hook('SessionStart', start, { project: desktop, env: { PATH } }).code, 1);
+    assert.equal(spawnSync('test', ['-e', join(desktop, 'installed')]).status, 1);
+
+    const cloud = project('cloud');
+    const installed = hook('SessionStart', start, { project: cloud, env: { PATH, CLAUDE_CODE_REMOTE: 'true' } });
+    assert.equal(installed.code, 0, installed.stderr);
+    assert.equal(hook('PreToolUse', bash('git status'), { project: cloud, env: { PATH, CLAUDE_CODE_REMOTE: 'true' } }).code, 0);
+
+    const broken = project('cloud-fails', d => writeFileSync(join(d, 'fail'), ''));
+    const warned = hook('SessionStart', start, { project: broken, env: { PATH, CLAUDE_CODE_REMOTE: 'true' } });
+    assert.equal(warned.code, 1);
+    assert.match(warned.stderr, /run pnpm install there/);
+    assert.equal(spawnSync('test', ['-e', join(broken, 'installed')]).status, 0);
   });
 
   test('a sarathi that crashes refuses PreToolUse and passes its exit on elsewhere', () => {

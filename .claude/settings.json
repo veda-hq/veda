@@ -63,7 +63,7 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/sarathi.sh SessionStart",
-            "timeout": 30
+            "timeout": 120
           }
         ]
       }

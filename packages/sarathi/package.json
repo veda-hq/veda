@@ -1,6 +1,6 @@
 {
   "name": "@veda-hq/sarathi",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Runs a project's Claude Code hooks from one entry per event, with kavach's guards built in, and carries the sarathi plugin's agents and working-rules skill.",
   "keywords": ["coding agents", "claude code", "hooks", "plugin", "guard"],
   "license": "MIT",

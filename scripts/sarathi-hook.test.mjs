@@ -1,8 +1,8 @@
 // .claude/hooks/sarathi.sh, run as Claude Code runs it: the event on stdin,
 // CLAUDE_PROJECT_DIR set. The repository's own install must be there
 // (`pnpm install`), as it is in CI.
-import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -40,6 +40,30 @@ function fakeSarathi(dir, version, body) {
   writeFileSync(join(dir, 'package.json'), `{\n  "name": "@veda-hq/sarathi",\n  "version": "${version}"\n}\n`);
   writeFileSync(join(dir, 'dist', 'bin.js'), body);
 }
+
+// A stand-in pnpm: counts its installs where it runs, and lays out a working
+// sarathi and dvara there; with a `fail` file it fails as pnpm does.
+const pnpmBin = join(scratch, 'bin');
+mkdirSync(pnpmBin, { recursive: true });
+writeFileSync(
+  join(pnpmBin, 'pnpm'),
+  [
+    '#!/bin/sh',
+    '[ "$*" = "install --frozen-lockfile" ] || exit 9',
+    'echo x >> installs',
+    '[ -n "$SLOW_INSTALL" ] && sleep 2',
+    '[ -e fail ] && { echo "ERR_TEST no such version"; exit 1; }',
+    'mkdir -p node_modules/@veda-hq/sarathi/dist node_modules/@veda-hq/dvara',
+    'printf \'{\\n  "version": "0.5.15"\\n}\\n\' > node_modules/@veda-hq/sarathi/package.json',
+    'printf \'{\\n  "version": "0.5.16"\\n}\\n\' > node_modules/@veda-hq/dvara/package.json',
+    'echo "process.stdout.write(\'{}\')" > node_modules/@veda-hq/sarathi/dist/bin.js',
+    '',
+  ].join('\n'),
+  { mode: 0o755 },
+);
+const start = { hook_event_name: 'SessionStart', source: 'startup' };
+/** How many installs the stand-in pnpm ran in `dir`. @param {string} dir */
+const installs = dir => (existsSync(join(dir, 'installs')) ? readFileSync(join(dir, 'installs'), 'utf8').split('\n').filter(Boolean).length : 0);
 
 describe('kavach through sarathi, from the pinned install', () => {
   test('a --no-verify commit is refused by the command guard', () => {
@@ -81,11 +105,12 @@ describe('kavach through sarathi, from the pinned install', () => {
 
 describe('when the pinned sarathi cannot run', () => {
   test('nothing installed: PreToolUse refuses, other events warn', () => {
-    const dir = project('missing');
+    const dir = project('missing', d => writeFileSync(join(d, 'fail'), ''));
     const refused = hook('PreToolUse', bash('git status'), { project: dir });
     assert.equal(refused.code, 2);
     assert.match(refused.stderr, /BLOCKED: sarathi 0\.5\.15 is not installed .*found nothing.*run pnpm install/);
-    const warned = hook('SessionStart', { hook_event_name: 'SessionStart' }, { project: dir });
+    assert.equal(installs(dir), 0, 'PreToolUse never installs');
+    const warned = hook('SessionStart', { hook_event_name: 'SessionStart' }, { project: dir, env: { PATH: `${pnpmBin}:${process.env.PATH}` } });
     assert.equal(warned.code, 1);
     assert.match(warned.stderr, /No SessionStart handler ran/);
   });
@@ -117,41 +142,57 @@ describe('when the pinned sarathi cannot run', () => {
     assert.match(stderr, /the workspace's own packages\/sarathi/);
   });
 
-  test('a cloud session installs the pin at session start; the desktop never does', () => {
-    const bin = join(scratch, 'bin');
-    mkdirSync(bin, { recursive: true });
-    // A stand-in pnpm: lays out a working sarathi where it runs, and leaves a mark.
-    writeFileSync(
-      join(bin, 'pnpm'),
-      [
-        '#!/bin/sh',
-        '[ "$*" = "install --frozen-lockfile" ] || exit 9',
-        'touch installed',
-        '[ -e fail ] && exit 1',
-        'mkdir -p node_modules/@veda-hq/sarathi/dist',
-        'printf \'{\\n  "version": "0.5.15"\\n}\\n\' > node_modules/@veda-hq/sarathi/package.json',
-        'echo "process.stdout.write(\'{}\')" > node_modules/@veda-hq/sarathi/dist/bin.js',
-        '',
-      ].join('\n'),
-      { mode: 0o755 },
-    );
-    const PATH = `${bin}:${process.env.PATH}`;
-    const start = { hook_event_name: 'SessionStart', source: 'startup' };
+  test('session start installs what package.json pins, on the desktop and in the cloud', () => {
+    const PATH = `${pnpmBin}:${process.env.PATH}`;
 
     const desktop = project('desktop');
-    assert.equal(hook('SessionStart', start, { project: desktop, env: { PATH } }).code, 1);
-    assert.equal(spawnSync('test', ['-e', join(desktop, 'installed')]).status, 1);
+    const installed = hook('SessionStart', start, { project: desktop, env: { PATH } });
+    assert.equal(installed.code, 0, installed.stderr);
+    assert.equal(installs(desktop), 1);
+    assert.equal(hook('PreToolUse', bash('git status'), { project: desktop, env: { PATH } }).code, 0);
+    // Once it is in place, a session start installs nothing.
+    assert.equal(hook('SessionStart', start, { project: desktop, env: { PATH } }).code, 0);
+    assert.equal(installs(desktop), 1);
 
     const cloud = project('cloud');
-    const installed = hook('SessionStart', start, { project: cloud, env: { PATH, CLAUDE_CODE_REMOTE: 'true' } });
-    assert.equal(installed.code, 0, installed.stderr);
-    assert.equal(hook('PreToolUse', bash('git status'), { project: cloud, env: { PATH, CLAUDE_CODE_REMOTE: 'true' } }).code, 0);
+    assert.equal(hook('SessionStart', start, { project: cloud, env: { PATH, CLAUDE_CODE_REMOTE: 'true' } }).code, 0);
+    assert.equal(installs(cloud), 1);
+  });
 
-    const broken = project('cloud-fails', d => writeFileSync(join(d, 'fail'), ''));
-    const warned = hook('SessionStart', start, { project: broken, env: { PATH, CLAUDE_CODE_REMOTE: 'true' } });
+  test('another @veda-hq pin behind its install is installed too, sarathi being current', () => {
+    const PATH = `${pnpmBin}:${process.env.PATH}`;
+    const dir = project('bumped', d => fakeSarathi(join(d, 'node_modules', '@veda-hq', 'sarathi'), '0.5.15', "process.stdout.write('{}')"));
+    writeFileSync(join(dir, 'package.json'), '{\n  "devDependencies": {\n    "@veda-hq/dvara": "0.5.16",\n    "@veda-hq/sarathi": "0.5.15"\n  }\n}\n');
+    assert.equal(hook('SessionStart', start, { project: dir, env: { PATH } }).code, 0);
+    assert.equal(installs(dir), 1);
+  });
+
+  test('a failed install is said, with its log, and PreToolUse still refuses', () => {
+    const PATH = `${pnpmBin}:${process.env.PATH}`;
+    const broken = project('fails', d => writeFileSync(join(d, 'fail'), ''));
+    const warned = hook('SessionStart', start, { project: broken, env: { PATH } });
     assert.equal(warned.code, 1);
+    assert.match(warned.stderr, /pnpm install --frozen-lockfile failed in .*sarathi-install\.log: ERR_TEST no such version/);
     assert.match(warned.stderr, /run pnpm install there/);
-    assert.equal(spawnSync('test', ['-e', join(broken, 'installed')]).status, 0);
+    assert.equal(hook('PreToolUse', bash('git status'), { project: broken, env: { PATH } }).code, 2);
+  });
+
+  test('two sessions starting at once install once', async () => {
+    const PATH = `${pnpmBin}:${process.env.PATH}`;
+    const dir = project('together');
+    const env = { ...process.env, CLAUDE_PROJECT_DIR: dir, KAVACH_REFUSAL_LOG_OFF: '1', PATH, SLOW_INSTALL: '1' };
+    delete env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL;
+    const run = () =>
+      new Promise(resolve => {
+        const child = spawn('bash', [LAUNCHER, 'SessionStart'], { env, cwd: ROOT, stdio: ['pipe', 'ignore', 'pipe'] });
+        let stderr = '';
+        child.stderr.on('data', d => (stderr += d));
+        child.on('close', code => resolve({ code, stderr }));
+        child.stdin.end(JSON.stringify(start));
+      });
+    const results = await Promise.all([run(), run()]);
+    for (const result of results) assert.equal(result.code, 0, result.stderr);
+    assert.equal(installs(dir), 1);
   });
 
   test('a sarathi that crashes refuses PreToolUse and passes its exit on elsewhere', () => {

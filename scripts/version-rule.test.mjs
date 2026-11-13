@@ -202,7 +202,11 @@ describe('only Alok approves a major', () => {
 /** A throwaway repository: tags, and manifests by path. */
 function repo(/** @type {string[]} */ tags, /** @type {Record<string, string>} */ manifests) {
   const dir = mkdtempSync(join(tmpdir(), 'version-rule-'));
-  const git = (/** @type {string[]} */ ...args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
+  // No automatic maintenance: a commit's detached `git maintenance run --auto`
+  // outlives it and can write into the repository while the test removes it
+  // (ENOTEMPTY).
+  const git = (/** @type {string[]} */ ...args) =>
+    execFileSync('git', ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0', ...args], { cwd: dir, stdio: 'pipe' });
   git('init', '-q');
   git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'root');
   for (const t of tags) git('tag', t);

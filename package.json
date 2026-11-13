@@ -9,6 +9,9 @@
     "node": ">=24.15"
   },
   "scripts": {
-    "check": "pnpm -r check"
+    "check": "pnpm -r check && sarathi check --settings .claude/settings.json"
+  },
+  "devDependencies": {
+    "@veda-hq/sarathi": "0.5.15"
   }
 }

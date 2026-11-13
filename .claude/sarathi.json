@@ -1,0 +1,12 @@
+{
+  "kavach": { "python": "python3" },
+  "forbidEnv": {
+    "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "it turns the advisor off, and work in veda runs with the advisor on"
+  },
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit", "guard": "worktree" },
+      { "matcher": "Bash", "guard": "command" }
+    ]
+  }
+}

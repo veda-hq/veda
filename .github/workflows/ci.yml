@@ -41,6 +41,12 @@ jobs:
       # that exact release, installed from the registry.
       - name: Guards are the pinned releases
         run: node scripts/released-pins.mjs
+      # veda's own code, linted by the released shuddhi the root pins, never
+      # packages/eslint-plugin-shuddhi. eslint-suppressions.json holds the
+      # findings from before the lint; a new one fails, and a fixed one must be
+      # pruned (`eslint . --prune-suppressions`), or eslint exits 2.
+      - name: Lint (shuddhi)
+        run: node_modules/.bin/eslint .
       # Veda never names a client (deny list: .veda/deny.sha256).
       - name: Boundary
         run: node_modules/.bin/pariksha boundary

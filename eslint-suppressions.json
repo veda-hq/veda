@@ -1,0 +1,142 @@
+{
+  "packages/dvara/src/cli.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 4
+    }
+  },
+  "packages/dvara/src/context.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 2
+    }
+  },
+  "packages/dvara/src/records/frozen.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 2
+    }
+  },
+  "packages/dvara/src/stages.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 1
+    }
+  },
+  "packages/dvara/src/supervisor.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 9
+    }
+  },
+  "packages/kavach/src/rule-checks/cli-entry.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 1
+    }
+  },
+  "packages/kavach/src/rule-checks/cli.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 1
+    }
+  },
+  "packages/kavach/src/rule-checks/live-runs.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 3
+    }
+  },
+  "packages/kavach/src/rule-checks/registry.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 1
+    }
+  },
+  "packages/pariksha/src/aggregate-gate-needs.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 2
+    }
+  },
+  "packages/pariksha/src/cli.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 21
+    }
+  },
+  "packages/pariksha/src/coverage-exemptions.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 1
+    }
+  },
+  "packages/pariksha/src/doc-files.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 1
+    }
+  },
+  "packages/pariksha/src/doc-identifiers.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 2
+    }
+  },
+  "packages/pariksha/src/doc-references.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 2
+    }
+  },
+  "packages/pariksha/src/duplicate-tests.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 1
+    }
+  },
+  "packages/pariksha/src/enforcement-claims.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 2
+    }
+  },
+  "packages/pariksha/src/flaky-tests.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 1
+    }
+  },
+  "packages/pariksha/src/git.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 1
+    }
+  },
+  "packages/pariksha/src/non-synced-resources.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 4
+    }
+  },
+  "packages/pariksha/src/pnpm-settings.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 2
+    }
+  },
+  "packages/pariksha/src/registry-ratchet.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 1
+    }
+  },
+  "packages/pariksha/src/shell-gates.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 2
+    }
+  },
+  "packages/pariksha/src/typescript.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 1
+    }
+  },
+  "packages/sarathi/src/cli.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 5
+    }
+  },
+  "packages/sarathi/src/hooks/format-before-write.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 5
+    }
+  },
+  "packages/sarathi/src/merge.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 1
+    }
+  },
+  "packages/sarathi/src/run.ts": {
+    "shuddhi/no-swallowed-catch": {
+      "count": 1
+    }
+  }
+}

@@ -169,12 +169,24 @@ importers:
       '@veda-hq/dvara':
         specifier: 0.5.16
         version: 0.5.16(supports-color@7.2.0)
+      '@veda-hq/eslint-plugin-shuddhi':
+        specifier: 0.2.0
+        version: 0.2.0(eslint@9.39.1(supports-color@7.2.0))(typescript@5.9.3)
       '@veda-hq/pariksha':
         specifier: 0.5.20
         version: 0.5.20(eslint@9.39.1(supports-color@7.2.0))(typescript@5.9.3)
       '@veda-hq/sarathi':
         specifier: 0.5.15
         version: 0.5.15
+      eslint:
+        specifier: 9.39.1
+        version: 9.39.1(supports-color@7.2.0)
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      typescript-eslint:
+        specifier: 8.48.0
+        version: 8.48.0(eslint@9.39.1(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)
 
   packages/dvara:
     dependencies:
@@ -515,6 +527,16 @@ packages:
     resolution: {integrity: sha512-XPMhBAgV6amHvFQHuZCDzcR6ONJlsU4Vrm3uOhPtFLOev5qp2jZ32h7rAOdQM54YoALhF8bx4gk/kM4VbzGdCQ==}
     engines: {node: '>=24.15'}
     hasBin: true
+
+  '@veda-hq/eslint-plugin-shuddhi@0.2.0':
+    resolution: {integrity: sha512-C0Iv1s5qJn8zSsAc7Y9qAeN6Sfxzk9jnHyNLWzWgrMCCM27j6qozmygE3gmkwBUv7l71MSDiZFajYNvHiEQKSg==}
+    engines: {node: '>=24.15'}
+    peerDependencies:
+      eslint: ^9.24.0
+      typescript: '>=5.4 <6'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@veda-hq/kavach@0.5.6':
     resolution: {integrity: sha512-pOdjMEQYRYKfq9J71PbElSWzl+UtV3RB+bY4BU7dfwL6+fS74KnnJMkL9/82CtfFoJLBqT+KbgVY/3Vkx55Ccg==}
@@ -1218,6 +1240,12 @@ snapshots:
       mdast-util-from-markdown: 2.0.3(supports-color@7.2.0)
     transitivePeerDependencies:
       - supports-color
+
+  '@veda-hq/eslint-plugin-shuddhi@0.2.0(eslint@9.39.1(supports-color@7.2.0))(typescript@5.9.3)':
+    dependencies:
+      eslint: 9.39.1(supports-color@7.2.0)
+    optionalDependencies:
+      typescript: 5.9.3
 
   '@veda-hq/kavach@0.5.6': {}
 

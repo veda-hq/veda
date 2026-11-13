@@ -87,6 +87,7 @@ folder, which holds handlers any TypeScript repository can list:
 | `code-quality-guard.sh` | PostToolUse, `Edit\|Write` | Refuses `@ts-ignore`, `@ts-nocheck`, `eslint-disable`, `any` and skipped tests in a `.ts`/`.tsx` edit. `.claude/`, `.agent/` and `docs/` are exempt. |
 | `arch-guard.sh` | PostToolUse, `Edit\|Write` | Runs the repository's `.dependency-cruiser.js` on a `.ts`/`.tsx` edit that touches imports; refuses what it refuses, and refuses when it cannot run. `scripts/` is exempt too. |
 | `session-dedupe-guard.sh` | PreToolUse, session starts | Refuses starting a session unless the conversation called `list_sessions` successfully in the last 15 minutes. |
+| `lessons.sh` | PreToolUse `Bash\|Edit\|Write`; PostToolUseFailure | Shows a lesson whose `when` line matches the call ("Lessons at their moment"). Never blocks. |
 
 They act on the session's checkout, the git toplevel of the event's `cwd`:
 the desktop app runs a worktree session's hooks with `$CLAUDE_PROJECT_DIR`
@@ -94,6 +95,50 @@ set to the main checkout. They use that checkout's prettier and
 dependency-cruiser, and the project checkout's prettier when a fresh worktree
 has none installed. They need `bash`, `jq` and `git`;
 `session-dedupe-guard.sh` runs `HOOK_PYTHON`, or `python3`.
+
+### Lessons at their moment
+
+A lesson changes what an agent does only when it is in front of the agent at
+the moment it matters. A lesson doc marks such a lesson with one line right
+under it, so the text and its trigger stay in one place:
+
+```md
+- **Address pools exhausted by leaked networks.** "all predefined address pools have been fully
+  subnetted" means leaked networks from killed test runs filled the default pools ...
+<!-- when: error "all predefined address pools have been fully subnetted" -->
+```
+
+| Kind | Pattern | Tested against |
+| --- | --- | --- |
+| `error` | plain text, case and runs of whitespace ignored | a failed tool call's `error` (PostToolUseFailure: for Bash, `Exit code N` and the output) |
+| `command` | a JavaScript regular expression | a Bash call's command, before it runs |
+| `path` | a glob: `*` and `?` within a segment, `**` across segments | an Edit or Write call's file, relative to the session's checkout, before it runs |
+
+A `when` line belongs to the top-level bullet it follows when no blank line
+separates them, otherwise to the section since the nearest heading; several
+`when` lines may follow one lesson. Fenced code is never read for them. The
+lesson's id is its file and the slug of its bold lead or heading.
+
+`lessons.sh` reads the package's own `lessons/` (veda's
+[`docs/lessons/`](../../docs/lessons), copied in at build) and each folder
+given as an argument, and adds each matching lesson to Claude's context, at
+most once per session. It never blocks. Every match appends a row to
+`<git common dir>/sarathi/lessons/<session>.jsonl` (`SARATHI_LESSONS_DIR`
+overrides the folder): `shown`, or `repeat` when the session had it already,
+so the log says how often a lesson comes back after it was shown. A call that
+matches nothing reads the docs and writes nothing.
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [{ "matcher": "Bash|Edit|Write", "command": "bash \"$SARATHI_HOOKS\"/lessons.sh ./docs/lessons", "timeout": 10 }],
+    "PostToolUseFailure": [{ "command": "bash \"$SARATHI_HOOKS\"/lessons.sh ./docs/lessons", "timeout": 10 }]
+  }
+}
+```
+
+The settings then need a `PostToolUseFailure` entry that runs
+`sarathi hook PostToolUseFailure`.
 
 ### Forbidden variables
 

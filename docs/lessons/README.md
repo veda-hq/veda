@@ -1,7 +1,9 @@
 # Lessons
 
 Traps that coding agents hit in repositories like the ones Veda serves, each with its symptom
-and its fix. One file per topic:
+and its fix. A lesson with a `<!-- when: ... -->` line under it is also shown to an agent at its
+moment by sarathi's lesson handler (`packages/sarathi/README.md`, "Lessons at their moment"),
+which ships these files. One file per topic:
 
 - [Claude Code](claude-code.md): classifier, hooks, context cost, desktop app, cloud, sessions.
 - [Git and GitHub](git-github.md): worktrees, pushes, commit messages, hooks, PR state, the API.

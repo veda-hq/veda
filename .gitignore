@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# sarathi's copy of docs/lessons/, made at build for its package.
+/packages/sarathi/lessons/
 coverage/
 .DS_Store
 __pycache__/

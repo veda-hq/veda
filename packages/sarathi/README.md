@@ -111,11 +111,31 @@ every `PreToolUse` call before any handler runs, and at `SessionStart` and
 `UserPromptSubmit` tells both Claude and the user why and how to fix it. Other
 events are left alone. It acts only on events the settings route to sarathi.
 
+## The working rules
+
+`skills/working-rules/SKILL.md` holds the generic rules an agent follows to
+carry a change from first edit to merge: run started work to merge, show then
+push, commit and push without skipping or weakening checks, resolve review
+threads only once the fix is on the remote, and when to stop and ask. A
+project adds its own rules on top.
+
+It ships in the package, so a project whose dependencies are installed can
+load it every session with one import line in its `CLAUDE.md` (or in a file
+its `CLAUDE.md` imports). Claude Code reads the import at session start, so a
+checkout with no `node_modules` yet starts without it:
+
+```md
+@node_modules/@veda-hq/sarathi/skills/working-rules/SKILL.md
+```
+
+The plugin carries the same file as the skill `sarathi:working-rules`.
+
 ## The plugin
 
-`sarathi@veda`, from this repository's marketplace, carries two agents:
+`sarathi@veda`, from this repository's marketplace, carries two agents,
 `sarathi:worker` (carries out one decided task end to end) and
-`sarathi:researcher` (answers an external question with sources, read-only).
+`sarathi:researcher` (answers an external question with sources, read-only),
+and the `sarathi:working-rules` skill.
 
 ```sh
 claude plugin marketplace add veda-hq/veda

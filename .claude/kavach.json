@@ -1,0 +1,26 @@
+{
+  "worktree": {
+    "readOnlyCommands": [
+      {
+        "pattern": "niyam (?:--version|-v|version)",
+        "env": { "CLAUDECODE": ["1"] },
+        "reason": "it prints niyam's version and writes nothing (niyam 0.6.14 audited)"
+      },
+      {
+        "pattern": "niyam propose [1-9][0-9]*(?: [1-9][0-9]*)*(?: --page(?: |=)https://claude\\.ai/(?:code/)?artifact/[A-Za-z0-9_-]+)?",
+        "env": { "CLAUDECODE": ["1"] },
+        "reason": "it writes nothing locally (niyam 0.6.14 audited); it posts the owner ask and its label to GitHub"
+      },
+      {
+        "pattern": "niyam review-thread PRRT_[A-Za-z0-9_-]+ --resolve",
+        "env": { "CLAUDECODE": ["1"] },
+        "reason": "it writes nothing locally (niyam 0.6.14 audited); it resolves the thread on GitHub"
+      },
+      {
+        "pattern": "niyam onboard --dry-run",
+        "env": { "CLAUDECODE": ["1"] },
+        "reason": "a dry run holds its changes in memory and writes nothing (niyam 0.6.14 audited); it reads GitHub and the keychain"
+      }
+    ]
+  }
+}

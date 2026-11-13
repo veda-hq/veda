@@ -1,5 +1,5 @@
 {
-  "kavach": { "python": "python3" },
+  "kavach": { "python": "python3", "config": ".claude/kavach.json" },
   "forbidEnv": {
     "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "it turns the advisor off, and work in veda runs with the advisor on"
   },

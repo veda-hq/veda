@@ -9,7 +9,8 @@
     "node": ">=24.15"
   },
   "scripts": {
-    "check": "pnpm -r check && pnpm test:scripts && pnpm lint && pnpm guards",
+    "check": "pnpm provenance && pnpm -r check && pnpm test:scripts && pnpm lint && pnpm guards",
+    "provenance": "node scripts/own-provenance.mjs",
     "test:scripts": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 '--test-coverage-include=scripts/*.mjs' '--test-coverage-exclude=scripts/*.test.mjs' scripts/*.test.mjs",
     "lint": "eslint .",
     "guards": "node scripts/released-pins.mjs && pariksha boundary && pariksha required-settings --require .veda/required-settings.json && pariksha required-settings --require node_modules/@veda-hq/pariksha/baselines/claude-settings.json && sarathi check --settings .claude/settings.json"
@@ -18,7 +19,7 @@
     "@veda-hq/dvara": "0.5.16",
     "@veda-hq/eslint-plugin-shuddhi": "0.2.0",
     "@veda-hq/pariksha": "0.5.20",
-    "@veda-hq/sarathi": "0.5.15",
+    "@veda-hq/sarathi": "0.6.0",
     "eslint": "9.39.1",
     "typescript": "5.9.3",
     "typescript-eslint": "8.48.0"

@@ -4,4 +4,9 @@ packages:
 # A package version must be a day old before it installs: a hijacked release is
 # usually caught and pulled within hours.
 minimumReleaseAge: 1440
-minimumReleaseAgeExclude: []
+# veda's own packages are standing exceptions (Alok, 2026-11-14): nobody else
+# watches them, so the day buys nothing, and it holds back every guard fix.
+# What checks them instead is `pnpm provenance` (scripts/own-provenance.mjs,
+# part of `pnpm check`): veda's release workflow built each one from its tag.
+minimumReleaseAgeExclude:
+  - '@veda-hq/*'

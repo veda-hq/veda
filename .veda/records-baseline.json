@@ -3,6 +3,9 @@
     ".github/workflows/ci.yml": {
       "EVIDENCE-02": 1
     },
+    "docs/lessons/git-github.md": {
+      "EVIDENCE-02": 4
+    },
     "packages/dvara/README.md": {
       "EVIDENCE-02": 3
     },

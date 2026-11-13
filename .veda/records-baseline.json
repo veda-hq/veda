@@ -1,0 +1,13 @@
+{
+  "files": {
+    ".github/workflows/ci.yml": {
+      "EVIDENCE-02": 1
+    },
+    "packages/dvara/README.md": {
+      "EVIDENCE-02": 3
+    },
+    "packages/pariksha/README.md": {
+      "EVIDENCE-02": 2
+    }
+  }
+}

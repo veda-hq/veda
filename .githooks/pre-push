@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# veda's pre-push, under the released dvara this checkout pins (.dvara.json):
+# the records and frozen gates on what the branch changes, the pinned guards
+# (`pnpm guards`), then niyam's check that an agent session pushes as the
+# agent and keeps the work rules. Every guard here is an installed release,
+# never packages/*/src, the source a change edits.
+# `pnpm install` points git here (core.hooksPath, the root's prepare script).
+root="$(git rev-parse --show-toplevel)" || exit 1
+dvara="$root/node_modules/@veda-hq/dvara"
+if [ "${DVARA_MEASURED_HOOK:-}" != "pre-push" ]; then
+  node "$root/scripts/released-pins.mjs" --root "$root" || exit 1
+  exec node "$dvara/dist/cli.js" run "$0" "$@"
+fi
+# shellcheck source=/dev/null
+source "$dvara/shell/stages.sh"
+refs="$(cat)"
+dvara_record_refs "$refs"
+
+base=origin/main
+git rev-parse --verify --quiet "$base^{commit}" > /dev/null || base=HEAD
+
+dvara_stage records
+node "$dvara/dist/cli.js" records --base "$base" || exit 1
+
+dvara_stage frozen
+node "$dvara/dist/cli.js" frozen --base "$base" || exit 1
+
+dvara_stage guards
+(cd "$root" && pnpm --silent guards) || exit 1
+
+# niyam's own hook, as `niyam onboard` writes it, once veda is onboarded
+# (.github/niyam.json): anyone else's push goes ahead; an agent session's
+# push is refused without the CLI. onboard reads the "$cli" pre-push line as
+# its own and leaves this file alone.
+[ -f "$root/.github/niyam.json" ] || exit 0
+dvara_stage niyam
+[ -z "${NIYAM_AGENT:-}" ] && [ "${CLAUDECODE:-}" != 1 ] && exit 0
+cli="$HOME/.config/niyam/bin/niyam"
+[ -x "$cli" ] || cli=niyam
+if ! command -v "$cli" > /dev/null 2>&1; then
+  echo "niyam: the CLI is not installed, so this agent push cannot be checked" >&2
+  exit 1
+fi
+"$cli" pre-push "$@" <<< "$refs"

@@ -27,16 +27,13 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: pnpm install --frozen-lockfile
+      # Each package's own tests prove the copy being changed; the scripts'
+      # tests (the version rule, released-pins) run too. Then `pnpm guards`
+      # guards the repository with the released pariksha and sarathi the root
+      # pins, never packages/*/src: each pin is checked to be that release,
+      # installed from the registry. Veda never names a client (boundary,
+      # deny list .veda/deny.sha256).
       - run: pnpm check
-      # The version rule's own tests: scripts/ is outside the packages pnpm check runs.
-      - name: Version rule tests
-        run: >-
-          node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95
-          --test-coverage-branches=90 '--test-coverage-include=scripts/*.mjs' '--test-coverage-exclude=scripts/*.test.mjs'
-          scripts/*.test.mjs
-      # The boundary check from source: Veda never names a client (deny list: .veda/deny.sha256).
-      - name: Boundary
-        run: node packages/pariksha/src/cli.ts boundary
       # Other repositories call the shared workflows here, so every one must lint clean.
       # Pinned by version and by the sha256 its release checksums publish; the
       # same release checks.yml installs. It stays in this required job until
@@ -54,11 +51,14 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$TAR" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color
 
-  # The shared checks other repositories call, run here from source, so a
-  # change to them is proven before anyone pins it. dvara's gates skip: this
-  # repository has no .dvara.json.
+  # The shared checks other repositories call, run here from this commit, so a
+  # change to the workflow is proven before anyone pins it. Its dvara gates
+  # run the released @veda-hq/dvara the root package.json pins, with
+  # .dvara.json, as the git hooks do.
   checks:
     uses: ./.github/workflows/checks.yml
+    with:
+      require: dvara,actionlint
     permissions:
       contents: read
 

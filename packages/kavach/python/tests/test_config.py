@@ -130,6 +130,48 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(parsed.trusted_commands[0].script, "scripts/..hidden/x.py")
         self.assertEqual(parsed.trusted_commands[0].pattern, re.compile("x"))
 
+    def test_read_only_commands(self) -> None:
+        def read_only(*entries: object) -> dict[str, object]:
+            return {"worktree": {"readOnlyCommands": list(entries)}}
+
+        good = {"pattern": "pnpm ls", "env": {"AGENT_REMOTE": ["true"]}, "reason": "lists only"}
+        where = "worktree.readOnlyCommands[0]"
+        self.refused({"worktree": {"readOnlyCommands": {}}}, "worktree.readOnlyCommands must be a JSON array")
+        self.refused(read_only(good, "x"), "worktree.readOnlyCommands[1] must be a JSON object")
+        self.refused(read_only({**good, "script": "x"}), f"{where} has unknown key(s): script")
+        self.refused(read_only({**good, "pattern": ""}), f"{where}.pattern must be a non-empty string")
+        self.refused(read_only({"env": good["env"], "reason": "r"}), f"{where}.pattern must be a non-empty string")
+        self.refused(read_only({**good, "pattern": "("}), f"{where}.pattern is not a regular expression")
+        for env in (None, {}, [], "AGENT_REMOTE=true"):
+            with self.subTest(env=env):
+                entry = {key: value for key, value in good.items() if key != "env"}
+                if env is not None:
+                    entry["env"] = env
+                self.refused(read_only(entry), f"{where}.env must be a non-empty JSON object of variable names")
+        for name in ("1A", "A-B", "", "$A"):
+            with self.subTest(name=name):
+                self.refused(read_only({**good, "env": {name: ["x"]}}), f"{where}.env has a key that is not a variable name")
+        self.refused(read_only({**good, "env": {"A": "true"}}), f"{where}.env.A must be a JSON array")
+        self.refused(read_only({**good, "env": {"A": []}}), f"{where}.env.A must list at least one value")
+        self.refused(read_only({**good, "env": {"A": ["x", ""]}}), f"{where}.env.A[1] must be a non-empty string")
+        self.refused(read_only({**good, "env": {"A": [1]}}), f"{where}.env.A[0] must be a non-empty string")
+        self.refused(read_only({key: value for key, value in good.items() if key != "reason"}), f"{where}.reason must be a non-empty string")
+        self.refused(read_only({**good, "reason": ""}), f"{where}.reason must be a non-empty string")
+        parsed = config.parse(
+            read_only({**good, "env": {"AGENT_REMOTE": ["true"], "AGENT_ENTRY": ["remote", "remote_desktop"]}})
+        )
+        self.assertEqual(
+            parsed.read_only_commands,
+            (
+                config.ReadOnlyCommand(
+                    re.compile("pnpm ls"),
+                    (("AGENT_REMOTE", ("true",)), ("AGENT_ENTRY", ("remote", "remote_desktop"))),
+                    "lists only",
+                ),
+            ),
+        )
+        self.assertEqual(config.parse(read_only()), config.DEFAULT)
+
     def test_protected_variables(self) -> None:
         def command(**values: object) -> dict[str, object]:
             return {"command": values}

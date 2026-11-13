@@ -14,10 +14,12 @@
 # refuses and says to install; other events warn and go ahead. A PreToolUse
 # sarathi that crashes refuses too: Claude Code lets a hook's exit 1 through.
 #
-# A cloud session ($CLAUDE_CODE_REMOTE) is a fresh clone, with nothing
-# installed, and its first refused call could not install it: so there,
-# SessionStart runs `pnpm install --frozen-lockfile` once when the pin is
-# missing. The desktop's main checkout is the owner's to install.
+# SessionStart installs what package.json pins when node_modules is behind
+# it: sarathi, or any other @veda-hq pin at another version. That is a pin
+# bump the main checkout has pulled but not installed (the desktop), or a
+# cloud session's fresh clone. It runs `pnpm install --frozen-lockfile` in
+# $root, one session at a time: a session that finds another's install under
+# way waits for it (up to 90 s). An install that fails is said, with its log.
 event="${1:?usage: sarathi.sh <Event>}"
 root="${CLAUDE_PROJECT_DIR:-$PWD}"
 pkg="$root/node_modules/@veda-hq/sarathi"
@@ -29,12 +31,41 @@ inspect() {
   case "$real" in "$(cd "$root" && pwd -P)"/packages/*) found="the workspace's own packages/sarathi" ;; esac
   [ -n "$pin" ] && [ "$found" = "$pin" ] && [ -f "$pkg/dist/bin.js" ]
 }
-if ! inspect && [ "$event" = SessionStart ] && [ "${CLAUDE_CODE_REMOTE:-}" = true ] && [ -n "$pin" ]; then
-  (cd "$root" && pnpm install --frozen-lockfile) </dev/null >/dev/null 2>&1
+# Every exact @veda-hq pin is installed at its version.
+pins_current() {
+  local name version
+  while read -r name version; do
+    [ "$(version_of "$root/node_modules/@veda-hq/$name/package.json")" = "$version" ] || return 1
+  done < <(sed -nE 's/^[[:space:]]*"@veda-hq\/([a-z0-9-]+)":[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1 \2/p' "$root/package.json" 2>/dev/null)
+}
+install_pins() {
+  local common lock log waited=0
+  common="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || common="$root"
+  lock="$common/sarathi-install.lock"
+  log="$common/sarathi-install.log"
+  # A lock older than 10 minutes is an install that died: take it over.
+  find "$lock" -maxdepth 0 -mmin +10 -exec rmdir {} \; 2>/dev/null
+  until mkdir "$lock" 2>/dev/null; do
+    [ "$waited" -ge 90 ] && { echo "sarathi.sh: another session's install in $root is still running after 90 s ($lock)." >&2; return 1; }
+    sleep 1
+    waited=$((waited + 1))
+  done
+  # Another session may have installed while this one waited.
+  if ! { inspect && pins_current; }; then
+    if ! (cd "$root" && pnpm install --frozen-lockfile) </dev/null >"$log" 2>&1; then
+      echo "sarathi.sh: pnpm install --frozen-lockfile failed in $root; its output is in $log: $(tail -n 1 "$log")" >&2
+    fi
+  fi
+  rmdir "$lock"
+}
+inspect
+current=$?
+if [ "$event" = SessionStart ] && [ -n "$pin" ] && ! { [ "$current" -eq 0 ] && pins_current; }; then
+  install_pins
   inspect
 fi
 if [ -z "$pin" ] || [ "$found" != "$pin" ] || [ ! -f "$pkg/dist/bin.js" ]; then
-  why="sarathi ${pin:-(no pin in package.json)} is not installed in $root (found ${found:-nothing}); run pnpm install there"
+  why="sarathi ${pin:-(no pin in package.json)} is not installed in $root (found ${found:-nothing}); the next session start (or resume) installs it, or run pnpm install there"
   if [ "$event" = PreToolUse ]; then
     echo "BLOCKED: $why. No guard ran." >&2
     exit 2

@@ -38,7 +38,9 @@ jobs:
       - name: Boundary
         run: node packages/pariksha/src/cli.ts boundary
       # Other repositories call the shared workflows here, so every one must lint clean.
-      # Pinned by version and by the sha256 its release checksums publish.
+      # Pinned by version and by the sha256 its release checksums publish; the
+      # same release checks.yml installs. It stays in this required job until
+      # main's ruleset also requires "checks / Checks".
       - name: actionlint
         env:
           ACTIONLINT_VERSION: 1.7.12
@@ -51,6 +53,14 @@ jobs:
           echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/$TAR" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$TAR" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color
+
+  # The shared checks other repositories call, run here from source, so a
+  # change to them is proven before anyone pins it. dvara's gates skip: this
+  # repository has no .dvara.json.
+  checks:
+    uses: ./.github/workflows/checks.yml
+    permissions:
+      contents: read
 
   # The marketplace and its plugins validate, and the plugins' own tests pass, under
   # one pinned Claude Code build: its linux-x64 npm tarball, checked against its sha256.

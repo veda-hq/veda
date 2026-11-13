@@ -59,6 +59,25 @@ jobs:
       pariksha-version: 0.1.0
 ```
 
+## Shared checks
+
+[`checks.yml`](.github/workflows/checks.yml) runs the generic checks that need
+no install of the calling repository's dependencies, each only where the caller
+has what it reads: dvara's `records` and `frozen` gates (the caller's
+`.dvara.json`, at the dvara version its `package.json` pins, so its git hooks
+and CI run one release), and actionlint with ShellCheck over its workflows.
+Call it from one job, pinned to a commit:
+
+```yaml
+jobs:
+  veda-checks:
+    permissions:
+      contents: read
+    uses: veda-hq/veda/.github/workflows/checks.yml@<commit>
+```
+
+This repository calls it too, from source.
+
 ## Rules this repository keeps
 
 - **A package's own repository is guarded by the last released version of its

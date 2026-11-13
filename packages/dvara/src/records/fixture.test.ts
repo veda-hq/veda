@@ -49,7 +49,17 @@ export const template = (make: () => Repo): (() => Repo) => {
   return () => {
     built ??= make();
     const root = mkdtempSync(join(tmpdir(), "dvara-copy-"));
-    cpSync(built.root, root, { recursive: true });
+    try {
+      cpSync(built.root, root, { recursive: true });
+    } catch (error) {
+      // STRESS-ONLY: name what the template and the copy hold when a copy fails.
+      const list = (dir: string): string =>
+        execFileSync("find", [dir, "-path", "*/.git/*"], { encoding: "utf8" });
+      throw new Error(
+        `copy failed: ${String(error)}\n--- template\n${list(built.root)}--- copy\n${list(root)}`,
+        { cause: error },
+      );
+    }
     return at(root);
   };
 };

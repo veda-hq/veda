@@ -2,7 +2,7 @@
 # veda's pre-commit, under the released dvara this checkout pins (.dvara.json):
 # the records and frozen gates on what is staged. It runs the installed
 # @veda-hq/dvara, never packages/dvara, the source a change edits.
-# `pnpm install` points git here (core.hooksPath, the root's prepare script).
+# Dormant until the main checkout's git config points core.hooksPath here.
 root="$(git rev-parse --show-toplevel)" || exit 1
 dvara="$root/node_modules/@veda-hq/dvara"
 if [ "${DVARA_MEASURED_HOOK:-}" != "pre-commit" ]; then

@@ -27,13 +27,29 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: pnpm install --frozen-lockfile
-      # Each package's own tests prove the copy being changed; the scripts'
-      # tests (the version rule, released-pins) run too. Then `pnpm guards`
-      # guards the repository with the released pariksha and sarathi the root
-      # pins, never packages/*/src: each pin is checked to be that release,
-      # installed from the registry. Veda never names a client (boundary,
-      # deny list .veda/deny.sha256).
-      - run: pnpm check
+      # Each package's own tests prove the copy being changed. (`pnpm check`
+      # runs these and the steps below, for a run by hand.)
+      - run: pnpm -r check
+      # The scripts' own tests: the version rule, released-pins, the git hooks.
+      - name: Script tests
+        run: >-
+          node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95
+          --test-coverage-branches=90 '--test-coverage-include=scripts/*.mjs' '--test-coverage-exclude=scripts/*.test.mjs'
+          scripts/*.test.mjs
+      # The repository is guarded by the released guards the root pins, never
+      # by packages/*/src, the copy being changed (T-9). Each @veda-hq pin is
+      # that exact release, installed from the registry.
+      - name: Guards are the pinned releases
+        run: node scripts/released-pins.mjs
+      # Veda never names a client (deny list: .veda/deny.sha256).
+      - name: Boundary
+        run: node_modules/.bin/pariksha boundary
+      - name: Required settings
+        run: |
+          node_modules/.bin/pariksha required-settings --require .veda/required-settings.json
+          node_modules/.bin/pariksha required-settings --require node_modules/@veda-hq/pariksha/baselines/claude-settings.json
+      - name: sarathi settings
+        run: node_modules/.bin/sarathi check --settings .claude/settings.json
       # Other repositories call the shared workflows here, so every one must lint clean.
       # Pinned by version and by the sha256 its release checksums publish; the
       # same release checks.yml installs. It stays in this required job until

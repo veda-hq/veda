@@ -9,7 +9,6 @@
     "node": ">=24.15"
   },
   "scripts": {
-    "prepare": "git config core.hooksPath .githooks",
     "check": "pnpm -r check && pnpm test:scripts && pnpm guards",
     "test:scripts": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 '--test-coverage-include=scripts/*.mjs' '--test-coverage-exclude=scripts/*.test.mjs' scripts/*.test.mjs",
     "guards": "node scripts/released-pins.mjs && pariksha boundary && pariksha required-settings --require .veda/required-settings.json && pariksha required-settings --require node_modules/@veda-hq/pariksha/baselines/claude-settings.json && sarathi check --settings .claude/settings.json"

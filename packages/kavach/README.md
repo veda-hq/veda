@@ -60,6 +60,10 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
   "worktree": {
     "trustedCommands": [
       { "script": "scripts/worktree.py", "pattern": "python3 scripts/worktree\\.py (?:status|retire --pr [1-9][0-9]*)" }
+    ],
+    "readOnlyCommands": [
+      { "pattern": "pnpm (?:health:check|(?:ls|list|why)(?: [A-Za-z0-9@][A-Za-z0-9@/._-]*)*(?: --depth [0-9]+)?)",
+        "env": { "AGENT_REMOTE": ["true"] }, "reason": "the script and pnpm's listing commands only read" }
     ]
   },
   "command": {
@@ -77,6 +81,14 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
   pattern must match the whole command; trust only command lines of plain
   words (a whole line with any shell metacharacter is never trusted by its
   pattern alone).
+- `readOnlyCommands`: a command line you reviewed as only reading, though
+  the guard cannot prove it (a package runner's script, say). It runs with no
+  owned worktree, from a checkout's root only, and only while the hook's own
+  environment holds one of the listed values for every variable in `env`,
+  which is required. The pattern is matched as a trusted command's is. Keep
+  the list to commands that write nothing however they are called, and
+  name each option a pattern allows: a runner's own options after the
+  subcommand (`pnpm ls -C elsewhere`, `--pnpmfile`) move or widen what runs.
 - `protectedVariables`: environment variables a command may not assign, declare or
   export.
 - `pairedChanges`: a commit that may record a path ending in `changes` must

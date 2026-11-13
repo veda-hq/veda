@@ -594,7 +594,8 @@ def refuse_during_push(tool: object, targets: list[Path], root: Path) -> None:
 def main() -> None:
     # First, so a misread settings file refuses every event, a read-only one
     # included.
-    trusted = settings().trusted_commands
+    loaded = settings()
+    trusted = loaded.trusted_commands
     data = boundary.read_input()
     cwd = Path(data.get("cwd") or Path.cwd()).resolve()
     state = boundary.checkout_state(cwd)
@@ -615,6 +616,13 @@ def main() -> None:
     if tool == "Bash":
         command = boundary.tool_command(values)
         if command and boundary.shell_is_read_only(command):
+            return
+        # A read the consumer reviewed (`worktree.readOnlyCommands`), from the
+        # checkout's root and only in the environment its entry names: like a
+        # proven read, it needs no owned worktree and waits for no push.
+        if command and boundary.read_only_request(
+            command, cwd, root, loaded.read_only_commands, os.environ
+        ):
             return
     # Only the shell parser reads these (a file tool is never given them), and
     # finding them costs git starts, so an Edit or Write does not pay for them.

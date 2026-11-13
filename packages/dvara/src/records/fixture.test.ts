@@ -8,6 +8,12 @@ import { dirname, join } from "node:path";
 /**
  * This process's environment without git's own variables (a test run from a
  * hook inherits GIT_DIR and GIT_INDEX_FILE) or the user's git config.
+ *
+ * Automatic maintenance is off. Otherwise every commit starts a detached
+ * `git maintenance run --auto` that outlives it and briefly holds a lock
+ * file in `.git/objects`. A template copied at that moment lists the lock,
+ * finds it gone, and fails with ENOENT (about 1 run in 75 on GitHub's
+ * Linux runners, git 2.56).
  */
 export const hermeticEnv: NodeJS.ProcessEnv = {
   ...Object.fromEntries(
@@ -15,6 +21,11 @@ export const hermeticEnv: NodeJS.ProcessEnv = {
   ),
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_GLOBAL: devNull,
+  GIT_CONFIG_COUNT: "2",
+  GIT_CONFIG_KEY_0: "maintenance.auto",
+  GIT_CONFIG_VALUE_0: "false",
+  GIT_CONFIG_KEY_1: "gc.auto",
+  GIT_CONFIG_VALUE_1: "0",
   GIT_AUTHOR_NAME: "Fixture",
   GIT_AUTHOR_EMAIL: "fixture@example.com",
   GIT_COMMITTER_NAME: "Fixture",

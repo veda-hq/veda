@@ -2,8 +2,8 @@
 the environment variable KAVACH_CONFIG.
 
 kavach knows no product. What one product trusts or requires (a script its
-agents may run from any checkout, environment variables an agent must leave
-alone, a file whose change needs another in the same commit) comes from this
+agents may run from any checkout, a command it reviewed as only reading and allows in one
+environment, environment variables an agent must leave alone, a file whose change needs another in the same commit) comes from this
 file, and with no file every such rule is off.
 
 A file that cannot be read, is not JSON, has a key this module does not know,
@@ -39,6 +39,18 @@ class TrustedCommand:
 
 
 @dataclass(frozen=True)
+class ReadOnlyCommand:
+    """A command line the consumer reviewed as only reading, allowed from a
+    checkout's root without an owned worktree, and only where the hook's own
+    environment holds one of the listed values for every variable in `env`.
+    `pattern` must match the whole command; `reason` says what was checked."""
+
+    pattern: re.Pattern[str]
+    env: tuple[tuple[str, tuple[str, ...]], ...]
+    reason: str
+
+
+@dataclass(frozen=True)
 class PairedChange:
     """A commit that may record a path ending in `changes` must also certainly
     record a path containing `requires`."""
@@ -54,13 +66,14 @@ class Config:
     protected_variables: tuple[str, ...] = ()
     protected_variables_reason: str = ""
     paired_changes: tuple[PairedChange, ...] = ()
+    read_only_commands: tuple[ReadOnlyCommand, ...] = ()
 
 
 DEFAULT = Config()
 
 SHAPE: dict[str, set[str]] = {
     "": {"worktree", "command"},
-    "worktree": {"trustedCommands"},
+    "worktree": {"trustedCommands", "readOnlyCommands"},
     "command": {"protectedVariables", "protectedVariablesReason", "pairedChanges"},
 }
 
@@ -100,6 +113,32 @@ def _trusted(value: Any, index: int) -> TrustedCommand:
     return TrustedCommand(script, pattern)
 
 
+def _read_only(value: Any, index: int) -> ReadOnlyCommand:
+    where = f"worktree.readOnlyCommands[{index}]"
+    entry = _object(value, where, {"pattern", "env", "reason"})
+    source = _text(entry.get("pattern"), f"{where}.pattern")
+    try:
+        pattern = re.compile(source)
+    except re.error as error:
+        raise ConfigError(f"{where}.pattern is not a regular expression: {error}") from None
+    # The environment is required: an entry with no condition would widen the
+    # guard on every machine, which is what kavach's own read-only list is
+    # kept narrow to avoid.
+    raw_env = entry.get("env")
+    if not isinstance(raw_env, dict) or not raw_env:
+        raise ConfigError(f"{where}.env must be a non-empty JSON object of variable names")
+    env: list[tuple[str, tuple[str, ...]]] = []
+    for name, values in raw_env.items():
+        if not VARIABLE_NAME.fullmatch(name):
+            raise ConfigError(f"{where}.env has a key that is not a variable name: {name!r}")
+        listed = _list(values, f"{where}.env.{name}")
+        if not listed:
+            raise ConfigError(f"{where}.env.{name} must list at least one value")
+        env.append((name, tuple(_text(item, f"{where}.env.{name}[{at}]") for at, item in enumerate(listed))))
+    reason = _text(entry.get("reason"), f"{where}.reason")
+    return ReadOnlyCommand(pattern, tuple(env), reason)
+
+
 def _paired(value: Any, index: int) -> PairedChange:
     where = f"command.pairedChanges[{index}]"
     entry = _object(value, where, {"changes", "requires", "reason"})
@@ -135,7 +174,11 @@ def parse(data: Any) -> Config:
         _paired(entry, index)
         for index, entry in enumerate(_list(command.get("pairedChanges", []), "command.pairedChanges"))
     )
-    return Config(trusted, variables, reason, paired)
+    read_only = tuple(
+        _read_only(entry, index)
+        for index, entry in enumerate(_list(worktree.get("readOnlyCommands", []), "worktree.readOnlyCommands"))
+    )
+    return Config(trusted, variables, reason, paired, read_only)
 
 
 def load(environ: Mapping[str, str] | None = None) -> Config:

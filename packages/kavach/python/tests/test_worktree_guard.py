@@ -49,6 +49,29 @@ WORKTREE_SETTINGS = {
 }
 
 
+# A sample consumer setting: commands the consumer reviewed as only reading,
+# allowed in a hosted session alone. The names are neutral on purpose.
+# Operands never start with `-`, and the only options are named: pnpm's own
+# options after the subcommand (`-C`, `--dir`, `--pnpmfile`) would move or
+# widen what it runs.
+READ_ONLY_PATTERN = (
+    r"pnpm (?:health:check|(?:ls|list|why)(?: [A-Za-z0-9@][A-Za-z0-9@/._-]*)*"
+    r"(?: --depth [0-9]+)?(?: --json)?)"
+)
+READ_ONLY_SETTINGS = {
+    "worktree": {
+        "readOnlyCommands": [
+            {
+                "pattern": READ_ONLY_PATTERN,
+                "env": {"AGENT_REMOTE": ["true"], "AGENT_ENTRY": ["remote", "remote_desktop"]},
+                "reason": "the script and pnpm's listing commands only read",
+            }
+        ]
+    }
+}
+HOSTED = {"AGENT_REMOTE": "true", "AGENT_ENTRY": "remote"}
+
+
 class AdapterTest(BoundaryFixture):
     def settings_env(self, document: object, name: str = "kavach.json") -> dict[str, str]:
         """The hook's environment with KAVACH_CONFIG naming ``document``.
@@ -317,6 +340,149 @@ class AdapterTest(BoundaryFixture):
             with self.subTest(command=command, present=WORKTREE_SCRIPT):
                 result = self.claude_bash(self.claude, command, environment)
                 self.assertEqual(result.returncode, expected, result.stderr)
+
+    def read_only_env(self, **variables: str) -> dict[str, str]:
+        """The hook's environment with READ_ONLY_SETTINGS and ``variables``."""
+
+        return {**self.settings_env(READ_ONLY_SETTINGS), **variables}
+
+    def test_reviewed_reads_run_from_a_checkout_root_in_their_environment(self) -> None:
+        """A reviewed read runs from any checkout's root, an unowned one
+        included, when the hook's environment is the entry's."""
+
+        environment = self.read_only_env(**HOSTED)
+        allowed = (
+            "pnpm health:check",
+            "pnpm ls",
+            "pnpm list",
+            "pnpm ls @scope/pkg --depth 0",
+            "pnpm why left-pad",
+            "pnpm list --depth 1 --json",
+            # The same words opening the line, then only read-only segments.
+            "pnpm health:check 2>&1 | tail -5",
+            "pnpm health:check; echo done",
+            "pnpm ls @scope/pkg --depth 0 2>/dev/null | grep -c pkg",
+        )
+        for cwd in (self.main, self.manual, self.claude):
+            for command in allowed:
+                with self.subTest(cwd=cwd, command=command):
+                    result = self.claude_bash(cwd, command, environment)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+        with self.subTest(entry="remote_desktop"):
+            result = self.claude_bash(
+                self.main, "pnpm ls", {**environment, "AGENT_ENTRY": "remote_desktop"}
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_everything_else_stays_refused_where_no_worktree_is_owned(self) -> None:
+        environment = self.read_only_env(**HOSTED)
+        outside = self.external / "made.txt"
+        refused = (
+            "pnpm install",
+            "pnpm i",
+            "pnpm add left-pad",
+            "pnpm exec tsx script.ts",
+            "pnpm run build",
+            "pnpm build",
+            "pnpm health:check extra",
+            "pnpm health:check --fix",
+            "pnpm -C sub ls",
+            "pnpm --dir sub ls",
+            "pnpm --filter app ls",
+            "pnpm ls -C sub",
+            "pnpm ls --dir /elsewhere",
+            "pnpm ls --pnpmfile=probe.cjs",
+            "pnpm why x --filter app",
+            "pnpm list --depth=1",
+            "pnpm list --json --depth 1",
+            "pnpm --config.verify-deps-before-run=install health:check",
+            "pnpm ls > list.txt",
+            f"pnpm ls >> {outside}",
+            "pnpm ls 2>&1 | tee list.txt",
+            f"pnpm ls; touch {outside}",
+            f"pnpm health:check && touch {outside}",
+            f"pnpm ls $(touch {outside})",
+            f"pnpm ls 'a; touch {outside}'",
+            "pnpm ls $PKG",
+            f"pnpm ls\ntouch {outside}",
+            f"touch {outside}; pnpm ls",
+            "cd sub; pnpm ls",
+            "AGENT_REMOTE=true pnpm ls",
+            "FORCE=1 pnpm health:check",
+            "env pnpm ls",
+            "/usr/local/bin/pnpm ls",
+            "./pnpm ls",
+            "npx pnpm ls",
+            "npm ls",
+        )
+        for command in refused:
+            with self.subTest(command=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("BLOCKED", result.stderr)
+        self.assertFalse(outside.exists())
+        # A subfolder's manifest is not the root's: its `health:check` is
+        # another script.
+        sub = self.main / "sub"
+        sub.mkdir()
+        for command in ("pnpm health:check", "pnpm ls"):
+            with self.subTest(cwd="sub", command=command):
+                result = self.claude_bash(sub, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("Claude-managed worktree", result.stderr)
+
+    def test_reviewed_reads_need_every_variable_of_their_environment(self) -> None:
+        cases = (
+            ("on a laptop", {}),
+            ("remote only", {"AGENT_REMOTE": "true"}),
+            ("entry only", {"AGENT_ENTRY": "remote"}),
+            ("remote false", {**HOSTED, "AGENT_REMOTE": "false"}),
+            ("remote upper case", {**HOSTED, "AGENT_REMOTE": "TRUE"}),
+            ("remote empty", {**HOSTED, "AGENT_REMOTE": ""}),
+            ("another entry", {**HOSTED, "AGENT_ENTRY": "cli"}),
+        )
+        for label, variables in cases:
+            environment = self.read_only_env(**variables)
+            for command in ("pnpm health:check", "pnpm ls"):
+                with self.subTest(environment=label, command=command):
+                    result = self.claude_bash(self.main, command, environment)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("Claude-managed worktree", result.stderr)
+        for label, environment in (
+            ("no settings", {**hermetic_git_env(), **HOSTED}),
+            ("no entries", {**self.settings_env({"worktree": {"readOnlyCommands": []}}), **HOSTED}),
+            ("trusted commands only", {**self.settings_env(WORKTREE_SETTINGS), **HOSTED}),
+        ):
+            with self.subTest(settings=label):
+                result = self.claude_bash(self.main, "pnpm ls", environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_read_only_request_matches_each_entry_in_its_own_environment(self) -> None:
+        """In process: an entry admits only its own lines, in its own
+        environment, from the root it is handed."""
+
+        # Any entry shaped like `config.ReadOnlyCommand` will do.
+        entries = (
+            mock.Mock(pattern=re.compile(r"pnpm ls"), env=(("A", ("1",)),)),
+            mock.Mock(pattern=re.compile(r"pnpm why x"), env=(("B", ("2", "3")),)),
+        )
+        root = self.main
+        for command, environ, expected in (
+            ("pnpm ls", {"A": "1"}, True),
+            ("pnpm ls", {"B": "2"}, False),
+            ("pnpm why x", {"B": "3"}, True),
+            ("pnpm why x", {"A": "1"}, False),
+            ("pnpm why x | tail -1", {"B": "2"}, True),
+            ("pnpm why x | tee out", {"B": "2"}, False),
+        ):
+            with self.subTest(command=command, environ=environ):
+                self.assertEqual(
+                    MODULE.read_only_request(command, root, root, entries, environ), expected
+                )
+        self.assertFalse(MODULE.read_only_request("pnpm ls", root, root, (), {"A": "1"}))
+        self.assertFalse(
+            MODULE.read_only_request("pnpm ls", root / "sub", root, entries, {"A": "1"})
+        )
 
     def test_unusable_settings_refuse_every_event(self) -> None:
         """A guard that misread what it trusts must not allow, a read included."""

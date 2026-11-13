@@ -16,7 +16,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
-from typing import Protocol, Sequence
+from typing import Mapping, Protocol, Sequence
 
 
 # Admission to this set means one thing: NO invocation of the command mutates
@@ -3246,25 +3246,85 @@ def trusted_request(
 
     if not trusted:
         return False
-    # A loose pattern (`.*`) must not trust a whole line that hides another
-    # command: the whole-line match holds only for plain words.
-    plain = TRUSTED_LINE_UNSAFE.search(command) is None
-    opening: tuple[str, list[list[str]]] | None = None
-    rest_is_inert: bool | None = None
+    line = ReviewedLine(command)
     for entry in trusted:
-        if not (plain and entry.pattern.fullmatch(command)):
-            if opening is None:
-                opening = trusted_opening(command)
-            first, rest = opening
-            if not first or not entry.pattern.fullmatch(first):
-                continue
-            if rest_is_inert is None:
-                rest_is_inert = all(segment_is_read_only(words) for words in rest)
-            if not rest_is_inert:
-                continue
+        if not line.matches(entry.pattern):
+            continue
         resolved = root.resolve()
         script = resolved / entry.script
         if cwd.resolve() == resolved and script.is_file() and script.resolve() == script:
+            return True
+    return False
+
+
+class ReviewedLine:
+    """One command line, as a consumer's reviewed pattern is matched to it.
+
+    A whole line of plain words matches when the pattern matches all of it. A
+    loose pattern (`.*`) must not admit a line that hides another command, so
+    any other line matches only by its first segment, as plain words, followed
+    by nothing but read-only segments (reviewed redirections included). The
+    parse is done once, for the first pattern that needs it.
+    """
+
+    def __init__(self, command: str) -> None:
+        self.command = command
+        self.plain = TRUSTED_LINE_UNSAFE.search(command) is None
+        self.opening: tuple[str, list[list[str]]] | None = None
+        self.rest_is_inert: bool | None = None
+
+    def matches(self, pattern: re.Pattern[str]) -> bool:
+        if self.plain and pattern.fullmatch(self.command):
+            return True
+        if self.opening is None:
+            self.opening = trusted_opening(self.command)
+        first, rest = self.opening
+        if not first or not pattern.fullmatch(first):
+            return False
+        if self.rest_is_inert is None:
+            self.rest_is_inert = all(segment_is_read_only(words) for words in rest)
+        return self.rest_is_inert
+
+
+class ReadOnlyEntry(Protocol):
+    """One reviewed read-only command, as `config.ReadOnlyCommand` carries it:
+    `pattern` must match the whole command line, and `env` pairs each
+    variable with the values the hook's environment may hold for it."""
+
+    pattern: re.Pattern[str]
+    env: tuple[tuple[str, tuple[str, ...]], ...]
+
+
+def read_only_request(
+    command: str,
+    cwd: Path,
+    root: Path,
+    entries: Sequence[ReadOnlyEntry],
+    environ: Mapping[str, str],
+) -> bool:
+    """Recognize a command line the consumer reviewed as only reading.
+
+    Such a command reads although this parser cannot prove it: a package
+    runner's script, say, whose writes are the consumer's to review, not
+    kavach's. It needs no owned worktree, so the match is held as tight as a
+    trusted command's (``ReviewedLine``), and two more conditions apply:
+
+    - It runs from the checkout's root (``root``), so a relative script or
+      a package manifest means the root's own, never a subfolder's.
+    - Every variable the entry names holds one of its listed values in
+      ``environ``, the hook's own environment, which the command line cannot
+      set.
+
+    No entries: nothing is admitted here.
+    """
+
+    if not entries or cwd.resolve() != root.resolve():
+        return False
+    line = ReviewedLine(command)
+    for entry in entries:
+        if all(environ.get(name) in values for name, values in entry.env) and line.matches(
+            entry.pattern
+        ):
             return True
     return False
 

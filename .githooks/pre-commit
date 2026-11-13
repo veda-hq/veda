@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# veda's pre-commit, under the released dvara this checkout pins (.dvara.json):
+# the records and frozen gates on what is staged. It runs the installed
+# @veda-hq/dvara, never packages/dvara, the source a change edits.
+# Dormant until the main checkout's git config points core.hooksPath here.
+root="$(git rev-parse --show-toplevel)" || exit 1
+dvara="$root/node_modules/@veda-hq/dvara"
+if [ "${DVARA_MEASURED_HOOK:-}" != "pre-commit" ]; then
+  node "$root/scripts/released-pins.mjs" --root "$root" @veda-hq/dvara || exit 1
+  exec node "$dvara/dist/cli.js" run "$0" "$@"
+fi
+# shellcheck source=/dev/null
+source "$dvara/shell/stages.sh"
+
+dvara_stage records
+node "$dvara/dist/cli.js" records --staged || exit 1
+
+dvara_stage frozen
+node "$dvara/dist/cli.js" frozen --staged || exit 1

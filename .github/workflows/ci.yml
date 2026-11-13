@@ -27,16 +27,29 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: pnpm install --frozen-lockfile
-      - run: pnpm check
-      # The version rule's own tests: scripts/ is outside the packages pnpm check runs.
-      - name: Version rule tests
+      # Each package's own tests prove the copy being changed. (`pnpm check`
+      # runs these and the steps below, for a run by hand.)
+      - run: pnpm -r check
+      # The scripts' own tests: the version rule, released-pins, the git hooks.
+      - name: Script tests
         run: >-
           node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95
           --test-coverage-branches=90 '--test-coverage-include=scripts/*.mjs' '--test-coverage-exclude=scripts/*.test.mjs'
           scripts/*.test.mjs
-      # The boundary check from source: Veda never names a client (deny list: .veda/deny.sha256).
+      # The repository is guarded by the released guards the root pins, never
+      # by packages/*/src, the copy being changed (T-9). Each @veda-hq pin is
+      # that exact release, installed from the registry.
+      - name: Guards are the pinned releases
+        run: node scripts/released-pins.mjs
+      # Veda never names a client (deny list: .veda/deny.sha256).
       - name: Boundary
-        run: node packages/pariksha/src/cli.ts boundary
+        run: node_modules/.bin/pariksha boundary
+      - name: Required settings
+        run: |
+          node_modules/.bin/pariksha required-settings --require .veda/required-settings.json
+          node_modules/.bin/pariksha required-settings --require node_modules/@veda-hq/pariksha/baselines/claude-settings.json
+      - name: sarathi settings
+        run: node_modules/.bin/sarathi check --settings .claude/settings.json
       # Other repositories call the shared workflows here, so every one must lint clean.
       # Pinned by version and by the sha256 its release checksums publish; the
       # same release checks.yml installs. It stays in this required job until
@@ -54,11 +67,14 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$TAR" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color
 
-  # The shared checks other repositories call, run here from source, so a
-  # change to them is proven before anyone pins it. dvara's gates skip: this
-  # repository has no .dvara.json.
+  # The shared checks other repositories call, run here from this commit, so a
+  # change to the workflow is proven before anyone pins it. Its dvara gates
+  # run the released @veda-hq/dvara the root package.json pins, with
+  # .dvara.json, as the git hooks do.
   checks:
     uses: ./.github/workflows/checks.yml
+    with:
+      require: dvara,actionlint
     permissions:
       contents: read
 

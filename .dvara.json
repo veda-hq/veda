@@ -1,0 +1,12 @@
+{
+  "historyDir": ".dvara",
+  "quietHooks": ["pre-commit"],
+  "stages": {
+    "pre-commit": ["records", "frozen"],
+    "pre-push": ["records", "frozen", "guards", "niyam"]
+  },
+  "records": {
+    "baseline": ".veda/records-baseline.json",
+    "repository": "veda-hq/veda"
+  }
+}

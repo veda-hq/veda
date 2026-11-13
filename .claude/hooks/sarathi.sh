@@ -65,7 +65,7 @@ if [ "$event" = SessionStart ] && [ -n "$pin" ] && ! { [ "$current" -eq 0 ] && p
   inspect
 fi
 if [ -z "$pin" ] || [ "$found" != "$pin" ] || [ ! -f "$pkg/dist/bin.js" ]; then
-  why="sarathi ${pin:-(no pin in package.json)} is not installed in $root (found ${found:-nothing}); run pnpm install there"
+  why="sarathi ${pin:-(no pin in package.json)} is not installed in $root (found ${found:-nothing}); the next session start (or resume) installs it, or run pnpm install there"
   if [ "$event" = PreToolUse ]; then
     echo "BLOCKED: $why. No guard ran." >&2
     exit 2

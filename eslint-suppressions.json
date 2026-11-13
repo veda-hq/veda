@@ -1,15 +1,7 @@
 {
   "packages/dvara/src/cli.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 1
-    },
     "shuddhi/no-swallowed-catch": {
       "count": 4
-    }
-  },
-  "packages/dvara/src/config.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 3
     }
   },
   "packages/dvara/src/context.ts": {
@@ -17,39 +9,17 @@
       "count": 2
     }
   },
-  "packages/dvara/src/records/baseline.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 1
-    }
-  },
   "packages/dvara/src/records/frozen.ts": {
     "shuddhi/no-swallowed-catch": {
       "count": 2
     }
   },
-  "packages/dvara/src/records/gate.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 2
-    },
-    "shuddhi/safe-log": {
-      "count": 18
-    }
-  },
   "packages/dvara/src/stages.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 2
-    },
     "shuddhi/no-swallowed-catch": {
       "count": 1
     }
   },
   "packages/dvara/src/supervisor.ts": {
-    "shuddhi/no-direct-child-process": {
-      "count": 1
-    },
-    "shuddhi/no-raw-error-string": {
-      "count": 1
-    },
     "shuddhi/no-swallowed-catch": {
       "count": 9
     }
@@ -60,18 +30,7 @@
     }
   },
   "packages/kavach/src/rule-checks/cli.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 3
-    },
     "shuddhi/no-swallowed-catch": {
-      "count": 1
-    },
-    "shuddhi/safe-log": {
-      "count": 1
-    }
-  },
-  "packages/kavach/src/rule-checks/latency.ts": {
-    "shuddhi/no-direct-child-process": {
       "count": 1
     }
   },
@@ -81,46 +40,26 @@
     }
   },
   "packages/kavach/src/rule-checks/registry.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 2
-    },
     "shuddhi/no-swallowed-catch": {
       "count": 1
     }
   },
   "packages/pariksha/src/aggregate-gate-needs.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 2
-    },
     "shuddhi/no-swallowed-catch": {
       "count": 2
     }
   },
   "packages/pariksha/src/cli.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 20
-    },
     "shuddhi/no-swallowed-catch": {
       "count": 21
     }
   },
-  "packages/pariksha/src/coverage-by-type.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 2
-    }
-  },
   "packages/pariksha/src/coverage-exemptions.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 1
-    },
     "shuddhi/no-swallowed-catch": {
       "count": 1
     }
   },
   "packages/pariksha/src/doc-files.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 2
-    },
     "shuddhi/no-swallowed-catch": {
       "count": 1
     }
@@ -131,17 +70,11 @@
     }
   },
   "packages/pariksha/src/doc-references.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 1
-    },
     "shuddhi/no-swallowed-catch": {
       "count": 2
     }
   },
   "packages/pariksha/src/duplicate-tests.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 1
-    },
     "shuddhi/no-swallowed-catch": {
       "count": 1
     }
@@ -151,15 +84,7 @@
       "count": 2
     }
   },
-  "packages/pariksha/src/env-gate-switches.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 3
-    }
-  },
   "packages/pariksha/src/flaky-tests.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 1
-    },
     "shuddhi/no-swallowed-catch": {
       "count": 1
     }
@@ -169,52 +94,23 @@
       "count": 1
     }
   },
-  "packages/pariksha/src/masked-exit-codes.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 2
-    }
-  },
   "packages/pariksha/src/non-synced-resources.ts": {
     "shuddhi/no-swallowed-catch": {
       "count": 4
     }
   },
   "packages/pariksha/src/pnpm-settings.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 3
-    },
     "shuddhi/no-swallowed-catch": {
       "count": 2
     }
   },
   "packages/pariksha/src/registry-ratchet.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 4
-    },
     "shuddhi/no-swallowed-catch": {
       "count": 1
     }
   },
-  "packages/pariksha/src/required-settings.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 2
-    }
-  },
   "packages/pariksha/src/shell-gates.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 2
-    },
     "shuddhi/no-swallowed-catch": {
-      "count": 2
-    }
-  },
-  "packages/pariksha/src/shell-sources.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 2
-    }
-  },
-  "packages/pariksha/src/stage-reach.ts": {
-    "shuddhi/no-raw-error-string": {
       "count": 2
     }
   },
@@ -224,16 +120,8 @@
     }
   },
   "packages/sarathi/src/cli.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 3
-    },
     "shuddhi/no-swallowed-catch": {
       "count": 5
-    }
-  },
-  "packages/sarathi/src/config.ts": {
-    "shuddhi/no-raw-error-string": {
-      "count": 2
     }
   },
   "packages/sarathi/src/hooks/format-before-write.ts": {
@@ -247,9 +135,6 @@
     }
   },
   "packages/sarathi/src/run.ts": {
-    "shuddhi/no-direct-child-process": {
-      "count": 1
-    },
     "shuddhi/no-swallowed-catch": {
       "count": 1
     }

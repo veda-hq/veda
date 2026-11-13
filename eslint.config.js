@@ -9,4 +9,15 @@ export default [
   { ignores: ['**/node_modules/**', '**/dist/**', '**/coverage/**', 'packages/*/corpus/**', 'packages/*/test/fixture/**'] },
   { files: ['**/*.{ts,tsx,mts,cts}'], languageOptions: { parser: tseslint.parser } },
   ...errorHandlingBlocks(CODE),
+  // Off until veda has the helpers these rules point at: errorDetail
+  // (no-raw-error-string), safeLog and safeInvoke (safe-log), and runChild
+  // (no-direct-child-process). Without them, new code has no compliant form.
+  {
+    files: CODE,
+    rules: {
+      'shuddhi/no-raw-error-string': 'off',
+      'shuddhi/safe-log': 'off',
+      'shuddhi/no-direct-child-process': 'off',
+    },
+  },
 ];

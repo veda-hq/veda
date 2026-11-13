@@ -1,5 +1,9 @@
 # Agents in veda
 
+Lessons learned with these tools (Claude Code, git and GitHub, Actions,
+review bots, Node and pnpm, testing, Stryker) are in `docs/lessons/`; read
+the matching file before working in that area.
+
 ## The advisor
 
 Sessions here run with the advisor on, set to fable (`advisorModel` in

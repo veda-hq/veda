@@ -9,9 +9,11 @@
     "node": ">=24.15"
   },
   "scripts": {
-    "check": "pnpm -r check && sarathi check --settings .claude/settings.json"
+    "check": "pnpm provenance && pnpm -r check && sarathi check --settings .claude/settings.json",
+    "provenance": "node scripts/own-provenance.mjs",
+    "test:scripts": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 '--test-coverage-include=scripts/*.mjs' '--test-coverage-exclude=scripts/*.test.mjs' scripts/*.test.mjs"
   },
   "devDependencies": {
-    "@veda-hq/sarathi": "0.5.15"
+    "@veda-hq/sarathi": "0.6.0"
   }
 }

@@ -167,8 +167,8 @@ importers:
   .:
     devDependencies:
       '@veda-hq/sarathi':
-        specifier: 0.5.15
-        version: 0.5.15
+        specifier: 0.6.0
+        version: 0.6.0
 
   packages/dvara:
     dependencies:
@@ -505,13 +505,13 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@veda-hq/kavach@0.5.6':
-    resolution: {integrity: sha512-pOdjMEQYRYKfq9J71PbElSWzl+UtV3RB+bY4BU7dfwL6+fS74KnnJMkL9/82CtfFoJLBqT+KbgVY/3Vkx55Ccg==}
+  '@veda-hq/kavach@0.6.0':
+    resolution: {integrity: sha512-Oc8MEAjnvKsmIYahAQ561gv4jTvktVLeMBo8otnDwqF0ywsK63H6cpVdkfrBGROqeuKO7v0slO5bl6tcWAFMdQ==}
     engines: {node: '>=24.15'}
     hasBin: true
 
-  '@veda-hq/sarathi@0.5.15':
-    resolution: {integrity: sha512-g+K8PHK0bEN9Oi+yW91JD9UjSnuiWdtbod9ym/KTpW//1ubguJTwW8gPOsV1TStC2oO6CkDAAv62QpM1qvuXig==}
+  '@veda-hq/sarathi@0.6.0':
+    resolution: {integrity: sha512-g9C9Gy1Ee95J5LoBxPQxVv6aiNgOiQAqlcuRyRzsNmh4SmFsqhH3IZ3b4Ayi4L+uwGclCAntgJuLf5SluX4eRQ==}
     engines: {node: '>=24.15'}
     hasBin: true
 
@@ -1189,11 +1189,11 @@ snapshots:
   '@typescript/typescript-win32-x64@7.0.2':
     optional: true
 
-  '@veda-hq/kavach@0.5.6': {}
+  '@veda-hq/kavach@0.6.0': {}
 
-  '@veda-hq/sarathi@0.5.15':
+  '@veda-hq/sarathi@0.6.0':
     dependencies:
-      '@veda-hq/kavach': 0.5.6
+      '@veda-hq/kavach': 0.6.0
 
   acorn-jsx@5.3.2(acorn@8.19.0):
     dependencies:

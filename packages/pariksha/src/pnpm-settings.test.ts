@@ -59,11 +59,19 @@ const lockBlocks = (overrides: string[], patches: string[]): string => ["lockfil
 const DOCUMENTED = ['# WHY: pinned inside the cooling-off window by the evidence work.', '# EXPIRES: 2099-01-01T00:00Z — delete both lines once the pins age out.'];
 const EXPIRED = ['# WHY: pinned inside the cooling-off window by the evidence work.', '# EXPIRES: 2026-09-02T18:54Z, 1440 minutes after publication.'];
 
+// veda exempts its own scope from the release age (pnpm-workspace.yaml): a
+// standing entry, so the repository passes with it named and fails without.
+const VEDA: PnpmConfig = { ...DEFAULT_PNPM_CONFIG, ownScopes: ['@veda-hq/*'] };
+
 describe('pnpm-settings: this repository', () => {
   it('passes, and is no vacuous pass: it has a lockfile to read', () => {
-    const report = check(REPO_ROOT, DEFAULT_PNPM_CONFIG);
+    const report = check(REPO_ROOT, VEDA);
     assert.deepEqual(report.failures, []);
     assert.equal(report.releaseAgeExclusionCount, 0);
+  });
+
+  it('its own-scope entry is an exception to any config that does not own the scope', () => {
+    assert.match(check(REPO_ROOT, DEFAULT_PNPM_CONFIG).failures.join('\n'), /`@veda-hq\/\*` is not pinned to an exact version/);
   });
 });
 
@@ -534,6 +542,8 @@ describe('pnpm-settings: the CLI', () => {
 
   it('reads this repository’s own files', () => {
     assert.ok(readFileSync(join(REPO_ROOT, 'pnpm-lock.yaml'), 'utf8').length > 0);
-    assert.equal(runCli(['--root', REPO_ROOT]).code, 0);
+    const config = join(temp('pariksha-pnpm-veda-'), 'pnpm-settings.json');
+    writeFileSync(config, JSON.stringify({ ownScopes: VEDA.ownScopes }));
+    assert.equal(runCli(['--root', REPO_ROOT, '--config', config]).code, 0);
   });
 });

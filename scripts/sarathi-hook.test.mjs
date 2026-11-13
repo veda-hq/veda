@@ -14,10 +14,11 @@ const LAUNCHER = join(ROOT, '.claude', 'hooks', 'sarathi.sh');
 const scratch = mkdtempSync(join(tmpdir(), 'sarathi-hook-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
-/** @param {string} event @param {object} input @param {{ project?: string, env?: Record<string, string> }} [options] */
+/** @param {string} event @param {object} input @param {{ project?: string, env?: Record<string, string>, unset?: string[] }} [options] */
 function hook(event, input, options = {}) {
   const env = { ...process.env, CLAUDE_PROJECT_DIR: options.project ?? ROOT, KAVACH_REFUSAL_LOG_OFF: '1', ...options.env };
   if (options.env?.CLAUDE_CODE_DISABLE_ADVISOR_TOOL === undefined) delete env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL;
+  for (const name of options.unset ?? []) delete env[name];
   const result = spawnSync('bash', [LAUNCHER, event], { input: JSON.stringify(input), encoding: 'utf8', env, cwd: ROOT });
   return { code: result.status, stdout: result.stdout, stderr: result.stderr };
 }
@@ -100,6 +101,61 @@ describe('kavach through sarathi, from the pinned install', () => {
     const told = hook('SessionStart', { hook_event_name: 'SessionStart', cwd: ROOT, source: 'startup' }, { env });
     assert.equal(told.code, 0);
     assert.match(JSON.parse(told.stdout).systemMessage, /advisor/);
+  });
+});
+
+// .claude/kavach.json lists the niyam command lines a session may run although
+// kavach cannot prove them read-only: they write nothing locally (niyam 0.6.14
+// audited) and run only in a Claude Code session (CLAUDECODE=1). The refused
+// rows fail for one reason or another (no owned worktree in CI, unresolved
+// targets in a session's worktree), so they assert only the refusal.
+describe('the niyam CLI, through .claude/kavach.json', () => {
+  const session = { env: { CLAUDECODE: '1' } };
+  const allowed = [
+    'niyam --version',
+    'niyam -v',
+    'niyam version',
+    'niyam propose 54',
+    'niyam propose 54 55 --page https://claude.ai/artifact/7UMPUd2KFsEzuZqwofNH6G',
+    'niyam propose 54 --page=https://claude.ai/code/artifact/ab_cd-12',
+    'niyam review-thread PRRT_kwDOabc_12-x --resolve',
+    'niyam onboard --dry-run',
+    'niyam --version | head -n 1',
+  ];
+  const refused = [
+    'niyam onboard',
+    'niyam onboard --dry-run --yes',
+    'niyam propose #54',
+    'niyam propose 54 --page https://example.com/artifact/x',
+    'niyam propose 54 --page "https://claude.ai/artifact/x"',
+    'niyam propose 54 --page https://claude.ai/artifact/$(touch x)',
+    'niyam propose 54 > out.txt',
+    'niyam propose 54; touch x',
+    'niyam review-thread PRRT_x --reply "done"',
+    'niyam review-thread PRRT_x --resolve --reply x',
+    'FOO=1 niyam --version',
+    './niyam --version',
+    'env niyam --version',
+    'niyam pre-push',
+  ];
+  for (const command of allowed) {
+    test(`passes: ${command}`, () => {
+      const { code, stderr } = hook('PreToolUse', bash(command), session);
+      assert.equal(code, 0, stderr);
+    });
+  }
+  for (const command of refused) {
+    test(`refused: ${command}`, () => {
+      assert.equal(hook('PreToolUse', bash(command), session).code, 2);
+    });
+  }
+  test('refused outside a Claude Code session', () => {
+    assert.equal(hook('PreToolUse', bash('niyam --version'), { unset: ['CLAUDECODE'] }).code, 2);
+    assert.equal(hook('PreToolUse', bash('niyam --version'), { env: { CLAUDECODE: 'true' } }).code, 2);
+  });
+  test('refused from a subfolder', () => {
+    const { code } = hook('PreToolUse', { ...bash('niyam --version'), cwd: join(ROOT, 'packages') }, session);
+    assert.equal(code, 2);
   });
 });
 

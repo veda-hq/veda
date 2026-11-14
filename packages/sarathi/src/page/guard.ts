@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, openSync, readFileSync } from 'node:fs';
+import { appendFileSync, closeSync, openSync, readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { confirmedVersion, toolCalls } from './protocol.ts';
 
@@ -194,9 +194,17 @@ export function hook(stdin: string): void {
   process.exitCode = main(stdin, process.env, readText, writeErr);
 }
 
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
-) {
+/**
+ * Whether `script` (the path node was given) is the module at `moduleUrl`.
+ * Node loads a module by its real path, so a script reached through a
+ * symlink (a pnpm install's `node_modules/@veda-hq/sarathi`) is compared by
+ * its real path too: a mismatch would make the hook a no-op, exit 0, which
+ * lets the call run.
+ */
+export function isEntry(script: string | undefined, moduleUrl: string): boolean {
+  return script !== undefined && script !== '' && moduleUrl === pathToFileURL(realpathSync(script)).href;
+}
+
+if (isEntry(process.argv[1], import.meta.url)) {
   readInput(process.stdin, hook);
 }

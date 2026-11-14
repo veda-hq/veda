@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
@@ -18,6 +18,7 @@ import {
   detail,
   envFrom,
   hook,
+  isEntry,
   main,
   readInput,
   readText,
@@ -329,6 +330,22 @@ describe('as the hook runs it', () => {
     const refused = run('publish');
     expect(refused.status).toBe(2);
     expect(refused.stderr).toContain('may only read');
+  });
+
+  it('still blocks when started through a symlink, as from a pnpm install', () => {
+    const guard = fileURLToPath(new URL('./guard.ts', import.meta.url));
+    const link = join(scratch(), 'guard.ts');
+    symlinkSync(guard, link);
+    const refused = spawnSync(process.execPath, [link], {
+      input: JSON.stringify({ tool_name: 'Artifact', tool_input: { action: 'publish' } }),
+      env: { ...process.env, PUBLISH_GUARD_MODE: 'read' },
+      encoding: 'utf8',
+    });
+    expect(refused.status, refused.stderr).toBe(2);
+    expect(isEntry(link, new URL('./guard.ts', import.meta.url).href)).toBe(true);
+    expect(isEntry(undefined, import.meta.url)).toBe(false);
+    expect(isEntry('', import.meta.url)).toBe(false);
+    expect(isEntry(guard, import.meta.url)).toBe(false);
   });
 });
 

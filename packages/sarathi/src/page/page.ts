@@ -662,11 +662,11 @@ export function parseStream(stdout: string): {
 /**
  * The CLAUDE_CODE_ENTRYPOINT the one-off session runs under. `claude -p`
  * offers the Artifact family by it: under the desktop app (claude-desktop)
- * and once in a cloud session (remote, 0103 R-09; no longer, since the cloud
- * sets CLAUDE_CODE_DISABLE_ARTIFACT, 2026-10-31), not under a terminal `claude`
- * (cli), Codex or none set. A cloud parent passes its own on, since
- * cloud-check.sh reads it and it is never set; any other runs as the desktop
- * app's child would. Only the one-off session sees the value, so desktop,
+ * and once in a cloud session (remote; no longer, since the cloud sets
+ * CLAUDE_CODE_DISABLE_ARTIFACT, 2026-10-31), not under a terminal `claude`
+ * (cli), Codex or none set. A cloud parent passes its own on, so the child
+ * still reads as a cloud session; any other runs as the desktop app's child
+ * would. Only the one-off session sees the value, so desktop,
  * terminal and cloud sessions can all publish.
  */
 export function childEntrypoint(parent: string | undefined): string {
@@ -925,7 +925,7 @@ function session(job: Job, spawn: Spawn, scratchRoot: string): string {
         ...process.env,
         CLAUDE_CODE_ENTRYPOINT: entrypoint,
         // Each run's cwd is a new temp folder, so Claude Code would leave a new
-        // empty memory folder under its projects folder every time (0165 L-01).
+        // empty memory folder under its projects folder every time.
         CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
         ...(guard && {
           ...guard,

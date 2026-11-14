@@ -1,0 +1,47 @@
+{
+  "name": "@veda-hq/agnipariksha",
+  "version": "0.6.8",
+  "description": "Mutation gate over stock StrykerJS: mutates the files a push changed, lane by lane, and blocks on a surviving mutant. Lanes come from agnipariksha.json. Also an arid-node ignorer plugin: @veda-hq/agnipariksha/arid-nodes.",
+  "keywords": ["mutation testing", "stryker", "gate", "pre-push", "ci", "coding agents"],
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24.15"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/veda-hq/veda.git",
+    "directory": "packages/agnipariksha"
+  },
+  "homepage": "https://github.com/veda-hq/veda/tree/main/packages/agnipariksha#readme",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "bin": {
+    "agnipariksha": "dist/cli.js"
+  },
+  "exports": {
+    "./arid-nodes": "./arid-nodes.mjs",
+    "./dist/*": "./dist/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "arid-nodes.mjs"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts src/**/*.test.ts",
+    "smoke": "out=$(node dist/cli.js --files none); code=$?; echo \"$out\"; case \"$out\" in *'REFUSED: no agnipariksha.json at '*) [ $code = 2 ] ;; *) false ;; esac && node --input-type=module -e \"const m = await import('@veda-hq/agnipariksha/arid-nodes'); const [p] = m.strykerPlugins; if (m.strykerPlugins.length !== 1 || p.kind !== 'Ignore' || p.name !== 'agnipariksha-arid-nodes' || typeof new p.injectableClass().shouldIgnore !== 'function') throw new Error('arid-nodes is not a Stryker Ignore plugin');\"",
+    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
+  },
+  "peerDependencies": {
+    "@stryker-mutator/core": ">=10.1.1 <11"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "5.9.3"
+  }
+}

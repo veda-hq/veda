@@ -1,6 +1,11 @@
 packages:
   - packages/*
 
+# A package's peer is the consumer's to install. agnipariksha's
+# @stryker-mutator/core would otherwise bring Stryker's whole tree into veda,
+# which never runs it.
+autoInstallPeers: false
+
 # A package version must be a day old before it installs: a hijacked release is
 # usually caught and pulled within hours.
 minimumReleaseAge: 1440

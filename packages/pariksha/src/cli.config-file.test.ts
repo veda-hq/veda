@@ -98,6 +98,28 @@ describe('.pariksha.json', () => {
     assert.match(c.err[0] ?? '', /ENOENT.*gone\.json.*nothing was checked/);
   });
 
+  it('judges every file when the selection changes the check’s own settings, and only then', () => {
+    const MD = JSON.stringify({ include: '\\.md$' });
+    const committed = (files: Record<string, string>): string => {
+      const root = repo(files);
+      git(root, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base');
+      return root;
+    };
+    const staged = (root: string, path: string, body: string): number => {
+      writeFileSync(join(root, path), body);
+      git(root, 'add', path);
+      return run(['absolute-paths', '--root', root, '--staged'], capture(root).io, '1.0.0', {}) as number;
+    };
+    // A file entry: an edit elsewhere in .pariksha.json leaves its run to the staged files.
+    const fileEntry = committed({ ...NOTE, 'cfg/abs.json': MD, '.pariksha.json': '{"checks": {"absolute-paths": "cfg/abs.json"}}' });
+    assert.equal(staged(fileEntry, '.pariksha.json', '{"checks": {"absolute-paths": "cfg/abs.json", "flaky-tests": "cfg/abs.json"}}\n'), 0);
+    // Its own file changed: every tracked document, the old note too.
+    assert.equal(staged(fileEntry, 'cfg/abs.json', `${MD}\n`), 1);
+    // An inline entry's settings are .pariksha.json itself.
+    const inline = committed({ ...NOTE, '.pariksha.json': JSON.stringify({ checks: { 'absolute-paths': { include: '\\.md$' } } }) });
+    assert.equal(staged(inline, '.pariksha.json', JSON.stringify({ checks: { 'absolute-paths': { include: '\\.mdx?$' } } })), 1);
+  });
+
   it('names an inline entry by the config file in a check’s own messages', () => {
     const entry = { vitest: { configs: ['apps/a/vitest.config.mjs'], requiredExcludes: ['**/*.test.ts'] } };
     const root = repo({ 'x.md': '', '.pariksha.json': JSON.stringify({ checks: { 'coverage-exemptions': entry } }) });
@@ -114,6 +136,17 @@ describe('.pariksha.json for flag-only checks', () => {
     const root = repo({ 'rule.md': RULE, 'other.md': RULE.replace('| 5 |', '| 1 |'), 'a.md': 'abc', '.pariksha.json': JSON.stringify({ checks: { 'doc-budgets': { table: 'rule.md', section: 'Sizes' } } }) });
     assert.equal(run(['doc-budgets', '--root', root], capture(root).io, '1.0.0', {}), 0);
     assert.equal(run(['doc-budgets', '--root', root, '--table', 'other.md'], capture(root).io, '1.0.0', {}), 1);
+  });
+
+  it('reads doc-budgets’ table from the config file’s folder, not from --root', () => {
+    const root = repo({ 'rule.md': RULE, '.pariksha.json': JSON.stringify({ checks: { 'doc-budgets': { table: 'rule.md', section: 'Sizes' } } }) });
+    // A snapshot of the documents alone: the table stays the checkout's.
+    const snapshot = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-snap-')));
+    writeFileSync(join(snapshot, 'a.md'), 'abcdefgh');
+    writeFileSync(join(snapshot, 'rule.md'), '');
+    const c = capture(root);
+    assert.equal(run(['doc-budgets', '--root', snapshot], c.io, '1.0.0', {}), 1);
+    assert.match([...c.out, ...c.err].join('\n'), /a\.md/);
   });
 
   it('sets authority-citations’ authorities from a list, read from a file entry', () => {

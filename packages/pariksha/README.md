@@ -41,7 +41,9 @@ or a CI step runs `pariksha <check> --staged` and names no settings file.
   `node_modules`, so a shared package can hold them.
 - **Flag-only checks.** `authority-citations` reads `authority` and
   `issuePrefix` (a string, or a list of strings) and `adrDir`; `doc-budgets`
-  reads `table` and `section`. Each is the flag of the same name.
+  reads `table` and `section`. Each is the flag of the same name. `table`
+  is a file, read from the config file's folder as an entry's path is;
+  `adrDir` is the folder citations name, under `--root`.
 - **Precedence.** `--config` on the command line wins over the entry, and a
   flag over a field. The entry wins over the check's built-in default.
 - **Errors.** A key other than `checks` (and `$schema`), a check that takes
@@ -67,9 +69,11 @@ or a CI step runs `pariksha <check> --staged` and names no settings file.
 Deleted files, symlinks and submodules are never listed. A ref that starts
 with `-`, or names no commit, exits 2, and so does a git that fails: a
 listing that failed never reads as "no files". When the selection changes
-the check's own settings (its `.pariksha.json`, or the file its entry or
-`--config` names), the check judges every tracked file instead: a tightened
-check meets the code it did not change.
+the file the check's settings are read from, the check judges every tracked
+file instead: a tightened check meets the code it did not change. That file
+is the one `--config` or the entry names; for an inline entry it is
+`.pariksha.json` itself. So an edit to one file entry, or to another check's
+entry, widens no other check's run.
 
 ## `absolute-paths`
 
@@ -754,7 +758,10 @@ So the files (named as words, and in the `--files-from` list) are grouped by
 owner, and each group runs `eslint --no-warn-ignored <eslint args> <files>`
 with that workspace's own binary (`<workspace>/node_modules/.bin/eslint`, else
 the root's), from that workspace's folder, its output on pariksha's own
-streams. What follows `--` is passed to ESLint as it is.
+streams. What follows `--` is passed to ESLint as it is. File paths are
+relative to `--root`, by default the top level of the checkout it runs in
+(outside git, the folder itself), so a run from a workspace folder groups the
+same way.
 
 ```json
 { "workspaces": ["apps", "packages"], "routes": { "apps/mobile/scripts/": "." } }

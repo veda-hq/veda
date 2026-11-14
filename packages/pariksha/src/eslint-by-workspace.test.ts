@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -141,6 +142,16 @@ describe('pariksha eslint-by-workspace', () => {
     const c = capture(root, runner, 'b.ts\nc.ts\n');
     assert.equal(run(['eslint-by-workspace', '--root', root, 'a.ts', '--files-from', '-', '--', '--max-warnings=0', '--format=x'], c.io, '1.0.0', {}), 0);
     assert.deepEqual(calls[0]?.args, ['--no-warn-ignored', '--max-warnings=0', '--format=x', 'a.ts', 'b.ts', 'c.ts']);
+  });
+
+  it('reads paths from the checkout’s top level when run from a workspace folder', () => {
+    const root = temp();
+    execFileSync('git', ['init', '-q'], { cwd: root });
+    bin(root, 'apps/w');
+    mkdirSync(join(root, 'apps/w/src'), { recursive: true });
+    const { calls, runner } = recorder();
+    assert.equal(run(['eslint-by-workspace', 'apps/w/src/a.ts'], capture(join(root, 'apps/w/src'), runner).io, '1.0.0', {}), 0);
+    assert.deepEqual(calls[0] && { cwd: calls[0].cwd, file: calls[0].args.at(-1) }, { cwd: join(root, 'apps/w'), file: 'src/a.ts' });
   });
 
   it('reads its routes from .pariksha.json', () => {

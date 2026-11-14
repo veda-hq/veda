@@ -2,7 +2,7 @@
 // pariksha: repository checks. One subcommand per check.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkAbsolutePaths, DEFAULT_GUIDANCE as ABSOLUTE_PATHS_GUIDANCE } from './absolute-paths.ts';
 import { checkGates, DEFAULT_GATE_CONFIG, parseGateConfig as parseAggregateConfig } from './aggregate-gate-needs.ts';
@@ -78,7 +78,6 @@ const PROJECT_FILE = '\0config-file';
 /** The text of the settings `--config` names, or the inline entry's. */
 const configText = (f: Map<string, string>, root: string): string => f.get(INLINE) ?? readFileSync(resolve(root, f.get('--config') as string), 'utf8');
 
-/** `path` with its folders' links resolved, as git names the top level; itself when it does not exist. */
 /**
  * What `body` returns; when it throws, undefined, with the reason on stderr
  * after `prefix`: nothing was checked, and the caller exits 2, never 0.
@@ -92,6 +91,7 @@ const unchecked = <T>(prefix: string, io: Io, body: () => T): T | undefined => {
   }
 };
 
+/** `path` with its folders' links resolved, as git names the top level; itself when it does not exist. */
 const real = (path: string): string => {
   try {
     return realpathSync(path);
@@ -116,9 +116,12 @@ const listOf = (f: Map<string, string>, io: Io, root: string): string | undefine
   }
   const top = topOf(root);
   if (top === undefined) throw new Error(`${root} is not in a git repository, so --staged, --base and --all have nothing to list`);
+  // The file the settings are read from: an inline entry's is the config
+  // file itself, any other the file named. So an edit to one check's entry
+  // in `.pariksha.json` widens no other check's run.
   const configPath = f.get('--config');
-  const settings = [f.get(PROJECT_FILE), f.has(INLINE) || configPath === undefined ? undefined : resolve(root, configPath)].filter((p): p is string => p !== undefined);
-  return selectedList(gitAt(top), top, selection, settings.map(real));
+  const settings = f.has(INLINE) ? f.get(PROJECT_FILE) : configPath === undefined ? undefined : resolve(root, configPath);
+  return selectedList(gitAt(top), top, selection, settings === undefined ? [] : [real(settings)]);
 };
 
 export const DENY_FILE = '.veda/deny.sha256';
@@ -906,7 +909,10 @@ const eslintByWorkspace = (f: Map<string, string>, named: readonly string[], esl
     io.err(USAGE);
     return 2;
   }
-  const root = resolve(f.get('--root') ?? '.');
+  // Paths are relative to the checkout's top level, wherever it is run from;
+  // `--root` names another folder, and outside git the folder it runs in.
+  const here = (io.cwd ?? (() => process.cwd()))();
+  const root = resolve(f.get('--root') ?? topOf(here) ?? here);
   const read = unchecked(P, io, () => ({
     config: f.has('--config') ? parseEslintByWorkspaceConfig(configText(f, root)) : DEFAULT_ESLINT_BY_WORKSPACE,
     files: [...named, ...(from === undefined ? [] : entries(listFrom(from, io)))],
@@ -1030,25 +1036,28 @@ const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly
 
 /**
  * Checks whose flags `.pariksha.json` may set, by field: the value is a
- * string, or for a list flag a list of strings joined with commas.
+ * string, or for a list flag a list of strings joined with commas. A file
+ * field is read from the config file's folder, as a file entry is; `adrDir`
+ * is not a file to read but the folder citations name under `--root`.
  */
-const FLAG_FIELDS: Readonly<Record<string, Readonly<Record<string, { readonly flag: string; readonly list?: boolean }>>>> = {
+type FlagField = { readonly flag: string; readonly list?: boolean; readonly file?: boolean };
+const FLAG_FIELDS: Readonly<Record<string, Readonly<Record<string, FlagField>>>> = {
   'authority-citations': { authority: { flag: '--authority', list: true }, issuePrefix: { flag: '--issue-prefix', list: true }, adrDir: { flag: '--adr-dir' } },
-  'doc-budgets': { table: { flag: '--table' }, section: { flag: '--section' } },
+  'doc-budgets': { table: { flag: '--table', file: true }, section: { flag: '--section' } },
 };
 
 /** The checks an entry in `.pariksha.json` can configure: those taking `--config`, and those with settable flags. */
 export const CONFIGURABLE = [...Object.keys(COMMANDS).filter((name) => COMMANDS[name]?.allowed.includes('--config') || Object.hasOwn(FLAG_FIELDS, name)), 'eslint-by-workspace'].sort();
 
 /** A flag-only check's entry as its flags, onto `f` where the command line did not give them. */
-const applyFlags = (command: string, entry: Entry, f: Map<string, string>, version: string): void => {
-  const fields = FLAG_FIELDS[command] as Readonly<Record<string, { readonly flag: string; readonly list?: boolean }>>;
+const applyFlags = (command: string, entry: Entry, folder: string, f: Map<string, string>, version: string): void => {
+  const fields = FLAG_FIELDS[command] as Readonly<Record<string, FlagField>>;
   for (const [key, value] of Object.entries(entryObject(entry, command, version))) {
     const field = Object.hasOwn(fields, key) ? fields[key] : undefined;
     if (field === undefined) throw new Error(`checks.${command}: unknown field "${key}" (pariksha ${version}); ${command} reads ${Object.keys(fields).join(', ')}`);
     const text = field.list && Array.isArray(value) && value.every((v) => typeof v === 'string') ? value.join(',') : typeof value === 'string' ? value : undefined;
     if (text === undefined || text === '') throw new Error(`checks.${command}.${key} must be ${field.list ? 'a string or a list of strings' : 'a string'} (pariksha ${version})`);
-    if (!f.has(field.flag)) f.set(field.flag, text);
+    if (!f.has(field.flag)) f.set(field.flag, field.file ? resolve(folder, text) : text);
   }
 };
 
@@ -1060,14 +1069,14 @@ const applyFlags = (command: string, entry: Entry, f: Map<string, string>, versi
 const applyProject = (command: string, f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv, version: string): void => {
   const project = loadProjectConfig((io.cwd ?? (() => process.cwd()))(), env, CONFIGURABLE, version);
   const entry = project.checks.get(command);
-  if (entry === undefined) return;
+  if (entry === undefined || project.file === undefined) return;
   if (Object.hasOwn(FLAG_FIELDS, command)) {
-    applyFlags(command, entry, f, version);
+    applyFlags(command, entry, dirname(project.file), f, version);
     return;
   }
   if (f.has('--config')) return;
   f.set(FROM_PROJECT, '');
-  if (project.file !== undefined) f.set(PROJECT_FILE, project.file);
+  f.set(PROJECT_FILE, project.file);
   if (entry.kind === 'file') {
     f.set('--config', entry.path);
     return;

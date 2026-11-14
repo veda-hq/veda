@@ -7,8 +7,9 @@
 // them. A git that fails stops the check: a listing that failed must never
 // read as "no files".
 //
-// A change to the check's own settings (its `.pariksha.json` entry, or the
-// file the entry or `--config` names) judges every file: a tightened check
+// A change to the file the check's settings are read from (the one the entry
+// or `--config` names; `.pariksha.json` for an inline entry) judges every
+// file: a tightened check
 // must meet the code it did not change, and a change of settings alone would
 // otherwise check nothing.
 import { lstatSync } from 'node:fs';

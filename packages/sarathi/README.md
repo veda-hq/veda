@@ -1,8 +1,9 @@
 # @veda-hq/sarathi
 
 सारथि, charioteer. Runs a project's Claude Code hooks from one settings entry
-per event, with [kavach](../kavach)'s guards built in, and carries the
-sarathi plugin's agents. Part of [Veda](https://github.com/veda-hq/veda).
+per event, with [kavach](../kavach)'s guards built in, publishes claude.ai
+pages for sessions without the Artifact tools, and carries the sarathi
+plugin's agents. Part of [Veda](https://github.com/veda-hq/veda).
 
 ## Why a package and not only a plugin
 
@@ -173,6 +174,56 @@ While one is set (anything but empty, `0` or `false`), `sarathi hook` refuses
 every `PreToolUse` call before any handler runs, and at `SessionStart` and
 `UserPromptSubmit` tells both Claude and the user why and how to fix it. Other
 events are left alone. It acts only on events the settings route to sarathi.
+
+## Pages
+
+`sarathi page` publishes, reads and answers claude.ai pages (Artifacts) for a
+session that does not carry the Artifact tools. Their definitions cost about
+11,000 tokens per request, so a project can deny them in its settings and
+still publish:
+
+```sh
+sarathi page <page.html> [--title T] [--description D] [--icon I]
+sarathi page --read <artifact> [--out <page.html>]
+sarathi page <page.html> --url <artifact>
+sarathi page --comments <artifact>
+sarathi page --reply <artifact> --thread <id> --text-file <file> [--resolve]
+```
+
+Each job runs in a one-off `claude -p` session, in a new scratch directory
+outside the project, so it loads no project settings. It gets only the tools
+the job needs, and its success is judged by what those tools returned, not by
+what the session says. It prints the page URL, the threads, the saved path or
+the reply's outcome.
+
+**Updating a page someone may have changed.** Comment threads answered by
+Claude rewrite a page after it is published. `--read` saves the live page
+(by default `.tmp/pages/<id>.html`) and, beside it, `<page>.live.json`, which
+records the URL, the file, the version read and when. `--url` updates only
+from the file that record names, and uses the record up, so the next update
+starts from a fresh `--read`. In the update session a PreToolUse hook
+(`dist/page/guard.js`) refuses the publish unless that session's own read
+confirmed the recorded version, refuses a second publish and any other page,
+and turns any fault into a refusal. A read session may only read; a comments
+session makes no Artifact call. Accepted limit: the tool has no
+compare-and-set, so an edit that lands between the session's read and its
+publish is not seen.
+
+**The action box.** Every page opens, before its first `<h2>`, with an element
+marked `data-action-box`. It holds a link marked `data-action-link` with an
+https href to where the reader acts, and an element marked `data-if-silent`
+saying what happens if they do nothing. A link that opens a GitHub list (a
+search, a label, a project board) stands only beside links marked
+`data-action-item`, one per item. A page without a whole box is refused
+before any session starts.
+
+**When the account is at its usage limit**, a publish prints `NOT PUBLISHED`
+and the page's `file://` URL and exits 0; a read, comments or reply exits 1
+and names the last saved copy, if any.
+
+The session runs under `CLAUDE_CODE_ENTRYPOINT=claude-desktop` (or `remote`,
+from a cloud session), the entrypoint that offers the Artifact tools, and
+stops if it started without them.
 
 ## The working rules
 

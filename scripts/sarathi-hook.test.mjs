@@ -120,10 +120,18 @@ describe('the niyam CLI, through .claude/kavach.json', () => {
     'niyam propose 54 --page=https://claude.ai/code/artifact/ab_cd-12',
     'niyam review-thread PRRT_kwDOabc_12-x --resolve',
     'niyam onboard --dry-run',
+    'niyam onboard AlokBansal8 --dry-run',
+    'niyam onboard AlokBansal8 AthyaBot --dry-run',
     'niyam --version | head -n 1',
   ];
   const refused = [
     'niyam onboard',
+    'niyam onboard AlokBansal8 AthyaBot',
+    'niyam onboard AlokBansal8 AthyaBot --yes',
+    'niyam onboard a b c --dry-run',
+    'niyam onboard -owner --dry-run',
+    'niyam onboard owner- --dry-run',
+    'niyam onboard AlokBansal8 AthyaBot --features board --dry-run',
     'niyam onboard --dry-run --yes',
     'niyam propose #54',
     'niyam propose 54 --page https://example.com/artifact/x',

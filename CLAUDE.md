@@ -29,7 +29,8 @@ lists, kavach's guards among them.
   scripts (`pnpm check`). Give `git commit` its message with
   `-F .tmp/<file>`. The niyam lines `.claude/kavach.json` lists run from the
   worktree root (`niyam --version`, `niyam propose <n> --page <url>`,
-  `niyam review-thread <id> --resolve`, `niyam onboard --dry-run`); a
+  `niyam review-thread <id> --resolve`,
+  `niyam onboard <owner> <agent> --dry-run`); a
   `--reply "<text>"` with quotes does not.
 - **Command guard.** kavach refuses any bypass of git's hooks
   (`--no-verify`, `-c core.hooksPath=…`), and any push that rewrites or

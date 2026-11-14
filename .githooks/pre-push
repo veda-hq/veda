@@ -31,14 +31,15 @@ dvara_stage guards
 # niyam's own hook, as `niyam onboard` writes it, once veda is onboarded
 # (.github/niyam.json): anyone else's push goes ahead; an agent session's
 # push is refused without the CLI. onboard reads the "$cli" pre-push line as
-# its own and leaves this file alone.
+# its own and leaves this file alone. The CLI is the release package.json
+# pins (released-pins checked it above), never a copy on PATH or in
+# ~/.config, so every machine runs the same niyam.
 [ -f "$root/.github/niyam.json" ] || exit 0
 dvara_stage niyam
 [ -z "${NIYAM_AGENT:-}" ] && [ "${CLAUDECODE:-}" != 1 ] && exit 0
-cli="$HOME/.config/niyam/bin/niyam"
-[ -x "$cli" ] || cli=niyam
-if ! command -v "$cli" > /dev/null 2>&1; then
-  echo "niyam: the CLI is not installed, so this agent push cannot be checked" >&2
+cli="$root/node_modules/.bin/niyam"
+if [ ! -x "$cli" ]; then
+  echo "niyam: the pinned CLI is not installed (run pnpm install), so this agent push cannot be checked" >&2
   exit 1
 fi
 "$cli" pre-push "$@" <<< "$refs"

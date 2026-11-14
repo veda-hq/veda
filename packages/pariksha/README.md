@@ -15,10 +15,66 @@ ported from did), and 2 on a usage or input error. `--root <dir>` (default:
 the current directory) names the repository. Node 24 or later. MIT; one
 ported file is ISC, see `NOTICE`.
 
+## The config file
+
+One committed file, `.pariksha.json`, holds every check's settings, so a hook
+or a CI step runs `pariksha <check> --staged` and names no settings file.
+
+```json
+{
+  "checks": {
+    "shell-gates": "config/shell-gates.json",
+    "authority-citations": { "authority": ["Dana"], "issuePrefix": ["ACME"] },
+    "doc-budgets": { "table": "docs/standards/budgets.md" }
+  }
+}
+```
+
+- **Where.** `.pariksha.json` at the top level of the git repository holding
+  the working directory (the working directory itself outside one), or the
+  file the `PARIKSHA_CONFIG` environment variable names (relative to the
+  working directory). It is never looked for under `--root`, which a hook may
+  point at a snapshot of the index: the settings are the checkout's.
+- **Entries.** `checks` maps a check's name to its settings: a path, relative
+  to the config file's folder, to a file holding what the check's `--config`
+  file would hold, or the same settings inline. A path may lead into
+  `node_modules`, so a shared package can hold them.
+- **Flag-only checks.** `authority-citations` reads `authority` and
+  `issuePrefix` (a string, or a list of strings) and `adrDir`; `doc-budgets`
+  reads `table` and `section`. Each is the flag of the same name.
+- **Precedence.** `--config` on the command line wins over the entry, and a
+  flag over a field. The entry wins over the check's built-in default.
+- **Errors.** A key other than `checks` (and `$schema`), a check that takes
+  no settings or does not exist, or an entry that is neither a path nor an
+  object exits 2. The message names the key and the pariksha version, so a
+  file written for a newer pariksha says so. So does a missing file
+  `PARIKSHA_CONFIG` names. With no file and no variable, every check runs on
+  its defaults.
+- Checks that take no settings (`boundary`, `export-deletions`,
+  `python-floor`, `required-settings`, `schema-roots`) never read the file.
+
+## Choosing files
+
+`absolute-paths`, `non-synced-resources`, `coverage-by-type`,
+`duplicate-tests` and `flaky-tests` judge a list of files. Beside
+`--files-from`, each takes one of:
+
+- `--staged`: the files the index adds, changes or renames (by the new path);
+- `--base <ref> [--head <ref>]`: the files `head` (default `HEAD`) changes
+  since its merge base with `ref`;
+- `--all`: every file git tracks.
+
+Deleted files, symlinks and submodules are never listed. A ref that starts
+with `-`, or names no commit, exits 2, and so does a git that fails: a
+listing that failed never reads as "no files". When the selection changes
+the check's own settings (its `.pariksha.json`, or the file its entry or
+`--config` names), the check judges every tracked file instead: a tightened
+check meets the code it did not change.
+
 ## `absolute-paths`
 
 ```sh
-pariksha absolute-paths [--config <file>] [--files-from <file>|-] [--root <dir>]
+pariksha absolute-paths [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]
 ```
 
 A document that points at `/Users/me/notes.md` points at something only its
@@ -259,7 +315,7 @@ base without `--no-base`; a git call that fails. Needs `typescript`, as
 ## `coverage-by-type`
 
 ```sh
-pariksha coverage-by-type [--config <file>] [--files-from <file>|-] [--root <dir>]
+pariksha coverage-by-type [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]
 ```
 
 A source file in a category needs the tests its category names: by default a
@@ -483,7 +539,7 @@ lychee, a `--base` with no merge base, or a failed git call.
 ## `duplicate-tests`
 
 ```sh
-pariksha duplicate-tests [--config <file>] [--files-from <file>|-] [--root <dir>]
+pariksha duplicate-tests [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]
 ```
 
 A test copied rather than written: two tests whose matchers, names and
@@ -683,6 +739,67 @@ included), a git call that fails, or a failure while reading a file's code
 exits 2: an unread gate is never clean. Needs `typescript` only when a
 TypeScript or JavaScript file is gate code.
 
+## `eslint-by-workspace`
+
+```sh
+pariksha eslint-by-workspace [--config <file>] [--files-from <file>|-] [--root <dir>] [<file>...] [-- <eslint args>...]
+```
+
+Lints each file with the ESLint of the workspace that owns it. Flat config
+does not cascade: one ESLint run from the root lints a workspace's files under
+the root's config, and says nothing. ESLint 9's
+`--flag v10_config_lookup_from_file` finds each file's nearest config, but
+reads one `eslint-suppressions.json` per run, and a workspace keeps its own.
+So the files (named as words, and in the `--files-from` list) are grouped by
+owner, and each group runs `eslint --no-warn-ignored <eslint args> <files>`
+with that workspace's own binary (`<workspace>/node_modules/.bin/eslint`, else
+the root's), from that workspace's folder, its output on pariksha's own
+streams. What follows `--` is passed to ESLint as it is.
+
+```json
+{ "workspaces": ["apps", "packages"], "routes": { "apps/mobile/scripts/": "." } }
+```
+
+- `workspaces` (default `apps`, `packages`): folders whose subfolders are
+  workspaces. A file in no workspace belongs to the root, `.`.
+- `routes` (default none): a path, or a prefix ending in `/`, to the workspace
+  that lints it, the longest match first. For a file that lives in a
+  workspace but is linted by the root's config.
+
+It exits 1 when any group fails, has no ESLint, or cannot start (every group
+still runs), 0 when all pass or nothing is listed, and 2 on a bad config or
+list, or with no file and no list.
+
+## `eslint-targets`
+
+```sh
+pariksha eslint-targets --range <git range> [--config <file>] [--root <dir>]
+```
+
+A delta lint checks the files a change touched, so a change that touches only
+configuration (a rule switched on, a suppression dropped, a tsconfig a typed
+rule reads) lints nothing, and every file the new configuration fails merges
+green. This prints, one per line, the lint targets the range reaches, for a
+whole sweep; none is no line.
+
+A target is the root (`.`) or a workspace with an `eslint.config.*` and the
+lint `script`. Its inputs are its `eslint.config.*` and every repository file
+that config reaches by a relative import, a require or
+`path.resolve(__dirname, …)`, transitively; its `eslint-suppressions.json`;
+and, for a workspace, each top-level `tsconfig*.json`. Fixed names count
+whether or not they exist, and a specifier that resolves to nothing counts
+every path it could name, so a deletion still reaches the target it broke.
+Rules from an installed package are outside that graph: a range whose
+`pinFiles` diff adds or removes a line naming one of `lintPackages` reaches
+every target.
+
+```json
+{ "workspaces": ["apps", "packages"], "script": "lint:ci", "lintPackages": ["@acme/eslint-rules"], "pinFiles": ["package.json", "pnpm-lock.yaml"] }
+```
+
+Every field is optional; those are the defaults, bar `lintPackages` (default
+none). It exits 0 with its list, and 2 on a bad range, config or git.
+
 ## `export-deletions`
 
 ```sh
@@ -794,7 +911,7 @@ base without `--no-base`, a failed git call, or no `typescript`.
 ## `flaky-tests`
 
 ```sh
-pariksha flaky-tests [--config <file>] [--files-from <file>|-] [--runs <n>] [--root <dir>]
+pariksha flaky-tests [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--runs <n>] [--root <dir>]
 ```
 
 Runs the test files `--runs` times (default 5, at most 1000) with
@@ -876,7 +993,7 @@ did; a bad config or a failed git call exits 2.
 ## `non-synced-resources`
 
 ```sh
-pariksha non-synced-resources [--config <file>] [--files-from <file>|-] [--root <dir>]
+pariksha non-synced-resources [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]
 ```
 
 A link to a file that was never committed works for its writer and for

@@ -342,7 +342,7 @@ export const runGate = (options: GateOptions): GateReport => {
 const P = 'pariksha doc-references:';
 
 /** What the run prints: problems and what to do on stderr; the one-line verdict on stdout. */
-export const formatReport = (report: GateReport, options: Pick<GateOptions, 'config' | 'mode' | 'checks'>, configPath: string): { ok: boolean; out: string[]; err: string[] } => {
+export const formatReport = (report: GateReport, options: Pick<GateOptions, 'config' | 'mode' | 'checks'>, configPath: string | undefined): { ok: boolean; out: string[]; err: string[] } => {
   const { config, mode, checks } = options;
   const scope = mode.kind === 'staged' ? 'staged' : mode.kind === 'range' ? 'pushed' : 'all';
   if (report.wrote !== undefined) {
@@ -356,7 +356,8 @@ export const formatReport = (report: GateReport, options: Pick<GateOptions, 'con
     err.push(`${P} ${report.failures.length} unresolved reference(s) in ${files} file(s). Fix each; one that names something absent on purpose (a quoted finding, a deleted or planned file) ends its line with <!-- ${config.exemptWord}: <why> --> (in code, a comment holding ${config.exemptWord}: <why>).`);
   }
   const changed = new Set(report.changed);
-  const lower = `pariksha doc-references --config ${configPath} --all --update-baseline`;
+  // Settings from .pariksha.json need no --config to be found again.
+  const lower = `pariksha doc-references${configPath === undefined ? '' : ` --config ${configPath}`} --all --update-baseline`;
   for (const entry of report.slack) {
     const line = `${P} ${config.baseline}: ${entry.file} ${entry.check}: baseline ${entry.baseline}, now ${entry.actual}; lower it: ${lower}`;
     (changed.has(entry.file) ? err : out).push(line);

@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { devNull, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -204,9 +204,16 @@ function repo(/** @type {string[]} */ tags, /** @type {Record<string, string>} *
   const dir = mkdtempSync(join(tmpdir(), 'version-rule-'));
   // No automatic maintenance: a commit's detached `git maintenance run --auto`
   // outlives it and can write into the repository while the test removes it
-  // (ENOTEMPTY).
+  // (ENOTEMPTY). Nor the caller's git config: an agent session passes
+  // tag.gpgsign=true through GIT_CONFIG_*, which makes `git tag` ask for a
+  // message.
+  const env = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_'))),
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: devNull,
+  };
   const git = (/** @type {string[]} */ ...args) =>
-    execFileSync('git', ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0', ...args], { cwd: dir, stdio: 'pipe' });
+    execFileSync('git', ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0', ...args], { cwd: dir, env, stdio: 'pipe' });
   git('init', '-q');
   git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'root');
   for (const t of tags) git('tag', t);

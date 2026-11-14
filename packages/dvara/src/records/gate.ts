@@ -107,7 +107,10 @@ export const parseArgs = (
 
 export interface Settings {
   readonly records: RecordsConfig;
-  /** Refs tried in order for the base a staged change is judged against. */
+  /**
+   * Refs tried in order for the base a staged change is judged against;
+   * every one that resolves is also pushed history, for cited commits.
+   */
   readonly baseRefs: readonly string[];
   /** Paths the gate never reads besides the baseline: the config file, say. */
   readonly own?: readonly string[];
@@ -340,7 +343,20 @@ const runChecks = (
     );
     return baseRenames.get(path);
   };
-  const tree = treeContext(repo, planned.ref, planned.branchBase, renamedFrom);
+  // Pushed history: HEAD's, and that of the ref CI names and the base refs.
+  const pushed = [
+    ...new Set([
+      ...(options.base === null ? [] : [options.base]),
+      ...settings.baseRefs,
+    ]),
+  ];
+  const tree = treeContext(
+    repo,
+    planned.ref,
+    planned.branchBase,
+    renamedFrom,
+    pushed,
+  );
   const recording = options.writeBaseline || options.survey;
   let baseline: Baseline = { files: pathMap() };
   let before: Baseline | null = null;

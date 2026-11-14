@@ -13,8 +13,11 @@
  * a module here, owned by the colocated suite of the same name:
  * `vacuous-assertion` (TEST-WEAK-03), `test-structure` (TEST-STRUCT-02),
  * `process-hygiene` (SHELL-09 and TEST-STRUCT-11), `sql-fake` (TEST-WEAK-10)
- * and `detox` (TEST-WEAK-01). `helpers.js` holds only what two or more
- * families read; a family imports nothing from another.
+ * and `detox` (TEST-WEAK-01), with two single-rule modules:
+ * `jsonnull-in-matcher` (a TEST-WEAK-03 shape: a Prisma null sentinel inside
+ * a partial matcher) and `import-meta-cjs` (a SHELL-09 script rule:
+ * `import.meta.dirname` in a file tsx runs as CommonJS). `helpers.js` holds
+ * only what two or more families read; a family imports nothing from another.
  *
  * `c05.js` adds three to the same test-file block: a test that returns before
  * its assertions with none on the return path, a recursive removal of a path
@@ -63,6 +66,8 @@ import {
   variableOf,
   WRAPPERS,
 } from './helpers.js';
+import { noImportMetaDirnameCjs } from './import-meta-cjs.js';
+import { jsonnullInMatcher } from './jsonnull-in-matcher.js';
 import {
   cliEntryHelper,
   detachedTeardown,
@@ -199,6 +204,8 @@ export const rules = {
   'spawn-timeout': spawnTimeout,
   'no-raw-group-kill': noRawGroupKill,
   'detached-teardown': detachedTeardown,
+  'jsonnull-in-matcher': jsonnullInMatcher,
+  'no-import-meta-dirname-cjs': noImportMetaDirnameCjs,
 };
 
 /** The c05 candidate extensions (`c05-candidates.js`), in catalogue order. */

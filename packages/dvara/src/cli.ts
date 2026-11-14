@@ -17,6 +17,7 @@ import {
 import { runner } from "./records/git.ts";
 import { listFor, readStageLists } from "./stages.ts";
 import { supervise, type Options } from "./supervisor.ts";
+import { GIT_TRAILER_KEYS, misplacedTrailers, refusal } from "./trailers.ts";
 
 export interface Io {
   readonly out: (line: string) => void;
@@ -31,8 +32,11 @@ export const USAGE = [
   "                                            the record gate: no new non-durable paths, a baseline that only falls",
   "       dvara frozen <--staged | --base REF [--head REF]>",
   "                                            refuse changes to the frozen paths",
+  "       dvara trailers <commit-msg-file>     refuse trailer lines git would not read (commit-msg)",
   "       dvara --version",
 ].join("\n");
+
+export const TRAILERS_USAGE = "usage: dvara trailers <commit-msg-file>";
 
 const SHELL_HELPERS = new Set(["stages", "keep-going"]);
 
@@ -53,24 +57,73 @@ export interface Context {
   readonly options?: Partial<Options>;
 }
 
+type CheckName = "records" | "frozen" | "trailers";
+
+const CHECK_USAGE: Readonly<Record<CheckName, string>> = {
+  records: RECORDS_USAGE,
+  frozen: FROZEN_USAGE,
+  trailers: TRAILERS_USAGE,
+};
+
+/** `dvara trailers` takes one argument: the commit message file git passes. */
+const parseTrailersArgs = (
+  args: readonly string[],
+): { file: string } | { error: string } => {
+  const [file] = args;
+  return file === undefined || args.length !== 1
+    ? { error: "give one commit message file" }
+    : { file };
+};
+
 /**
- * `dvara records` or `dvara frozen` at the root `cwd`: 2 on bad arguments, a
- * config it cannot read, or git failing.
+ * `dvara trailers <file>`: 1 when a known trailer line sits above the last
+ * paragraph. The file is read relative to `cwd`, as git runs a hook at the
+ * top of the working tree and passes `.git/COMMIT_EDITMSG`.
+ */
+const trailers = (
+  file: string,
+  keys: readonly string[],
+  { io, cwd }: Context,
+): number => {
+  let text: string;
+  try {
+    text = readFileSync(resolve(cwd, file), "utf8");
+  } catch (error) {
+    throw new Error(`cannot read ${file}: ${(error as Error).message}`, {
+      cause: error,
+    });
+  }
+  const misplaced = misplacedTrailers(text, [...GIT_TRAILER_KEYS, ...keys]);
+  if (misplaced.length === 0) return 0;
+  for (const line of refusal(file, misplaced)) io.err(line);
+  return 1;
+};
+
+/**
+ * `dvara records`, `dvara frozen` or `dvara trailers` at the root `cwd`: 2 on
+ * bad arguments, a config or file it cannot read, or git failing.
  */
 const checkCommand = (
-  command: "records" | "frozen",
+  command: CheckName,
   args: readonly string[],
-  { io, cwd, env }: Context,
+  context: Context,
 ): number => {
+  const { io, cwd, env } = context;
   const parsed =
-    command === "records" ? parseRecordsArgs(args) : parseFrozenArgs(args);
+    command === "records"
+      ? parseRecordsArgs(args)
+      : command === "frozen"
+        ? parseFrozenArgs(args)
+        : parseTrailersArgs(args);
   if ("error" in parsed) {
     io.err(`dvara ${command}: ${parsed.error}`);
-    io.err(command === "records" ? RECORDS_USAGE : FROZEN_USAGE);
+    io.err(CHECK_USAGE[command]);
     return 2;
   }
   try {
     const config = loadConfig(cwd, env);
+    if ("file" in parsed)
+      return trailers(parsed.file, config.trailerKeys, context);
     const repo = { cwd, env };
     if ("mode" in parsed)
       return records(parsed, repo, io.out, {
@@ -107,7 +160,7 @@ export const run = async (
     io.out(shellHelper(rest[0] ?? ""));
     return 0;
   }
-  if (command === "records" || command === "frozen")
+  if (command === "records" || command === "frozen" || command === "trailers")
     return checkCommand(command, rest, context);
   if (
     (command === "run" && rest.length > 0) ||

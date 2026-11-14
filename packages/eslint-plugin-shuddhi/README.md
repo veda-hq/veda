@@ -50,7 +50,7 @@ of globs, with a `namespace` parameter:
 | input parsing | `no-hand-rolled-argv`, `env-through-schema`, `strict-scalar-parse`, `schema-parse-untrusted`, `schema-satisfies-contract`, `prisma-json-through-schema`, `no-regex-structured-parse` | `inputParsingConfigs` |
 | server boundary | `nest-body-dto`, `dto-field-constraints`, `no-local-api-contract`, `dto-implements-contract`, `no-capability-literal`, `compare-and-set` | `boundaryBlocks` |
 | NestJS and Prisma | `no-raw-sql-interpolation`, `nest-http-exception`, `prisma-transaction-multiwrite`, `nest-param-pipe`, `no-unbound-test-app`, `require-orderby-findfirst`, `no-self-mock-sut` | none |
-| test lint | 41 rules on test structure, vacuous assertions, process hygiene, fixtures and fakes | `testLintBlocks` |
+| test lint | 43 rules on test structure, vacuous assertions (among them `jsonnull-in-matcher`: a Prisma null sentinel inside `toMatchObject` or `objectContaining`), process hygiene, fixtures and fakes; and for scripts, `no-import-meta-dirname-cjs` (`import.meta.dirname` in a file tsx runs as CommonJS) | `testLintBlocks` |
 
 Every name of a repository's own helper (the safe-logging module, the child
 process runner, the argument parser, the contracts package) is a rule option,

@@ -12,7 +12,11 @@
 //   `--abbrev-commit`, `rev-parse --short`);
 // - a 40-hex id cited as a commit that is not one in this repository, among
 //   those the change adds (compared with the ids the file cited at the merge
-//   base). No baseline holds these: they are new by construction.
+//   base). No baseline holds these: they are new by construction;
+// - among those same added ids, a commit this clone has that is on no pushed
+//   history: neither HEAD nor a base ref reaches it, so a CI clone, which
+//   fetches only those, does not have it. A shallow clone cannot tell where
+//   a commit stands (its walk stops at the cut), so it judges none, as before.
 //
 // Captured output inside a fence is exempt from the token rule; its command
 // line is not.
@@ -236,7 +240,11 @@ export const commitIdentity = (
   const finding = (
     path: string,
     n: number,
-    check: "abbreviating-command" | "abbreviated-id" | "unresolved-id",
+    check:
+      | "abbreviating-command"
+      | "abbreviated-id"
+      | "unresolved-id"
+      | "unpushed-id",
     message: string,
   ): Finding => ({
     rule: "EVIDENCE-01",
@@ -333,8 +341,32 @@ export const commitIdentity = (
     );
     if (full.length === 0) return found;
     const types = tree.typesOf([...new Set(full.map((f) => f.sha))]);
+    // A commit this clone has may still be one CI's clone lacks: one made
+    // here and never pushed, or on a branch since deleted. Only history HEAD
+    // or a base ref reaches is fetched there. Asked of every commit, however
+    // the line names it: CI fails to resolve a bare id the same way.
+    const commits = [...types]
+      .filter(([, t]) => t === "commit")
+      .map(([s]) => s);
+    const history = commits.length === 0 ? null : tree.onHistory(commits);
     for (const { n, sha, asCommit } of full) {
       const type = types.get(sha);
+      if (type === "commit" && history?.unreached.has(sha)) {
+        const refs =
+          history.refs.length === 0
+            ? "a base ref (none resolves in this clone)"
+            : history.refs.join(" or ");
+        found.push({
+          ...finding(
+            path,
+            n,
+            "unpushed-id",
+            `${sha} is not on pushed history: it is neither an ancestor of HEAD nor of ${refs}, so CI cannot resolve it. Cite a commit that is merged or on this branch.`,
+          ),
+          ratchet: false,
+        });
+        continue;
+      }
       // Git prints blob and tree ids too: every object resolves, unless the
       // line names it a commit.
       if (type !== undefined && (!asCommit || type === "commit")) continue;

@@ -72,19 +72,32 @@ step's `if:`, or any `${{ … }}` in the job, outside quoted literals. Text in
 a `run:` script and an action input named `if` are not reads. A non-gating
 job (a change detector) need not be gated, but must be declared once read.
 
+The same command refuses a workflow that holds a gate and can also be
+dispatched (`workflow_dispatch` in `on:`, as one event, in a list or as a
+key), one line per gate under its own id, `dispatch-on-gate-workflow`. A
+dispatch run from a branch with an open pull request posts every job's check
+on the head commit, the gate among them as skipped, and that replaces the
+pull request run's success: a merge queue requiring the gate reads it as
+failed and dequeues the pull request. Ad-hoc runs belong in a separate
+workflow with no gate-named job.
+
 ```json
-{ "id": "CI-001", "workflowsDir": ".github/workflows", "gateName": "gate$", "nonGating": ["detect-changes"] }
+{ "id": "CI-001", "workflowsDir": ".github/workflows", "gateName": "gate$", "nonGating": ["detect-changes"], "dispatchAllowed": [] }
 ```
 
 - `id` (default `aggregate-gate-needs`) names the check in its messages: a
-  project's rule id, say.
+  project's rule id, say. The dispatch refusal keeps its own id.
 - `workflowsDir` (default `.github/workflows`, relative to the root).
 - `gateName` (default `gate$`) is a regex, matched case-insensitively.
 - `nonGating` (default none) lists job ids that gate nothing.
+- `dispatchAllowed` (default none) lists workflow file names (`release.yml`)
+  that may be dispatched beside a gate: one no merge queue requires, such as
+  an approval gate in a release workflow.
 
 A workflow that does not parse is reported as a gap, never passed. No
 workflow to read exits 1 (`no workflow files found — the lookup failed`),
-as the original did; a bad config exits 2.
+as the original did; a bad config exits 2. The clean line is unchanged: it
+prints only when both refusals find nothing.
 
 ## `authority-citations`
 
@@ -1029,6 +1042,38 @@ Parsing those is the job of a command guard such as kavach's `git_safety`.
 `permissions.defaultMode: "auto"` is not in it: Claude Code ignores `auto` in a
 project's settings and then also skips the user's own `defaultMode`, so it
 belongs in user settings only.
+
+## `schema-roots`
+
+```sh
+pariksha schema-roots [--files-from <file>|-] [--root <dir>] [<file>...]
+```
+
+The Anthropic API refuses a tool's `input_schema`, or a structured output's
+schema, with `allOf`, `anyOf` or `oneOf` at its root, answering 400:
+"input_schema does not support oneOf, allOf, or anyOf at the top level". The
+request fails before the first tool call, so an agent built on that schema
+dies at its start every time. This reads the JSON files it is given and refuses each such
+schema:
+
+- the value under `input_schema`, `inputSchema`, `output_schema`,
+  `outputSchema` or `json_schema`, and the `schema` inside a `json_schema`,
+  at any depth, in objects and arrays (a request's `tools` list, say);
+- the `schema` of an object whose `type` is `json_schema`, a structured
+  output format;
+- the root of a file named `*.schema.json`.
+
+A combinator below a schema's root is allowed, and a schema found is not read
+further: a property inside it named `input_schema` is a property. Each
+finding goes to stderr as `<file>: <json path>: top-level <keyword>`, with
+the fix: express the condition in code after the call returns.
+
+The files are the ones named on the command line and the ones `--files-from`
+lists, one path per line (a file, or `-` for stdin); relative paths are read
+from the root. Only `.json` files are read, so a list of changed files can
+hold others; YAML is not read. No file to read passes. The first `.json`
+file that cannot be read or is not plain JSON (one with comments, say) exits
+2, naming it, and no finding is printed; so does a list that cannot be read.
 
 ## `shell-gates`
 

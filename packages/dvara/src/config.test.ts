@@ -32,8 +32,13 @@ describe("parseConfig", () => {
       stages: { "pre-push": ["lint", "test"] },
       stageList: null,
       stageListRequired: ["pre-push"],
+      trailerKeys: [],
       records: DEFAULTS.records,
     });
+    assert.deepEqual(
+      parseConfig('{"trailerKeys": ["Slice", "Removes-File"]}').trailerKeys,
+      ["Slice", "Removes-File"],
+    );
     assert.deepEqual(parseConfig("{}"), DEFAULTS);
     assert.equal(parseConfig('{"watchdog": null}').watchdog, null);
   });
@@ -157,6 +162,10 @@ describe("parseConfig", () => {
       ['{"stageList": "..\\\\out.json"}', /stageList must be a file path/],
       ['{"stageList": "C:out.json"}', /stageList must be a file path/],
       ['{"stageListRequired": "pre-push"}', /stageListRequired must be a list/],
+      ['{"trailerKeys": "Slice"}', /trailerKeys must be a list/],
+      ['{"trailerKeys": [""]}', /trailerKeys must hold trailer keys/],
+      ['{"trailerKeys": ["Slice:"]}', /trailerKeys must hold trailer keys/],
+      ['{"trailerKeys": ["Two words"]}', /trailerKeys must hold trailer keys/],
       [
         '{"stages": {}, "stageList": "s.json"}',
         /give stages or stageList, not both/,

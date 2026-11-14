@@ -799,6 +799,95 @@ describe("CI: the branch and the whole tree", () => {
   });
 });
 
+describe("EVIDENCE-01 through the gate: cited commits on pushed history", () => {
+  const RFC = "docs/rfcs/0002-cites.md";
+
+  /**
+   * `work` on main (HEAD); `upstream` only on origin/main; `gone` on a branch
+   * since deleted, so only this clone's store has it.
+   */
+  const cited = template(() => {
+    const r = repo();
+    r.write(".gitignore", ".tmp/\n");
+    r.write(BASELINE, baseline({}));
+    r.write("docs/rfcs/0001-a.md", "# A\n");
+    r.commit("init");
+    const sha = () => r.git("rev-parse", "HEAD").trim();
+    r.git("checkout", "-q", "-b", "gone");
+    r.write("g.md", "g\n");
+    r.commit("gone");
+    r.write(".tmp/gone", sha());
+    r.git("checkout", "-q", "main");
+    r.git("branch", "-q", "-D", "gone");
+    r.git("checkout", "-q", "-b", "up");
+    r.write("u.md", "u\n");
+    r.commit("upstream");
+    r.git("update-ref", "refs/remotes/origin/main", "HEAD");
+    r.git("checkout", "-q", "main");
+    r.git("branch", "-q", "-D", "up");
+    r.write("w.md", "w\n");
+    r.commit("work");
+    return r;
+  });
+
+  const ids = (r: Repo) => ({
+    work: r.git("rev-parse", "HEAD").trim(),
+    upstream: r.git("rev-parse", "origin/main").trim(),
+    gone: readFileSync(join(r.root, ".tmp/gone"), "utf8"),
+  });
+
+  /** The real rules, with commit identity asked under docs/rfcs/. */
+  const real = (
+    r: Repo,
+    options: Partial<Options> & { mode: Options["mode"] },
+  ) => {
+    const lines: string[] = [];
+    const settings = {
+      ...DEFAULTS.records,
+      identityPaths: [/^docs\/rfcs\//],
+    };
+    const code = records(
+      { base: null, writeBaseline: false, survey: false, ...options },
+      { cwd: r.root, env: r.env },
+      (line) => lines.push(line),
+      { records: settings, baseRefs: ["origin/missing", "origin/main"] },
+    );
+    return { code, out: lines.join("\n") };
+  };
+
+  it("refuses a staged citation of a commit only this clone has, at pre-commit and in CI", () => {
+    const r = cited();
+    const { work, upstream, gone } = ids(r);
+    r.write(
+      RFC,
+      `# Cites\n\nBuilt from ${work}.\nMerged ${upstream}.\nFixed in ${gone}.\n`,
+    );
+    r.git("add", "-A");
+    const message = `${gone} is not on pushed history: it is neither an ancestor of HEAD nor of origin/main, so CI cannot resolve it. Cite a commit that is merged or on this branch.`;
+    const pre = real(r, { mode: "staged" });
+    assert.equal(pre.code, 1, pre.out);
+    assert.deepEqual(pre.out.split("\n").slice(1, 3), [
+      `${RFC} — EVIDENCE-01:`,
+      `  ${RFC}:5 [EVIDENCE-01/unpushed-id] ${message}`,
+    ]);
+    assert.doesNotMatch(pre.out, new RegExp(`${work}|${upstream}`));
+    r.commit("cites");
+    const ci = real(r, { mode: "base", base: "origin/main" });
+    assert.equal(ci.code, 1, ci.out);
+    assert.ok(ci.out.includes(`${RFC}:5 [EVIDENCE-01/unpushed-id] ${message}`));
+  });
+
+  it("passes the same citation once the commit is merged", () => {
+    const r = cited();
+    const { gone } = ids(r);
+    r.git("merge", "-q", "--no-edit", gone);
+    r.write(RFC, `# Cites\n\nFixed in ${gone}.\n`);
+    r.git("add", "-A");
+    const result = real(r, { mode: "staged" });
+    assert.equal(result.code, 0, result.out);
+  });
+});
+
 describe("arguments", () => {
   it("reads each mode", () => {
     for (const [args, expected] of [

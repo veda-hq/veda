@@ -66,10 +66,10 @@ library behaviour that surprised a working change.
   script as CommonJS, where `import.meta.dirname` is undefined and
   `path.resolve(import.meta.dirname, ...)` throws `ERR_INVALID_ARG_TYPE` at load, while Vitest
   runs the same file as ESM, so its tests pass. A green colocated suite proves nothing about the
-  real entry point. Resolve the script's folder with `dirname(fileURLToPath(import.meta.url))`,
-  run every new CLI once by hand (a dry run or `--help`) before calling it done, and make any
-  test that spawns the script assert the child ran (exit status 0 and expected stdout), not only
-  a missing side effect.
+  real entry point. Run every new CLI once by hand (a dry run or `--help`) before calling it
+  done, and make any test that spawns the script assert the child ran (exit status 0 and
+  expected stdout), not only a missing side effect.
+  <!-- held by: shuddhi no-import-meta-dirname-cjs (refuses import.meta.dirname in a file that runs as CommonJS); the run-it-once habit is not checked -->
 
 ## Lint and format
 

@@ -207,6 +207,16 @@ describe('run aggregate-gate-needs', () => {
     assert.deepEqual(p.out, ['✅ aggregate-gate-needs: every aggregate gate depends on all its jobs (1 workflow(s))']);
   });
 
+  it('refuses dispatch on a gate workflow unless the config allows that workflow', () => {
+    const root = workflows({ 'ci.yml': 'on:\n  pull_request:\n  workflow_dispatch:\njobs:\n  setup: {}\n  ci-gate:\n    needs: [setup]\n' });
+    const r = run0(['aggregate-gate-needs', '--root', root]);
+    assert.equal(r.code, 1);
+    assert.deepEqual(r.out, []);
+    assert.match(r.err[0] ?? '', /^❌ dispatch-on-gate-workflow: \.github\/workflows\/ci\.yml: workflow_dispatch on the workflow holding the required gate ci-gate\. /);
+    writeFileSync(join(root, 'gate.json'), JSON.stringify({ dispatchAllowed: ['ci.yml'] }));
+    assert.equal(run0(['aggregate-gate-needs', '--root', root, '--config', 'gate.json']).code, 0);
+  });
+
   it('exits 1 with no workflows, as the original did, and 2 on a bad config', () => {
     const root = tree({ 'bad.json': '{"gateName": "("}' }, false);
     const none = run0(['aggregate-gate-needs', '--root', root]);

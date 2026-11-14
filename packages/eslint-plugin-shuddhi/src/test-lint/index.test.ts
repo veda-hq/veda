@@ -51,6 +51,8 @@ const RULE_NAMES = [
   'spawn-timeout',
   'no-raw-group-kill',
   'detached-teardown',
+  'jsonnull-in-matcher',
+  'no-import-meta-dirname-cjs',
 ];
 
 describe('the test-lint rule map', () => {

@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, symlinkSync } from "node:fs";
+import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { pathToFileURL } from "node:url";
 import { hermeticEnv, repo, type Repo } from "./fixture.test.ts";
 import {
   batchObjectSize,
   git,
+  isShallow,
   listedIn,
   listModes,
   listTree,
@@ -23,6 +25,7 @@ import {
   treeContext,
   treeLists,
   tryGit,
+  unreachable,
   UnreadableObject,
   type Git,
 } from "./git.ts";
@@ -34,6 +37,30 @@ const committed = (): { r: Repo; at: Git } => {
   r.write("docs/b.md", "beta\n");
   r.commit("first");
   return { r, at: { cwd: r.root, env: r.env } };
+};
+
+/**
+ * `first` then `head` on main; `merged` on a branch origin/main points at,
+ * never merged into main; `side` on a local branch nothing else reaches.
+ */
+const histories = () => {
+  const { r, at } = committed();
+  const first = r.git("rev-parse", "HEAD").trim();
+  r.write("a.md", "second\n");
+  r.commit("second");
+  const head = r.git("rev-parse", "HEAD").trim();
+  r.git("checkout", "-q", "-b", "upstream", first);
+  r.write("u.md", "upstream\n");
+  r.commit("upstream");
+  const merged = r.git("rev-parse", "HEAD").trim();
+  r.git("update-ref", "refs/remotes/origin/main", merged);
+  r.git("checkout", "-q", "-b", "side", first);
+  r.write("s.md", "side\n");
+  r.commit("side");
+  const side = r.git("rev-parse", "HEAD").trim();
+  r.git("checkout", "-q", "main");
+  r.git("branch", "-q", "-D", "upstream");
+  return { r, at, first, head, merged, side };
 };
 
 /** A 4-hex prefix two blobs written to the store share. */
@@ -296,8 +323,10 @@ describe("recordingContext", () => {
       ],
     );
     assert.equal(context.baseText("a.md"), null);
+    assert.equal(context.onHistory(["s1"]), null);
     assert.deepEqual([...asked.shas], ["s1", "s2"]);
     assert.deepEqual([...asked.bases], ["a.md"]);
+    assert.deepEqual([...asked.history], ["s1"]);
   });
 
   it("answers the base text itself when there is no base commit", () => {
@@ -388,6 +417,58 @@ describe("treeContext", () => {
     assert.deepEqual([...tree.typesOf([])], []);
   });
 
+  it("judges where commits stand against HEAD and the base refs that resolve", () => {
+    const { r, at, first, head, merged, side } = histories();
+    const blob = r.git("rev-parse", "HEAD:a.md").trim();
+    const tree = treeContext(at, "HEAD", undefined, undefined, [
+      "origin/missing",
+      "origin/main",
+      "origin/main",
+    ]);
+    // A blob or a missing id is no commit: it is not sent to rev-list.
+    const missing = "0123456789abcdef0123456789abcdef01234567";
+    const history = tree.onHistory([first, head, merged, side, blob, missing]);
+    assert.deepEqual(history, {
+      unreached: new Set([side]),
+      refs: ["origin/main"],
+    });
+    // Asked again, from what it knows.
+    assert.deepEqual(tree.onHistory([side, head]), history);
+    // With no base refs, only HEAD's history counts.
+    assert.deepEqual(treeContext(at, "HEAD", undefined).onHistory([merged]), {
+      unreached: new Set([merged]),
+      refs: [],
+    });
+  });
+
+  it("counts a staged merge's other parent as the new commit's history", () => {
+    const { r, at, side } = histories();
+    writeFileSync(join(r.root, ".git", "MERGE_HEAD"), `${side}\n`);
+    assert.deepEqual(treeContext(at, ":", undefined).onHistory([side]), {
+      unreached: new Set(),
+      refs: [],
+    });
+    // A commit's tree has no merge in progress.
+    assert.deepEqual(
+      [
+        ...(treeContext(at, "HEAD", undefined).onHistory([side])?.unreached ??
+          []),
+      ],
+      [side],
+    );
+  });
+
+  it("judges nothing in a shallow clone, whose walk stops at its cut", () => {
+    const { r } = histories();
+    const clone = mkdtempSync(join(tmpdir(), "dvara-shallow-"));
+    r.git("clone", "-q", "--depth", "1", pathToFileURL(r.root).href, clone);
+    const at = { cwd: clone, env: r.env };
+    const tip = git(at, ["rev-parse", "HEAD"]).trim();
+    assert.equal(isShallow(at), true);
+    assert.equal(treeContext(at, "HEAD", undefined).onHistory([tip]), null);
+    assert.equal(isShallow({ cwd: r.root, env: r.env }), false);
+  });
+
   it("answers warmed questions in batches", () => {
     const { r, at } = committed();
     const base = r.git("rev-parse", "HEAD").trim();
@@ -402,5 +483,43 @@ describe("treeContext", () => {
     assert.deepEqual([...tree.typesOf([base])], [[base, "commit"]]);
     // With no base commit, only the ids are asked.
     treeContext(at, "HEAD", null).warm(asked);
+  });
+
+  it("warms history for the commits among the ids asked", () => {
+    const { r, at, head, side } = histories();
+    const blob = r.git("rev-parse", "HEAD:a.md").trim();
+    const asked = noQuestions();
+    for (const id of [head, side, blob]) {
+      asked.shas.add(id);
+      asked.history.add(id);
+    }
+    const tree = treeContext(at, "HEAD", undefined);
+    tree.warm(asked);
+    // Answered from the cache: the side branch's commit is gone from git's view.
+    r.git("branch", "-q", "-D", "side");
+    r.git("reflog", "expire", "--expire=now", "--all");
+    r.git("gc", "-q", "--prune=now");
+    assert.deepEqual(tree.onHistory([head, side])?.unreached, new Set([side]));
+  });
+});
+
+describe("unreachable", () => {
+  it("lists the commits no tip reaches, a tip itself reached", () => {
+    const { at, first, head, merged, side } = histories();
+    assert.deepEqual(
+      unreachable(at, [first, head, merged, side], [head, merged]),
+      new Set([side]),
+    );
+    assert.deepEqual(
+      unreachable(at, [first, side], []),
+      new Set([first, side]),
+    );
+    assert.deepEqual(unreachable(at, [], [head]), new Set());
+  });
+
+  it("walks no blob, so it never lists one", () => {
+    const { r, at, head } = histories();
+    const blob = r.git("rev-parse", "HEAD:a.md").trim();
+    assert.deepEqual(unreachable(at, [blob], [head]), new Set());
   });
 });

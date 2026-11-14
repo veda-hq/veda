@@ -6,6 +6,7 @@ import type { TreeContext } from "./types.ts";
 
 const tree: TreeContext = {
   typesOf: () => new Map(),
+  onHistory: () => null,
   baseText: () => undefined,
 };
 

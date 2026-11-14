@@ -4,7 +4,8 @@ the environment variable KAVACH_CONFIG.
 kavach knows no product. What one product trusts or requires (a script its
 agents may run from any checkout, a command it reviewed as only reading and allows in one
 environment, environment variables an agent must leave alone, a file whose change needs another in the same commit) comes from this
-file, and with no file every such rule is off.
+file, and with no file every such rule is off. So does the mode of a rule on
+trial (`command.shellExpansion`), which warns until the file says "refuse".
 
 A file that cannot be read, is not JSON, has a key this module does not know,
 or a value of the wrong shape raises ConfigError. Each guard's entry point
@@ -67,14 +68,26 @@ class Config:
     protected_variables_reason: str = ""
     paired_changes: tuple[PairedChange, ...] = ()
     read_only_commands: tuple[ReadOnlyCommand, ...] = ()
+    # The shell-expansion rule (git_safety.py): "warn" allows with a warning,
+    # "refuse" blocks. A new refusal warns first, so the default is "warn".
+    shell_expansion: str = "warn"
+    # The day it is to start refusing, shown in its warning (YYYY-MM-DD).
+    # Shown only: what makes it refuse is "refuse" above, set once its log
+    # shows no wrong fire.
+    shell_expansion_refuses_from: str = ""
 
 
 DEFAULT = Config()
+SHELL_EXPANSION_MODES = ("warn", "refuse")
+DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 SHAPE: dict[str, set[str]] = {
     "": {"worktree", "command"},
     "worktree": {"trustedCommands", "readOnlyCommands"},
-    "command": {"protectedVariables", "protectedVariablesReason", "pairedChanges"},
+    "command": {
+        "protectedVariables", "protectedVariablesReason", "pairedChanges",
+        "shellExpansion", "shellExpansionRefusesFrom",
+    },
 }
 
 
@@ -178,7 +191,13 @@ def parse(data: Any) -> Config:
         _read_only(entry, index)
         for index, entry in enumerate(_list(worktree.get("readOnlyCommands", []), "worktree.readOnlyCommands"))
     )
-    return Config(trusted, variables, reason, paired, read_only)
+    mode = command.get("shellExpansion", "warn")
+    if mode not in SHELL_EXPANSION_MODES:
+        raise ConfigError(f"command.shellExpansion must be one of {', '.join(SHELL_EXPANSION_MODES)}")
+    refuses_from = command.get("shellExpansionRefusesFrom", "")
+    if refuses_from != "" and not (isinstance(refuses_from, str) and DAY.fullmatch(refuses_from)):
+        raise ConfigError("command.shellExpansionRefusesFrom must be a day, YYYY-MM-DD")
+    return Config(trusted, variables, reason, paired, read_only, mode, refuses_from)
 
 
 def load(environ: Mapping[str, str] | None = None) -> Config:

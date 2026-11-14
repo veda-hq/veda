@@ -94,6 +94,7 @@ scanning. Each lesson names the symptom and the fix.
   while branch protection accepts skipped. Never add dispatch to a workflow holding a required
   gate; put ad-hoc runs in a separate workflow with no gate-named job. On an unexplained dequeue,
   look for a newer skipped check with the same name.
+  <!-- held by: pariksha aggregate-gate-needs (refuses workflow_dispatch on the workflow holding the gate) -->
 - **A re-run replays the original event.** Re-running a failed `pull_request` job reuses the
   original event's merge ref and workflow file, so after a workflow fix lands on the default
   branch, merge it into the blocked branch and push instead of re-running. It replays the old

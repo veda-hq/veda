@@ -110,6 +110,10 @@ describe('.pariksha.json', () => {
       git(root, 'add', path);
       return run(['absolute-paths', '--root', root, '--staged'], capture(root).io, '1.0.0', {}) as number;
     };
+    // A selection is matched by the include as a list names it, relative to the root.
+    const anchored = committed({ ...NOTE, '.pariksha.json': JSON.stringify({ checks: { 'absolute-paths': ONLY_DOCS } }) });
+    assert.equal(staged(anchored, 'docs/b.md', 'see /Users/someone/y\n'), 1);
+    assert.equal(staged(anchored, 'docs/b.md', 'clean again\n'), 0);
     // A file entry: an edit elsewhere in .pariksha.json leaves its run to the staged files.
     const fileEntry = committed({ ...NOTE, 'cfg/abs.json': MD, '.pariksha.json': '{"checks": {"absolute-paths": "cfg/abs.json"}}' });
     assert.equal(staged(fileEntry, '.pariksha.json', '{"checks": {"absolute-paths": "cfg/abs.json", "flaky-tests": "cfg/abs.json"}}\n'), 0);

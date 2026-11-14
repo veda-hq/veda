@@ -121,7 +121,12 @@ const listOf = (f: Map<string, string>, io: Io, root: string): string | undefine
   // in `.pariksha.json` widens no other check's run.
   const configPath = f.get('--config');
   const settings = f.has(INLINE) ? f.get(PROJECT_FILE) : configPath === undefined ? undefined : resolve(root, configPath);
-  return selectedList(gitAt(top), top, selection, settings === undefined ? [] : [real(settings)]);
+  // Relative to the root, as a caller's list names them: a check's `include`
+  // is matched against the path as listed, so `^docs/` must see `docs/a.md`.
+  const base = real(root);
+  return entries(selectedList(gitAt(top), top, selection, settings === undefined ? [] : [real(settings)]))
+    .map((path) => relative(base, path))
+    .join('\0');
 };
 
 export const DENY_FILE = '.veda/deny.sha256';

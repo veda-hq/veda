@@ -66,6 +66,8 @@ or a CI step runs `pariksha <check> --staged` and names no settings file.
   since its merge base with `ref`;
 - `--all`: every file git tracks.
 
+The files are listed relative to `--root`, as a `--files-from` list names
+them, so a check's `include` sees `docs/a.md`, not an absolute path.
 Deleted files, symlinks and submodules are never listed. A ref that starts
 with `-`, or names no commit, exits 2, and so does a git that fails: a
 listing that failed never reads as "no files". When the selection changes

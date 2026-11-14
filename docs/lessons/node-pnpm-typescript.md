@@ -33,7 +33,8 @@ library behaviour that surprised a working change.
   `minimumReleaseAgeExclude` entry for a too-new version, revert it and pick an older patch.
   The one standing entry is veda's own scope, `@veda-hq/*` (Alok, 2026-11-14): a new release
   installs at once, and `pnpm provenance` (in `pnpm check`) checks instead that veda's release
-  workflow built each `@veda-hq` package the lockfile resolves, from its own tag.
+  workflow built and signed each `@veda-hq` package the lockfile resolves, from its own tag.
+  When Sigstore rotates a key, it fails until `scripts/sigstore-trusted-root.json` is refreshed.
   Check whether the default branch already carries the bump before making it.
 - **A lost patch looks like a code bug.** When pnpm warns that `node_modules` are out of sync
   with the lockfile because the `patchedDependencies` value changed, a patched dependency has

@@ -166,6 +166,15 @@ importers:
 
   .:
     devDependencies:
+      '@sigstore/bundle':
+        specifier: 5.0.1
+        version: 5.0.1
+      '@sigstore/protobuf-specs':
+        specifier: 0.5.2
+        version: 0.5.2
+      '@sigstore/verify':
+        specifier: 4.1.3
+        version: 4.1.3
       '@veda-hq/dvara':
         specifier: 0.5.16
         version: 0.5.16(supports-color@7.2.0)
@@ -316,6 +325,22 @@ packages:
   '@humanwhocodes/retry@0.4.3':
     resolution: {integrity: sha512-bV0Tgo9K4hfPCek+aMAn81RppFKv2ySDQeMoSZuvTASywNTnVJCArCZE2FWqpvIatKu7VMRLWlR1EazvVhDyhQ==}
     engines: {node: '>=18.18'}
+
+  '@sigstore/bundle@5.0.1':
+    resolution: {integrity: sha512-7q8DOObFzN+/eQrvL2O0cylDp95ssgBCAomQxSYfGAMO9+q4xceRbg0L3L0G2/8NyideoYCs7HuVxWKCdn/maQ==}
+    engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
+
+  '@sigstore/core@4.0.1':
+    resolution: {integrity: sha512-9v5hRjujn5NXq8o7XFEUgLyAtdr5Iisb4pzM05u3K61IS5q3hP3luWAndk0RkPPLTUFoTbg7Vb84UQ1ZQeajWQ==}
+    engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
+
+  '@sigstore/protobuf-specs@0.5.2':
+    resolution: {integrity: sha512-SQqvFMt4V78fdjcDdYX6HbiVSOR4QK3ZgwCa2KOsopAgPIHy1rU5UDUmzLl02r5oyyaYcYHR1hpwDRk/yUe+Mw==}
+    engines: {node: ^18.17.0 || >=20.5.0}
+
+  '@sigstore/verify@4.1.3':
+    resolution: {integrity: sha512-V2ik+fLz2YTZOV4USVnjvLJWDjmBMWi7XhFR8CNp1tj7y09OrogDxPZZdbSWXIA7IpenJTyGukIgF2CFtH/8rA==}
+    engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
 
   '@types/debug@4.1.13':
     resolution: {integrity: sha512-KSVgmQmzMwPlmtljOomayoR89W4FynCAi3E8PPs7vmDVPe84hT+vGPKkJfThkmXs0x0jAaa9U8uW8bbfyS2fWw==}
@@ -1048,6 +1073,20 @@ snapshots:
   '@humanwhocodes/module-importer@1.0.1': {}
 
   '@humanwhocodes/retry@0.4.3': {}
+
+  '@sigstore/bundle@5.0.1':
+    dependencies:
+      '@sigstore/protobuf-specs': 0.5.2
+
+  '@sigstore/core@4.0.1': {}
+
+  '@sigstore/protobuf-specs@0.5.2': {}
+
+  '@sigstore/verify@4.1.3':
+    dependencies:
+      '@sigstore/bundle': 5.0.1
+      '@sigstore/core': 4.0.1
+      '@sigstore/protobuf-specs': 0.5.2
 
   '@types/debug@4.1.13':
     dependencies:

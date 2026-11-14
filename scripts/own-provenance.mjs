@@ -9,17 +9,60 @@
 // lockfile installs. A release published any other way (a stolen token, a fork,
 // another workflow) fails here before anything runs it.
 //
-// This reads the statement the registry serves and checks who built what. It
-// does not verify the bundle's Sigstore signature, nor compare the signing
-// certificate's identity with the workflow fields: it trusts the registry to
-// have checked the bundle at publish.
+// The statement's workflow fields are written by whoever ran npm publish, so
+// they alone prove nothing. What binds them is the Sigstore bundle around the
+// statement. This verifies it offline with @sigstore/verify:
+// - the signature over the statement;
+// - the signing certificate's chain to Sigstore's public-good Fulcio;
+// - its signed certificate timestamp, and the Rekor entry that times it;
+// - the certificate's identity. Its SAN must name veda-hq/veda's release
+//   workflow at the version's tag, and its issuer must be GitHub Actions.
+//
+// The trust anchors are sigstore-trusted-root.json beside this script: the
+// public-good trusted_root.json, whose sha256 matched Sigstore's TUF targets
+// (tuf-repo-cdn.sigstore.dev, targets v14) on 2026-11-14. When Sigstore rotates
+// a key, new releases fail here until the file is refreshed: take
+// targets/trusted_root.json from sigstore/root-signing, and check its sha256
+// against the trusted_root.json entry of the latest targets.json on the TUF CDN.
 import { readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { bundleFromJSON } from '@sigstore/bundle';
+import { TrustedRoot } from '@sigstore/protobuf-specs';
+import { toSignedEntity, toTrustMaterial, Verifier } from '@sigstore/verify';
 
 export const SCOPE = '@veda-hq/';
 export const REPOSITORY = 'https://github.com/veda-hq/veda';
 export const WORKFLOW = '.github/workflows/release.yml';
 export const SLSA = 'https://slsa.dev/provenance/v1';
+/** The OIDC issuer Fulcio records for a GitHub Actions run. */
+export const ISSUER = 'https://token.actions.githubusercontent.com';
+export const TRUSTED_ROOT = fileURLToPath(new URL('sigstore-trusted-root.json', import.meta.url));
+
+/**
+ * Who must have signed the provenance of `version`: veda's release workflow at its tag.
+ * @param {string} version
+ */
+export const signingPolicy = version => ({
+  subjectAlternativeName: `${REPOSITORY}/${WORKFLOW}@refs/tags/v${version}`,
+  extensions: { issuer: ISSUER },
+});
+
+/**
+ * A function that verifies a Sigstore bundle against a policy and throws when
+ * it does not verify, trusting only the trusted root in `rootText`.
+ * @param {string} rootText a trusted_root.json
+ * @returns {(bundle: unknown, policy: ReturnType<typeof signingPolicy>) => void}
+ */
+export function bundleVerifier(rootText) {
+  const verifier = new Verifier(toTrustMaterial(TrustedRoot.fromJSON(JSON.parse(rootText))), {
+    tlogThreshold: 1,
+    ctlogThreshold: 1,
+    timestampThreshold: 1,
+  });
+  return (bundle, policy) => {
+    verifier.verify(toSignedEntity(bundleFromJSON(bundle)), policy);
+  };
+}
 
 /**
  * The @veda-hq packages a pnpm lockfile resolves, and every @veda-hq key it
@@ -42,15 +85,20 @@ export function ownPackages(lockText) {
 export const attestationsUrl = (name, version) =>
   `https://registry.npmjs.org/-/npm/v1/attestations/${name.replace('/', '%2f')}@${version}`;
 
-/** The SLSA statement among a version's attestations, or a reason there is none. @param {unknown} document */
-function statementOf(document) {
+/**
+ * The SLSA bundle among a version's attestations and the statement it carries,
+ * or a reason there is none.
+ * @param {unknown} document
+ * @returns {string | { bundle: unknown, statement: any }}
+ */
+function provenanceOf(document) {
   const list = /** @type {{ attestations?: unknown }} */ (document ?? {}).attestations;
   if (!Array.isArray(list)) return 'the registry served no attestations';
-  const slsa = list.find(a => a?.predicateType === SLSA);
-  const payload = slsa?.bundle?.dsseEnvelope?.payload;
+  const bundle = list.find(a => a?.predicateType === SLSA)?.bundle;
+  const payload = bundle?.dsseEnvelope?.payload;
   if (typeof payload !== 'string') return 'it has no SLSA provenance';
   try {
-    return JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+    return { bundle, statement: JSON.parse(Buffer.from(payload, 'base64').toString('utf8')) };
   } catch {
     // fail-open: the reason returned is a failure, so the check still fails
     return 'its SLSA provenance is not JSON';
@@ -61,13 +109,21 @@ function statementOf(document) {
  * Why a package's provenance does not show veda's release built it; empty when it does.
  * @param {{ name: string, version: string, integrity: string }} pkg
  * @param {unknown} document the registry's attestations response
+ * @param {ReturnType<typeof bundleVerifier>} verifyBundle
  * @returns {string[]}
  */
-export function provenanceFailures(pkg, document) {
+export function provenanceFailures(pkg, document, verifyBundle) {
   const at = `${pkg.name}@${pkg.version}`;
-  const statement = statementOf(document);
-  if (typeof statement === 'string') return [`${at}: ${statement}`];
+  const provenance = provenanceOf(document);
+  if (typeof provenance === 'string') return [`${at}: ${provenance}`];
+  const { bundle, statement } = provenance;
   const failures = [];
+  try {
+    verifyBundle(bundle, signingPolicy(pkg.version));
+  } catch (error) {
+    // fail-open: the error is recorded as a failure, so the check still fails
+    failures.push(`${at}: its provenance is not signed by veda's release of v${pkg.version} (${/** @type {Error} */ (error).message})`);
+  }
   const workflow = statement?.predicate?.buildDefinition?.externalParameters?.workflow ?? {};
   const expected = { repository: REPOSITORY, path: WORKFLOW, ref: `refs/tags/v${pkg.version}` };
   for (const [key, value] of Object.entries(expected)) {
@@ -82,8 +138,9 @@ export function provenanceFailures(pkg, document) {
 /**
  * Every own package's failures. @param {string} lockText
  * @param {(url: string) => Promise<unknown>} fetchJson
+ * @param {ReturnType<typeof bundleVerifier>} verifyBundle
  */
-export async function check(lockText, fetchJson) {
+export async function check(lockText, fetchJson, verifyBundle) {
   const { packages, unread } = ownPackages(lockText);
   const failures = unread.map(key => `${key}: the lockfile names it in a shape this check does not read, so it is not checked`);
   // The root pins sarathi, so a lockfile with no own package is one this did not read.
@@ -97,7 +154,7 @@ export async function check(lockText, fetchJson) {
       failures.push(`${pkg.name}@${pkg.version}: its attestations could not be read (${/** @type {Error} */ (error).message})`);
       continue;
     }
-    failures.push(...provenanceFailures(pkg, document));
+    failures.push(...provenanceFailures(pkg, document, verifyBundle));
   }
   return { packages, failures };
 }
@@ -111,12 +168,12 @@ async function fetchJson(url) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const { packages, failures } = await check(readFileSync('pnpm-lock.yaml', 'utf8'), fetchJson);
+  const { packages, failures } = await check(readFileSync('pnpm-lock.yaml', 'utf8'), fetchJson, bundleVerifier(readFileSync(TRUSTED_ROOT, 'utf8')));
   for (const failure of failures) console.error(`own-provenance: ${failure}`);
   if (failures.length > 0) {
     console.error(`own-provenance: ${SCOPE}* skips the release age only when veda's release built it.`);
     process.exit(1);
   }
-  console.log(`own-provenance: ${packages.map(p => `${p.name}@${p.version}`).join(', ')} built by ${REPOSITORY} ${WORKFLOW}`);
+  console.log(`own-provenance: ${packages.map(p => `${p.name}@${p.version}`).join(', ')} built and signed by ${REPOSITORY} ${WORKFLOW}`);
 }
 /* node:coverage enable */

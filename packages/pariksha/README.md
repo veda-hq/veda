@@ -636,8 +636,8 @@ skipped, not counted.
   be claimed like a rule. Each named rule must be on in EVERY workspace an
   `applies_to` target covers: a prefix covers every workspace under it, and
   a path under none is the root workspace's (`.`).
-- **validator.** A cited `<dispatcher> <target>` must be a case of the
-  dispatcher, a shell `case` whose lines read `name)` or `a|b)` (any alias
+- **validator.** Where a `dispatcher` is configured, a cited
+  `<dispatcher> <target>` must be a case of it, a shell `case` whose lines read `name)` or `a|b)` (any alias
   counts). Then every path the claim names (`enforcement_script`, and the
   paths the target's case names) must exist, and at least one of them must be
   reached from a stage: the files directly in
@@ -661,8 +661,11 @@ skipped, not counted.
   file (`tests.file`) counts as run when a reached script of its workspace
   matches `tests.runner`.
 
-`id` is optional and only labels the output. `packageRunner`, `bin` and
-`turbo` are optional (absent or `null`: none, so less is reached). Exit 0
+`id` is optional and only labels the output. `dispatcher`, `packageRunner`,
+`bin` and `turbo` are optional (absent or `null`: none, so less is reached).
+Without a `dispatcher`, a claim's `enforcement_config` is prose, and the
+claim is judged by its `enforcement_script` alone: a repository whose stages
+call each check directly names the binary or script they call there. Exit 0
 prints `pariksha enforcement-claims (<id>): every eslint-rule claim is real
 and every validator claim runs at a stage (<eslint-rule> + <validator> of
 <standards> rule(s))`. Exit 1 prints one line per problem, ``<file> (<id>):

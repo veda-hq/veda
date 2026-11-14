@@ -50,7 +50,7 @@ describe('parseConfig', () => {
     assert.equal(c.standards, 'docs/standards');
     assert.deepEqual(c.workspaces, CONFIG.workspaces);
     assert.equal(c.dispatcher, 'scripts/run-validation.sh');
-    assert.equal(c.dispatchCall.source, 'run\\-validation\\.sh\\s+([a-z][a-z0-9-]*)');
+    assert.equal(c.dispatchCall?.source, 'run\\-validation\\.sh\\s+([a-z][a-z0-9-]*)');
     assert.deepEqual(c.packageRunner, CONFIG.packageRunner);
     assert.deepEqual([c.hooks, c.workflows, c.actions], [['.husky'], ['.github/workflows'], ['.github/actions']]);
     assert.equal(c.runnable.length, 2);
@@ -62,6 +62,11 @@ describe('parseConfig', () => {
     const c = config({ id: undefined, packageRunner: null, stageRoots: { hooks: ['.husky'] }, runnable: { prefixes: ['scripts/'], extensions: ['sh'], bin: null }, workspaceList: { pnpm: 'pnpm-workspace.yaml', turbo: null } });
     assert.deepEqual([c.id, c.packageRunner, c.turbo, c.workflows, c.actions, c.runnable.length], [undefined, undefined, undefined, [], [], 1]);
     assert.equal(config({ packageRunner: undefined }).packageRunner, undefined);
+    // A repository whose stages call each check directly has no dispatcher.
+    for (const dispatcher of [undefined, null]) {
+      const none = config({ dispatcher });
+      assert.deepEqual([none.dispatcher, none.dispatchCall], [undefined, undefined]);
+    }
   });
 
   const refuses = (over: Record<string, unknown>, message: RegExp): void => {
@@ -88,7 +93,7 @@ describe('parseConfig', () => {
   });
 
   it('refuses a missing or bad dispatcher, package runner, stage root, prefix, extension or pattern', () => {
-    refuses({ dispatcher: undefined }, /"dispatcher" must be an object/);
+    refuses({ dispatcher: 'scripts/run-validation.sh' }, /"dispatcher" must be an object/);
     refuses({ dispatcher: { path: '/abs.sh' } }, /dispatcher: "path": "\/abs\.sh" is not a normalized root-relative path/);
     refuses({ packageRunner: { path: 'a.sh', call: 'run validator', validatorsDir: 'v' } }, /"call" must be a shell function name/);
     refuses({ stageRoots: { hooks: [], workflows: [] } }, /"hooks" and "workflows" are both empty/);
@@ -345,6 +350,11 @@ describe('findEnforcementProblems', () => {
     assert.deepEqual(problems(standard({ enforcement: 'validator', enforcementConfig: 'run-validation.sh check-masked' })), []);
     // No dispatcher call: the stage walk judges it.
     assert.deepEqual(problems(standard({ enforcement: 'validator', enforcementConfig: 'Reviewer checks it' })), []);
+  });
+
+  it('reads a dispatcher-shaped claim as prose when the repository has no dispatcher', () => {
+    const claim = standard({ enforcement: 'validator', enforcementConfig: 'run-validation.sh no-such-target' });
+    assert.deepEqual(findEnforcementProblems([claim], ACTIVE, '', config({ dispatcher: undefined })), []);
   });
 
   it('reads a deprecated standard as claiming nothing', () => {

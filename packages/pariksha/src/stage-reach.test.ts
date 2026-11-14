@@ -512,6 +512,14 @@ describe('resolveStageReach', () => {
     assert.throws(() => resolveStageReach(tree({ 'pnpm-workspace.yaml': 'packages:\n', 'turbo.json': '{}' }), STAGES), /ENOENT/);
     assert.throws(() => resolveStageReach(tree({ 'scripts/run-validation.sh': '', 'turbo.json': '{}' }), STAGES), /ENOENT/);
   });
+
+  it('walks without a dispatcher, reading a dispatcher-shaped call as an ordinary command', () => {
+    const withoutDispatch = Object.fromEntries(Object.entries(REPO).filter(([path]) => path !== 'scripts/run-validation.sh'));
+    const reach = resolveStageReach(tree(withoutDispatch), config({ dispatcher: undefined }));
+    const withDispatch = resolveStageReach(tree(REPO), STAGES);
+    assert.ok(reach.files.has('scripts/inner.sh'));
+    assert.deepEqual([...withDispatch.files].filter((f) => !reach.files.has(f)).sort(), ['node_modules/.bin/pk', 'scripts/validations/foo.sh']);
+  });
 });
 
 describe('testFileRuns', () => {
@@ -620,6 +628,12 @@ describe('findUncalledValidators', () => {
   it('uses a reach it is given instead of walking', () => {
     const given: StageReach = { files: new Set(['scripts/hidden.sh']), scripts: new Map(), workspaces: [] };
     assert.deepEqual(findUncalledValidators(root, [claim({ enforcementScript: 'scripts/hidden.sh' })], STAGES, given), []);
+  });
+
+  it('judges a claim by its named script alone when the repository has no dispatcher', () => {
+    const stages = config({ dispatcher: undefined });
+    assert.deepEqual(findUncalledValidators(root, [claim({ enforcementScript: 'scripts/inner.sh', enforcementConfig: 'run-validation.sh foo' })], stages), []);
+    assert.deepEqual(findUncalledValidators(root, [claim({ enforcementConfig: 'run-validation.sh check-foo' })], stages)[0]?.reason, 'claims validator enforcement but names no script — nothing here can run');
   });
 
   it('reads the dispatcher call by the configured file name, and follows only the configured dispatcher by case', () => {

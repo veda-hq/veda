@@ -9,8 +9,8 @@
 // This resolves each configured workspace's REAL flat config through the
 // ESLint API, and holds every rule a standard names to being on (error or
 // warn) in every workspace it applies to; a rule at `off` is a false claim.
-// Validator claims must name a dispatcher target that exists, and something
-// a stage runs (stage-reach.ts).
+// Validator claims must name something a stage runs (stage-reach.ts), and,
+// where the repository has a dispatcher, a dispatcher target that exists.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join, posix, relative, resolve } from 'node:path';
 import { load } from 'js-yaml';
@@ -60,9 +60,13 @@ export const parseConfig = (source: string): Config => {
   const twice = dirs.find((d, i) => dirs.indexOf(d) !== i);
   if (twice !== undefined) throw new Error(`workspace "${twice}" is listed more than once`);
 
-  const dispatcherRaw = object(raw, 'dispatcher', '');
-  onlyKeys(dispatcherRaw, ['path'], 'dispatcher: ');
-  const dispatcher = path(dispatcherRaw, 'path', 'dispatcher: ');
+  // Optional: a repository whose stages call each check directly has none.
+  const dispatcherRaw = optional(raw, 'dispatcher');
+  let dispatcher: string | undefined;
+  if (dispatcherRaw !== undefined) {
+    onlyKeys(dispatcherRaw, ['path'], 'dispatcher: ');
+    dispatcher = path(dispatcherRaw, 'path', 'dispatcher: ');
+  }
 
   const runnerRaw = optional(raw, 'packageRunner');
   let packageRunner: PackageRunner | undefined;
@@ -107,7 +111,7 @@ export const parseConfig = (source: string): Config => {
     standards: path(raw, 'standards', ''),
     workspaces,
     dispatcher,
-    dispatchCall: new RegExp(`${basename(dispatcher).replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&')}\\s+([a-z][a-z0-9-]*)`),
+    dispatchCall: dispatcher === undefined ? undefined : new RegExp(`${basename(dispatcher).replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&')}\\s+([a-z][a-z0-9-]*)`),
     packageRunner,
     hooks,
     workflows,
@@ -303,7 +307,7 @@ export const findEnforcementProblems = (standards: readonly Standard[], byWorksp
     // any alias on its case line; otherwise relabelling an eslint-rule claim
     // as a validator would be the cheapest way past this check.
     if (standard.enforcement === 'validator') {
-      const target = config.dispatchCall.exec(standard.enforcementConfig);
+      const target = config.dispatchCall?.exec(standard.enforcementConfig) ?? null;
       if (target !== null && !targets.has(target[1] as string)) {
         problems.push({ file: standard.file, id: standard.id, rule: target[1] as string, reason: `is not a case in ${config.dispatcher} — the command does not exist` });
       }
@@ -337,7 +341,7 @@ export const checkClaims = async (root: string, config: Config, ESLint: LinterCl
   if (!dir?.isDirectory()) throw new Error(`the standards folder ${config.standards} is not a folder under the root`);
   const standards = readStandards(root, config.standards);
   if (standards.length === 0) throw new Error(`no standard under ${config.standards} declares an enforcement — the scan failed`);
-  const dispatch = readFileSync(posix.join(root, config.dispatcher), 'utf8');
+  const dispatch = config.dispatcher === undefined ? '' : readFileSync(posix.join(root, config.dispatcher), 'utf8');
   const byWorkspace = await activeRules(ESLint, root, config.workspaces);
   return { standards, problems: [...findEnforcementProblems(standards, byWorkspace, dispatch, config), ...findUncalledValidators(root, standards, config)] };
 };

@@ -35,11 +35,13 @@ every round, why a green PR sits unqueued, and when it is safe to resolve review
   Mergify rule requiring `check-success` never queues the PR even though `gh pr checks` shows
   nothing failing. Buying seats or flex capacity is an owner spend decision, so never narrow
   review scope to fit a budget.
+  <!-- when: error "line limit reached" -->
 - **Re-triggering a review.** Comment `@cubic incremental review` only if Cubic already
   reviewed that PR (cheaper on the line allowance); otherwise comment `@cubic review`, since
   incremental needs a prior full review. Check `gh pr view <n> --json reviews,comments` for a
   Cubic author first. Both `@cubic` and the bot's full handle `@cubic-dev-ai` have been used to
   trigger reviews.
+  <!-- when: command "gh pr comment .*@cubic" -->
 - **NEUTRAL after a rebase; rollup state.** Cubic reports NEUTRAL when it skips a push with no
   new content (a pure rebase), and Mergify's `check-success` matches success only, so such a PR
   parks blocked; post `@cubic-dev-ai review` to force a fresh review. A non-required check still
@@ -84,6 +86,7 @@ every round, why a green PR sits unqueued, and when it is safe to resolve review
   merge first: if it merges clean, comment `@mergifyio refresh` instead of pushing, since a push
   resets the queue, and if it is still unqueued, `@mergifyio queue`. After the last check goes
   green, always confirm the PR actually entered the queue.
+  <!-- when: command "@[Mm]ergifyio (refresh|queue)\b" -->
 - **In-place checks and self-merge.** Mergify uses in-place checks (compatible with GitHub's
   "require branches up to date" rule) only when `merge_queue.max_parallel_checks` is 1, every
   queue's `batch_size` is 1, `merge_conditions` equal `queue_conditions` (single-step CI) and
@@ -95,11 +98,13 @@ every round, why a green PR sits unqueued, and when it is safe to resolve review
   For a green PR that will not merge, look for an unresolved review thread first (branch
   protection's conversation-resolution rule gates it even when the Mergify config never mentions
   threads), and re-collect threads after every push, because review bots add new ones.
+  <!-- when: command "--json[ =]\S*mergeStateStatus" -->
 - **"Checks timed out" needs a requeue command.** After Mergify dequeues a PR for "Checks timed
   out", re-adding the queue label does not requeue the same head, and such dequeues are not
   auto-requeued; comment `@mergifyio requeue`. Give every merge-queue job a `timeout-minutes`
   (GitHub's default is 360), and check a "pending 0" job's steps through the jobs API before
   concluding no runner picked it up.
+  <!-- when: error "checks timed out" -->
 - **Speculative drafts run every workflow.** A Mergify speculative-check draft is an ordinary
   PR against the base branch, so every `pull_request` workflow runs on it: commit-range checks
   see its untyped "Merge of #N" commit, and review bots that skip drafts post no check there.
@@ -142,3 +147,4 @@ every round, why a green PR sits unqueued, and when it is safe to resolve review
   summarizes, re-read the body with `gh pr view <n> --json body`: the bot can write back the
   earlier body with its summary appended, reverting your edit. Rebuild the body as your text
   followed by the bot's own blocks from its footer marker onward, then re-read.
+  <!-- when: command "gh pr edit .*--body" -->

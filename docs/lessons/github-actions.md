@@ -13,6 +13,7 @@ scanning. Each lesson names the symptom and the fix.
   or your spending limit needs to be increased" blocks every PR. Do not re-run or push fixes.
   Only the account owner can clear it in the billing settings; afterwards run
   `gh run rerun <run-id> --failed` once.
+  <!-- when: error "your spending limit needs to be increased" -->
 - **The billing usage endpoint spans repositories.** The organisation's Actions billing usage
   endpoint returns one row per SKU per repository per day, so filter on `repositoryName` before
   summing one repository's minutes. The runs API caps at 1,000 results, so fetch day by day.
@@ -95,22 +96,25 @@ scanning. Each lesson names the symptom and the fix.
   look for a newer skipped check with the same name.
 - **A re-run replays the original event.** Re-running a failed `pull_request` job reuses the
   original event's merge ref and workflow file, so after a workflow fix lands on the default
-  branch, merge it into the blocked branch and push instead of re-running.
-- **A re-run replays the old PR body.** A check that reads the PR body from the event payload
+  branch, merge it into the blocked branch and push instead of re-running. It replays the old
+  PR body too: a check that reads the PR body from the event payload
   keeps the original body on `gh run rerun`, so it fails again after the body is fixed. Put
   required body lines in before the first push. Otherwise re-trigger it with a
   `gh pr edit --body-file` change when the workflow listens to the `edited` event, or push a new
   commit; never just rerun.
+  <!-- when: command "\bgh run rerun\b" -->
 - **Review-thread checks go stale.** GitHub emits no event when a review thread is resolved, and
   it mints a new check suite per trigger event, so same-named check rows never overwrite each
   other and only re-running that run updates its row; `cancel-in-progress` leaves permanent red
   rows. For a thread-count check, trigger on `pull_request` only with a PR-plus-sha concurrency
   key, and turn review events into a rerun of that one row. `workflow_run` and `schedule`
   workflows fire only from default-branch files, so they activate on merge, not on the PR.
+  <!-- when: path ".github/workflows/*.yml" -->
 - **`continue-on-error` reports success.** A step with `continue-on-error: true` reports
   conclusion `success` in the jobs API even when it failed; the failure lives only in `outcome`
   and the log text. Before removing `continue-on-error` or citing such a step as proof, grep its
   log for `##[error]` (`gh api repos/<owner>/<repo>/actions/jobs/<id>/logs`).
+  <!-- when: command "continue-on-error" -->
 
 ## Code scanning
 

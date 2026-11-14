@@ -12,10 +12,12 @@ undoing another.
   however narrow the rule, and the `update-config` skill hits the same block. Say so at once and
   hand over the remedy: the prompt's Always allow button, the Bypass permissions mode, or a
   script the user runs themselves when several rules are needed.
+  <!-- when: path ".claude/settings.local.json" -->
 - **Hook wiring edits read as self-modification.** The classifier refuses edits to
   `.claude/settings.json` hook wiring, even when an approved task removes those hooks. Ask the
   user up front to remove the entries or allow the edit, and keep the hook files until then:
   deleting a still-registered hook breaks every session.
+  <!-- when: path ".claude/settings.json" -->
 - **Hook-instructed PR tool calls can be denied.** The classifier can deny calls a hook asks for
   to the desktop app's PR tools (`bind_pr`, `set_monitor`) as dangerous, because their
   descriptions say to call them only when the user asks. Have the user add
@@ -30,6 +32,7 @@ undoing another.
   `do-not-merge` label on a PR, so a label hold can only be lifted by the owner. Do not hold a
   bad PR with a label: rely on a check that already fails, rewrite the PR or close it. If a hold
   is truly needed, tell the owner up front that they must lift it.
+  <!-- when: command "gh pr edit .*--(add|remove)-label[ =]do-not-merge" -->
 
 ## Hooks, settings and mods
 
@@ -57,12 +60,14 @@ undoing another.
   (Skill tool) to start the watch, and at turn end the app asks "Enable hot reloading for this
   session?". Invoke the skill, end the turn and have the user pick Enable; a compacted or resumed
   session needs the skill again.
+  <!-- when: command "\bln -s.*\.claude/dev-mods/" -->
 - **Capturing a mod for evidence.** Use `screencapture -x -o -l <windowId>` on the largest
   layer-0 "Claude" window (Screen Recording permission needed), keep the Mac awake with
   `caffeinate -d -t <s>` only for the run, and keep the window uncovered: a covered window
   repaints nothing, and identical byte sizes are the tell. Toasts draw at the window's bottom
   right, so crop band and toast together. Capture the window only, never the full screen, and
   delete scratch crops.
+  <!-- when: command "\bscreencapture\b" -->
 
 ## Context and cost
 
@@ -107,6 +112,7 @@ undoing another.
   wrong limit. Read `api_error_status` in the result or `apiErrorStatus` in the transcript entry
   (`~/.claude/projects/<cwd-slug>/<session>.jsonl`). Only a stream-json `rate_limit_event`
   carries which limit (`rateLimitType`) and its reset (`resetsAt`).
+  <!-- when: command "claude -p .*--output-format[ =](stream-)?json" -->
 - **No top-level schema combinators.** A structured-output or tool `input_schema` with a
   top-level `allOf`, `anyOf` or `oneOf` is rejected by the API (400 "input_schema does not
   support oneOf, allOf, or anyOf at the top level"), killing the agent before its first tool
@@ -158,10 +164,12 @@ undoing another.
   message to a cloud session and prints "Sent to cloud session."; the reply never comes back to
   the laptop. End such a prompt with one block the user can copy back, tell them what to paste,
   and do not poll.
+  <!-- when: command "claude -p .*--cloud\b" -->
 - **`send_message` from an untrusted device.** `send_message` to a cloud session can fail
   non-retryably with `elevated_session_untrusted_device`. Typing the message into the web app
   through a browser instead would send it on the user's behalf and route around a trust check,
   so give the user the text to relay or wait for their yes.
+  <!-- when: error "elevated_session_untrusted_device" -->
 - **Routines are full cloud sessions.** Routines run with a 1-hour minimum interval, drawn from
   subscription usage, but their entrypoint and clone path are undocumented, so probe one run
   before relying on a routine to commit or push. In cloud sessions `gh pr` (GraphQL) is refused
@@ -217,6 +225,7 @@ undoing another.
   SIGPIPE only on its next write and a finished log is never written again. Wait with
   `until grep -qa "pattern" log; do sleep 30; done` instead, and stop any wait whose result you
   have read or whose target was superseded.
+  <!-- when: command "tail -[fF] .*\| *grep .*-m ?1" -->
 - **Exit codes that lie.** `cmd | tail` returns tail's exit code and masks failures, so never
   chain `... | tail && git push`; check `$?` or use pipefail. `pnpm --filter <pkg> <script>`
   exits 0 when the package has no such script, so confirm the suite's summary line appears, not

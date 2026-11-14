@@ -123,7 +123,10 @@ A `when` line in neither is a stray; `docProblems` reports strays, two lessons
 sharing an id, and patterns that cannot fire. Fenced code is never read for
 them. The lesson's id is its file and the slug of its heading or bold lead.
 `<!-- held by: ... -->` lines, which name the check that holds a lesson, are
-left out of the text shown.
+left out of the text shown. A lessons folder's `when-samples.tsv` gives each
+`when` line one sample event (`lesson`, `kind`, `pattern`, `sample`: the error
+text, command or path); veda's tests check that every line has one, and that
+each sample fires its own line and no other.
 
 `lessons.sh` reads the package's own `lessons/` (veda's
 [`docs/lessons/`](../../docs/lessons), copied in at build) and each folder

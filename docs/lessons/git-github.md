@@ -20,6 +20,8 @@ and PR state, and the GitHub API.
   detached). Linked worktrees share one object store, so you can also branch at the peer's head
   and push to the PR's remote ref. Check `gh pr view <n> --json baseRefName` before believing a
   handoff's stated base.
+  <!-- when: error "is already used by worktree at" -->
+  <!-- when: error "already checked out at" -->
 - **`core.hooksPath` must be relative.** Set `core.hooksPath` to a relative path to the tracked
   hooks directory (for example `.husky`) so every worktree runs its own hooks; an absolute path
   into the main checkout runs main's hook scripts against the worktree. With
@@ -32,12 +34,14 @@ and PR state, and the GitHub API.
   the shared `.git/config` for `core.bare = true`;
   `git config --file <repo>/.git/config core.bare false` restores them all. One known cause is a
   test that runs `git init` under a git hook, where an exported `GIT_DIR` overrides the cwd.
+  <!-- when: error "this operation must be run in a work tree" -->
 - **Squash merges defeat merged-branch checks.** Squash merges leave a merged branch's commits
   off main, so `git branch -d`, "commits ahead" and `git cherry` cannot tell merged from
   unmerged; use the merged-PR head-branch list from `gh` as the safety signal before deleting.
   Set `git config --global fetch.prune true`, because GitHub's delete-branch-on-merge never
   reaches local clones, and let `git worktree prune` remove only already-deleted worktree
   directories.
+  <!-- when: command "\bgit (branch -[dD]|cherry(?![-\w]))" -->
 
 ## Pushing
 
@@ -60,6 +64,7 @@ and PR state, and the GitHub API.
   `origin/<branch>`, so anything reading `@{u}` thinks the branch is not on the remote. After
   the first such push run `git fetch origin <branch>` and
   `git branch --set-upstream-to=origin/<branch>`.
+  <!-- when: command "git push \S+ \S+:refs/heads/" -->
 - **`* [new branch]` on a PR branch.** If pushing to a PR's branch prints `* [new branch]`, the
   PR already merged and its branch was deleted; your commits now sit on an orphan branch, so
   re-apply them on top of main in a new PR.
@@ -123,6 +128,8 @@ and PR state, and the GitHub API.
   review bot's check run can hang `in_progress` and block a merge queue; it is a check run, not
   a status, so list check-runs with `?per_page=100`, and check GitHub's own health before fixing
   scripts.
+  <!-- when: error "HTTP 502" -->
+  <!-- when: error "HTTP 504" -->
 - **Thread ids collide on a case-insensitive filesystem.** Review-thread node ids are
   case-sensitive base64 and can differ only by case, so naming one reply file per thread id on
   macOS APFS merges two files and posts the wrong reply. Key reply files by index or comment
@@ -142,6 +149,8 @@ and PR state, and the GitHub API.
   hit, not a corrupt repository, network or token problem. Reduce concurrent sessions and set
   `pack.threads=1` (via `GIT_CONFIG_*`), and classify such pre-session infrastructure failures
   so the work is requeued instead of counted as failed.
+  <!-- when: error "spawn git EAGAIN" -->
+  <!-- when: error "Resource temporarily unavailable" -->
 - **Raw NUL bytes hide diffs.** A raw NUL byte in a source file makes git treat it as binary,
   so its diff shows "Bin N -> M bytes" and the change is invisible to review and blame while
   tsc, lint and tests pass. Write NUL separators as the `\0` or `\x00` escape, detect with

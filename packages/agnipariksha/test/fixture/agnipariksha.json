@@ -1,0 +1,89 @@
+{
+  "upstream": "origin/main",
+  "ignore": [
+    "(^|/)(__tests__|__mocks__)(/|$)",
+    "^apps/server/test/",
+    "^apps/web/e2e/",
+    "\\.(test|spec)\\.[^/]*$",
+    "\\.d\\.ts$"
+  ],
+  "unsetEnv": ["VITEST_MAX_WORKERS", "GITHUB_ACTIONS", "GITHUB_STEP_SUMMARY"],
+  "lanes": [
+    {
+      "name": "apps/server",
+      "cwd": "apps/server",
+      "config": "stryker.config.mjs",
+      "reuse": true,
+      "include": ["^apps/server/src/"],
+      "extensions": [".ts", ".tsx"],
+      "exclude": ["(^|/)(generated|\\.prisma|@prisma)(/|$)", "\\.config\\.[^/]*$"]
+    },
+    {
+      "name": "apps/web",
+      "cwd": "apps/web",
+      "config": "stryker.config.mjs",
+      "reuse": true,
+      "include": ["^apps/web/src/"],
+      "extensions": [".ts", ".tsx"],
+      "exclude": ["(^|/)(generated|\\.prisma|@prisma)(/|$)", "\\.config\\.[^/]*$"]
+    },
+    {
+      "name": "apps/mobile",
+      "cwd": "apps/mobile",
+      "config": "stryker.config.mjs",
+      "reuse": true,
+      "include": ["^apps/mobile/src/"],
+      "extensions": [".ts", ".tsx"],
+      "exclude": ["(^|/)(generated|\\.prisma|@prisma)(/|$)", "\\.config\\.[^/]*$"]
+    },
+    {
+      "name": "packages/shared",
+      "cwd": "packages/shared",
+      "config": "stryker.config.mjs",
+      "reuse": true,
+      "include": ["^packages/shared/src/"],
+      "extensions": [".ts", ".tsx"],
+      "exclude": ["(^|/)(generated|\\.prisma|@prisma)(/|$)", "\\.config\\.[^/]*$"]
+    },
+    {
+      "name": "packages/claude-mods",
+      "cwd": "packages/claude-mods",
+      "config": "stryker.config.mjs",
+      "reuse": true,
+      "include": ["^packages/claude-mods/src/"],
+      "extensions": [".ts", ".tsx"],
+      "exclude": ["(^|/)(generated|\\.prisma|@prisma)(/|$)", "\\.config\\.[^/]*$"]
+    },
+    {
+      "name": "tooling vitest",
+      "cwd": "",
+      "config": "scripts/mutation/config/tooling-vitest.stryker.mjs",
+      "reuse": false,
+      "include": [
+        "^scripts/",
+        "^apps/mobile/scripts/(android|ios|manifest|perf|release)/",
+        "^(?:apps/server/scripts/(?:ops|attendance)/|apps/web/scripts/validate-form-drafts\\.ts$|apps/mobile/scripts/check-screen-flows\\.ts$|infra/cloudflare/)"
+      ],
+      "extensions": [".ts", ".js", ".mjs", ".cjs"],
+      "exclude": ["(^|/)(fixtures|__fixtures__)(/|$)", "\\.fixture\\.[^/]*$"],
+      "env": { "REPO_TOOLING_RELATED_FILTER": "1" },
+      "fallbackEnv": { "REPO_TOOLING_RELATED_FILTER": "0", "REPO_TOOLING_MUTATION_SUITES": "{suites}" }
+    },
+    {
+      "name": "tooling node:test",
+      "cwd": "",
+      "config": "scripts/mutation/config/tooling-node-test.stryker.mjs",
+      "reuse": false,
+      "include": ["^\\.claude/scripts/"],
+      "extensions": [".ts", ".js", ".mjs", ".cjs"],
+      "exclude": ["(^|/)(fixtures|__fixtures__)(/|$)", "\\.fixture\\.[^/]*$"],
+      "env": { "REPO_TOOLING_MUTATION_SUITES": "{suites}" }
+    }
+  ],
+  "reuseKey": {
+    "always": ["pnpm-lock.yaml", "node_modules/@stryker-mutator/core/package.json"],
+    "pluginDir": "scripts/mutation/",
+    "helperPackages": ["packages/test-utils/"],
+    "sharedWorkspace": "packages/shared"
+  }
+}

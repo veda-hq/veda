@@ -1,6 +1,6 @@
 {
   "name": "@veda-hq/sarathi",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Runs a project's Claude Code hooks from one entry per event, with kavach's guards built in, and carries the sarathi plugin's agents and working-rules skill.",
   "keywords": ["coding agents", "claude code", "hooks", "plugin", "guard"],
   "license": "MIT",
@@ -24,14 +24,15 @@
   "files": [
     "dist",
     "hooks",
+    "lessons",
     "skills",
     "!dist/**/*.test.js"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && rm -rf lessons && cp -R ../../docs/lessons lessons",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude='src/**/*.test.ts' --test-coverage-exclude=src/bin.ts 'src/**/*.test.ts'",
-    "smoke": "node dist/bin.js --version && node dist/bin.js check --config test/fixture/sarathi.json --settings test/fixture/settings.json && echo {} | bash hooks/format-before-write.sh",
+    "smoke": "node dist/bin.js --version && node dist/bin.js check --config test/fixture/sarathi.json --settings test/fixture/settings.json && echo {} | bash hooks/format-before-write.sh && SARATHI_LESSONS_DIR=$(mktemp -d) bash hooks/lessons.sh < test/fixture/pools-failure.json | grep -q 'Address pools exhausted'",
     "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
   },
   "dependencies": {

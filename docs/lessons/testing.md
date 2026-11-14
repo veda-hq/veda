@@ -231,6 +231,7 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   filled the default pools (about 31 networks). Count networks with no containers via
   `docker network ls` plus `inspect`, remove only empty ones you own (others need their owner's
   yes), and never run a blanket prune.
+  <!-- when: error "all predefined address pools have been fully subnetted" -->
 - **The VM disk is not the host disk.** On macOS the container engine's VM disk is separate from
   host free space: "no space left on device" during an image build, or every Postgres container
   exiting 1 with "could not write block" in its log, means the VM disk is full. Diagnose with

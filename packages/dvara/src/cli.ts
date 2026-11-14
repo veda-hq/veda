@@ -32,11 +32,12 @@ export const USAGE = [
   "                                            the record gate: no new non-durable paths, a baseline that only falls",
   "       dvara frozen <--staged | --base REF [--head REF]>",
   "                                            refuse changes to the frozen paths",
-  "       dvara trailers <commit-msg-file>     refuse trailer lines git would not read (commit-msg)",
+  "       dvara trailers [--key KEY]… <commit-msg-file>",
+  "                                            refuse trailer lines git would not read (commit-msg)",
   "       dvara --version",
 ].join("\n");
 
-export const TRAILERS_USAGE = "usage: dvara trailers <commit-msg-file>";
+export const TRAILERS_USAGE = "usage: dvara trailers [--key KEY]… <commit-msg-file>";
 
 const SHELL_HELPERS = new Set(["stages", "keep-going"]);
 
@@ -65,14 +66,35 @@ const CHECK_USAGE: Readonly<Record<CheckName, string>> = {
   trailers: TRAILERS_USAGE,
 };
 
-/** `dvara trailers` takes one argument: the commit message file git passes. */
-const parseTrailersArgs = (
+/** A trailer key, as `--key` and `trailerKeys` take one. */
+const TRAILER_KEY = /^[A-Za-z0-9-]+$/;
+
+/**
+ * `dvara trailers` takes the commit message file git passes, and any number
+ * of `--key <Key>`: a repository's own keys, given on the command line so a
+ * hook can name them without a config field an older dvara would refuse.
+ */
+export const parseTrailersArgs = (
   args: readonly string[],
-): { file: string } | { error: string } => {
-  const [file] = args;
-  return file === undefined || args.length !== 1
+): { file: string; keys: string[] } | { error: string } => {
+  const files: string[] = [];
+  const keys: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i] ?? "";
+    if (arg !== "--key") {
+      files.push(arg);
+      continue;
+    }
+    const key = args[i + 1];
+    if (key === undefined || !TRAILER_KEY.test(key))
+      return { error: "--key takes a trailer key: letters, digits and -" };
+    keys.push(key);
+    i += 1;
+  }
+  const [file] = files;
+  return file === undefined || files.length !== 1
     ? { error: "give one commit message file" }
-    : { file };
+    : { file, keys };
 };
 
 /**
@@ -123,7 +145,7 @@ const checkCommand = (
   try {
     const config = loadConfig(cwd, env);
     if ("file" in parsed)
-      return trailers(parsed.file, config.trailerKeys, context);
+      return trailers(parsed.file, [...config.trailerKeys, ...parsed.keys], context);
     const repo = { cwd, env };
     if ("mode" in parsed)
       return records(parsed, repo, io.out, {

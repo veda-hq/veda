@@ -226,7 +226,7 @@ Git reads a message's trailers only from its last paragraph, so a trailer
 line above a blank line is prose to git: the commit lands without it, and
 nothing says so. For a commit-msg hook, `dvara trailers <commit-msg-file>`
 refuses (exit 1) a line whose key is `Co-Authored-By`, `Signed-off-by` or one
-of `trailerKeys` (any case, `Key: value` at the start of the line) in any
+of `trailerKeys` or a `--key KEY` (any case, `Key: value` at the start of the line) in any
 paragraph before the last, or in the title's paragraph, which git never reads
 trailers from (so a message of one paragraph keeps none). The title line
 itself is never judged. Each is named with its line number. The file is
@@ -237,7 +237,7 @@ none. Exit 2: bad arguments, or a config or file it cannot read.
 ```bash
 #!/usr/bin/env bash
 # .husky/commit-msg
-exec node node_modules/@veda-hq/dvara/dist/cli.js trailers "$1"
+exec node node_modules/@veda-hq/dvara/dist/cli.js trailers --key Slice "$1"
 ```
 
 ## Commands
@@ -248,6 +248,6 @@ dvara stages <hook>                  # the stages .dvara.json lists for it
 dvara shell <stages|keep-going>      # the path of a shell helper
 dvara records <--staged | --all [--base REF] [--write-baseline | --survey] | --base REF>
 dvara frozen <--staged | --base REF [--head REF]>
-dvara trailers <commit-msg-file>     # refuse trailer lines git would not read
+dvara trailers [--key KEY]… <commit-msg-file>  # refuse trailer lines git would not read
 dvara --version
 ```

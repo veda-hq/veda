@@ -300,6 +300,36 @@ describe("dvara trailers", () => {
     ]);
   });
 
+  it("takes a repository's keys from --key too, with no config field", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dvara-cli-trailers-"));
+    writeFileSync(join(root, "msg"), MESSAGE);
+    const { io, err } = capture();
+    assert.equal(
+      await run(["trailers", "--key", "Slice", "msg"], { io, cwd: root, env: {} }),
+      1,
+    );
+    assert.equal(err[1], "  msg:3 Slice: L-04");
+    assert.equal(
+      await run(["trailers", "msg", "--key", "State"], { io, cwd: root, env: {} }),
+      0,
+    );
+  });
+
+  it("refuses a --key with no key or a key git would not read", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dvara-cli-trailers-"));
+    for (const args of [["msg", "--key"], ["--key", "Bad key", "msg"]]) {
+      const { io, err } = capture();
+      assert.equal(
+        await run(["trailers", ...args], { io, cwd: root, env: {} }),
+        2,
+      );
+      assert.deepEqual(err, [
+        "dvara trailers: --key takes a trailer key: letters, digits and -",
+        "usage: dvara trailers [--key KEY]… <commit-msg-file>",
+      ]);
+    }
+  });
+
   it("refuses bad arguments, a bad config and a file it cannot read", async () => {
     const root = mkdtempSync(join(tmpdir(), "dvara-cli-trailers-"));
     for (const args of [[], ["a", "b"]]) {
@@ -310,7 +340,7 @@ describe("dvara trailers", () => {
       );
       assert.deepEqual(err, [
         "dvara trailers: give one commit message file",
-        "usage: dvara trailers <commit-msg-file>",
+        "usage: dvara trailers [--key KEY]… <commit-msg-file>",
       ]);
     }
     const { io, err } = capture();
@@ -329,7 +359,7 @@ describe("dvara trailers", () => {
   });
 
   it("is in the usage", () => {
-    assert.ok(USAGE.includes("dvara trailers <commit-msg-file>"), USAGE);
+    assert.ok(USAGE.includes("dvara trailers [--key KEY]… <commit-msg-file>"), USAGE);
   });
 });
 

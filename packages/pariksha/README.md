@@ -75,7 +75,9 @@ the file the check's settings are read from, the check judges every tracked
 file instead: a tightened check meets the code it did not change. That file
 is the one `--config` or the entry names; for an inline entry it is
 `.pariksha.json` itself. So an edit to one file entry, or to another check's
-entry, widens no other check's run.
+entry, widens no other check's run. `duplicate-tests` and `flaky-tests`
+never widen: comparing every pair of tests, or rerunning every test, outlasts
+a CI step, so they judge the selection as listed.
 
 ## `absolute-paths`
 

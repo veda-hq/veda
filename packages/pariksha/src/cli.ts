@@ -105,9 +105,9 @@ const real = (path: string): string => {
  * The list a check that judges files reads: the files `--staged`, `--base` or
  * `--all` select in the repository holding `root`, the `--files-from` list,
  * or undefined for the check's own default. A selection that changes the
- * check's settings lists every tracked file.
+ * check's settings lists every tracked file, unless `widen` is false.
  */
-const listOf = (f: Map<string, string>, io: Io, root: string): string | undefined => {
+const listOf = (f: Map<string, string>, io: Io, root: string, widen = true): string | undefined => {
   const selection = selectionOf(f);
   if (selection !== undefined && 'error' in selection) throw new Error(selection.error);
   if (selection === undefined) {
@@ -120,7 +120,7 @@ const listOf = (f: Map<string, string>, io: Io, root: string): string | undefine
   // file itself, any other the file named. So an edit to one check's entry
   // in `.pariksha.json` widens no other check's run.
   const configPath = f.get('--config');
-  const settings = f.has(INLINE) ? f.get(PROJECT_FILE) : configPath === undefined ? undefined : resolve(root, configPath);
+  const settings = !widen ? undefined : f.has(INLINE) ? f.get(PROJECT_FILE) : configPath === undefined ? undefined : resolve(root, configPath);
   // Relative to the root, as a caller's list names them: a check's `include`
   // is matched against the path as listed, so `^docs/` must see `docs/a.md`.
   const base = real(root);
@@ -834,10 +834,12 @@ const requiredSettings = (f: Map<string, string>, io: Io): number => {
  * The test files duplicate-tests and flaky-tests judge, relative to the root:
  * those `--files-from` lists (mode `files`; a relative entry is read from the
  * root), or every tracked file on disk (mode `all`), kept when `include`
- * matches the root-relative path.
+ * matches the root-relative path. A change to their settings never widens
+ * the selection: comparing every pair of tests, or rerunning every test,
+ * outlasts any CI step.
  */
 const testFiles = (f: Map<string, string>, io: Io, root: string, include: RegExp): { mode: string; files: string[] } => {
-  const text = listOf(f, io, root);
+  const text = listOf(f, io, root, false);
   const listed =
     text === undefined
       ? must(gitAt(root), ['ls-files', '-z'])

@@ -124,6 +124,24 @@ describe('.pariksha.json', () => {
     assert.equal(staged(inline, '.pariksha.json', JSON.stringify({ checks: { 'absolute-paths': { include: '\\.mdx?$' } } })), 1);
   });
 
+  it('never widens duplicate-tests or flaky-tests when their settings change', () => {
+    const body = "describe('adder', () => { it('adds two numbers', () => { expect(1).toBe(1); expect(2).toBe(2); expect(3).toBe(3); }); });\n";
+    // A committed pair of copies: a whole-tree run would refuse them.
+    const root = repo({ 'a.test.ts': body, 'b.test.ts': body, 'cfg/dup.json': '{}', 'cfg/flaky.json': '{}', 'c.ts': '', '.pariksha.json': '{"checks": {"duplicate-tests": "cfg/dup.json", "flaky-tests": "cfg/flaky.json"}}' });
+    assert.equal(run(['duplicate-tests', '--root', root, '--all'], capture(root).io, '1.0.0', {}), 1);
+    git(root, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base');
+    // Each check's own settings change, beside a file that is no test: nothing is listed to judge.
+    writeFileSync(join(root, 'cfg/dup.json'), '{"threshold": 0.9}\n');
+    writeFileSync(join(root, 'cfg/flaky.json'), '{"exclude": []}\n');
+    writeFileSync(join(root, 'c.ts'), 'export {};\n');
+    git(root, 'add', '-A');
+    for (const check of ['duplicate-tests', 'flaky-tests']) {
+      const c = capture(root);
+      assert.equal(run([check, '--root', root, '--staged'], c.io, '1.0.0', {}), 0);
+      assert.match(c.out.join('\n'), /No files found to analyze/);
+    }
+  });
+
   it('names an inline entry by the config file in a check’s own messages', () => {
     const entry = { vitest: { configs: ['apps/a/vitest.config.mjs'], requiredExcludes: ['**/*.test.ts'] } };
     const root = repo({ 'x.md': '', '.pariksha.json': JSON.stringify({ checks: { 'coverage-exemptions': entry } }) });

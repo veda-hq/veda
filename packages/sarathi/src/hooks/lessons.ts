@@ -17,8 +17,8 @@
  *   the session's checkout: `*` and `?` within one path segment, `**` across
  *   segments.
  *
- * The lesson unit is the one athya_mono's "lessons nothing holds" counter reads
- * (scripts/lessons-nothing-holds.ts, 0165 L-01), so a lesson with a `when`
+ * The lesson unit is the one a "lessons nothing holds" counter reads (a lesson
+ * with neither a `when` line nor a `held by` line), so a lesson with a `when`
  * line is never counted as unheld. In every `.md` file but README.md: a `### `
  * section is one lesson, bullets inside it included, up to the next heading of
  * any level; outside one, a column-0 `- ` bullet is one lesson with its

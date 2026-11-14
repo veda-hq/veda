@@ -114,8 +114,8 @@ lesson's end, so the text and its trigger stay in one place:
 | `command` | a JavaScript regular expression | a Bash call's command, before it runs |
 | `path` | a glob: `*` and `?` within a segment, `**` across segments | an Edit or Write call's file, relative to the session's checkout, before it runs |
 
-A lesson is what athya_mono's "lessons nothing holds" counter counts, in
-every `.md` file but `README.md`: a `### ` section, bullets inside it
+A lesson is the unit a "lessons nothing holds" counter counts (those with
+neither a `when` nor a `held by` line), in every `.md` file but `README.md`: a `### ` section, bullets inside it
 included, up to the next heading; outside one, a column-0 `- ` bullet with
 its indented lines, up to a column-0 paragraph. Put the `when` line at the
 lesson's end, indented two spaces inside a bullet. One lesson may have several.

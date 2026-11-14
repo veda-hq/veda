@@ -16,6 +16,9 @@
     "guards": "node scripts/released-pins.mjs && pariksha boundary && pariksha required-settings --require .veda/required-settings.json && pariksha required-settings --require node_modules/@veda-hq/pariksha/baselines/claude-settings.json && sarathi check --settings .claude/settings.json"
   },
   "devDependencies": {
+    "@sigstore/bundle": "5.0.1",
+    "@sigstore/protobuf-specs": "0.5.2",
+    "@sigstore/verify": "4.1.3",
     "@veda-hq/dvara": "0.5.16",
     "@veda-hq/eslint-plugin-shuddhi": "0.2.0",
     "@veda-hq/pariksha": "0.5.20",

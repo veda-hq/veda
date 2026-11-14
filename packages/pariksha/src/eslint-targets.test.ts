@@ -95,17 +95,17 @@ describe('configInputs on a fixture tree', () => {
 });
 
 describe('lintPackagesMoved', () => {
-  const packages = ['@athya-hq/rules', 'athya-hq/athya-rules', '@veda-hq/eslint-plugin-shuddhi'];
+  const packages = ['@acme/rules', 'acme/acme-rules', '@veda-hq/eslint-plugin-shuddhi'];
   it('is true for an added or removed line naming any package', () => {
     assert.ok(lintPackagesMoved('-    "@veda-hq/eslint-plugin-shuddhi": "0.2.0",\n+    "@veda-hq/eslint-plugin-shuddhi": "0.2.1",', packages));
-    assert.ok(lintPackagesMoved('+    "@athya-hq/rules": "github:athya-hq/athya-rules#v0.2.1"', packages));
-    assert.ok(lintPackagesMoved('-    resolution: {commit: 616d184, repo: https://github.com/athya-hq/athya-rules.git, type: git}', packages));
+    assert.ok(lintPackagesMoved('+    "@acme/rules": "github:acme/acme-rules#v0.2.1"', packages));
+    assert.ok(lintPackagesMoved('-    resolution: {commit: 616d184, repo: https://github.com/acme/acme-rules.git, type: git}', packages));
   });
   it('is false for context lines, file headers, other packages, and with no packages named', () => {
-    const diff = ['--- a/package.json', '+++ b/package.json', '     "@athya-hq/rules": "github:athya-hq/athya-rules#v0.2.0"', '-    "zod": "4.6.6"', '+    "zod": "4.6.7"'].join('\n');
+    const diff = ['--- a/package.json', '+++ b/package.json', '     "@acme/rules": "github:acme/acme-rules#v0.2.0"', '-    "zod": "4.6.6"', '+    "zod": "4.6.7"'].join('\n');
     assert.ok(!lintPackagesMoved(diff, packages));
     assert.ok(!lintPackagesMoved('', packages));
-    assert.ok(!lintPackagesMoved('+ "@athya-hq/rules"', []));
+    assert.ok(!lintPackagesMoved('+ "@acme/rules"', []));
   });
 });
 
@@ -135,7 +135,7 @@ describe('pariksha eslint-targets', () => {
     put(root, 'notes.txt', 'one\n');
     put(root, 'apps/a/package.json', LINTED);
     put(root, 'apps/a/eslint.config.mjs', 'export default [];\n');
-    put(root, 'lint.json', '{"lintPackages": ["@athya-hq/rules"]}');
+    put(root, 'lint.json', '{"lintPackages": ["@acme/rules"]}');
     commit(root, 'one');
     put(root, 'notes.txt', 'two\n');
     commit(root, 'a file no lint reads');
@@ -147,7 +147,7 @@ describe('pariksha eslint-targets', () => {
     commit(root, 'the root suppressions');
     assert.deepEqual(targets(root).out, ['.']);
     // A moved rules pin reaches every target, when the config names the package.
-    put(root, 'package.json', '{ "devDependencies": { "@athya-hq/rules": "github:athya-hq/athya-rules#v1" } }\n');
+    put(root, 'package.json', '{ "devDependencies": { "@acme/rules": "github:acme/acme-rules#v1" } }\n');
     commit(root, 'the rules pin');
     assert.deepEqual(targets(root).out, []);
     assert.deepEqual(targets(root, 'lint.json').out, ['.', 'apps/a']);

@@ -1,6 +1,6 @@
 /**
- * PreToolUse (Bash, Edit, Write) and PostToolUseFailure handler: shows a
- * lesson at the moment it matters.
+ * PreToolUse and PostToolUseFailure handler: shows a lesson at the moment it
+ * matters.
  *
  * A lesson doc (Markdown) marks a lesson that has a moment with a line at the
  * lesson's end, so the text and its trigger live in one place:
@@ -8,6 +8,8 @@
  *   <!-- when: error "all predefined address pools have been fully subnetted" -->
  *   <!-- when: command "git push \S+ \S+:refs/heads/" -->
  *   <!-- when: path "apps/server/prisma/schema.prisma" -->
+ *   <!-- when: tool "Agent|Task" input "\x22subagent_type\x22:\x22general-purpose\x22" -->
+ *   <!-- when: content "DROP DATABASE" path "**\/*.test.*" -->
  *
  * - `error`: plain text, found in a failed tool call's `error`
  *   (PostToolUseFailure), ignoring case and runs of whitespace.
@@ -16,6 +18,15 @@
  * - `path`: a glob, matched against an Edit or Write call's file, relative to
  *   the session's checkout: `*` and `?` within one path segment, `**` across
  *   segments.
+ * - `tool`: a regular expression for the whole tool name, before any call the
+ *   hook is routed (PreToolUse). An optional `input "<regex>"` must also
+ *   match the call's input as JSON, so the line fires on one use of a tool.
+ * - `content`: a regular expression, tested against the text an Edit or Write
+ *   puts in its file (`new_string`, or `content`), and only for files its
+ *   required `path "<glob>"` matches, so it stays off unrelated edits.
+ *
+ * Patterns are written between double quotes and do not contain one; write
+ * `\x22` for a quote inside a regular expression.
  *
  * The lesson unit is the one a "lessons nothing holds" counter reads (a lesson
  * with neither a `when` line nor a `held by` line), so a lesson with a `when`
@@ -56,7 +67,10 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export type Kind = 'error' | 'command' | 'path';
+export type Kind = 'error' | 'command' | 'path' | 'tool' | 'content';
+
+/** The qualifier each kind takes: `tool` an optional `input`, `content` a required `path`. */
+export type Qualifier = 'input' | 'path';
 
 export interface Trigger {
   readonly kind: Kind;
@@ -64,6 +78,14 @@ export interface Trigger {
   readonly pattern: string;
   /** The `when` line's 1-based line number, for messages. */
   readonly line: number;
+  /** A second clause, `input "<regex>"` or `path "<glob>"`, when the line has one. */
+  readonly scope?: { readonly qualifier: Qualifier; readonly pattern: string };
+}
+
+/** What an event offers a trigger of one kind: the text it is tested on, and the text its scope is. */
+export interface Subject {
+  readonly text: string;
+  readonly scope?: string;
 }
 
 export interface Lesson {
@@ -91,7 +113,7 @@ export interface ToolEvent {
 /** One lesson's text in context is capped: a lesson is a bullet or a short section. */
 export const TEXT_MAX = 2000;
 export const EXCERPT_MAX = 120;
-const WHEN = /^<!--\s*when:\s*(error|command|path)\s+"(.*)"\s*-->$/;
+const WHEN = /^<!--\s*when:\s*(error|command|path|tool|content)\s+"(.*?)"(?:\s+(input|path)\s+"(.*)")?\s*-->$/;
 /** Marker lines a lesson's text leaves out: `when` lines and L-01's `held by` lines. */
 const MARKER_LINE = /^<!--\s*(when|held by):.*-->$/;
 const MARKER = '<!-- when:';
@@ -165,7 +187,8 @@ export function parseDoc(text: string, file: string): Doc {
     if (MARKER_LINE.test(line)) markers.add(index);
     const when = WHEN.exec(line);
     if (when === null) return;
-    const trigger: Trigger = { kind: when[1] as Kind, pattern: when[2] ?? '', line: index + 1 };
+    const scope = when[3] === undefined ? {} : { scope: { qualifier: when[3] as Qualifier, pattern: when[4] ?? '' } };
+    const trigger: Trigger = { kind: when[1] as Kind, pattern: when[2] ?? '', line: index + 1, ...scope };
     if (unit === undefined || (section < 0 && item < 0)) {
       strays.push(`${file}:${index + 1}`);
       return;
@@ -261,20 +284,47 @@ function squash(text: string): string {
   return text.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-/** Does `trigger` fire on `subject`? A pattern that does not compile never fires. */
-export function fires(trigger: Trigger, subject: string): boolean {
-  if (trigger.pattern === '') return false;
+/** The qualifier a kind takes, and whether it must have it. */
+const QUALIFIERS: Readonly<Record<Kind, { qualifier?: Qualifier; required: boolean }>> = {
+  error: { required: false },
+  command: { required: false },
+  path: { required: false },
+  tool: { qualifier: 'input', required: false },
+  content: { qualifier: 'path', required: true },
+};
+
+/** Is the trigger's scope the one its kind takes (present when required, absent when none)? */
+function scopeFits(trigger: Trigger): boolean {
+  const rule = QUALIFIERS[trigger.kind];
+  if (trigger.scope === undefined) return !rule.required;
+  return trigger.scope.qualifier === rule.qualifier && trigger.scope.pattern !== '';
+}
+
+/**
+ * Does `trigger` fire on `subject`: a string (an error, a command, a path,
+ * a tool name, a file's new text) or a Subject with the scope text too? A
+ * pattern that does not compile never fires; a scope a trigger needs and the
+ * subject lacks never matches.
+ */
+export function fires(trigger: Trigger, subject: string | Subject): boolean {
+  const { text, scope } = typeof subject === 'string' ? { text: subject, scope: undefined } : subject;
+  if (trigger.pattern === '' || !scopeFits(trigger)) return false;
   try {
-    if (trigger.kind === 'error') return squash(subject).includes(squash(trigger.pattern));
-    if (trigger.kind === 'command') return new RegExp(trigger.pattern).test(subject);
-    return globToRegExp(trigger.pattern).test(subject);
+    if (trigger.kind === 'error') return squash(text).includes(squash(trigger.pattern));
+    if (trigger.kind === 'command') return new RegExp(trigger.pattern).test(text);
+    if (trigger.kind === 'path') return globToRegExp(trigger.pattern).test(text);
+    if (trigger.kind === 'tool') {
+      if (!new RegExp(`^(?:${trigger.pattern})$`).test(text)) return false;
+      return trigger.scope === undefined || (scope !== undefined && new RegExp(trigger.scope.pattern).test(scope));
+    }
+    return scope !== undefined && globToRegExp(trigger.scope?.pattern ?? '').test(scope) && new RegExp(trigger.pattern).test(text);
   } catch {
     // fail-open: a pattern that does not compile never fires; triggerProblems reports it
     return false;
   }
 }
 
-/** Problems with the `when` lines: a pattern that is empty or does not compile. */
+/** Problems with the `when` lines: an empty pattern, one that does not compile, or a missing or wrong qualifier. */
 export function triggerProblems(lessons: readonly Lesson[]): string[] {
   const problems: string[] = [];
   for (const lesson of lessons) {
@@ -284,12 +334,23 @@ export function triggerProblems(lessons: readonly Lesson[]): string[] {
         problems.push(`${where}: an empty ${trigger.kind} pattern never fires`);
         continue;
       }
-      if (trigger.kind === 'error') continue;
-      try {
-        if (trigger.kind === 'command') new RegExp(trigger.pattern);
-      } catch (error) {
-        // fail-open: the problem is returned to the caller, not thrown
-        problems.push(`${where}: "${trigger.pattern}" is not a regular expression (${(error as Error).message})`);
+      if (!scopeFits(trigger)) {
+        const rule = QUALIFIERS[trigger.kind];
+        const wanted = rule.qualifier === undefined ? 'no second clause' : `${rule.required ? 'a' : 'an optional'} ${rule.qualifier} "…"`;
+        problems.push(`${where}: a ${trigger.kind} line takes ${wanted}, so it never fires`);
+        continue;
+      }
+      const regexes = [
+        ...(trigger.kind === 'command' || trigger.kind === 'tool' || trigger.kind === 'content' ? [trigger.pattern] : []),
+        ...(trigger.scope?.qualifier === 'input' ? [trigger.scope.pattern] : []),
+      ];
+      for (const pattern of regexes) {
+        try {
+          new RegExp(pattern);
+        } catch (error) {
+          // fail-open: the problem is returned to the caller, not thrown
+          problems.push(`${where}: "${pattern}" is not a regular expression (${(error as Error).message})`);
+        }
       }
     }
   }
@@ -327,11 +388,41 @@ export function kindOf(event: ToolEvent): Kind | undefined {
   return event.tool_name === 'Edit' || event.tool_name === 'Write' ? 'path' : undefined;
 }
 
+/** Every trigger kind an event can fire: its `kindOf`, a `tool` before any call, and `content` before Edit or Write. */
+export function kindsOf(event: ToolEvent): Kind[] {
+  const kind = kindOf(event);
+  if (event.hook_event_name !== 'PreToolUse' || typeof event.tool_name !== 'string' || event.tool_name === '') return kind === undefined ? [] : [kind];
+  return [...(kind === undefined ? [] : [kind]), ...(kind === 'path' ? (['content'] as const) : []), 'tool'];
+}
+
+/** The text an Edit or Write puts in its file: `new_string`, `content`, or a MultiEdit's `edits`. */
+function newText(input: Record<string, unknown>): string | undefined {
+  if (typeof input.new_string === 'string') return input.new_string;
+  if (typeof input.content === 'string') return input.content;
+  if (!Array.isArray(input.edits)) return undefined;
+  const parts = input.edits.map((edit: unknown) => (typeof edit === 'object' && edit !== null ? (edit as Record<string, unknown>).new_string : undefined));
+  return parts.every(part => typeof part === 'string') ? parts.join('\n') : undefined;
+}
+
+/** What an event offers a trigger of `kind`: its text and, for `tool` and `content`, the text a scope is tested on. */
+export function eventSubject(event: ToolEvent, kind: Kind): Subject | undefined {
+  const input = typeof event.tool_input === 'object' && event.tool_input !== null ? (event.tool_input as Record<string, unknown>) : {};
+  if (kind === 'tool') return typeof event.tool_name === 'string' ? { text: event.tool_name, scope: JSON.stringify(input) } : undefined;
+  if (kind !== 'content') {
+    const text = subjectOf(event, kind);
+    return text === undefined ? undefined : { text };
+  }
+  const path = subjectOf(event, 'path');
+  const text = newText(input);
+  return path === undefined || text === undefined ? undefined : { text, scope: path };
+}
+
 /** The text an event's triggers are tested against, for its kind; `undefined` when it has none. */
 export function subjectOf(event: ToolEvent, kind: Kind): string | undefined {
   const input = typeof event.tool_input === 'object' && event.tool_input !== null ? (event.tool_input as Record<string, unknown>) : {};
   if (kind === 'error') return typeof event.error === 'string' ? event.error : undefined;
   if (kind === 'command') return typeof input.command === 'string' ? input.command : undefined;
+  if (kind === 'tool' || kind === 'content') return eventSubject(event, kind)?.text;
   const file = input.file_path;
   if (typeof file !== 'string' || file === '') return undefined;
   const cwd = typeof event.cwd === 'string' && event.cwd !== '' ? event.cwd : process.cwd();
@@ -410,22 +501,35 @@ function render(lesson: Lesson): string {
 export function respond(raw: string, deps: Deps): string {
   try {
     const event = JSON.parse(raw) as ToolEvent;
-    const kind = kindOf(event);
-    if (kind === undefined) return '';
-    const candidates = loadLessons(deps.dirs).filter(lesson => lesson.triggers.some(trigger => trigger.kind === kind));
+    const kinds = kindsOf(event);
+    if (kinds.length === 0) return '';
+    const candidates = loadLessons(deps.dirs).filter(lesson => lesson.triggers.some(trigger => kinds.includes(trigger.kind)));
     if (candidates.length === 0) return '';
-    const subject = subjectOf(event, kind);
-    if (subject === undefined) return '';
-    const matched = candidates.filter(lesson => lesson.triggers.some(trigger => trigger.kind === kind && fires(trigger, subject)));
+    const subjects = new Map<Kind, Subject>();
+    for (const kind of kinds) {
+      const subject = eventSubject(event, kind);
+      if (subject !== undefined) subjects.set(kind, subject);
+    }
+    const matchOf = (lesson: Lesson): { kind: Kind; subject: Subject } | undefined => {
+      for (const trigger of lesson.triggers) {
+        const subject = subjects.get(trigger.kind);
+        if (subject !== undefined && fires(trigger, subject)) return { kind: trigger.kind, subject };
+      }
+      return undefined;
+    };
+    const matched = candidates.flatMap(lesson => {
+      const match = matchOf(lesson);
+      return match === undefined ? [] : [{ lesson, ...match }];
+    });
     if (matched.length === 0) return '';
-    const unique = [...new Map(matched.map(lesson => [lesson.id, lesson])).values()];
+    const unique = [...new Map(matched.map(match => [match.lesson.id, match])).values()];
     const session = typeof event.session_id === 'string' && SESSION.test(event.session_id) ? event.session_id : undefined;
     const dir = logDir(event, deps.env);
     const file = join(dir, `${session ?? 'no-session'}.jsonl`);
     const seen = session === undefined ? new Set<string>() : shownIn(file);
-    const fresh = unique.filter(lesson => !seen.has(lesson.id));
+    const fresh = unique.filter(match => !seen.has(match.lesson.id)).map(match => match.lesson);
     const ts = deps.now().toISOString();
-    const rows = unique.map(lesson => ({
+    const rows = unique.map(({ lesson, kind, subject }) => ({
       ts,
       session: session ?? '',
       event: String(event.hook_event_name),
@@ -433,7 +537,8 @@ export function respond(raw: string, deps: Deps): string {
       kind,
       lesson: lesson.id,
       outcome: seen.has(lesson.id) ? 'repeat' : 'shown',
-      excerpt: clip(subject),
+      // A tool or content match is cited by what it matched on: the call's input, or the file.
+      excerpt: clip(kind === 'tool' || kind === 'content' ? `${subject.text} ${subject.scope ?? ''}` : subject.text),
     }));
     try {
       mkdirSync(dir, { recursive: true });

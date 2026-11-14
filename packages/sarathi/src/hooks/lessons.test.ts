@@ -12,6 +12,8 @@ import {
   globToRegExp,
   kindOf,
   docProblems,
+  eventSubject,
+  kindsOf,
   loadLessons,
   logDir,
   packagedLessons,
@@ -177,6 +179,60 @@ test('each kind fires on its own subject; a broken pattern never fires', () => {
   assert.ok(!fires(t('error', ''), 'anything'));
 });
 
+test('a tool line fires on the whole tool name and, given one, its input; a content line needs its path', () => {
+  const [lesson] = parseLessons(
+    [
+      '- **A.** a',
+      '  <!-- when: tool "Agent|Task" input "\\x22subagent_type\\x22:\\x22general-purpose\\x22" -->',
+      '  <!-- when: tool "mcp__x__start" -->',
+      '  <!-- when: content "DROP DATABASE" path "**/*.test.*" -->',
+    ].join('\n'),
+    'x.md',
+  );
+  const [agent, start, drop] = lesson?.triggers ?? [];
+  assert.deepEqual(agent?.scope, { qualifier: 'input', pattern: '\\x22subagent_type\\x22:\\x22general-purpose\\x22' });
+  assert.equal(start?.scope, undefined);
+  assert.deepEqual(drop?.scope, { qualifier: 'path', pattern: '**/*.test.*' });
+  if (agent === undefined || start === undefined || drop === undefined) throw new Error('three triggers');
+
+  assert.ok(fires(agent, { text: 'Agent', scope: '{"subagent_type":"general-purpose"}' }));
+  assert.ok(fires(agent, { text: 'Task', scope: '{"subagent_type":"general-purpose"}' }));
+  assert.ok(!fires(agent, { text: 'Agent', scope: '{"subagent_type":"Explore"}' }));
+  assert.ok(!fires(agent, { text: 'AgentX', scope: '{"subagent_type":"general-purpose"}' }), 'the whole name');
+  assert.ok(!fires(agent, 'Agent'), 'an input clause needs the input');
+  assert.ok(fires(start, 'mcp__x__start'));
+  assert.ok(!fires(start, 'mcp__x__start_other'));
+
+  assert.ok(fires(drop, { text: 'await db.$executeRaw`DROP DATABASE x`', scope: 'apps/server/a.integration.test.ts' }));
+  assert.ok(!fires(drop, { text: 'DROP DATABASE x', scope: 'apps/server/src/migrate.ts' }), 'outside its path');
+  assert.ok(!fires(drop, { text: 'select 1', scope: 'a.test.ts' }));
+  assert.ok(!fires(drop, 'DROP DATABASE x'), 'no path, no match');
+  assert.ok(!fires({ kind: 'content', pattern: 'x', line: 1 }, { text: 'x', scope: 'a' }), 'content needs a path clause');
+  assert.ok(!fires({ kind: 'command', pattern: 'x', line: 1, scope: { qualifier: 'input', pattern: 'y' } }, 'x'));
+  assert.ok(!fires({ kind: 'tool', pattern: '(bad', line: 1 }, 'x'));
+});
+
+test('trigger problems name a missing or wrong second clause, and a bad input pattern', () => {
+  const lessons = parseLessons(
+    [
+      '- **A.** a',
+      '  <!-- when: content "DROP" -->',
+      '  <!-- when: command "git" input "x" -->',
+      '  <!-- when: tool "Agent" path "x" -->',
+      '  <!-- when: tool "Agent" input "(bad" -->',
+      '  <!-- when: content "ok" path "a/**" -->',
+      '  <!-- when: tool "Agent" -->',
+    ].join('\n'),
+    'x.md',
+  );
+  assert.deepEqual(triggerProblems(lessons), [
+    'x.md:2: a content line takes a path "…", so it never fires',
+    'x.md:3: a command line takes no second clause, so it never fires',
+    'x.md:4: a tool line takes an optional input "…", so it never fires',
+    'x.md:5: "(bad" is not a regular expression (Invalid regular expression: /(bad/: Unterminated group)',
+  ]);
+});
+
 test('trigger problems name empty and uncompilable patterns', () => {
   const lessons = parseLessons(
     '- **A.** a\n  <!-- when: command "(bad" -->\n  <!-- when: error "" -->\n  <!-- when: error "fine" -->\n  <!-- when: path "ok/*" -->\n  <!-- when: command "ok" -->\n',
@@ -237,6 +293,76 @@ test('an event offers its kind and subject', () => {
   const outside = scratch();
   assert.equal(subjectOf({ cwd: outside, tool_input: { file_path: join(outside, 'x.ts') } }, 'path'), 'x.ts');
   assert.equal(typeof subjectOf({ tool_input: { file_path: join(process.cwd(), 'x.ts') } }, 'path'), 'string');
+});
+
+test('an event offers every kind it can fire: tool before any call, content before Edit or Write', () => {
+  assert.deepEqual(kindsOf({ hook_event_name: 'PreToolUse', tool_name: 'Bash' }), ['command', 'tool']);
+  assert.deepEqual(kindsOf({ hook_event_name: 'PreToolUse', tool_name: 'Edit' }), ['path', 'content', 'tool']);
+  assert.deepEqual(kindsOf({ hook_event_name: 'PreToolUse', tool_name: 'Agent' }), ['tool']);
+  assert.deepEqual(kindsOf({ hook_event_name: 'PreToolUse' }), []);
+  assert.deepEqual(kindsOf({ hook_event_name: 'PostToolUseFailure', tool_name: 'Bash' }), ['error']);
+  assert.deepEqual(kindsOf({ hook_event_name: 'PostToolUse', tool_name: 'Bash' }), []);
+
+  const repo = scratch();
+  mkdirSync(join(repo, '.git'));
+  const file = join(repo, 'a.test.ts');
+  assert.deepEqual(eventSubject({ tool_name: 'Agent', tool_input: { subagent_type: 'Explore' } }, 'tool'), {
+    text: 'Agent',
+    scope: '{"subagent_type":"Explore"}',
+  });
+  assert.deepEqual(eventSubject({ tool_name: 'Agent' }, 'tool'), { text: 'Agent', scope: '{}' });
+  assert.equal(eventSubject({}, 'tool'), undefined);
+  assert.equal(subjectOf({ tool_name: 'Agent' }, 'tool'), 'Agent');
+  assert.deepEqual(eventSubject({ cwd: repo, tool_input: { file_path: file, new_string: 'x' } }, 'content'), { text: 'x', scope: 'a.test.ts' });
+  assert.deepEqual(eventSubject({ cwd: repo, tool_input: { file_path: file, content: 'y' } }, 'content'), { text: 'y', scope: 'a.test.ts' });
+  assert.deepEqual(
+    eventSubject({ cwd: repo, tool_input: { file_path: file, edits: [{ new_string: 'a' }, { new_string: 'b' }] } }, 'content'),
+    { text: 'a\nb', scope: 'a.test.ts' },
+  );
+  assert.equal(eventSubject({ cwd: repo, tool_input: { file_path: file, edits: [{ old_string: 'a' }, 'odd'] } }, 'content'), undefined);
+  assert.equal(eventSubject({ cwd: repo, tool_input: { file_path: file } }, 'content'), undefined);
+  assert.equal(eventSubject({ cwd: repo, tool_input: { file_path: '/elsewhere/a.ts', new_string: 'x' } }, 'content'), undefined);
+  assert.equal(subjectOf({ cwd: repo, tool_input: { file_path: file, new_string: 'x' } }, 'content'), 'x');
+  assert.deepEqual(eventSubject({ tool_input: { command: 'ls' } }, 'command'), { text: 'ls' });
+  assert.equal(eventSubject({ tool_input: {} }, 'command'), undefined);
+});
+
+test('tool and content lines show their lesson through respond, the log citing what matched', () => {
+  const dir = scratch();
+  writeFileSync(
+    join(dir, 'x.md'),
+    [
+      '- **Agent helper.** Use Explore.',
+      '  <!-- when: tool "Agent" input "\\x22subagent_type\\x22:\\x22general-purpose\\x22" -->',
+      '- **Drop in tests.** Defer drops.',
+      '  <!-- when: content "DROP DATABASE" path "**/*.test.ts" -->',
+      '',
+    ].join('\n'),
+  );
+  const repo = scratch();
+  mkdirSync(join(repo, '.git'));
+  const log = join(repo, 'log');
+  const deps: Deps = { env: { SARATHI_LESSONS_DIR: log }, now: () => new Date(0), dirs: [dir] };
+  const agent = respond(
+    JSON.stringify({ hook_event_name: 'PreToolUse', session_id: 's1', cwd: repo, tool_name: 'Agent', tool_input: { subagent_type: 'general-purpose', prompt: 'p' } }),
+    deps,
+  );
+  assert.match(agent, /Agent helper/);
+  assert.doesNotMatch(agent, /Drop in tests/);
+  const drop = respond(
+    JSON.stringify({ hook_event_name: 'PreToolUse', session_id: 's1', cwd: repo, tool_name: 'Edit', tool_input: { file_path: join(repo, 'a.test.ts'), new_string: 'DROP DATABASE t' } }),
+    deps,
+  );
+  assert.match(drop, /Drop in tests/);
+  const rows = readFileSync(join(log, 's1.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as { kind: string; excerpt: string });
+  assert.deepEqual(rows.map(row => [row.kind, row.excerpt]), [
+    ['tool', 'Agent {"subagent_type":"general-purpose","prompt":"p"}'],
+    ['content', 'DROP DATABASE t a.test.ts'],
+  ]);
+  assert.equal(
+    respond(JSON.stringify({ hook_event_name: 'PreToolUse', session_id: 's1', cwd: repo, tool_name: 'Edit', tool_input: { file_path: join(repo, 'a.ts'), new_string: 'DROP DATABASE t' } }), deps),
+    '',
+  );
 });
 
 test('the log folder: the override, the git common dir, then the state folder', () => {
@@ -392,45 +518,68 @@ interface Sample {
   lesson: string;
   kind: Trigger['kind'];
   pattern: string;
+  /** The line's second clause (`input` or `path`), or ''. */
+  scope: string;
+  /** An error text, a command or a path; for `tool`, the name then its input as JSON; for `content`, the path then the text. */
   sample: string;
 }
 
+const KINDS: readonly string[] = ['error', 'command', 'path', 'tool', 'content'];
+
 function samplesIn(dir: string): Sample[] {
   const [header, ...rows] = readFileSync(join(dir, 'when-samples.tsv'), 'utf8').trimEnd().split('\n');
-  assert.equal(header, 'lesson\tkind\tpattern\tsample');
+  assert.equal(header, 'lesson\tkind\tpattern\tscope\tsample');
   return rows.map(row => {
-    const [lesson = '', kind = '', pattern = '', sample = '', ...rest] = row.split('\t');
-    assert.deepEqual(rest, [], `${lesson}: a sample row has four columns`);
-    assert.ok(kind === 'error' || kind === 'command' || kind === 'path', `${lesson}: kind ${kind}`);
-    return { lesson, kind, pattern, sample };
+    const [lesson = '', kind = '', pattern = '', scope = '', sample = '', ...rest] = row.split('\t');
+    assert.deepEqual(rest, [], `${lesson}: a sample row has five columns`);
+    assert.ok(KINDS.includes(kind), `${lesson}: kind ${kind}`);
+    return { lesson, kind: kind as Trigger['kind'], pattern, scope, sample };
   });
+}
+
+/** A when line as the table keys it. */
+function lineKey(lesson: string, trigger: Trigger): string {
+  return `${lesson}\t${trigger.kind}\t${trigger.pattern}\t${trigger.scope?.pattern ?? ''}`;
 }
 
 /** The event a sample stands for, in the checkout `root`. */
 function sampleEvent(sample: Sample, root: string, session: string): Record<string, unknown> {
   const base = { session_id: session, cwd: root };
+  const space = sample.sample.indexOf(' ');
+  const [head, tail] = [sample.sample.slice(0, space), sample.sample.slice(space + 1)];
   if (sample.kind === 'error') {
     return { ...base, hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command: 'true' }, error: sample.sample };
   }
   if (sample.kind === 'command') return { ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: sample.sample } };
-  return { ...base, hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: join(root, sample.sample) } };
+  if (sample.kind === 'path') return { ...base, hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: join(root, sample.sample) } };
+  if (sample.kind === 'tool') return { ...base, hook_event_name: 'PreToolUse', tool_name: head, tool_input: JSON.parse(tail) as unknown };
+  return { ...base, hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: join(root, head), old_string: '', new_string: tail } };
+}
+
+/** The when lines an event fires, as respond tests them. */
+function firedBy(lines: readonly { key: string; trigger: Trigger }[], event: Record<string, unknown>): string[] {
+  const kinds = kindsOf(event);
+  return lines
+    .filter(line => {
+      const subject = kinds.includes(line.trigger.kind) ? eventSubject(event, line.trigger.kind) : undefined;
+      return subject !== undefined && fires(line.trigger, subject);
+    })
+    .map(line => line.key);
 }
 
 test("veda's own lessons: every when line has a sample, and each sample fires its line and no other", () => {
   assert.deepEqual(docProblems([REPO_LESSONS]), []);
-  const lines = loadLessons([REPO_LESSONS]).flatMap(lesson =>
-    lesson.triggers.map(trigger => ({ key: `${lesson.id}\t${trigger.kind}\t${trigger.pattern}`, trigger })),
-  );
+  const lines = loadLessons([REPO_LESSONS]).flatMap(lesson => lesson.triggers.map(trigger => ({ key: lineKey(lesson.id, trigger), trigger })));
   const samples = samplesIn(REPO_LESSONS);
-  const keys = samples.map(sample => `${sample.lesson}\t${sample.kind}\t${sample.pattern}`);
+  const keys = samples.map(sample => `${sample.lesson}\t${sample.kind}\t${sample.pattern}\t${sample.scope}`);
   assert.deepEqual([...keys].sort(), lines.map(line => line.key).sort(), 'one sample per when line');
   const root = scratch();
   mkdirSync(join(root, '.git'));
   samples.forEach((sample, index) => {
     const key = keys[index];
-    const fired = lines.filter(line => line.trigger.kind === sample.kind && fires(line.trigger, sample.sample)).map(line => line.key);
-    assert.deepEqual(fired, [key], `${key}: fires its line alone`);
-    const out = respond(JSON.stringify(sampleEvent(sample, root, `sample-${index}`)), {
+    const event = sampleEvent(sample, root, `sample-${index}`);
+    assert.deepEqual(firedBy(lines, event), [key], `${key}: fires its line alone`);
+    const out = respond(JSON.stringify(event), {
       env: { SARATHI_LESSONS_DIR: join(root, 'log') },
       now: () => new Date(0),
       dirs: [REPO_LESSONS],
@@ -442,24 +591,30 @@ test("veda's own lessons: every when line has a sample, and each sample fires it
 });
 
 test("veda's own lessons: everyday calls fire no when line", () => {
-  const triggers = loadLessons([REPO_LESSONS]).flatMap(lesson => lesson.triggers);
-  const everyday: [Trigger['kind'], string][] = [
-    ['command', 'git status -sb'],
-    ['command', 'git commit -F .tmp/msg.txt'],
-    ['command', 'git cherry-pick 1a2b3c4'],
-    ['command', 'git push -u origin HEAD'],
-    ['command', 'pnpm test'],
-    ['command', 'gh pr view 12 --json state,title'],
-    ['path', 'src/index.ts'],
-    ['path', 'scripts/release.mjs'],
-    ['path', 'docs/lessons/testing.md'],
-    ['path', '.claude/sarathi.json'],
-    ['error', 'Exit code 1\nAssertionError: expected 2 to equal 3'],
+  const lines = loadLessons([REPO_LESSONS]).flatMap(lesson => lesson.triggers.map(trigger => ({ key: lineKey(lesson.id, trigger), trigger })));
+  const root = scratch();
+  mkdirSync(join(root, '.git'));
+  const pre = (tool: string, input: Record<string, unknown>): Record<string, unknown> => ({ hook_event_name: 'PreToolUse', cwd: root, tool_name: tool, tool_input: input });
+  const edit = (file: string, text: string): Record<string, unknown> => pre('Edit', { file_path: join(root, file), old_string: 'a', new_string: text });
+  const everyday: Record<string, unknown>[] = [
+    pre('Bash', { command: 'git status -sb' }),
+    pre('Bash', { command: 'git commit -F .tmp/msg.txt' }),
+    pre('Bash', { command: 'git cherry-pick 1a2b3c4' }),
+    pre('Bash', { command: 'git push -u origin HEAD' }),
+    pre('Bash', { command: 'pnpm test' }),
+    pre('Bash', { command: 'gh pr view 12 --json state,title' }),
+    edit('src/index.ts', 'export const a = 1;'),
+    edit('scripts/release.mjs', 'process.kill(child.pid)'),
+    edit('docs/lessons/testing.md', 'DROP DATABASE is slow'),
+    edit('.claude/sarathi.json', '"hooks": {}'),
+    edit('.claude/settings.json', '"advisorModel": "fable"'),
+    edit('src/a.test.ts', "expect(sum(1, 2)).toBe(3);"),
+    pre('Agent', { description: 'd', prompt: 'p', subagent_type: 'Explore' }),
+    pre('mcp__ccd_session__start_session', { title: 't', prompt: 'p' }),
+    pre('Read', { file_path: join(root, 'src/index.ts') }),
+    { hook_event_name: 'PostToolUseFailure', cwd: root, tool_name: 'Bash', error: 'Exit code 1\nAssertionError: expected 2 to equal 3' },
   ];
-  for (const [kind, subject] of everyday) {
-    const fired = triggers.filter(trigger => trigger.kind === kind && fires(trigger, subject)).map(trigger => trigger.pattern);
-    assert.deepEqual(fired, [], `${kind} ${subject}`);
-  }
+  for (const event of everyday) assert.deepEqual(firedBy(lines, event), [], JSON.stringify(event));
 });
 
 test('the hook runs as a script: lesson folders as arguments, the answer on stdout', () => {

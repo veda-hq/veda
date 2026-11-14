@@ -132,6 +132,7 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   sends SIGTERM to every user process, the editor session included. Restrict any test's scan and
   kill set to pids it spawned and use impossible pids for fake records. If a session dies
   repeatedly at the same stage of a gate, suspect the gate.
+  <!-- when: content "process\.kill\(" path "**/*.test.*" -->
 - **`ps -o lstart=` pads with spaces.** macOS `ps -o lstart= -p <pid>` pads its output with
   trailing spaces, so a stored start time never equals a fresh read. Normalise both
   (`tr -s ' '` and trim, or `.trim().replace(/ +/g, ' ')` in TypeScript) before comparing to
@@ -211,6 +212,7 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   `afterAll` times out under load, and raising the hook timeout only moves the cliff. Defer
   drops to the end of the run and issue them concurrently (a small pool) so they share
   checkpoints; `CREATE DATABASE ... TEMPLATE` forces none.
+  <!-- when: content "DROP DATABASE" path "**/*.test.*" -->
 - **Loopback inside the container trusts any password.** The official postgres image's
   `pg_hba` trusts the local socket and `127.0.0.1` / `::1`, so a password probe run inside the
   container over loopback accepts any password while real host connections are checked. Probe

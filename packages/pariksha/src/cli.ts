@@ -2,7 +2,7 @@
 // pariksha: repository checks. One subcommand per check.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkAbsolutePaths, DEFAULT_GUIDANCE as ABSOLUTE_PATHS_GUIDANCE } from './absolute-paths.ts';
 import { checkGates, DEFAULT_GATE_CONFIG, parseGateConfig as parseAggregateConfig } from './aggregate-gate-needs.ts';
@@ -33,6 +33,10 @@ import { parseConfig as parseDuplicateConfig, runDuplicateTests } from './duplic
 import { DEFAULT_RUNS, npxVitest, parseConfig as parseFlakyConfig, parseRuns, runFlakyTests, type VitestRunner } from './flaky-tests.ts';
 import { inheritRunner, runPythonFloor, type Options as PythonFloorOptions, type PythonRunner } from './python-floor.ts';
 import { checkSchemaRoots, jsonFiles, readDocuments } from './schema-roots.ts';
+import { CONFIG_FILE, entryObject, entryText, loadProjectConfig, type Entry } from './project-config.ts';
+import { selectedList, selectionOf } from './selection.ts';
+import { DEFAULT_CONFIG as DEFAULT_ESLINT_TARGETS, parseConfig as parseEslintTargetsConfig, rangeTargets } from './eslint-targets.ts';
+import { DEFAULT_CONFIG as DEFAULT_ESLINT_BY_WORKSPACE, inheritEslint, lintByWorkspace, parseConfig as parseEslintByWorkspaceConfig, type EslintRunner } from './eslint-by-workspace.ts';
 
 export interface Io {
   readonly out: (line: string) => void;
@@ -55,28 +59,98 @@ export interface Io {
   readonly vitest?: VitestRunner;
   /** How python-floor runs the named interpreter; a child sharing this process's stdio by default. */
   readonly python?: PythonRunner;
+  /** How eslint-by-workspace runs each group's ESLint; on this process's own streams by default. */
+  readonly eslintRunner?: EslintRunner;
+  /** The directory `.pariksha.json` is found from; the process's own by default. */
+  readonly cwd?: () => string;
 }
+
+/**
+ * Flags the config file sets that no user can type: the settings text of an
+ * inline entry, and that the settings came from the config file at all.
+ */
+const INLINE = '\0inline-config';
+const FROM_PROJECT = '\0from-config-file';
+
+/** The config file the settings came from, when they did. */
+const PROJECT_FILE = '\0config-file';
+
+/** The text of the settings `--config` names, or the inline entry's. */
+const configText = (f: Map<string, string>, root: string): string => f.get(INLINE) ?? readFileSync(resolve(root, f.get('--config') as string), 'utf8');
+
+/**
+ * What `body` returns; when it throws, undefined, with the reason on stderr
+ * after `prefix`: nothing was checked, and the caller exits 2, never 0.
+ */
+const unchecked = <T>(prefix: string, io: Io, body: () => T): T | undefined => {
+  try {
+    return body();
+  } catch (e) {
+    io.err(`${prefix} ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return undefined;
+  }
+};
+
+/** `path` with its folders' links resolved, as git names the top level; itself when it does not exist. */
+const real = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    // fail-open: a settings file that does not exist is compared by the path given; the check reads it later and fails there.
+    return path;
+  }
+};
+
+/**
+ * The list a check that judges files reads: the files `--staged`, `--base` or
+ * `--all` select in the repository holding `root`, the `--files-from` list,
+ * or undefined for the check's own default. A selection that changes the
+ * check's settings lists every tracked file.
+ */
+const listOf = (f: Map<string, string>, io: Io, root: string): string | undefined => {
+  const selection = selectionOf(f);
+  if (selection !== undefined && 'error' in selection) throw new Error(selection.error);
+  if (selection === undefined) {
+    const from = f.get('--files-from');
+    return from === undefined ? undefined : listFrom(from, io);
+  }
+  const top = topOf(root);
+  if (top === undefined) throw new Error(`${root} is not in a git repository, so --staged, --base and --all have nothing to list`);
+  // The file the settings are read from: an inline entry's is the config
+  // file itself, any other the file named. So an edit to one check's entry
+  // in `.pariksha.json` widens no other check's run.
+  const configPath = f.get('--config');
+  const settings = f.has(INLINE) ? f.get(PROJECT_FILE) : configPath === undefined ? undefined : resolve(root, configPath);
+  // Relative to the root, as a caller's list names them: a check's `include`
+  // is matched against the path as listed, so `^docs/` must see `docs/a.md`.
+  const base = real(root);
+  return entries(selectedList(gitAt(top), top, selection, settings === undefined ? [] : [real(settings)]))
+    .map((path) => relative(base, path))
+    .join('\0');
+};
 
 export const DENY_FILE = '.veda/deny.sha256';
 
 const USAGE = [
   'usage: pariksha authority-citations [--mode staged|tree] [--authority <a,b>] [--issue-prefix <A,B>] [--adr-dir <dir>] [--root <dir>]',
-  '       pariksha absolute-paths [--config <file>] [--files-from <file>|-] [--root <dir>]',
+  '       pariksha absolute-paths [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha aggregate-gate-needs [--config <file>] [--root <dir>]',
   '       pariksha boundary [--root <dir>] [--deny <file>]',
   '       pariksha codec-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
-  '       pariksha coverage-by-type [--config <file>] [--files-from <file>|-] [--root <dir>]',
+  '       pariksha coverage-by-type [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha coverage-exemptions --config <file> [--package <dir>] [--root <dir>]',
   '       pariksha doc-budgets --table <file> [--section <name>] [--root <dir>]',
   '       pariksha doc-references --config <file> (--staged | --base <ref> [--head <ref>] | --all [--update-baseline | --write-baseline]) [--checks <ids>] [--root <dir>]',
-  '       pariksha duplicate-tests [--config <file>] [--files-from <file>|-] [--root <dir>]',
+  '       pariksha duplicate-tests [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha enforcement-claims --config <file> [--root <dir>]',
   '       pariksha env-gate-switches --config <file> [--mode staged|tree] [--root <dir>]',
+  '       pariksha eslint-by-workspace [--config <file>] [--files-from <file>|-] [--root <dir>] [<file>...] [-- <eslint args>...]',
+  '       pariksha eslint-targets --range <git range> [--config <file>] [--root <dir>]',
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
   '       pariksha fault-injection-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
-  '       pariksha flaky-tests [--config <file>] [--files-from <file>|-] [--runs <n>] [--root <dir>]',
+  '       pariksha flaky-tests [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--runs <n>] [--root <dir>]',
   '       pariksha masked-exit-codes [--config <file>] [--staged] [--root <dir>]',
-  '       pariksha non-synced-resources [--config <file>] [--files-from <file>|-] [--root <dir>]',
+  '       pariksha non-synced-resources [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha pnpm-settings [--config <file>] [--root <dir>]',
   '       pariksha python-floor --python <interpreter> --floor-file <path> [--exclude <regex>] [--selector <path>] [--root <dir>]',
   '       pariksha required-settings --require <file> [--settings <file>] [--root <dir>]',
@@ -141,9 +215,8 @@ const docCheck =
     const base = resolve(f.get('--root') ?? '.');
     try {
       const configPath = f.get('--config');
-      const config = parseDocConfig(configPath === undefined ? undefined : readFileSync(resolve(base, configPath), 'utf8'), defaultGuidance);
-      const from = f.get('--files-from');
-      const listed = from === undefined ? undefined : from === '-' ? (io.stdin ?? (() => readFileSync(0, 'utf8')))() : readFileSync(resolve(from), 'utf8');
+      const config = parseDocConfig(configPath === undefined ? undefined : configText(f, base), defaultGuidance);
+      const listed = listOf(f, io, base);
       const docs = selectDocs(base, listed, config.include).map((file) => ({ file, text: () => readDoc(base, file) }));
       const result = check(docs, base, config);
       result.out.forEach(io.out);
@@ -180,7 +253,7 @@ const maskedExitCodes = (f: Map<string, string>, io: Io): number => {
   const root = resolve(f.get('--root') ?? '.');
   try {
     const configPath = f.get('--config');
-    const config = configPath === undefined ? DEFAULT_MASKED_CONFIG : parseMaskedConfig(readFileSync(resolve(root, configPath), 'utf8'));
+    const config = configPath === undefined ? DEFAULT_MASKED_CONFIG : parseMaskedConfig(configText(f, root));
     const files = shellFiles(root, config);
     const problems = files.length === 0 ? [] : findMaskedExits(root, files, maskedReaderFor(f.has('--staged')), config);
     const result = formatMasked(problems, files.length, config.id);
@@ -210,7 +283,7 @@ const shellGates = (f: Map<string, string>, io: Io): number => {
   let mode: ShellMode;
   try {
     const configPath = f.get('--config');
-    config = parseGatesConfig(configPath === undefined ? '{}' : readFileSync(resolve(root, configPath), 'utf8'));
+    config = parseGatesConfig(configPath === undefined ? '{}' : configText(f, root));
     const base = f.get('--base');
     const from = f.get('--files-from');
     if (from !== undefined) {
@@ -241,7 +314,7 @@ const aggregateGateNeeds = (f: Map<string, string>, io: Io): number => {
   const configPath = f.get('--config');
   let config = DEFAULT_GATE_CONFIG;
   try {
-    if (configPath !== undefined) config = parseAggregateConfig(readFileSync(resolve(root, configPath), 'utf8'));
+    if (configPath !== undefined) config = parseAggregateConfig(configText(f, root));
   } catch (e) {
     io.err(`pariksha aggregate-gate-needs: ${(e as Error).message}; nothing was checked, so this is not a pass`);
     return 2;
@@ -256,7 +329,7 @@ const pnpmSettings = (f: Map<string, string>, io: Io): number => {
   const root = resolve(f.get('--root') ?? '.');
   const configPath = f.get('--config');
   try {
-    const config = configPath === undefined ? DEFAULT_PNPM_CONFIG : parsePnpmConfig(readFileSync(resolve(root, configPath), 'utf8'));
+    const config = configPath === undefined ? DEFAULT_PNPM_CONFIG : parsePnpmConfig(configText(f, root));
     const result = formatParity(checkPnpmSettings(root, config, (io.now ?? Date.now)()), config.id);
     result.err.forEach(io.err);
     result.out.forEach(io.out);
@@ -358,13 +431,13 @@ const docReferences = (f: Map<string, string>, io: Io): number => {
   let config: DocReferencesConfig;
   let report: GateReport;
   try {
-    config = parseDocReferencesConfig(readFileSync(resolve(root, configPath), 'utf8'));
+    config = parseDocReferencesConfig(configText(f, root));
     report = runGate({ root, config, mode, checks, baseline, links: io.links ?? lycheeRunner() });
   } catch (e) {
     io.err(`${P} ${(e as Error).message}; nothing was checked, so this is not a pass`);
     return 2;
   }
-  const result = formatDocReferences(report, { config, mode, checks }, configPath);
+  const result = formatDocReferences(report, { config, mode, checks }, f.has(FROM_PROJECT) ? undefined : configPath);
   result.out.forEach(io.out);
   result.err.forEach(io.err);
   return result.ok ? 0 : 1;
@@ -379,7 +452,7 @@ const enforcementClaims = async (f: Map<string, string>, io: Io): Promise<number
   const root = resolve(f.get('--root') ?? '.');
   let P = 'pariksha enforcement-claims:';
   try {
-    const config = parseClaimsConfig(readFileSync(resolve(root, configPath), 'utf8'));
+    const config = parseClaimsConfig(configText(f, root));
     if (config.id !== undefined) P = `pariksha enforcement-claims (${config.id}):`;
     const ESLint = await (io.eslint ?? loadEslint)();
     if (typeof ESLint === 'string') {
@@ -475,14 +548,11 @@ const coverageByType = (f: Map<string, string>, io: Io): number => {
   }
   try {
     const configPath = f.get('--config');
-    const config: Config = configPath === undefined ? DEFAULT_CONFIG : parseConfig(readFileSync(resolve(root, configPath), 'utf8'));
-    const from = f.get('--files-from');
-    const paths =
-      from === undefined
-        ? treePaths(root, must(gitAt(root), ['ls-files', '-z']))
-        : listedPaths(root, from === '-' ? (io.stdin ?? (() => readFileSync(0, 'utf8')))() : readFileSync(resolve(from), 'utf8'));
+    const config: Config = configPath === undefined ? DEFAULT_CONFIG : parseConfig(configText(f, root));
+    const listed = listOf(f, io, root);
+    const paths = listed === undefined ? treePaths(root, must(gitAt(root), ['ls-files', '-z'])) : listedPaths(root, listed);
     const findings = findGaps(ts, config, root, paths);
-    if (from === undefined && findings.judged === 0) {
+    if ((listed === undefined || f.has('--all')) && findings.judged === 0) {
       // The whole tree in no category is a config that checks nothing.
       io.err(`pariksha coverage-by-type: none of ${findings.listed} tracked file(s) is in a category; nothing was checked, so this is not a pass`);
       return 2;
@@ -510,7 +580,7 @@ const coverageExemptions = (f: Map<string, string>, io: Io): number => {
     return 2;
   }
   try {
-    const config = parseExemptions(readFileSync(resolve(root, configPath), 'utf8'));
+    const config = parseExemptions(configText(f, root));
     const pkg = f.get('--package');
     const refused = pkg === undefined ? undefined : checkPackage(root, pkg);
     if (refused !== undefined) {
@@ -565,7 +635,7 @@ const envGateSwitches = (f: Map<string, string>, io: Io): number => {
   let reader: ReturnType<typeof readerFor>;
   let words: readonly string[];
   try {
-    const config = parseGateConfig(readFileSync(resolve(root, configPath), 'utf8'));
+    const config = parseGateConfig(configText(f, root));
     reader = readerFor(config);
     words = config.words;
   } catch (e) {
@@ -649,7 +719,7 @@ const runRatchet = <C extends { readonly baseline: string; readonly skipped: rea
   }
   const git = gitAt(root);
   try {
-    const config = spec.parse(readFileSync(resolve(root, configPath), 'utf8'));
+    const config = spec.parse(configText(f, root));
     const baseline = readBaseline(root, config.baseline, (source, where) => spec.parseBaseline(source, where, config, false));
     const roots = spec.roots(config);
     const files = trackedUnder(git, root, roots);
@@ -767,14 +837,14 @@ const requiredSettings = (f: Map<string, string>, io: Io): number => {
  * matches the root-relative path.
  */
 const testFiles = (f: Map<string, string>, io: Io, root: string, include: RegExp): { mode: string; files: string[] } => {
-  const from = f.get('--files-from');
+  const text = listOf(f, io, root);
   const listed =
-    from === undefined
+    text === undefined
       ? must(gitAt(root), ['ls-files', '-z'])
           .split('\0')
           .filter((p) => p && existsSync(join(root, p)))
-      : entries(from === '-' ? (io.stdin ?? (() => readFileSync(0, 'utf8')))() : readFileSync(resolve(from), 'utf8')).map((e) => relative(root, resolve(root, e)));
-  return { mode: from === undefined ? 'all' : 'files', files: listed.filter((p) => include.test(p)) };
+      : entries(text).map((e) => relative(root, resolve(root, e)));
+  return { mode: text === undefined || f.has('--all') ? 'all' : 'files', files: listed.filter((p) => include.test(p)) };
 };
 
 /** duplicate-tests: the report on stdout, warnings and parse errors on stderr, as the original printed them. */
@@ -791,19 +861,18 @@ const duplicateTests = (f: Map<string, string>, io: Io): number => {
     io.err(`${P} ${ts}`);
     return 2;
   }
-  try {
-    const configPath = f.get('--config');
-    const config = parseDuplicateConfig(configPath === undefined ? undefined : readFileSync(resolve(root, configPath), 'utf8'));
-    const { mode, files } = testFiles(f, io, root, config.include);
-    const listed = files.map((file) => ({ file, path: resolve(root, file), read: () => readFileSync(resolve(root, file), 'utf8') }));
-    const result = runDuplicateTests(ts, config, mode, listed);
-    result.out.forEach(io.out);
-    result.err.forEach(io.err);
-    return result.code;
-  } catch (e) {
-    io.err(`${P} ${(e as Error).message}; nothing was checked, so this is not a pass`);
-    return 2;
-  }
+  return (
+    unchecked(P, io, () => {
+      const configPath = f.get('--config');
+      const config = parseDuplicateConfig(configPath === undefined ? undefined : configText(f, root));
+      const { mode, files } = testFiles(f, io, root, config.include);
+      const listed = files.map((file) => ({ file, path: resolve(root, file), read: () => readFileSync(resolve(root, file), 'utf8') }));
+      const result = runDuplicateTests(ts, config, mode, listed);
+      result.out.forEach(io.out);
+      result.err.forEach(io.err);
+      return result.code;
+    }) ?? 2
+  );
 };
 
 /** flaky-tests: `--runs` passes (default 5) of Vitest over the test files, from each package root. */
@@ -824,13 +893,57 @@ const flakyTests = (f: Map<string, string>, io: Io): number => {
   let selected: { config: ReturnType<typeof parseFlakyConfig>; mode: string; files: string[] };
   try {
     const configPath = f.get('--config');
-    const config = parseFlakyConfig(configPath === undefined ? undefined : readFileSync(resolve(root, configPath), 'utf8'));
+    const config = parseFlakyConfig(configPath === undefined ? undefined : configText(f, root));
     selected = { config, ...testFiles(f, io, root, config.include) };
   } catch (e) {
     io.err(`${P} ${(e as Error).message}; nothing was checked, so this is not a pass`);
     return 2;
   }
   return runFlakyTests(selected.config, runs, selected.mode, root, selected.files, io.vitest ?? npxVitest, io.out);
+};
+
+/**
+ * eslint-by-workspace: the files named as bare words and in the
+ * `--files-from` list, each linted by its owning workspace's ESLint; what
+ * follows `--` goes to ESLint as it is.
+ */
+const eslintByWorkspace = (f: Map<string, string>, named: readonly string[], eslintArgs: readonly string[], io: Io): number => {
+  const P = 'pariksha eslint-by-workspace:';
+  const from = f.get('--files-from');
+  if (from === undefined && named.length === 0) {
+    io.err(USAGE);
+    return 2;
+  }
+  // Paths are relative to the checkout's top level, wherever it is run from;
+  // `--root` names another folder, and outside git the folder it runs in.
+  const here = (io.cwd ?? (() => process.cwd()))();
+  const root = resolve(f.get('--root') ?? topOf(here) ?? here);
+  const read = unchecked(P, io, () => ({
+    config: f.has('--config') ? parseEslintByWorkspaceConfig(configText(f, root)) : DEFAULT_ESLINT_BY_WORKSPACE,
+    files: [...named, ...(from === undefined ? [] : entries(listFrom(from, io)))],
+  }));
+  if (read === undefined) return 2;
+  return lintByWorkspace(root, read.config, read.files, eslintArgs, io.eslintRunner ?? inheritEslint, io);
+};
+
+/** eslint-targets: the lint targets a range's configuration changes reach, one per stdout line; none is no line. */
+const eslintTargets = (f: Map<string, string>, io: Io): number => {
+  const P = 'pariksha eslint-targets:';
+  const range = f.get('--range');
+  if (range === undefined || range.startsWith('-')) {
+    io.err(USAGE);
+    return 2;
+  }
+  const dir = resolve(f.get('--root') ?? '.');
+  const root = topOf(dir);
+  if (root === undefined) {
+    io.err(`${P} ${dir} is not in a git repository`);
+    return 2;
+  }
+  const targets = unchecked(P, io, () => rangeTargets(gitAt(root), root, f.has('--config') ? parseEslintTargetsConfig(configText(f, root)) : DEFAULT_ESLINT_TARGETS, range));
+  if (targets === undefined) return 2;
+  targets.forEach(io.out);
+  return 0;
 };
 
 /** python-floor: the packaged script under the `--python` the caller names, its output and exit code passed through. */
@@ -905,25 +1018,84 @@ const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly
   'codec-registry': { allowed: ['--config', '--base', '--root'], switches: ['--no-base'], run: codecRegistry },
   'coverage-exemptions': { allowed: ['--config', '--package', '--root'], run: coverageExemptions },
   'fault-injection-registry': { allowed: ['--config', '--base', '--root'], switches: ['--no-base'], run: faultInjectionRegistry },
-  'absolute-paths': { allowed: ['--config', '--files-from', '--root'], run: absolutePaths },
+  'absolute-paths': { allowed: ['--config', '--files-from', '--base', '--head', '--root'], switches: ['--staged', '--all'], run: absolutePaths },
   'aggregate-gate-needs': { allowed: ['--config', '--root'], run: aggregateGateNeeds },
-  'non-synced-resources': { allowed: ['--config', '--files-from', '--root'], run: nonSyncedResources },
+  'non-synced-resources': { allowed: ['--config', '--files-from', '--base', '--head', '--root'], switches: ['--staged', '--all'], run: nonSyncedResources },
   'pnpm-settings': { allowed: ['--config', '--root'], run: pnpmSettings },
   'python-floor': { allowed: ['--python', '--floor-file', '--exclude', '--selector', '--root'], run: pythonFloor },
   'authority-citations': { allowed: ['--mode', '--authority', '--issue-prefix', '--adr-dir', '--root'], run: authorityCitations },
   boundary: { allowed: ['--root', '--deny'], run: boundary },
-  'coverage-by-type': { allowed: ['--config', '--files-from', '--root'], run: coverageByType },
+  'coverage-by-type': { allowed: ['--config', '--files-from', '--base', '--head', '--root'], switches: ['--staged', '--all'], run: coverageByType },
   'doc-budgets': { allowed: ['--table', '--section', '--root'], run: docBudgets },
   'doc-references': { allowed: ['--config', '--base', '--head', '--checks', '--root'], switches: ['--staged', '--all', '--update-baseline', '--write-baseline'], run: docReferences },
-  'duplicate-tests': { allowed: ['--config', '--files-from', '--root'], run: duplicateTests },
+  'duplicate-tests': { allowed: ['--config', '--files-from', '--base', '--head', '--root'], switches: ['--staged', '--all'], run: duplicateTests },
   'enforcement-claims': { allowed: ['--config', '--root'], run: enforcementClaims },
-  'flaky-tests': { allowed: ['--config', '--files-from', '--runs', '--root'], run: flakyTests },
+  'eslint-targets': { allowed: ['--range', '--config', '--root'], run: eslintTargets },
+  'flaky-tests': { allowed: ['--config', '--files-from', '--base', '--head', '--runs', '--root'], switches: ['--staged', '--all'], run: flakyTests },
   'env-gate-switches': { allowed: ['--config', '--mode', '--root'], run: envGateSwitches },
   'export-deletions': { allowed: ['--base', '--root'], run: exportDeletions },
   'masked-exit-codes': { allowed: ['--config', '--root'], switches: ['--staged'], run: maskedExitCodes },
   'required-settings': { allowed: ['--require', '--settings', '--root'], run: requiredSettings },
   'shell-gates': { allowed: ['--config', '--base', '--files-from', '--only', '--root'], switches: ['--staged', '--all'], run: shellGates },
 };
+
+/**
+ * Checks whose flags `.pariksha.json` may set, by field: the value is a
+ * string, or for a list flag a list of strings joined with commas. A file
+ * field is read from the config file's folder, as a file entry is; `adrDir`
+ * is not a file to read but the folder citations name under `--root`.
+ */
+type FlagField = { readonly flag: string; readonly list?: boolean; readonly file?: boolean };
+const FLAG_FIELDS: Readonly<Record<string, Readonly<Record<string, FlagField>>>> = {
+  'authority-citations': { authority: { flag: '--authority', list: true }, issuePrefix: { flag: '--issue-prefix', list: true }, adrDir: { flag: '--adr-dir' } },
+  'doc-budgets': { table: { flag: '--table', file: true }, section: { flag: '--section' } },
+};
+
+/** The checks an entry in `.pariksha.json` can configure: those taking `--config`, and those with settable flags. */
+export const CONFIGURABLE = [...Object.keys(COMMANDS).filter((name) => COMMANDS[name]?.allowed.includes('--config') || Object.hasOwn(FLAG_FIELDS, name)), 'eslint-by-workspace'].sort();
+
+/** A flag-only check's entry as its flags, onto `f` where the command line did not give them. */
+const applyFlags = (command: string, entry: Entry, folder: string, f: Map<string, string>, version: string): void => {
+  const fields = FLAG_FIELDS[command] as Readonly<Record<string, FlagField>>;
+  for (const [key, value] of Object.entries(entryObject(entry, command, version))) {
+    const field = Object.hasOwn(fields, key) ? fields[key] : undefined;
+    if (field === undefined) throw new Error(`checks.${command}: unknown field "${key}" (pariksha ${version}); ${command} reads ${Object.keys(fields).join(', ')}`);
+    const text = field.list && Array.isArray(value) && value.every((v) => typeof v === 'string') ? value.join(',') : typeof value === 'string' ? value : undefined;
+    if (text === undefined || text === '') throw new Error(`checks.${command}.${key} must be ${field.list ? 'a string or a list of strings' : 'a string'} (pariksha ${version})`);
+    if (!f.has(field.flag)) f.set(field.flag, field.file ? resolve(folder, text) : text);
+  }
+};
+
+/**
+ * The check's settings from `.pariksha.json`, onto `f`: `--config` on the
+ * command line wins; otherwise a file entry becomes `--config` (absolute, so
+ * `--root` does not move it) and an inline one is the settings text itself.
+ */
+const applyProject = (command: string, f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv, version: string): void => {
+  const project = loadProjectConfig((io.cwd ?? (() => process.cwd()))(), env, CONFIGURABLE, version);
+  const entry = project.checks.get(command);
+  if (entry === undefined || project.file === undefined) return;
+  if (Object.hasOwn(FLAG_FIELDS, command)) {
+    applyFlags(command, entry, dirname(project.file), f, version);
+    return;
+  }
+  if (f.has('--config')) return;
+  f.set(FROM_PROJECT, '');
+  f.set(PROJECT_FILE, project.file);
+  if (entry.kind === 'file') {
+    f.set('--config', entry.path);
+    return;
+  }
+  f.set('--config', `${CONFIG_FILE} (checks.${command})`);
+  f.set(INLINE, entryText(entry));
+};
+
+/** Whether `.pariksha.json`'s settings for `command` were read into `f`; why not is on stderr. */
+const projectApplied = (command: string, f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv, version: string): boolean =>
+  unchecked(`pariksha ${command}:`, io, () => {
+    applyProject(command, f, io, env, version);
+    return true;
+  }) === true;
 
 /** The exit code; a Promise of it for the one check that is asynchronous (enforcement-claims, which loads ESLint). */
 export const run = (args: readonly string[], io: Io, version: string = ownVersion(), env: NodeJS.ProcessEnv = process.env): number | Promise<number> => {
@@ -936,14 +1108,26 @@ export const run = (args: readonly string[], io: Io, version: string = ownVersio
     io.out(hash(rest[0]));
     return 0;
   }
-  // The one check that takes files as bare words, so not through `flags`.
+  // The checks that take files as bare words, so not through `flags`.
   if (command === 'schema-roots') return schemaRoots(rest, io);
+  if (command === 'eslint-by-workspace') {
+    const cut = rest.indexOf('--');
+    const { flagArgs, files } = splitFiles(cut === -1 ? rest : rest.slice(0, cut));
+    const f = flags(flagArgs, ['--config', '--files-from', '--root']);
+    if (!f) {
+      io.err(USAGE);
+      return 2;
+    }
+    if (!projectApplied(command, f, io, env, version)) return 2;
+    return eslintByWorkspace(f, files, cut === -1 ? [] : rest.slice(cut + 1), io);
+  }
   const spec = command !== undefined && Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;
   const f = spec && flags(rest, spec.allowed, spec.switches);
   if (!spec || !f) {
     io.err(USAGE);
     return 2;
   }
+  if (CONFIGURABLE.includes(command as string) && !projectApplied(command as string, f, io, env, version)) return 2;
   return spec.run(f, io, env);
 };
 

@@ -19,10 +19,23 @@ export interface Finding {
   readonly ratchet?: false;
 }
 
+/** Where cited commits stand against the history a push publishes. */
+export interface History {
+  /** The commits asked about that neither HEAD nor a base ref reaches. */
+  readonly unreached: ReadonlySet<string>;
+  /** The base refs that resolved, in the config's order, for a message to name. */
+  readonly refs: readonly string[];
+}
+
 /** What a rule may ask of the tree it checks. */
 export interface TreeContext {
   /** The object type of each id the store has (commit, tree, blob, tag). */
   readonly typesOf: (shas: readonly string[]) => ReadonlyMap<string, string>;
+  /**
+   * Of these commits, the ones off pushed history; null when this clone
+   * cannot tell (a shallow one, whose walk stops at its cut).
+   */
+  readonly onHistory: (commits: readonly string[]) => History | null;
   /** The file at the branch's merge base: null when added, undefined when no branch. */
   readonly baseText: (path: string) => string | null | undefined;
 }

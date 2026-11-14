@@ -32,17 +32,32 @@ const records: Pick<RecordsConfig, "identityPaths" | "repository"> = {
   repository: "acme/widgets",
 };
 
+/** Every commit the fake store has is on pushed history. */
+const pushed: TreeContext["onHistory"] = () => ({
+  unreached: new Set(),
+  refs: ["origin/main"],
+});
+
 const check = (
   text: string,
   path = PATH,
   baseText: string | null = null,
   config: Pick<RecordsConfig, "identityPaths" | "repository"> = records,
+  onHistory: TreeContext["onHistory"] = pushed,
 ): Finding[] =>
-  commitIdentity(config)(path, text, { typesOf, baseText: () => baseText });
+  commitIdentity(config)(path, text, {
+    typesOf,
+    onHistory,
+    baseText: () => baseText,
+  });
 
 /** With no branch to compare (baseText undefined), no full id is asked. */
 const unbranched = (text: string, path = PATH): Finding[] =>
-  commitIdentity(records)(path, text, { typesOf, baseText: () => undefined });
+  commitIdentity(records)(path, text, {
+    typesOf,
+    onHistory: pushed,
+    baseText: () => undefined,
+  });
 
 const messages = (found: readonly Finding[]): string =>
   found.map((f) => f.message).join("\n");
@@ -527,25 +542,97 @@ describe("EVIDENCE-01: commit identity", () => {
         asked.push([...shas]);
         return new Map();
       },
+      onHistory: (commits) => {
+        asked.push([...commits]);
+        return null;
+      },
       baseText: () => null,
     });
     assert.deepEqual(asked, []);
   });
 
-  it("asks the store once, for each new id once", () => {
+  it("asks the store once, for each new id once, and history only of commits", () => {
     const asked: string[][] = [];
+    const history: string[][] = [];
     commitIdentity(records)(
       PATH,
-      `Built from ${UNKNOWN}.\nMerged ${UNKNOWN} and ${COMMIT}.\n`,
+      `Built from ${UNKNOWN}.\nMerged ${UNKNOWN} and ${COMMIT}.\nBlob ${BLOB}.\n`,
       {
         typesOf: (shas) => {
           asked.push([...shas]);
           return typesOf(shas);
         },
+        onHistory: (commits) => {
+          history.push([...commits]);
+          return pushed(commits);
+        },
         baseText: () => null,
       },
     );
-    assert.deepEqual(asked, [[UNKNOWN, COMMIT]]);
+    assert.deepEqual(asked, [[UNKNOWN, COMMIT, BLOB]]);
+    assert.deepEqual(history, [[COMMIT]]);
+    // No commit among the new ids: history is not asked.
+    history.length = 0;
+    commitIdentity(records)(PATH, `Built from ${UNKNOWN}.\n`, {
+      typesOf,
+      onHistory: (commits) => {
+        history.push([...commits]);
+        return null;
+      },
+      baseText: () => null,
+    });
+    assert.deepEqual(history, []);
+  });
+
+  it("refuses an added commit on no pushed history, however the line names it", () => {
+    const offMain: TreeContext["onHistory"] = (commits) => ({
+      unreached: new Set(commits.filter((c) => c === OTHER_COMMIT)),
+      refs: ["origin/main", "origin/develop"],
+    });
+    const message = `${OTHER_COMMIT} is not on pushed history: it is neither an ancestor of HEAD nor of origin/main or origin/develop, so CI cannot resolve it. Cite a commit that is merged or on this branch.`;
+    assert.deepEqual(
+      check(
+        `x\nBuilt from ${OTHER_COMMIT} and ${COMMIT}.\n${OTHER_COMMIT}\n`,
+        PATH,
+        null,
+        records,
+        offMain,
+      ),
+      [2, 3].map((line) => ({
+        rule: "EVIDENCE-01",
+        check: "unpushed-id",
+        file: PATH,
+        line,
+        message,
+        ratchet: false,
+      })),
+    );
+    // Cited at the base already: legacy, not asked again.
+    assert.deepEqual(
+      check(
+        `Built from ${OTHER_COMMIT}.\n`,
+        PATH,
+        `Built from ${OTHER_COMMIT}.\n`,
+        records,
+        offMain,
+      ),
+      [],
+    );
+  });
+
+  it("says so when no base ref resolves, and judges nothing a shallow clone cannot", () => {
+    const text = `Built from ${OTHER_COMMIT}.\n`;
+    includes(
+      check(text, PATH, null, records, (commits) => ({
+        unreached: new Set(commits),
+        refs: [],
+      })),
+      "neither an ancestor of HEAD nor of a base ref (none resolves in this clone), so CI",
+    );
+    assert.deepEqual(
+      check(text, PATH, null, records, () => null),
+      [],
+    );
   });
 
   it("reads a megabyte line by bounded windows around each token", () => {

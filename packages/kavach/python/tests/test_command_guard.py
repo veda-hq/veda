@@ -335,7 +335,7 @@ class Loading(unittest.TestCase):
 
     def test_the_shell_code_check_failing_blocks(self) -> None:
         directory = self.copy("config.py", "bash_guard.py")
-        Path(directory, "git_safety.py").write_text("def hook_main(settings):\n    raise ValueError('x')\n")
+        Path(directory, "git_safety.py").write_text("def hook_main(settings, fired=None):\n    raise ValueError('x')\n")
         self.assert_blocks(os.path.join(directory, "command_guard.py"), "the shell-code check failed (ValueError: x)", "git status")
 
     def test_files_in_the_cwd_do_not_stand_in_for_the_modules(self) -> None:

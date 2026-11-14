@@ -8,7 +8,7 @@ judged before it runs. Part of [Veda](https://github.com/veda-hq/veda).
 | Guard | Refuses | Entry point |
 | --- | --- | --- |
 | Worktree boundary | Any write outside the agent's own git worktree: a Bash command, an Edit or a Write; and, while a push runs, any write into it (below). Read-only commands pass from any checkout. | `python3 python/kavach/worktree_guard.py` |
-| Command guard | Git-hook bypasses (`--no-verify`, `core.hooksPath`…), history-destroying pushes, and the project's own command rules (settings below). | `python3 python/kavach/command_guard.py` |
+| Command guard | Git-hook bypasses (`--no-verify`, `core.hooksPath`…), history-destroying pushes, and the project's own command rules (settings below). On trial, it warns of a message the shell would change (below). | `python3 python/kavach/command_guard.py` |
 | Rule checks | The project's own checks, written in TypeScript, refusing or warning with the rule's reason. | `kavach-rule-checks` (`dist/rule-checks/cli.js`) |
 
 The two Python guards read one Claude Code `PreToolUse` event on stdin. Exit
@@ -50,6 +50,20 @@ the worktree, bypass hooks or force-push, each executed in real bash to prove
 it does what its row says, and near-miss commands that must pass. Each guard
 must refuse every attack row and pass every near-miss.
 
+## What a refusal says
+
+Each refusal names the way out. "mutation targets could not be resolved"
+goes on to name what in the command the guard could not read (a redirection
+into a file, a heredoc, a pipeline, a `;`/`&&` chain, `$(...)` or backticks,
+an interpreter running a file such as `node <file>`, a program it does not
+know), then the alternative: one plain command per call, files written with
+the Edit or Write tools, and anything more as a script under the worktree's
+`.tmp/` run through the repository's package runner (`pnpm exec tsx
+.tmp/x.ts`). A write outside the worktree says where it aimed (the main
+checkout, another worktree or its git folder, the repository's git folder, a
+system temp folder) and where it belongs instead. The leading words of each
+refusal are unchanged, so searches of older logs still match.
+
 ## Settings
 
 `KAVACH_CONFIG` names a JSON file; unset, every project rule is off. A file
@@ -71,7 +85,9 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
     "protectedVariablesReason": "it marks a hosted session; leave it as the session set it",
     "pairedChanges": [
       { "changes": "schema.sql", "requires": "changesets/", "reason": "a schema change needs its changeset" }
-    ]
+    ],
+    "shellExpansion": "warn",
+    "shellExpansionRefusesFrom": "2026-11-21"
   }
 }
 ```
@@ -97,6 +113,45 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
   longer refused for that reason alone (`--no-verify` and the rest still are).
   Keep a CI check behind it: the guard reads one command line, not the files
   other programs change.
+- `shellExpansion`: `"warn"` (the default) or `"refuse"`, the mode of the
+  rule on trial below. `shellExpansionRefusesFrom` (a day, `YYYY-MM-DD`) is
+  only shown in its warning; nothing switches on that day. A kavach older
+  than this rule refuses every call on these unknown keys, so add them only
+  once the pinned kavach knows them.
+
+## A rule on trial: messages the shell changes
+
+In bash and zsh a double-quoted (or unquoted) message is expanded before git
+reads it: ``git commit -m "fix `parse`"`` runs `parse` and commits "fix ",
+`$(...)` does the same, and an interactive shell replaces `!word` from its
+history. commitlint reads only the header, so the loss ships. The command
+guard finds backticks, `$(...)` and `!word` (a `!` before a blank, `=`, `(`,
+a closing quote or the end is left alone) in the value of `git commit` and
+`git tag`'s `-m`/`--message`, and of `--body`/`-b` on `gh pr create`,
+`comment`, `edit` and `review` and `gh issue create`, `comment` and `edit`.
+Single quotes, an escaped `` \` ``, `-F <file>` and `--body-file` are fine,
+and so is a value that is wholly one command substitution
+(`-m "$(cat file)"`, `--body "$(git log -1 --format=%s)"`): its author meant
+the expansion, so nothing is lost. A substitution or backticks inside other
+text (`-m "fix $(foo) bar"`) still fire, except `$(cat <<'EOF' ... EOF)`,
+the heredoc whose text arrives whole (with an unquoted delimiter only while
+its body runs nothing). This rule lets that heredoc pass; the worktree
+boundary still refuses any heredoc, so from a worktree use `-F <file>`.
+
+A new refusal starts by warning, since a wrong one would stop every session
+at once. In `"warn"` the command runs, and the guard answers on stdout:
+
+```json
+{"hookSpecificOutput": {"hookEventName": "PreToolUse",
+  "additionalContext": "kavach warning (refuses from 2026-11-21): the shell expands the backticks `parse` inside this double-quoted -m before git sees it, ..."}}
+```
+
+In `"refuse"` it exits 2 with the same reason. Either way each fire is a row
+of the refusal log naming the rule (`commit-message-shell-expansion`) and the
+mode, so the trial's fires can be read for wrong ones before it refuses. Any
+other refusal of the same command comes first. While it warns, an error in
+the rule's own detection allows the call and logs a warning row naming the
+error's type; refusing, it fails closed, as every other check always does.
 
 ## While a push runs
 
@@ -129,7 +184,8 @@ Without the marker, nothing here changes.
 
 Each refusal of the two Python guards appends a row (time, guard, tool, first
 line of the reason, start of the command) to
-`<git common dir>/kavach/refusals.jsonl`. It is best effort and never changes
+`<git common dir>/kavach/refusals.jsonl`; a rule on trial adds a row for
+each warning too, and names itself in its rows (`rule`, `mode`). It is best effort and never changes
 a verdict; `KAVACH_REFUSAL_LOG_OFF=1` turns it off. The rule-check engine
 keeps its own fire log (`--fires-dir`).
 

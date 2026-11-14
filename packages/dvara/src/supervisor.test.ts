@@ -320,6 +320,7 @@ describe("what a run is judged against", () => {
     assert.equal(judged.base?.ref, "origin/main");
     assert.equal(judged.base?.mergeBase, judged.base?.commit);
     assert.equal(judged.clean, false);
+    assert.equal(judged.head, git(root, "rev-parse", "HEAD").trim());
   });
 
   it('records "none" for a base with no shared history and no branch on a detached HEAD', () => {
@@ -337,6 +338,7 @@ describe("what a run is judged against", () => {
     const { root } = repo("true", "pre-push", false);
     const judged = judgedAgainst(root, process.env, ["origin/main"]);
     assert.equal(judged.fingerprint, null);
+    assert.equal(judged.head, null);
     assert.equal(judged.clean, null);
     assert.equal(judged.base, null);
   });
@@ -429,6 +431,83 @@ describe("the stage list", () => {
     );
     const { opts } = options(root, {}, { stageList: "rules/stages.json" });
     assert.equal(await supervise([hook], opts), 0);
+  });
+});
+
+describe("HEAD during a push", () => {
+  const COMMIT =
+    "git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --allow-empty -m moved";
+  const head = (root: string) => git(root, "rev-parse", "HEAD").trim();
+
+  it("refuses a passing pre-push during which HEAD moved, naming both commits", async () => {
+    const { root, hook } = repo(`dvara_stage test\n${COMMIT}`);
+    const before = head(root);
+    const { opts, captured } = options(root);
+    assert.equal(await supervise([hook, "origin", "url"], opts), 1);
+    const after = head(root);
+    assert.notEqual(before, after);
+    const refusal = `dvara: HEAD moved from ${before} to ${after} while pre-push ran (something committed, merged or checked out in this worktree mid-push), so the checks did not judge what git is pushing. Push again.`;
+    assert.equal(captured.err, `${refusal}\n`);
+    const [row] = rows(root);
+    assert.equal(row?.status, "failure");
+    assert.equal(row?.exitCode, 1);
+    assert.equal(row?.error, refusal);
+    assert.equal(row?.stages.at(-1)?.status, "failed");
+  });
+
+  it("passes a pre-push whose HEAD stayed put", async () => {
+    const { root, hook } = repo("git status --porcelain > /dev/null");
+    const { opts, captured } = options(root);
+    assert.equal(await supervise([hook, "origin", "url"], opts), 0);
+    assert.equal(captured.err, "");
+  });
+
+  it("keeps a failing pre-push's own code and story", async () => {
+    const { root, hook } = repo(`${COMMIT}\nexit 3`);
+    const { opts, captured } = options(root);
+    assert.equal(await supervise([hook], opts), 3);
+    assert.doesNotMatch(captured.err, /HEAD moved/);
+    assert.equal(rows(root)[0]?.error, undefined);
+  });
+
+  it("does not judge a preflight or another hook", async () => {
+    const preflight = repo(COMMIT);
+    const { opts } = options(preflight.root, {
+      env: { ...process.env, DVARA_VERBOSE: "", DVARA_MODE: "preflight" },
+    });
+    assert.equal(await supervise([preflight.hook], opts), 0);
+    assert.equal(rows(preflight.root)[0]?.kind, "preflight");
+    const commit = repo(COMMIT, "pre-commit");
+    assert.equal(await supervise([commit.hook], options(commit.root).opts), 0);
+  });
+
+  it("changes nothing when HEAD cannot be read at either end", async () => {
+    const unborn = repo(COMMIT, "pre-push", false);
+    assert.equal(await supervise([unborn.hook], options(unborn.root).opts), 0);
+    const gone = repo("rm -rf .git");
+    assert.equal(await supervise([gone.hook], options(gone.root).opts), 0);
+  });
+
+  it("prints a quiet pre-push's whole output with the refusal, and no success line", async () => {
+    const { root, hook } = repo(`echo checked\n${COMMIT}`);
+    const { opts, captured } = options(root, {}, { quietHooks: ["pre-push"] });
+    assert.equal(await supervise([hook], opts), 1);
+    assert.match(captured.err, /checked\n[^]*dvara: HEAD moved from /);
+    assert.doesNotMatch(captured.out, /passed/);
+  });
+
+  it("says both when the run also broke its stage list", async () => {
+    const { root, hook } = repo(`dvara_stage typo\n${COMMIT}`);
+    const { opts, captured } = options(
+      root,
+      {},
+      { stages: { "pre-push": ["lint"] } },
+    );
+    assert.equal(await supervise([hook], opts), 1);
+    assert.match(captured.err, /stage "typo"[^]*\ndvara: HEAD moved from /);
+    const error = String(rows(root)[0]?.error);
+    assert.match(error, /stage "typo"/);
+    assert.match(error, /HEAD moved/);
   });
 });
 

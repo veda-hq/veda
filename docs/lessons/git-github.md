@@ -83,6 +83,7 @@ and PR state, and the GitHub API.
   trailer in one block with no blank lines (one `-m` with embedded newlines, or `-F <file>`) and
   verify with `git log -1 --format=%(trailers)`; fix after the fact with an `--allow-empty`
   commit carrying the block.
+  <!-- held by: dvara trailers (a commit-msg check that refuses a trailer above the last paragraph) -->
 - **commitlint reads `#<number>` lines as footers.** commitlint parses a body line containing a
   `#<number>` reference as a footer, so a long line such as "... describes only PR #N. Keep ..."
   fails `footer-max-line-length` (100) after every other hook has run. Wrap body lines well under
@@ -91,6 +92,7 @@ and PR state, and the GitHub API.
   `git commit -m` are expanded and the word silently vanishes; commitlint checks only the
   header, so the damage ships. Write the message to a file and use `git commit -F <file>`, and
   `gh pr create --body-file` for PR bodies.
+  <!-- held by: kavach command guard (warns, then refuses, a double-quoted commit message or PR body the shell would expand) -->
 
 ## Hooks and shell scripts
 

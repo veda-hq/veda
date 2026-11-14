@@ -40,7 +40,10 @@ export interface Config {
   readonly quietHooks: readonly string[];
   /** A watchdog module to attach to each run (see Watchdog in supervisor.ts), relative to the root; none by default. */
   readonly watchdog: string | null;
-  /** Refs tried in order for the base a run is judged against. */
+  /**
+   * Refs tried in order for the base a run is judged against. To the record
+   * gate, every one that resolves is also pushed history (EVIDENCE-01).
+   */
   readonly baseRefs: readonly string[];
   /** Each hook's stages, in the order they run; a passing run must keep to them (stages.ts). */
   readonly stages: Readonly<Record<string, readonly string[]>>;
@@ -48,6 +51,8 @@ export interface Config {
   readonly stageList: string | null;
   /** Hooks a stage list that cannot be read refuses; any other hook passes with a warning. */
   readonly stageListRequired: readonly string[];
+  /** The repository's own trailer keys, which `dvara trailers` checks beside git's. */
+  readonly trailerKeys: readonly string[];
   /** The record gate and the frozen-path check. */
   readonly records: RecordsConfig;
 }
@@ -60,6 +65,7 @@ export const DEFAULTS: Config = {
   stages: {},
   stageList: null,
   stageListRequired: ["pre-push"],
+  trailerKeys: [],
   records: {
     baseline: ".dvara/records-baseline.json",
     skip: [],
@@ -246,6 +252,15 @@ export const parseConfig = (text: string): Config => {
       entries.stageListRequired,
       "stageListRequired",
     );
+  if ("trailerKeys" in entries) {
+    const keys = strings(entries.trailerKeys, "trailerKeys");
+    // Git reads a key as letters, digits and `-`; a key with other characters matches no line.
+    if (!keys.every((key) => /^[A-Za-z0-9-]+$/.test(key)))
+      throw new Error(
+        "trailerKeys must hold trailer keys: letters, digits and -",
+      );
+    config.trailerKeys = keys;
+  }
   if ("records" in entries)
     config.records = parseRecordsConfig(entries.records);
   return config;

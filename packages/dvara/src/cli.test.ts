@@ -268,6 +268,71 @@ describe("dvara records and dvara frozen", () => {
   });
 });
 
+describe("dvara trailers", () => {
+  const MESSAGE = "feat: x\n\nSlice: L-04\n\nCo-Authored-By: A <a@a>\n";
+
+  it("passes a message whose trailers are all in its last paragraph", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dvara-cli-trailers-"));
+    writeFileSync(
+      join(root, "msg"),
+      "feat: x\n\nSlice: L-04\nCo-Authored-By: A\n",
+    );
+    const { io, out, err } = capture();
+    assert.equal(await run(["trailers", "msg"], { io, cwd: root, env: {} }), 0);
+    assert.deepEqual([out, err], [[], []]);
+  });
+
+  it("refuses a known trailer above a blank line, with the config's keys", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dvara-cli-trailers-"));
+    writeFileSync(join(root, "msg"), MESSAGE);
+    const { io, err } = capture();
+    // Without the repository's key, Slice is prose.
+    assert.equal(await run(["trailers", "msg"], { io, cwd: root, env: {} }), 0);
+    writeFileSync(
+      join(root, ".dvara.json"),
+      JSON.stringify({ trailerKeys: ["Slice"] }),
+    );
+    assert.equal(await run(["trailers", "msg"], { io, cwd: root, env: {} }), 1);
+    assert.deepEqual(err, [
+      "❌ trailers: msg has trailer lines git does not read (above a blank line, or in the title's paragraph):",
+      "  msg:3 Slice: L-04",
+      "Git reads trailers only from the last paragraph. Move these lines into the final block with no blank line between them (one `-F <file>` message), then check with `git log -1 --format=%(trailers)`.",
+    ]);
+  });
+
+  it("refuses bad arguments, a bad config and a file it cannot read", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dvara-cli-trailers-"));
+    for (const args of [[], ["a", "b"]]) {
+      const { io, err } = capture();
+      assert.equal(
+        await run(["trailers", ...args], { io, cwd: root, env: {} }),
+        2,
+      );
+      assert.deepEqual(err, [
+        "dvara trailers: give one commit message file",
+        "usage: dvara trailers <commit-msg-file>",
+      ]);
+    }
+    const { io, err } = capture();
+    assert.equal(
+      await run(["trailers", "missing"], { io, cwd: root, env: {} }),
+      2,
+    );
+    assert.match(err[0] ?? "", /^dvara trailers: cannot read missing: ENOENT/);
+    writeFileSync(join(root, ".dvara.json"), '{"trailerKeys": [""]}');
+    err.length = 0;
+    assert.equal(
+      await run(["trailers", "missing"], { io, cwd: root, env: {} }),
+      2,
+    );
+    assert.match(err[0] ?? "", /^dvara trailers: dvara: .*trailerKeys must/);
+  });
+
+  it("is in the usage", () => {
+    assert.ok(USAGE.includes("dvara trailers <commit-msg-file>"), USAGE);
+  });
+});
+
 describe("isEntry", () => {
   const self = resolve(import.meta.dirname, "cli.ts");
 

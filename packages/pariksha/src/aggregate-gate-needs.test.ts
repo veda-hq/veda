@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { checkGates, consumedNeeds, DEFAULT_GATE_CONFIG, findGateGaps, parseGateConfig, workflowFiles, type GateConfig } from './aggregate-gate-needs.ts';
+import { checkGates, consumedNeeds, DEFAULT_GATE_CONFIG, dispatchMessage, findDispatchedGates, findGateGaps, hasDispatch, parseGateConfig, workflowFiles, type GateConfig } from './aggregate-gate-needs.ts';
 
 const temps: string[] = [];
 /** A fresh temporary directory, removed when this file's tests end. */
@@ -136,6 +136,78 @@ describe('findGateGaps', () => {
   });
 });
 
+describe('findDispatchedGates', () => {
+  const PROBE = join('.github', 'workflows', 'probe.yml');
+  const GATED = ['jobs:', '  build: {}', '  ci-gate:', '    name: CI Gate', '    needs: [build]', ''];
+  const dispatched = (on: readonly string[], config: GateConfig = CONFIG) => {
+    const { root, names } = fixture([...on, ...GATED].join('\n'));
+    return findDispatchedGates(root, names, config);
+  };
+
+  it('passes this repository’s own workflows', () => {
+    assert.deepEqual(findDispatchedGates(REPO_ROOT, workflowFiles(REPO_ROOT, '.github/workflows'), CONFIG), []);
+  });
+
+  it('finds dispatch beside a gate in every shape `on:` takes', () => {
+    const shapes: string[][] = [
+      ['on: workflow_dispatch'],
+      ['on: [pull_request, workflow_dispatch]'],
+      ['on:', '  - merge_group', '  - workflow_dispatch'],
+      ['on:', '  pull_request:', '  workflow_dispatch:'],
+      ['on:', '  workflow_dispatch:', '    inputs:', '      reason:', '        type: string'],
+      ['"on": { workflow_dispatch: {} }'],
+    ];
+    for (const on of shapes) assert.deepEqual(dispatched(on), [{ workflow: PROBE, gate: 'ci-gate' }], on.join(' / '));
+  });
+
+  it('passes a gate workflow with no dispatch, and dispatch with no gate', () => {
+    assert.deepEqual(dispatched(['on: [pull_request, merge_group]']), []);
+    assert.deepEqual(dispatched(['on:', '  pull_request:', '  workflow_call:']), []);
+    assert.deepEqual(dispatched(['on: pull_request']), []);
+    assert.deepEqual(dispatched([]), []);
+    const { root, names } = fixture('on: workflow_dispatch\njobs:\n  build: {}\n  release: {}\n');
+    assert.deepEqual(findDispatchedGates(root, names, CONFIG), []);
+  });
+
+  it('reads a job id, not only a name, as a gate, and names every gate', () => {
+    const { root, names } = fixture('on: workflow_dispatch\njobs:\n  security-gate: {}\n  x:\n    name: Merge Gate\n');
+    assert.deepEqual(findDispatchedGates(root, names, CONFIG), [
+      { workflow: PROBE, gate: 'security-gate' },
+      { workflow: PROBE, gate: 'x' },
+    ]);
+  });
+
+  it('lets a workflow the config allows by file name be dispatched', () => {
+    assert.deepEqual(dispatched(['on: workflow_dispatch'], { ...CONFIG, dispatchAllowed: new Set(['probe.yml']) }), []);
+    assert.equal(dispatched(['on: workflow_dispatch'], { ...CONFIG, dispatchAllowed: new Set(['other.yml']) }).length, 1);
+  });
+
+  it('leaves an unparseable or scalar workflow to the needs check', () => {
+    const broken = fixture('on: workflow_dispatch\njobs:\n  - [unbalanced\n');
+    assert.deepEqual(findDispatchedGates(broken.root, broken.names, CONFIG), []);
+    const scalar = fixture('workflow_dispatch\n');
+    assert.deepEqual(findDispatchedGates(scalar.root, scalar.names, CONFIG), []);
+  });
+});
+
+describe('hasDispatch', () => {
+  it('reads one event, a list and a map, and nothing else', () => {
+    assert.equal(hasDispatch('workflow_dispatch'), true);
+    assert.equal(hasDispatch(['push', 'workflow_dispatch']), true);
+    assert.equal(hasDispatch({ workflow_dispatch: null }), true);
+    for (const on of [undefined, null, 'push', ['push'], { push: null }, 3]) assert.equal(hasDispatch(on), false, JSON.stringify(on));
+  });
+});
+
+describe('dispatchMessage', () => {
+  it('names the workflow and the gate, under its own id', () => {
+    assert.equal(
+      dispatchMessage({ workflow: 'ci.yml', gate: 'ci-gate' }),
+      "❌ dispatch-on-gate-workflow: ci.yml: workflow_dispatch on the workflow holding the required gate ci-gate. A dispatch run posts the gate as skipped on the PR's head commit, which a merge queue reads as failed and dequeues the PR. Move ad-hoc runs to a separate workflow with no gate-named job.",
+    );
+  });
+});
+
 describe('consumedNeeds', () => {
   it('reads nothing of no job', () => {
     assert.deepEqual(consumedNeeds(undefined), []);
@@ -162,11 +234,12 @@ describe('parseGateConfig', () => {
   });
 
   it('reads every key, the gate name case-insensitively', () => {
-    const config = parseGateConfig(JSON.stringify({ id: 'CI-1', workflowsDir: 'ci', gateName: '^merge$', nonGating: ['detect'] }));
+    const config = parseGateConfig(JSON.stringify({ id: 'CI-1', workflowsDir: 'ci', gateName: '^merge$', nonGating: ['detect'], dispatchAllowed: ['release.yml'] }));
     assert.equal(config.id, 'CI-1');
     assert.equal(config.workflowsDir, 'ci');
     assert.ok(config.gateName.test('MERGE'));
     assert.deepEqual([...config.nonGating], ['detect']);
+    assert.deepEqual([...config.dispatchAllowed], ['release.yml']);
   });
 
   it('refuses anything else', () => {
@@ -182,6 +255,9 @@ describe('parseGateConfig', () => {
       ['{"nonGating": null}', /"nonGating" must be a list of job ids/],
       ['{"workflowsDir": null}', /"workflowsDir" must be a non-empty string/],
       ['{"gateName": null}', /"gateName" must be a non-empty string/],
+      ['{"dispatchAllowed": "ci.yml"}', /"dispatchAllowed" must be a list of workflow file names/],
+      ['{"dispatchAllowed": [""]}', /"dispatchAllowed" must be a list of workflow file names/],
+      ['{"dispatchAllowed": null}', /"dispatchAllowed" must be a list of workflow file names/],
     ];
     for (const [text, message] of cases) assert.throws(() => parseGateConfig(text), message, text);
   });
@@ -211,5 +287,22 @@ describe('checkGates', () => {
         'The merge queue checks only the gate. A job absent from its `needs:` cannot\nblock a merge however it fails — and a failure upstream turns into a SKIP\ndownstream, which the gate then accepts.\n',
       ],
     });
+  });
+
+  const DISPATCHED = `❌ dispatch-on-gate-workflow: ${join('.github', 'workflows', 'probe.yml')}: workflow_dispatch on the workflow holding the required gate gate. A dispatch run posts the gate as skipped on the PR's head commit, which a merge queue reads as failed and dequeues the PR. Move ad-hoc runs to a separate workflow with no gate-named job.`;
+
+  it('refuses a complete gate its workflow can dispatch, under the dispatch id', () => {
+    const { root } = fixture('on: [pull_request, workflow_dispatch]\njobs:\n  a: {}\n  gate:\n    needs: [a]\n');
+    assert.deepEqual(checkGates(root, config), { ok: false, out: [], err: [DISPATCHED] });
+    assert.deepEqual(checkGates(root, { ...config, dispatchAllowed: new Set(['probe.yml']) }).ok, true);
+  });
+
+  it('reports the needs gaps first, then the dispatch', () => {
+    const { root } = fixture('on: workflow_dispatch\njobs:\n  a: {}\n  gate: {}\n');
+    const result = checkGates(root, config);
+    assert.equal(result.ok, false);
+    assert.equal(result.err[0], '\n❌ CI-1: 1 aggregate gate(s) with an incomplete needs list\n');
+    assert.equal(result.err.length, 5);
+    assert.equal(result.err[4], DISPATCHED);
   });
 });

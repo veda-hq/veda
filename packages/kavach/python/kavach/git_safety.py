@@ -44,7 +44,7 @@ import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 MAX_DEPTH = 6
 
@@ -72,6 +72,11 @@ PAIRED_REMEDY = (
 
 class Blocked(Exception):
     """Raised with the reason a command is refused."""
+
+
+class DetectionError(Exception):
+    """The shell-expansion detection failed while lexing a message word;
+    its text is the type of the error the lexer met."""
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +108,10 @@ class Word:
     glob_leading: bool = False
     # An unquoted `{a,b}` / `{1..3}`: bash turns the word into several.
     braces: bool = False
+    # What the shell replaces in this word that a message's author likely
+    # meant as text (Analyzer.shell_expansion): (kind, the fragment as typed).
+    # Kinds: "backticks", "substitution" (`$(...)`), "history" (`!word`).
+    hazards: list[tuple[str, str]] = field(default_factory=list)
 
     def could_be_flag(self) -> bool:
         """Might the shell turn this word into something starting with '-'/'+'?"""
@@ -373,6 +382,34 @@ class Lexer:
 
     # -- expansions ----------------------------------------------------------
 
+    def hazard(self, find: Callable[[], tuple[str, str] | None]) -> None:
+        """Note what ``find`` finds the shell would change in this word. The
+        finding is the shell-expansion rule's alone, so an error in it never
+        stops the lexing the other checks need: it is noted as an ("error",
+        <type>) hazard, which the rule turns into its own failure if the word
+        is a message (Analyzer.message_value)."""
+
+        try:
+            found = find()
+        except Exception as error:
+            found = ("error", type(error).__name__)
+        if found is not None:
+            self.word.hazards.append(found)
+
+    def history(self, index: int) -> None:
+        """Note a `!` at ``index`` that an interactive shell's history
+        expansion would replace: one followed by a word, not by a blank, `=`,
+        `(`, a closing quote or the end (`fix!`, `a != b` stay text)."""
+
+        def find() -> tuple[str, str] | None:
+            following = self.text[index + 1 : index + 2]
+            if not following or following in " \t\n=(\"":
+                return None
+            fragment = re.match(r"![^\s\"';&|()<>]*", self.text[index:])
+            return ("history", fragment.group(0) if fragment else "!")
+
+        self.hazard(find)
+
     def dollar(self, in_double: bool) -> None:
         text, index = self.text, self.index
         following = text[index + 1 : index + 2]
@@ -380,7 +417,15 @@ class Lexer:
             # `$((...))` arithmetic closes the same way; its body, analysed as
             # a program, is a harmless subshell unless it nests a `$(...)`.
             end = matching_close(text, index + 2, "(", ")")
-            self.word.bodies.append(text[index + 2 : end - 1])
+            body = text[index + 2 : end - 1]
+            # Arithmetic gives a number, never lost text; a heredoc read by
+            # `cat` is how a message is meant to be substituted.
+            self.hazard(
+                lambda: None
+                if body.startswith("(") or heredoc_message(body)
+                else ("substitution", text[index:end])
+            )
+            self.word.bodies.append(body)
             self.add(text[index:end], dynamic=True)
             self.index = end
             return
@@ -421,6 +466,8 @@ class Lexer:
         if end < 0:
             raise Blocked("unterminated backquote")
         body = self.text[self.index + 1 : end].replace("\\`", "`")
+        fragment = self.text[self.index : end + 1]
+        self.hazard(lambda: ("backticks", fragment))
         self.word.bodies.append(body)
         self.add(self.text[self.index : end + 1], dynamic=True)
         self.index = end + 1
@@ -538,6 +585,8 @@ class Lexer:
                 self.add(char)
                 self.index += 1
                 continue
+            if char == "!":
+                self.history(self.index)
             self.add(char)
             self.index += 1
         self.finish_command(";")
@@ -571,12 +620,19 @@ class Lexer:
                     self.add(text[self.index + 1], quoted=True)
                 self.index += 2
                 continue
+            if char == "\\" and text[self.index + 1 : self.index + 2] == "!":
+                # `\!` stops history expansion; bash keeps the backslash.
+                self.add("\\!", quoted=True)
+                self.index += 2
+                continue
             if char == "$":
                 self.dollar(in_double=True)
                 continue
             if char == "`":
                 self.backquote()
                 continue
+            if char == "!":
+                self.history(self.index)
             self.add(char, quoted=True)
             self.index += 1
         raise Blocked("unterminated double quote")
@@ -595,6 +651,30 @@ def substitution_bodies(text: str) -> list[str]:
 
 def parse(script: str) -> list[Command]:
     return Lexer(script).run()
+
+
+def heredoc_message(body: str) -> bool:
+    """Whether a `$(...)` body is the heredoc idiom for a message,
+    `cat <<'EOF' ... EOF`: one plain `cat` reading one heredoc whose body
+    runs nothing. Its text arrives whole; that is what the idiom is for. With
+    an unquoted delimiter a `$(...)` or backtick in the body still runs, so
+    that body is no exemption."""
+
+    try:
+        commands = parse(body)
+    except Blocked:
+        return False
+    if len(commands) != 1:
+        return False
+    (command,) = commands
+    return (
+        [(word.text, word.dynamic, word.quoted) for word in command.words] == [("cat", False, False)]
+        and len(command.heredocs) == 1
+        and not command.expanded_bodies
+        and not command.redirect_targets
+        and not command.input_targets
+        and not command.herestrings
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -721,6 +801,86 @@ def dangerous_long(word: str) -> str | None:
     return None
 
 
+# The shell-expansion rule (`command.shellExpansion` in config.py): a message
+# given on the command line in double quotes (or none) loses what the shell
+# expands in it. `git commit -m "fix `parse`"` runs `parse` and commits "fix ";
+# `!word` is replaced by an interactive shell's history. commitlint reads only
+# the header, so the loss ships. A message from a file (`-F`, `--body-file`),
+# in single quotes, or read by `$(cat <<'EOF' ... EOF)` arrives whole.
+SHELL_EXPANSION_RULE = "commit-message-shell-expansion"
+SHELL_EXPANSION_MODES = ("warn", "refuse")
+# gh's commands whose `--body`/`-b` is the text written; elsewhere `-b` may
+# mean another thing (`gh pr checkout -b <branch>`).
+GH_BODY_COMMANDS = {
+    ("pr", "create"), ("pr", "comment"), ("pr", "edit"), ("pr", "review"),
+    ("issue", "create"), ("issue", "comment"), ("issue", "edit"),
+}
+# Their other options that take a value, so a value is never read as `-b`.
+GH_VALUE_OPTIONS = {
+    "-t", "--title", "-B", "--base", "-H", "--head", "-a", "--assignee", "-l", "--label",
+    "-m", "--milestone", "-p", "--project", "-r", "--reviewer", "-R", "--repo", "-F",
+    "--body-file", "-T", "--template", "--add-label", "--remove-label", "--add-assignee",
+    "--remove-assignee", "--add-reviewer", "--remove-reviewer", "--add-project", "--remove-project",
+}
+# git tag's long options that take the next word as their value.
+TAG_VALUE_LONG = {
+    "--file", "--local-user", "--cleanup", "--sort", "--format", "--contains", "--no-contains",
+    "--points-at", "--merged", "--no-merged", "--trailer",
+}
+EXPANSION_KINDS = {
+    "backticks": "the backticks {}",
+    "substitution": "the command substitution {}",
+    "history": "the history expansion {}",
+}
+FRAGMENT_LIMIT = 60
+
+
+def is_message_option(name: str) -> bool:
+    """`--message` or an abbreviation git resolves to it (`--mes`)."""
+
+    return len(name) > 2 and "--message".startswith(name)
+
+
+@dataclass(frozen=True)
+class Expansion:
+    """One expansion the shell makes in a message value: the program
+    (`git commit`, `gh pr create`), the option, what is expanded (a kind of
+    EXPANSION_KINDS and the text as typed), and whether the value was quoted."""
+
+    program: str
+    flag: str
+    kind: str
+    fragment: str
+    quoted: bool
+
+
+def shell_expansion_message(found: Sequence[Expansion]) -> str:
+    """The rule's reason, naming each expansion of the first option found."""
+
+    first = found[0]
+    named: list[str] = []
+    for item in found:
+        if (item.program, item.flag) != (first.program, first.flag):
+            continue
+        fragment = item.fragment.replace("\n", " ")
+        if len(fragment) > FRAGMENT_LIMIT:
+            fragment = fragment[: FRAGMENT_LIMIT - 3] + "..."
+        named.append(EXPANSION_KINDS[item.kind].format(fragment))
+    what = named[0] if len(named) == 1 else ", ".join(named[:-1]) + " and " + named[-1]
+    quoting = "double-quoted" if first.quoted else "unquoted"
+    tool = first.program.split(" ", 1)[0]
+    if first.program == "git commit":
+        remedy = "Write the message to a file and use `git commit -F <file>` (or `gh ... --body-file <file>`)."
+    elif first.program == "git tag":
+        remedy = "Write the message to a file and use `git tag -F <file>`."
+    else:
+        remedy = f"Write the body to a file and use `{first.program} --body-file <file>`."
+    return (
+        f"the shell expands {what} inside this {quoting} {first.flag} before {tool} sees it, "
+        f"so that text silently disappears from the message. {remedy}"
+    )
+
+
 @dataclass
 class Scope:
     """What earlier commands in the same script changed for later ones."""
@@ -812,7 +972,12 @@ def expand_braces(words: list[Word]) -> list[Word]:
             continue
         alternatives = None if word.first_quoted is not None else brace_alternatives(word.text)
         if alternatives is None:
-            out.append(Word(text=word.text, dynamic=True, quoted=word.quoted, bodies=word.bodies, started=True, first_dynamic=0))
+            out.append(
+                Word(
+                    text=word.text, dynamic=True, quoted=word.quoted, bodies=word.bodies, started=True,
+                    first_dynamic=0, hazards=word.hazards,
+                )
+            )
             continue
         for index, text in enumerate(alternatives):
             out.append(
@@ -825,14 +990,28 @@ def expand_braces(words: list[Word]) -> list[Word]:
                     first_dynamic=word.first_dynamic,
                     glob=any(char in text for char in "*?["),
                     glob_leading=text[:1] in ("*", "?", "["),
+                    hazards=word.hazards if index == 0 else [],
                 )
             )
     return out
 
 
 class Analyzer:
-    def __init__(self, base_cwd: str | None, read_config: bool = True, paired_changes: Sequence[Any] = ()) -> None:
+    def __init__(
+        self,
+        base_cwd: str | None,
+        read_config: bool = True,
+        paired_changes: Sequence[Any] = (),
+        tolerate_detection: bool = False,
+    ) -> None:
         self.base_cwd = base_cwd
+        # The shell-expansion rule on trial ("warn") must not stop a call by
+        # failing: an error in its detection is then noted in
+        # `detection_failures` (the error's type) and the analysis goes on.
+        # Refusing, it fails closed like every other check: the error
+        # propagates and the entry blocks.
+        self.tolerate_detection = tolerate_detection
+        self.detection_failures: list[str] = []
         self.read_config = read_config
         # The consumer's paired changes (config.PairedChange: `changes`,
         # `requires`, `reason`); empty turns the env -C half of that rule off.
@@ -846,6 +1025,48 @@ class Analyzer:
         # The current command (or a program it runs) was moved by `env -C`,
         # which bash_guard.py's paired-change model does not follow.
         self.chdir_by_env = False
+        # Messages the shell would change before git or gh reads them, in the
+        # order found, each once (a program may be read twice).
+        self.expansions: list[Expansion] = []
+
+    def detect(self, step: Callable[[], None]) -> None:
+        """Run one step of the shell-expansion detection, which is nothing
+        the other checks rely on; see ``tolerate_detection``."""
+
+        try:
+            step()
+        except Exception as error:
+            if not self.tolerate_detection:
+                raise
+            name = str(error) if isinstance(error, DetectionError) else type(error).__name__
+            self.detection_failures.append(name)
+
+    def message_value(
+        self, program: str, flag: str, word: Word, value: str | None = None, option: str | None = None
+    ) -> None:
+        """Note what the shell expands in ``word``, the value of ``flag``;
+        ``value`` is the value's text when the word also holds the option
+        (`-m"$(x)"`, `--body=$(x)`). With ``option``, only when that option
+        is `--message` (or git's abbreviation of it).
+
+        A value that is wholly one command substitution (`"$(cat file)"`,
+        `` "`git log -1`" ``) is the author's own choice: its output is the
+        message, and nothing is lost. One inside other text is the slip."""
+
+        def step() -> None:
+            if option is not None and not is_message_option(option):
+                return
+            text = word.text if value is None else value
+            for kind, fragment in word.hazards:
+                if kind == "error":
+                    raise DetectionError(fragment)
+                if kind in ("substitution", "backticks") and text == fragment:
+                    continue
+                found = Expansion(program, flag, kind, fragment, word.quoted)
+                if found not in self.expansions:
+                    self.expansions.append(found)
+
+        self.detect(step)
 
     # -- entry -------------------------------------------------------------
 
@@ -1047,6 +1268,8 @@ class Analyzer:
                         raise Blocked(f"'{name}' on '{word.text}' can disable the repository hooks. {HOOK_REMEDY}")
         if name == "git":
             self.git(words, scope, depth)
+        elif name == "gh":
+            self.detect(lambda: self.gh(words))
 
     @staticmethod
     def written_operands(name: str, operands: list[Word]) -> list[Word]:
@@ -1420,6 +1643,8 @@ class Analyzer:
         elif name == "config":
             self.config(args)
         else:
+            if name == "tag":
+                self.detect(lambda: self.tag(args))
             for word in args:
                 if word.text == "--":
                     break
@@ -1565,6 +1790,9 @@ class Analyzer:
                 # `--message="$MSG"`: the option NAME is literal, only its value is not.
                 if is_no_verify(literal):
                     raise Blocked(f"--no-verify is forbidden on all git commands. {HOOK_REMEDY}")
+                self.message_value(
+                    "git commit", "--message", word, text.split("=", 1)[1], option=literal.split("=", 1)[0]
+                )
                 index += 1
                 continue
             if literal.startswith("-") and len(literal) > 1 and not literal.startswith("--"):
@@ -1578,7 +1806,11 @@ class Analyzer:
                     if flag in "mFCct":
                         consumed = True
                         if position == len(cluster) - 1 and literal == text:
+                            if flag == "m" and index + 1 < len(args):
+                                self.message_value("git commit", "-m", args[index + 1])
                             index += 1  # the value is the next word
+                        elif flag == "m":
+                            self.message_value("git commit", "-m", word, text[position + 2 :])
                         break
                     if flag in "Su":
                         consumed = True
@@ -1596,10 +1828,83 @@ class Analyzer:
                 # git takes any unambiguous abbreviation (`--mes '-n'` is a
                 # message); an ambiguous one is an error and nothing runs.
                 takes_value = len(text) > 2 and any(option.startswith(text) for option in value_long)
+                if takes_value and index + 1 < len(args):
+                    self.message_value("git commit", "--message", args[index + 1], option=text)
                 index += 2 if takes_value else 1
                 continue
             index += 1
         return stages_all
+
+    def tag(self, args: list[Word]) -> None:
+        """Note the shell's expansions in git tag's message values."""
+
+        index = 0
+        while index < len(args):
+            word = args[index]
+            text = word.text
+            literal = text if word.first_dynamic is None else text[: word.first_dynamic]
+            index += 1
+            if text == "--":
+                return
+            if literal.startswith("--"):
+                name, attached, _value = literal.partition("=")
+                if is_message_option(name):
+                    if attached:
+                        self.message_value("git tag", "--message", word, text.split("=", 1)[1])
+                    elif index < len(args):
+                        self.message_value("git tag", "--message", args[index])
+                        index += 1
+                elif not attached and len(name) > 2 and any(option.startswith(name) for option in TAG_VALUE_LONG):
+                    index += 1
+                continue
+            if literal.startswith("-") and len(literal) > 1:
+                cluster = literal[1:]
+                for position, flag in enumerate(cluster):
+                    if flag not in "mFu":
+                        continue
+                    last = position == len(cluster) - 1 and literal == text
+                    if flag == "m":
+                        if not last:
+                            self.message_value("git tag", "-m", word, text[position + 2 :])
+                        elif index < len(args):
+                            self.message_value("git tag", "-m", args[index])
+                    if last:
+                        index += 1
+                    break
+
+    def gh(self, words: list[Word]) -> None:
+        """Note the shell's expansions in the body of a gh pull request or
+        issue, created, edited, reviewed or commented on."""
+
+        command: list[str] = []
+        index = 1
+        while index < len(words) and len(command) < 2:
+            text = words[index].text
+            index += 1
+            if text in ("-R", "--repo"):
+                index += 1
+            elif not text.startswith("-"):
+                command.append(text)
+        if tuple(command) not in GH_BODY_COMMANDS:
+            return
+        program = "gh " + " ".join(command)
+        while index < len(words):
+            word = words[index]
+            text = word.text
+            literal = text if word.first_dynamic is None else text[: word.first_dynamic]
+            index += 1
+            if text == "--":
+                return
+            if literal in ("-b", "--body") and literal == text:
+                if index < len(words):
+                    self.message_value(program, literal, words[index])
+                    index += 1
+            elif literal.startswith("--body="):
+                self.message_value(program, "--body", word, text.split("=", 1)[1])
+            elif literal.startswith("-b") and not literal.startswith("--"):
+                self.message_value(program, "-b", word, text[2:])
+            elif literal in GH_VALUE_OPTIONS and literal == text:
+                index += 1
 
     def push(
         self,
@@ -1917,12 +2222,38 @@ def check(
     ``paired_changes`` are the consumer's (config.PairedChange); none turns
     that rule off."""
 
-    analyzer = Analyzer(cwd, read_config=read_config, paired_changes=paired_changes)
+    return analyse(command, cwd, read_config=read_config, paired_changes=paired_changes)[0]
+
+
+def analyse(
+    command: str, cwd: str | None, *, read_config: bool = True, paired_changes: Sequence[Any] = ()
+) -> tuple[str | None, list[Expansion]]:
+    """``check``'s reason, and the expansions the shell would make in the
+    command's messages (the shell-expansion rule, judged by ``hook_main``)."""
+
+    reason, analyzer = analysed(command, cwd, read_config=read_config, paired_changes=paired_changes)
+    return reason, analyzer.expansions
+
+
+def analysed(
+    command: str,
+    cwd: str | None,
+    *,
+    read_config: bool = True,
+    paired_changes: Sequence[Any] = (),
+    tolerate_detection: bool = False,
+) -> tuple[str | None, Analyzer]:
+    """``check``'s reason and the Analyzer that read the command, whose
+    ``expansions`` and ``detection_failures`` the shell-expansion rule reads."""
+
+    analyzer = Analyzer(
+        cwd, read_config=read_config, paired_changes=paired_changes, tolerate_detection=tolerate_detection
+    )
     try:
         analyzer.script(command, cwd)
     except Blocked as reason:
-        return str(reason)
-    return None
+        return str(reason), analyzer
+    return None, analyzer
 
 
 # ---------------------------------------------------------------------------
@@ -1961,20 +2292,86 @@ def read_hook_input(raw: str) -> tuple[str, str]:
     return command, cwd if isinstance(cwd, str) and os.path.isabs(cwd) else os.getcwd()
 
 
-def hook_main(settings: Any = None) -> None:
+# The way out for a refusal that names none: what this guard can read is a
+# git command written out plainly.
+PLAIN_REMEDY = (
+    "Run the git command as a plain command of its own, with literal words: no eval, "
+    "`bash -c`, pipe into a shell or wrapper option around it, and nothing computed at run time."
+)
+REMEDIES = (HOOK_REMEDY, FORCE_REMEDY, AMBIGUOUS_REMEDY, PAIRED_REMEDY, "Write the flags literally")
+
+
+def with_way_out(reason: str) -> str:
+    """``reason``, ending in the way out when it names none of its own."""
+
+    if any(remedy in reason for remedy in REMEDIES):
+        return reason
+    return f"{reason.rstrip('.')}. {PLAIN_REMEDY}"
+
+
+def warning(message: str, refuses_from: str) -> str:
+    """The PreToolUse answer that allows the call and puts ``message`` in
+    front of the agent: one JSON object, the whole of stdout."""
+
+    when = f"refuses from {refuses_from}" if refuses_from else "refuses after its trial"
+    context = (
+        f"kavach warning ({when}): {message} This call still runs while the rule is on trial: "
+        "check the text it wrote and correct it."
+    )
+    return json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": context}})
+
+
+def hook_main(settings: Any = None, fired: Any = None) -> None:
     """command_guard.py's second check: the hook input is in ``HOOK_INPUT``,
-    ``settings`` the consumer's config.Config (None: no paired changes).
+    ``settings`` the consumer's config.Config (None: no paired changes, the
+    shell-expansion rule warns).
 
     Always ends in SystemExit(0) or SystemExit(2); the entry blocks on any
     other end, an exception included. The paired-change rule is
     bash_guard.py's, whose index model the command-guard suite holds, except
     for commits moved by `env -C` (Analyzer.env_chdir_paired).
+
+    The shell-expansion rule runs in the mode ``settings`` gives it: "refuse"
+    blocks, "warn" allows with the warning (``warning``) on stdout. Any other
+    refusal comes first. ``fired(rule, mode, message)``, when given, hears of
+    each fire before the verdict, so the entry can log it.
+
+    While it warns, the rule cannot stop a call by failing: an error in its
+    detection (finding message values and what the shell expands in them,
+    building its reason) allows the call and is reported to ``fired`` as a
+    warning that names the error's type, so the trial's log shows it. Every
+    other check fails closed as before, and so does the rule once it refuses.
     """
 
     paired = tuple(getattr(settings, "paired_changes", ()))
+    mode = getattr(settings, "shell_expansion", "warn")
+    refuses_from = getattr(settings, "shell_expansion_refuses_from", "")
+    tolerate = mode != "refuse"
     command, cwd = read_hook_input(os.environ.get("HOOK_INPUT", ""))
     if command.strip():
-        reason = check(command, cwd, paired_changes=paired)
+        reason, analyzer = analysed(command, cwd, paired_changes=paired, tolerate_detection=tolerate)
         if reason is not None:
-            block(f"BLOCKED: {reason}")
+            block(f"BLOCKED: {with_way_out(reason)}")
+        failures = list(analyzer.detection_failures)
+        message = None
+        if analyzer.expansions:
+            try:
+                message = shell_expansion_message(analyzer.expansions)
+            except Exception as error:
+                if not tolerate:
+                    raise
+                failures.append(type(error).__name__)
+        if failures and fired is not None:
+            named = ", ".join(dict.fromkeys(failures))
+            fired(
+                SHELL_EXPANSION_RULE,
+                mode,
+                f"the shell-expansion check failed ({named}), so it did not judge this command; the call was allowed.",
+            )
+        if message is not None:
+            if fired is not None:
+                fired(SHELL_EXPANSION_RULE, mode, message)
+            if mode == "refuse":
+                block(f"BLOCKED: {message}")
+            print(warning(message, refuses_from))
     raise SystemExit(0)

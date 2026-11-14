@@ -40,10 +40,17 @@ file in your repository; dvara runs it.
   stage may be marked again where it stands, a name may
   appear more than once in a list, and dvara's own `startup` and
   `runtime-selection` need no entry. A run that marks no stage reads no list.
+- **A push judges what git pushes.** Git picks the commits a push sends
+  before `pre-push` starts; the hook's checks read the worktree. A run of
+  `pre-push` (not a preflight) records HEAD when it starts and again when the
+  hook ends, and a passing run whose HEAD moved in between (something
+  committed, merged or checked out in the worktree mid-push) is refused
+  (exit 1), naming both commits: push again. A HEAD that cannot be read at
+  either end changes nothing. The refusal is the row's `error`.
 
 Telemetry, quiet output and a watchdog that fails to load never change a
-hook's verdict. Only a signal, an enforcing watchdog's stop and the stage list
-do.
+hook's verdict. Only a signal, an enforcing watchdog's stop, the stage list
+and a HEAD that moved during a push do.
 
 ## A hook under dvara
 
@@ -86,15 +93,16 @@ rename it in its messages (default "preflight" and "Preflight").
 `.dvara.json` at the repository's root, or the file `DVARA_CONFIG` names. Every
 field is optional; an unknown field is an error.
 
-| Field               | Default                                          | Meaning                                                                                           |
-| ------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
-| `historyDir`        | `.dvara`                                         | where the history, the quiet log and scratch files go                                             |
-| `quietHooks`        | `["pre-commit"]`                                 | hooks whose passing output is one line                                                            |
-| `watchdog`          | `null`                                           | a watchdog module, relative to the root                                                           |
-| `baseRefs`          | `origin/main`, `origin/develop`, `origin/master` | the refs tried for the base a run is judged against                                               |
-| `stages`            | `{}`                                             | each hook's stages in order, which a passing run must keep to; `dvara stages <hook>` prints them  |
-| `stageList`         | `null`                                           | a JSON file holding the same map instead, relative to the root and read when a run ends; not both |
-| `stageListRequired` | `["pre-push"]`                                   | hooks a list file that cannot be read refuses; any other hook passes with a warning               |
+| Field               | Default                                          | Meaning                                                                                                            |
+| ------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `historyDir`        | `.dvara`                                         | where the history, the quiet log and scratch files go                                                              |
+| `quietHooks`        | `["pre-commit"]`                                 | hooks whose passing output is one line                                                                             |
+| `watchdog`          | `null`                                           | a watchdog module, relative to the root                                                                            |
+| `baseRefs`          | `origin/main`, `origin/develop`, `origin/master` | the refs tried for the base a run is judged against; to `dvara records`, every one that resolves is pushed history |
+| `stages`            | `{}`                                             | each hook's stages in order, which a passing run must keep to; `dvara stages <hook>` prints them                   |
+| `stageList`         | `null`                                           | a JSON file holding the same map instead, relative to the root and read when a run ends; not both                  |
+| `stageListRequired` | `["pre-push"]`                                   | hooks a list file that cannot be read refuses; any other hook passes with a warning                                |
+| `trailerKeys`       | `[]`                                             | the repository's own trailer keys, which `dvara trailers` checks beside git's                                      |
 
 `records`, an object, holds the settings of `dvara records` and `dvara frozen`
 (below). Each field is optional; an unknown one is an error.
@@ -167,6 +175,13 @@ grows and clones disagree on their length:
 - `unresolved-id`: a full id the change adds that is not a commit in this
   repository, compared with the ids the file cited at the merge base. No
   baseline holds these: they are new by construction.
+- `unpushed-id`: a full id the change adds that is a commit here but on no
+  pushed history: neither HEAD (nor, at pre-commit, a merge's other parent)
+  nor any of `baseRefs` or `--base` reaches it. A commit made here and never
+  pushed, or one on a branch since deleted, resolves in this clone and in no
+  CI clone. One `git rev-list` answers for every citation. A shallow clone
+  cannot tell where a commit stands, so it judges none. No baseline holds
+  these either.
 
 In Markdown, a fence's captured output is not read for tokens; its command
 lines are (`$ ` lines of a transcript, every line of an `sh` fence). Fences are
@@ -205,6 +220,26 @@ In a merge, a path staged exactly as a merged-in parent has it is that
 parent's change and passes; a hand resolution counts. With no frozen paths
 configured it passes without asking git. Exit 0, 1 or 2 as above.
 
+## Trailers: `dvara trailers`
+
+Git reads a message's trailers only from its last paragraph, so a trailer
+line above a blank line is prose to git: the commit lands without it, and
+nothing says so. For a commit-msg hook, `dvara trailers <commit-msg-file>`
+refuses (exit 1) a line whose key is `Co-Authored-By`, `Signed-off-by` or one
+of `trailerKeys` (any case, `Key: value` at the start of the line) in any
+paragraph before the last, or in the title's paragraph, which git never reads
+trailers from (so a message of one paragraph keeps none). The title line
+itself is never judged. Each is named with its line number. The file is
+read raw: comment lines (`#`) are dropped, the scissors line ends the
+message, whitespace-only lines separate paragraphs and trailing ones start
+none. Exit 2: bad arguments, or a config or file it cannot read.
+
+```bash
+#!/usr/bin/env bash
+# .husky/commit-msg
+exec node node_modules/@veda-hq/dvara/dist/cli.js trailers "$1"
+```
+
 ## Commands
 
 ```sh
@@ -213,5 +248,6 @@ dvara stages <hook>                  # the stages .dvara.json lists for it
 dvara shell <stages|keep-going>      # the path of a shell helper
 dvara records <--staged | --all [--base REF] [--write-baseline | --survey] | --base REF>
 dvara frozen <--staged | --base REF [--head REF]>
+dvara trailers <commit-msg-file>     # refuse trailer lines git would not read
 dvara --version
 ```

@@ -116,8 +116,8 @@ undoing another.
 - **No top-level schema combinators.** A structured-output or tool `input_schema` with a
   top-level `allOf`, `anyOf` or `oneOf` is rejected by the API (400 "input_schema does not
   support oneOf, allOf, or anyOf at the top level"), killing the agent before its first tool
-  call. Express conditional requirements in code after the call returns, and pin it with a test
-  that scans schema files for root-level combinators.
+  call. Express conditional requirements in code after the call returns.
+  <!-- held by: pariksha schema-roots (refuses a tool or output schema in a .json file whose root has allOf, anyOf or oneOf); a schema built in code is not read -->
 
 ## The desktop app and worktrees
 
@@ -129,9 +129,9 @@ undoing another.
   directory.
 - **Autofix can merge main under a running push.** The app's Autofix may merge `origin/main`
   into the session's worktree host-side when a PR shows conflicts, even while a long pre-push
-  hook runs, so HEAD moves under the hook. After any Autofix conflict event run
-  `git log -1 --format="%h %p"` before pushing, stop an in-flight push if HEAD moved, and
-  regenerate code (for example `prisma generate`) if the merge brought application changes.
+  hook runs, so HEAD moves under the hook. Regenerate code (for example `prisma generate`) if
+  the merge brought application changes.
+  <!-- held by: dvara run (refuses a pre-push run whose HEAD moved while it ran) -->
 - **The sync tool's default base can be stale.** In a reused worktree, the sync-with-base-branch
   tool defaults to the branch the worktree was first cut from, which may since have been
   deleted, and fails at fetch; always pass base `main`. Conflicts on append-only files are

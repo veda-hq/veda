@@ -57,6 +57,7 @@ describe('testLintBlocks', () => {
     assert.deepEqual(Object.keys(blocks[3]?.rules ?? {}), [
       'shuddhi/no-process-exit',
       'shuddhi/cli-entry-helper',
+      'shuddhi/no-import-meta-dirname-cjs',
     ]);
   });
 
@@ -121,6 +122,7 @@ describe('plugin and config blocks', () => {
     'no-partial-git-mask',
     'env-via-stub',
     'detached-teardown',
+    'jsonnull-in-matcher',
   ];
   /** The blocks every option builds, under `namespace`. */
   const expected = (namespace: string, bound: unknown) => {
@@ -142,7 +144,11 @@ describe('plugin and config blocks', () => {
       scriptBlock: {
         files: ['c'],
         plugins,
-        rules: on(['no-process-exit', 'cli-entry-helper']),
+        rules: on([
+          'no-process-exit',
+          'cli-entry-helper',
+          'no-import-meta-dirname-cjs',
+        ]),
       },
       detoxBlock: { files: ['d'], plugins, rules: on(['detox-tap-by-id']) },
     };
@@ -268,6 +274,7 @@ describe('namespaces', () => {
     assert.deepEqual(withNamespace(SCRIPT_RULES, 'product-test'), {
       'product-test/no-process-exit': 'error',
       'product-test/cli-entry-helper': 'error',
+      'product-test/no-import-meta-dirname-cjs': 'error',
     });
     assert.deepEqual(
       Object.keys(withNamespace(TEST_FILE_RULES, 'x')),

@@ -61,7 +61,11 @@ describe("scope", () => {
 
 describe("rulesFor", () => {
   it("ships the durable-path and commit-id rules under the configured settings", () => {
-    const tree = { typesOf: () => new Map(), baseText: () => undefined };
+    const tree = {
+      typesOf: () => new Map(),
+      onHistory: () => null,
+      baseText: () => undefined,
+    };
     const text = "run npm install after commit abc1234d\n";
     const run = (records: typeof RECORDS) =>
       rulesFor({ ...records, packageManager: "pnpm" })

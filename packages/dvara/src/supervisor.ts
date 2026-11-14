@@ -1,10 +1,11 @@
 // The hook supervisor: runs a git hook under bash, forwards the terminal's
 // signals to it, and writes one history row per run. It changes the hook's
 // verdict only to report a signalled run as cancelled, to let an enforcing
-// watchdog's stop decide it, and to refuse a passing run that broke its stage
+// watchdog's stop decide it, to refuse a passing run that broke its stage
 // list (stages.ts), or, for a hook in stageListRequired, whose list cannot be
-// read. Every other failure of its
-// own (telemetry, watchdog, quiet output) is fail-open.
+// read, and to refuse a passing pre-push during which HEAD moved (head.ts).
+// Every other failure of its own (telemetry, watchdog, quiet output) is
+// fail-open.
 import {
   execFileSync,
   spawn,
@@ -24,6 +25,7 @@ import { relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Config } from "./config.ts";
 import { hookKind, invocationContext, perfLevelNames } from "./context.ts";
+import { headMoved, readHead } from "./head.ts";
 import { isQuiet, successLine, successNotices } from "./quiet.ts";
 import { parseRecords, parseStages, treeUsage } from "./records.ts";
 import { readStageLists, stageVerdict } from "./stages.ts";
@@ -174,7 +176,8 @@ export const judgedAgainst = (
     diff === null || untracked === null
       ? null
       : diff === "" && untracked === "";
-  return { branch, fingerprint, base, tree, clean };
+  const head = revision?.trim() || null;
+  return { head, branch, fingerprint, base, tree, clean };
 };
 
 /**
@@ -260,7 +263,7 @@ export const supervise = async (
     for (const [name, listener] of listeners) signals.off(name, listener);
   };
 
-  const { branch, fingerprint, base, tree, clean } = judgedAgainst(
+  const { head, branch, fingerprint, base, tree, clean } = judgedAgainst(
     root,
     env,
     config.baseRefs,
@@ -392,15 +395,23 @@ export const supervise = async (
     const ended = Date.now();
     const marks = parseStages(readOrNull(events), bootstrapMs);
     // Only a run that would pass is checked: a failure keeps its own story.
-    const { refusal, warning } =
-      code === 0 && !imposed && !signal
-        ? stageVerdict(
-            hookName,
-            marks.map((mark) => mark.name),
-            () => readStageLists(root, config),
-            config.stageListRequired,
-          )
-        : { refusal: null, warning: null };
+    const passing = code === 0 && !imposed && !signal;
+    const { refusal: stageRefusal, warning } = passing
+      ? stageVerdict(
+          hookName,
+          marks.map((mark) => mark.name),
+          () => readStageLists(root, config),
+          config.stageListRequired,
+        )
+      : { refusal: null, warning: null };
+    // A push, not a preflight: only a push has a commit git sends. Asked
+    // after the stage list, so a run that broke both says both.
+    const moved =
+      passing && kind === "pre-push"
+        ? headMoved(hookName, head, readHead(root, env))
+        : null;
+    const refusals = [stageRefusal, moved].filter((r) => r !== null);
+    const refusal = refusals.length === 0 ? null : refusals.join("\n");
     if (refusal !== null) code = 1;
     if (quiet) report(code, ended - started);
     if (refusal !== null) stderr(`${refusal}\n`);

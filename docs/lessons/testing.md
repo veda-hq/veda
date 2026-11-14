@@ -270,6 +270,7 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   `JsonNull` is a class instance with no enumerable keys. Assert the sentinel directly with
   `expect(row.col).toBe(Prisma.JsonNull)` (the same for `DbNull`), and check a new
   mutant-killing test by hand-applying the mutant and watching it fail.
+  <!-- held by: shuddhi jsonnull-in-matcher (refuses JsonNull, DbNull or AnyNull inside toMatchObject or objectContaining) -->
 
 ## Tests that can fail
 

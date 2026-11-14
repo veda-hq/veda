@@ -2,7 +2,7 @@
 // in CI) read in batches, so a hundred staged files cost one `cat-file`
 // process, not a hundred.
 import { execFileSync, spawnSync } from "node:child_process";
-import type { TreeContext } from "./types.ts";
+import type { History, TreeContext } from "./types.ts";
 
 /** `:` is the index; anything else is a commit-ish. */
 export type TreeRef = string;
@@ -250,15 +250,48 @@ export const resolveRef = (repo: Git, ref: string): string | null => {
   return out === null ? null : out.trim();
 };
 
+/**
+ * Of `commits`, the ones no commit of `tips` reaches, in one walk:
+ * `git rev-list <commits> --not <tips>` prints exactly the commits reachable
+ * from the first and from none of the second, so a cited commit that is an
+ * ancestor of a tip (or a tip itself) is not printed. The walk covers only
+ * what the tips do not reach, which for a branch's citations is a handful of
+ * commits. Only commits are asked: rev-list walks commits and lists no blob
+ * or tree, so one passed here would read as reached.
+ */
+export const unreachable = (
+  repo: Git,
+  commits: readonly string[],
+  tips: readonly string[],
+): Set<string> => {
+  if (commits.length === 0) return new Set();
+  const input = [...commits, ...tips.map((tip) => `^${tip}`)].join("\n");
+  const printed = new Set(
+    git(repo, ["rev-list", "--stdin"], `${input}\n`).split("\n"),
+  );
+  return new Set(commits.filter((commit) => printed.has(commit)));
+};
+
+/**
+ * Whether the clone is shallow. Its history stops at a cut, so a commit
+ * below the cut that the store has anyway cannot be shown an ancestor of
+ * anything: a shallow clone cannot judge where a commit stands.
+ */
+export const isShallow = (repo: Git): boolean =>
+  git(repo, ["rev-parse", "--is-shallow-repository"]).trim() === "true";
+
 /** What the rules asked git about during a dry pass, to answer in batches. */
 export interface Questions {
   readonly shas: Set<string>;
   readonly bases: Set<string>;
+  /** Commits whose place on pushed history a rule asked. */
+  readonly history: Set<string>;
 }
 
 export const noQuestions = (): Questions => ({
   shas: new Set(),
   bases: new Set(),
+  history: new Set(),
 });
 
 export interface GitTreeContext extends TreeContext {
@@ -286,6 +319,12 @@ export const recordingContext = (
     for (const sha of shas) asked.shas.add(sha);
     return new Map(shas.map((sha) => [sha, "commit"]));
   },
+  // Every id passed for a commit above, so blobs and missing ids are asked
+  // here too: `warm` sends git only the ones that are commits.
+  onHistory: (commits) => {
+    for (const commit of commits) asked.history.add(commit);
+    return null;
+  },
   baseText: (path) => {
     if (typeof tree.base !== "string") return tree.base;
     asked.bases.add(path);
@@ -300,6 +339,11 @@ export const treeContext = (
   base: string | null | undefined,
   /** The path a file had at the base, when the branch renamed it. */
   renamedFrom: (path: string) => string | undefined = () => undefined,
+  /**
+   * The base refs whose history counts as pushed, beside HEAD: a cited
+   * commit off all of them exists in this clone only.
+   */
+  pushed: readonly string[] = [],
 ): GitTreeContext => {
   const modes = listModes(repo, ref);
   const present = new Set(modes.keys());
@@ -307,6 +351,42 @@ export const treeContext = (
   const baseCache = new Map<string, string | null>();
   /** Object type by name; null when the store does not have it. */
   const objects = new Map<string, string | null>();
+  /** Whether each commit judged is off pushed history. */
+  const off = new Map<string, boolean>();
+  let standing: { shallow: boolean; tips: string[]; refs: string[] } | null =
+    null;
+  /** What pushed history is here, asked once and only when a commit needs it. */
+  const history = (): { shallow: boolean; tips: string[]; refs: string[] } => {
+    if (standing !== null) return standing;
+    if (isShallow(repo))
+      return (standing = { shallow: true, tips: [], refs: [] });
+    const tips: string[] = [];
+    const refs: string[] = [];
+    // A staged merge commits MERGE_HEAD as a parent, so its history is the
+    // new commit's too. A ref that does not resolve here is no tip.
+    for (const name of [
+      "HEAD",
+      ...(ref === ":" ? ["MERGE_HEAD"] : []),
+      ...pushed,
+    ]) {
+      const id = resolveRef(repo, name);
+      if (id === null) continue;
+      tips.push(id);
+      if (pushed.includes(name) && !refs.includes(name)) refs.push(name);
+    }
+    return (standing = { shallow: false, tips, refs });
+  };
+  const judge = (commits: readonly string[]): void => {
+    probe(commits);
+    const fresh = [...new Set(commits)].filter(
+      (commit) => objects.get(commit) === "commit" && !off.has(commit),
+    );
+    if (fresh.length === 0) return;
+    const { shallow, tips } = history();
+    if (shallow) return;
+    const unreached = unreachable(repo, fresh, tips);
+    for (const commit of fresh) off.set(commit, unreached.has(commit));
+  };
 
   const readInto = (
     into: Map<string, string | null>,
@@ -379,6 +459,16 @@ export const treeContext = (
       }
       return types;
     },
+    onHistory: (commits): History | null => {
+      judge(commits);
+      if (standing?.shallow) return null;
+      return {
+        unreached: new Set(
+          commits.filter((commit) => off.get(commit) === true),
+        ),
+        refs: standing?.refs ?? [],
+      };
+    },
     baseText: (path) => {
       if (typeof base !== "string") return base;
       readBases(base, [path]);
@@ -387,6 +477,7 @@ export const treeContext = (
     warm: (asked) => {
       if (typeof base === "string") readBases(base, [...asked.bases]);
       probe([...asked.shas]);
+      judge([...asked.history]);
     },
   };
 };

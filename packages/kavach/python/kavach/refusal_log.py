@@ -4,7 +4,10 @@ say which refusals a guard made and how often.
 Where: ``<git common dir>/kavach/refusals.jsonl`` of the repository the
 event's ``cwd`` belongs to, shared by all of its worktrees. Each row holds the
 time, the guard, the tool, the first line of the reason and the start of the
-command or path. Commands can hold secrets typed on a command line, so the log
+command or path. A rule on trial also writes a row each time it only warns,
+and names itself in both kinds of row (``rule``, ``mode``: "warn" or
+"refuse"), so its trial can be read for wrong fires before it refuses.
+Commands can hold secrets typed on a command line, so the log
 stays inside the repository's git directory, never in the working tree.
 
 Best effort: logging never changes a verdict. Any failure (no git, no
@@ -75,8 +78,30 @@ def excerpt(tool_input: Any) -> str:
     return ""
 
 
-def record(guard: str, raw_input: str, stderr_text: str, now: Callable[[], float] = time.time) -> None:
-    """Append one row for a refusal; never raises."""
+# The rule and mode the next refusal row names (``label``), taken by it.
+_LABEL: dict[str, str] = {}
+
+
+def label(rule: str, mode: str) -> None:
+    """Name the rule and mode of the refusal about to be made, so its one
+    row says which rule fired and in which mode."""
+
+    _LABEL.clear()
+    _LABEL.update(rule=rule, mode=mode)
+
+
+def record(
+    guard: str,
+    raw_input: str,
+    stderr_text: str,
+    now: Callable[[], float] = time.time,
+    *,
+    rule: str | None = None,
+    mode: str | None = None,
+) -> None:
+    """Append one row for a refusal, or for a warning (``mode`` "warn");
+    never raises. ``rule`` and ``mode`` are written only when given, so the
+    rows of rules with no name keep their shape."""
 
     try:
         if os.environ.get(OFF_VAR):
@@ -102,6 +127,10 @@ def record(guard: str, raw_input: str, stderr_text: str, now: Callable[[], float
             "reason": reason,
             "excerpt": excerpt(event.get("tool_input")),
         }
+        if rule is not None:
+            row["rule"] = rule
+        if mode is not None:
+            row["mode"] = mode
         directory.mkdir(parents=True, exist_ok=True)
         with open(directory / FILE, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -140,9 +169,13 @@ def guarded(guard: str, body: Callable[[], Any], raw_input: Callable[[], str] | 
     previous = sys.stderr, sys.stdin
     sys.stderr, sys.stdin = stderr, stdin  # type: ignore[assignment]
 
+    _LABEL.clear()
+
     def log() -> None:
         text = raw_input() if raw_input is not None else stdin.copy.getvalue()
-        record(guard, text, stderr.copy.getvalue())
+        named = dict(_LABEL)
+        _LABEL.clear()
+        record(guard, text, stderr.copy.getvalue(), rule=named.get("rule"), mode=named.get("mode"))
 
     try:
         result = body()

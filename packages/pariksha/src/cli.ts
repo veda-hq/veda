@@ -32,6 +32,7 @@ import { checkClaims, formatOutcome, loadEslint, parseConfig as parseClaimsConfi
 import { parseConfig as parseDuplicateConfig, runDuplicateTests } from './duplicate-tests.ts';
 import { DEFAULT_RUNS, npxVitest, parseConfig as parseFlakyConfig, parseRuns, runFlakyTests, type VitestRunner } from './flaky-tests.ts';
 import { inheritRunner, runPythonFloor, type Options as PythonFloorOptions, type PythonRunner } from './python-floor.ts';
+import { checkSchemaRoots, jsonFiles, readDocuments } from './schema-roots.ts';
 
 export interface Io {
   readonly out: (line: string) => void;
@@ -79,6 +80,7 @@ const USAGE = [
   '       pariksha pnpm-settings [--config <file>] [--root <dir>]',
   '       pariksha python-floor --python <interpreter> --floor-file <path> [--exclude <regex>] [--selector <path>] [--root <dir>]',
   '       pariksha required-settings --require <file> [--settings <file>] [--root <dir>]',
+  '       pariksha schema-roots [--files-from <file>|-] [--root <dir>] [<file>...]',
   '       pariksha shell-gates [--config <file>] [--staged | --all | --base <ref> | --files-from <file>|-] [--only <checks>] [--root <dir>]',
   '       pariksha hash <word>',
   '       pariksha --version',
@@ -852,6 +854,53 @@ const pythonFloor = (f: Map<string, string>, io: Io): number => {
   return runPythonFloor(options, io.python ?? inheritRunner, io.err);
 };
 
+/** `rest` split into its `--name value` pairs and the bare words around them, the files a command names. */
+export const splitFiles = (rest: readonly string[]): { flagArgs: string[]; files: string[] } => {
+  const flagArgs: string[] = [];
+  const files: string[] = [];
+  for (let i = 0; i < rest.length; i += 1) {
+    const word = rest[i] as string;
+    if (!word.startsWith('--')) {
+      files.push(word);
+      continue;
+    }
+    flagArgs.push(...rest.slice(i, i + 2));
+    i += 1;
+  }
+  return { flagArgs, files };
+};
+
+/**
+ * schema-roots: the `.json` files named on the command line and in the
+ * `--files-from` list, relative ones read from the root; other files are
+ * not read, and none at all is a pass. The first file that cannot be read or
+ * parsed exits 2, naming it, with no finding printed.
+ */
+const schemaRoots = (rest: readonly string[], io: Io): number => {
+  const P = 'pariksha schema-roots:';
+  const { flagArgs, files: named } = splitFiles(rest);
+  const f = flags(flagArgs, ['--files-from', '--root']);
+  if (!f) {
+    io.err(USAGE);
+    return 2;
+  }
+  const root = resolve(f.get('--root') ?? '.');
+  const from = f.get('--files-from');
+  let documents: ReturnType<typeof readDocuments>;
+  try {
+    const listed = [...named, ...(from === undefined ? [] : entries(listFrom(from, io)))];
+    const files = [...new Set(jsonFiles(listed).map((p) => relative(root, resolve(root, p))))];
+    documents = readDocuments(files, (file) => readFileSync(resolve(root, file), 'utf8'));
+  } catch (e) {
+    io.err(`${P} ${(e as Error).message}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+  const result = checkSchemaRoots(documents);
+  result.out.forEach(io.out);
+  result.err.forEach(io.err);
+  return result.ok ? 0 : 1;
+};
+
 const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly string[]; run: (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv) => number | Promise<number> }> = {
   'codec-registry': { allowed: ['--config', '--base', '--root'], switches: ['--no-base'], run: codecRegistry },
   'coverage-exemptions': { allowed: ['--config', '--package', '--root'], run: coverageExemptions },
@@ -887,6 +936,8 @@ export const run = (args: readonly string[], io: Io, version: string = ownVersio
     io.out(hash(rest[0]));
     return 0;
   }
+  // The one check that takes files as bare words, so not through `flags`.
+  if (command === 'schema-roots') return schemaRoots(rest, io);
   const spec = command !== undefined && Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;
   const f = spec && flags(rest, spec.allowed, spec.switches);
   if (!spec || !f) {

@@ -10,6 +10,12 @@ command that sets a protected variable, and a commit that records one path
 of a paired change without the other. Each is read from the repository the
 command actually targets.
 
+One rule is on trial: a message the shell would change before git or gh
+reads it (backticks, ``$(...)`` or ``!word`` in a double-quoted ``-m`` or
+``--body``). Until the settings say ``"shellExpansion": "refuse"`` it allows
+the command and prints a PreToolUse answer on stdout that puts the warning in
+front of the agent; either way each fire is a row of the refusal log.
+
 Two checks, and the command runs only when both allow it: bash_guard.py
 first, then git_safety.py, which reads the code the first cannot (below)
 and runs against the adversarial corpus in ``corpus/``, every row of which
@@ -124,7 +130,28 @@ def cannot_name_git():
         command = json.loads(os.environ["HOOK_INPUT"])["tool_input"]["command"]
     except Exception:
         return False
-    return isinstance(command, str) and not re.search(r"(?i)git|[\\\x27\"$`*?\[{|<>(]", command)
+    if not isinstance(command, str) or re.search(r"(?i)git|[\\\x27\"$`*?\[{|<>(]", command):
+        return False
+    # `gh pr comment 1 -b fix!now` has a message git_safety.py reads; a `!`
+    # anywhere else (`if ! make; then ...`) keeps the fast exit it had.
+    return not ("!" in command and re.search(r"(?<![\w.-])gh(?![\w.-])", command))
+
+
+def fired(rule, mode, message):
+    """Log one fire of a rule on trial (git_safety.hook_main's ``fired``): a
+    refusal's row is written as it ends, named here; a warning's now, since
+    an allowed call writes no row of its own. Logging never changes a
+    verdict."""
+    try:
+        import refusal_log
+        if mode == "refuse":
+            refusal_log.label(rule, mode)
+        else:
+            refusal_log.record(
+                "command", os.environ.get("HOOK_INPUT", ""), "WARNING: " + message, rule=rule, mode=mode
+            )
+    except BaseException:
+        return
 
 
 def main():
@@ -146,7 +173,7 @@ def main():
         return 0
     return verdict(
         "the shell-code check",
-        lambda: __import__("git_safety").hook_main(loaded),
+        lambda: __import__("git_safety").hook_main(loaded, fired),
         "git_safety.py",
         "git_safety",
     )

@@ -22,8 +22,10 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from types import ModuleType
 from typing import Any, NoReturn
@@ -399,7 +401,227 @@ def denial(target: Path, root: Path, primary: Path) -> str:
             f"; agent memory is writable only when {expected} is a real directory"
             " (it is missing, or it or its parent is a symlink)"
         )
-    return message
+        return message
+    try:
+        return message + where_instead(target, root, primary)
+    except Exception:
+        # Words only: a hint that fails must not turn the denial into a crash.
+        return message + GENERIC_INSTEAD
+
+
+GENERIC_INSTEAD = "; write only inside this worktree, and keep scratch files in its .tmp/"
+
+
+def system_temp_roots() -> list[Path]:
+    """The system's temp folders, resolved: where scratch files go by habit."""
+
+    roots = [Path("/tmp"), Path("/var/tmp"), Path(tempfile.gettempdir())]
+    if os.environ.get("TMPDIR"):
+        roots.append(Path(os.environ["TMPDIR"]))
+    return [root.resolve() for root in roots]
+
+
+def linked_worktrees(git_dir: Path) -> list[tuple[Path, Path]]:
+    """Each linked worktree's own git folder and its work tree, read from
+    ``<git dir>/worktrees/*/gitdir``; what cannot be read is left out."""
+
+    found: list[tuple[Path, Path]] = []
+    try:
+        entries = sorted((git_dir / "worktrees").iterdir())
+    except OSError:
+        return found
+    for entry in entries:
+        try:
+            pointer = (entry / "gitdir").read_text(encoding="utf-8").strip()
+        except (OSError, ValueError):
+            continue
+        if pointer:
+            found.append((entry.resolve(), Path(pointer).parent.resolve()))
+    return found
+
+
+def where_instead(target: Path, root: Path, primary: Path) -> str:
+    """Where the write belongs instead, after naming the place it aimed at.
+
+    Only words: the verdict is already made. Generic on purpose, since every
+    consumer's checkout differs: the main checkout, another worktree or its
+    git folder, the repository's git folder, a system temp folder, elsewhere.
+    """
+
+    resolved, checkout, own = target.resolve(), primary.resolve(), root.resolve()
+    git_dir = checkout / ".git"
+    own_git_dir = git_dir_of(root)
+    worktrees = linked_worktrees(git_dir)
+    if own_git_dir is not None and boundary.is_inside(resolved, own_git_dir.resolve()):
+        return "; that is this worktree's git folder: change it only through git commands run in this worktree"
+    if boundary.is_inside(resolved, git_dir / "worktrees"):
+        return (
+            "; that is another worktree's git folder: for this worktree's own branch run git here, and "
+            "for anything else write a script under this worktree's .tmp/ and run it from this worktree"
+        )
+    if boundary.is_inside(resolved, git_dir):
+        return "; that is the repository's git folder: change it only through git commands run in this worktree"
+    if any(boundary.is_inside(resolved, tree) for _gitdir, tree in worktrees if tree != own):
+        return (
+            "; that is another worktree, which another session may own: make the change in this "
+            "worktree, or ask the user to make it there"
+        )
+    if boundary.is_inside(resolved, checkout):
+        relative = resolved.relative_to(checkout)
+        return (
+            f"; that is the main checkout: make the change in this worktree's own copy, {own / relative}"
+        )
+    if any(boundary.is_inside(resolved, temp) for temp in system_temp_roots()):
+        return (
+            "; that is a system temp folder: keep scratch files in this worktree's .tmp/ "
+            "(keep it git-ignored) and write them with the Edit or Write tools"
+        )
+    return GENERIC_INSTEAD
+
+
+UNRESOLVED = "mutation targets could not be resolved"
+WAY_OUT = (
+    "Run one plain command per call; write files with the Edit or Write tools; for more, write a "
+    "script under this worktree's .tmp/ and run it through the repository's package runner "
+    "(for example `pnpm exec tsx .tmp/x.ts`)."
+)
+REDIRECTION_WAY_OUT = (
+    " A redirection into a file is never read, wherever it points: drop it and read the output, "
+    "or write the file with Write."
+)
+HEREDOC_WAY_OUT = (
+    " Write a heredoc's text to a file with Write instead (for a commit message, `git commit -F <file>`)."
+)
+INTERPRETERS = {
+    "python", "python2", "python3", "node", "nodejs", "bun", "deno", "perl", "ruby", "php", "lua",
+    "tsx", "ts-node", "osascript", "pwsh", "bash", "sh", "zsh", "dash", "ksh", "mksh", "fish",
+}
+SHELL_NAMES = {"bash", "sh", "zsh", "dash", "ksh", "mksh", "fish"}
+# The option that makes each interpreter run its next word as a program.
+INLINE_FLAGS = {"-e", "--eval", "-p", "--print"}
+SHOWN = 80
+
+
+def inline_flags(head: str) -> set[str]:
+    if head in SHELL_NAMES or head.startswith("python"):
+        return {"-c"}
+    if head == "osascript":
+        return {"-e"}
+    if head == "pwsh":
+        return {"-c", "-Command"}
+    return INLINE_FLAGS
+
+
+def shell_reader() -> ModuleType | None:
+    """git_safety.py's shell lexer, which sees quoting, to name what a
+    refused command holds; None when it cannot load (the refusal then names
+    nothing). Loaded only for a refusal, so an allowed call never pays."""
+
+    name = "kavach_worktree_shell"
+    if name in sys.modules:
+        return sys.modules[name]
+    try:
+        spec = importlib.util.spec_from_file_location(name, HERE / "git_safety.py")
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    except (Exception, SystemExit):
+        sys.modules.pop(name, None)
+        return None
+    return module
+
+
+def shown(text: str) -> str:
+    text = text.replace("\n", " ")
+    return text if len(text) <= SHOWN else text[: SHOWN - 3] + "..."
+
+
+def unreadable_constructs(command: str, cwd: Path) -> list[str]:
+    """What in ``command`` keeps its writes from being read, most specific
+    first: a heredoc, a redirection into a file, a substitution, an
+    interpreter, a program the guard does not know, then a pipeline or a
+    chain. Words for a refusal only: the verdict is ``mutation_directories``'s."""
+
+    reader = shell_reader()
+    if reader is None:
+        return []
+    try:
+        commands = reader.parse(command)
+    except Exception:
+        return []
+    found: list[str] = []
+
+    def add(text: str) -> None:
+        if text not in found:
+            found.append(text)
+
+    for each in commands:
+        if each.heredocs:
+            add("a heredoc (`<<`)")
+    for each in commands:
+        for target in each.redirect_targets:
+            if target.text != os.devnull and not re.fullmatch(r"[0-9]+|-", target.text):
+                add(f"an output redirection (`>` to {shown(target.text)})")
+    if any(
+        word.bodies
+        for each in commands
+        for word in (*each.words, *each.redirect_targets, *each.input_targets, *each.herestrings)
+    ) or any(each.expanded_bodies for each in commands):
+        add("a command substitution (`$(...)`, backticks or `<(...)`)")
+    for each in commands:
+        words = list(each.words)
+        while words and words[0].is_assignment() is not None:
+            words.pop(0)
+        if not words or words[0].dynamic:
+            continue
+        head = os.path.basename(words[0].text)
+        if head in INTERPRETERS or re.fullmatch(r"python[0-9]+(\.[0-9]+)*", head):
+            inline = next((word.text for word in words[1:] if word.text in inline_flags(head)), None)
+            if inline is not None:
+                add(f"an inline {head} program (`{head} {inline}`)")
+            elif any(not word.text.startswith("-") for word in words[1:]):
+                typed = " ".join(word.text for word in words)
+                add(f"an interpreter running a file or module (`{shown(typed)}`)")
+            continue
+        own = each.heredocs or each.redirect_targets or any(word.bodies or word.dynamic for word in words)
+        if not own and boundary.mutation_directories(shlex.join(word.text for word in words), cwd) is None:
+            add(f"`{head}`, a program whose writes the guard does not know")
+    if any(each.piped_from is not None for each in commands):
+        add("a pipeline (`|`)")
+    if any(each.follows in (";", "&&", "||", "\n", "&") for each in commands[1:]):
+        add("a chain of commands (`;`, `&&` or `||`)")
+    return found
+
+
+def unresolved(tool: object, values: dict[str, object], cwd: Path) -> str:
+    """The refusal for a call whose writes could not be read, naming what in
+    it could not be read and the way out. The leading words stay as they
+    were, so earlier logs and searches still match."""
+
+    if tool != "Bash":
+        return (
+            f"{UNRESOLVED}: the file path cannot be read as one place. "
+            "Give the tool an absolute path inside this worktree."
+        )
+    command = boundary.tool_command(values)
+    try:
+        found = unreadable_constructs(command, cwd) if command else []
+    except Exception:
+        found = []
+    if not found:
+        return f"{UNRESOLVED}: the guard cannot read off this command what it writes. {WAY_OUT}"
+    named = found[0] if len(found) == 1 else ", ".join(found[:-1]) + " and " + found[-1]
+    extra = ""
+    if any(item.startswith("an output redirection") for item in found):
+        extra += REDIRECTION_WAY_OUT
+    if "a heredoc (`<<`)" in found:
+        extra += HEREDOC_WAY_OUT
+    return (
+        f"{UNRESOLVED}: this command uses {named}, so the guard cannot read off it what it writes. "
+        f"{WAY_OUT}{extra}"
+    )
 
 
 # A push in progress (0086 P-06). A pre-push hook that runs kavach's
@@ -652,7 +874,7 @@ def main() -> None:
         refuse_during_push(tool, [root], root)
         return
     if targets is None:
-        boundary.deny("mutation targets could not be resolved")
+        boundary.deny(unresolved(tool, values, cwd))
     for target in targets:
         # From inside an owned worktree the two allowances compose, so
         # `touch <memory>/note.md` works while the same command with a second

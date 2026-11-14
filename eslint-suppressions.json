@@ -51,7 +51,7 @@
   },
   "packages/pariksha/src/cli.ts": {
     "shuddhi/no-swallowed-catch": {
-      "count": 21
+      "count": 22
     }
   },
   "packages/pariksha/src/coverage-exemptions.ts": {

@@ -59,6 +59,7 @@ export const TEST_FILE_RULES = {
   [id('no-partial-git-mask')]: 'error',
   [id('env-via-stub')]: 'error',
   [id('detached-teardown')]: 'error',
+  [id('jsonnull-in-matcher')]: 'error',
 };
 
 /** Rules for Nest server tests only. */
@@ -67,10 +68,14 @@ export const SERVER_TEST_RULES = {
   [id('e2e-uses-supertest')]: 'error',
 };
 
-/** Rules for tooling scripts (SHELL-09). */
+/**
+ * Rules for tooling scripts (SHELL-09): the non-test sources `testLintBlocks`
+ * binds to its `scripts` globs.
+ */
 export const SCRIPT_RULES = {
   [id('no-process-exit')]: 'error',
   [id('cli-entry-helper')]: 'error',
+  [id('no-import-meta-dirname-cjs')]: 'error',
 };
 
 /** Rules for Detox end-to-end suites (TEST-WEAK-01). */

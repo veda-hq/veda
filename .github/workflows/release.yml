@@ -4,8 +4,11 @@ name: Release
 # under packages/ whose version is X.Y.Z to npm, signed with provenance from
 # this workflow, and makes the GitHub release. A version already on npm is skipped, so a rerun is safe.
 #
-# npm auth: trusted publishing (OIDC) once it is set up for a package on
-# npmjs.com; until then, for a package's first publish, the NPM_TOKEN secret.
+# npm auth: trusted publishing (OIDC) only, set up on npmjs.com for each
+# package with this repository and this workflow. There is no npm token, so a
+# leaked secret cannot publish. A new package needs its first version on npm
+# (a 0.0.0-stage placeholder, published by Alok) and trusted publishing set up
+# for it before its first release here.
 on:
   push:
     tags: ['v*']
@@ -60,7 +63,6 @@ jobs:
       - run: pnpm check
       - name: Publish the packages at this version
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail

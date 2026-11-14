@@ -1,0 +1,7 @@
+{
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Bash",
+  "tool_input": { "command": "docker compose up --wait" },
+  "error": "Exit code 1\nfailed to create network demo_default: Error response from daemon: all predefined address pools have been fully subnetted",
+  "is_interrupt": false
+}

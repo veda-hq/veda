@@ -29,9 +29,13 @@ library behaviour that surprised a working change.
   and KILL the group).
 - **Release age and audit fixes.** When `pnpm audit` blocks on a new advisory under a
   `minimumReleaseAge` policy, pin the newest patched version already older than the release age
-  (check `npm view <pkg> time`) and raise the override floor. Check whether the default branch
-  already carries the bump before making it.
-  <!-- held by: pariksha pnpm-settings (fails a minimumReleaseAgeExclude entry with no comment, no expiry or a non-exact version) -->
+  (check `npm view <pkg> time`) and raise the override floor (pariksha `pnpm-settings` already
+  fails an unexplained `minimumReleaseAgeExclude` entry).
+  The one standing entry is veda's own scope, `@veda-hq/*` (Alok, 2026-11-14): a new release
+  installs at once, and `pnpm provenance` (in `pnpm check`) checks instead that veda's release
+  workflow built and signed each `@veda-hq` package the lockfile resolves, from its own tag.
+  When Sigstore rotates a key, it fails until `scripts/sigstore-trusted-root.json` is refreshed.
+  Check whether the default branch already carries the bump before making it.
 - **A lost patch looks like a code bug.** When pnpm warns that `node_modules` are out of sync
   with the lockfile because the `patchedDependencies` value changed, a patched dependency has
   lost its patch, and its guard test fails exactly like a code bug in a file the diff never

@@ -24,10 +24,13 @@ lists, kavach's guards among them.
   scratchpad). Keep scratch files in `.tmp/`, which git ignores. A command
   whose writes kavach cannot read off its command line is refused as
   "mutation targets could not be resolved": a script run as `node <file>`,
-  a CLI it does not know (`niyam` among them), a heredoc. Package runners
-  such as `pnpm` are reviewed, so they run from your own worktree: use the
-  repository's scripts (`pnpm check`). Give `git commit` its message with
-  `-F .tmp/<file>`.
+  a CLI it does not know, a heredoc. Package runners such as `pnpm` are
+  reviewed, so they run from your own worktree: use the repository's
+  scripts (`pnpm check`). Give `git commit` its message with
+  `-F .tmp/<file>`. The niyam lines `.claude/kavach.json` lists run from the
+  worktree root (`niyam --version`, `niyam propose <n> --page <url>`,
+  `niyam review-thread <id> --resolve`, `niyam onboard --dry-run`); a
+  `--reply "<text>"` with quotes does not.
 - **Command guard.** kavach refuses any bypass of git's hooks
   (`--no-verify`, `-c core.hooksPath=…`), and any push that rewrites or
   deletes history.

@@ -99,13 +99,13 @@ has none installed. They need `bash`, `jq` and `git`;
 ### Lessons at their moment
 
 A lesson changes what an agent does only when it is in front of the agent at
-the moment it matters. A lesson doc marks such a lesson with one line right
-under it, so the text and its trigger stay in one place:
+the moment it matters. A lesson doc marks such a lesson with a line at the
+lesson's end, so the text and its trigger stay in one place:
 
 ```md
 - **Address pools exhausted by leaked networks.** "all predefined address pools have been fully
   subnetted" means leaked networks from killed test runs filled the default pools ...
-<!-- when: error "all predefined address pools have been fully subnetted" -->
+  <!-- when: error "all predefined address pools have been fully subnetted" -->
 ```
 
 | Kind | Pattern | Tested against |
@@ -114,10 +114,16 @@ under it, so the text and its trigger stay in one place:
 | `command` | a JavaScript regular expression | a Bash call's command, before it runs |
 | `path` | a glob: `*` and `?` within a segment, `**` across segments | an Edit or Write call's file, relative to the session's checkout, before it runs |
 
-A `when` line belongs to the top-level bullet it follows when no blank line
-separates them, otherwise to the section since the nearest heading; several
-`when` lines may follow one lesson. Fenced code is never read for them. The
-lesson's id is its file and the slug of its bold lead or heading.
+A lesson is what athya_mono's "lessons nothing holds" counter counts, in
+every `.md` file but `README.md`: a `### ` section, bullets inside it
+included, up to the next heading; outside one, a column-0 `- ` bullet with
+its indented lines, up to a column-0 paragraph. Put the `when` line at the
+lesson's end, indented two spaces inside a bullet. One lesson may have several.
+A `when` line in neither is a stray; `docProblems` reports strays, two lessons
+sharing an id, and patterns that cannot fire. Fenced code is never read for
+them. The lesson's id is its file and the slug of its heading or bold lead.
+`<!-- held by: ... -->` lines, which name the check that holds a lesson, are
+left out of the text shown.
 
 `lessons.sh` reads the package's own `lessons/` (veda's
 [`docs/lessons/`](../../docs/lessons), copied in at build) and each folder

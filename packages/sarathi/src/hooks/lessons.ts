@@ -2,8 +2,8 @@
  * PreToolUse (Bash, Edit, Write) and PostToolUseFailure handler: shows a
  * lesson at the moment it matters.
  *
- * A lesson doc (Markdown) marks a lesson that has a moment with one line right
- * under it, so the text and its trigger live in one place:
+ * A lesson doc (Markdown) marks a lesson that has a moment with a line at the
+ * lesson's end, so the text and its trigger live in one place:
  *
  *   <!-- when: error "all predefined address pools have been fully subnetted" -->
  *   <!-- when: command "git push \S+ \S+:refs/heads/" -->
@@ -17,11 +17,16 @@
  *   the session's checkout: `*` and `?` within one path segment, `**` across
  *   segments.
  *
- * The lesson a `when` line belongs to is the top-level bullet it follows,
- * when no blank line separates them; otherwise the section since the nearest
- * heading. Lines in fenced code are never headings, bullets or `when` lines.
- * A lesson's id is its file and the slug of its bold lead (`**Title.**`) or
- * heading, so it survives edits to the text around it.
+ * The lesson unit is the one athya_mono's "lessons nothing holds" counter reads
+ * (scripts/lessons-nothing-holds.ts, 0165 L-01), so a lesson with a `when`
+ * line is never counted as unheld. In every `.md` file but README.md: a `### `
+ * section is one lesson, bullets inside it included, up to the next heading of
+ * any level; outside one, a column-0 `- ` bullet is one lesson with its
+ * indented lines and any column-0 `<!--` lines, up to a column-0 paragraph. A
+ * `when` line in neither is a stray, reported by `docProblems`. Lines in fenced
+ * code are never headings, bullets or `when` lines. A lesson's id is its file
+ * and the slug of its heading or bold lead (`**Title.**`; else the bullet's
+ * first 60 characters), so it survives edits to the text around it.
  *
  * The handler adds each matching lesson to Claude's context
  * (`additionalContext`), at most once per session, and appends one log row per
@@ -87,11 +92,12 @@ export interface ToolEvent {
 export const TEXT_MAX = 2000;
 export const EXCERPT_MAX = 120;
 const WHEN = /^<!--\s*when:\s*(error|command|path)\s+"(.*)"\s*-->$/;
+/** Marker lines a lesson's text leaves out: `when` lines and L-01's `held by` lines. */
+const MARKER_LINE = /^<!--\s*(when|held by):.*-->$/;
 const MARKER = '<!-- when:';
-const HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
-const BULLET = /^[-*]\s/;
-const FENCE = /^(```|~~~)/;
-const BOLD_LEAD = /^[-*]\s+\*\*(.+?)\*\*/;
+const BULLET = /^- /;
+const FENCE = /^\s*```/;
+const BOLD_LEAD = /^-\s+\*\*(.+?)\*\*/;
 const SESSION = /^[\w.-]{1,128}$/;
 
 /** GitHub's anchor for a title: lower case, punctuation dropped, spaces to hyphens. */
@@ -107,94 +113,132 @@ function plain(markdown: string): string {
   return markdown.replace(/[*_`]/g, '').replace(/[.:]\s*$/, '').trim();
 }
 
-/** The lessons with a `when` line in one doc's text. */
-export function parseLessons(text: string, file: string): Lesson[] {
-  if (!text.includes(MARKER)) return [];
+export interface Doc {
+  readonly lessons: Lesson[];
+  /** `when` lines outside any lesson: `<file>:<line>`. */
+  readonly strays: string[];
+}
+
+/** The lessons with a `when` line in one doc's text, and the `when` lines outside any lesson. */
+export function parseDoc(text: string, file: string): Doc {
+  if (!text.includes(MARKER)) return { lessons: [], strays: [] };
   const lines = text.split('\n');
-  const lessons: Lesson[] = [];
+  const units = new Map<number, { end: number; title: string; triggers: Trigger[] }>();
+  const strays: string[] = [];
+  const markers = new Set<number>();
   let fenced = false;
-  let heading = -1;
+  let section = -1;
   let item = -1;
-  let blankSinceItem = false;
-  let open: { start: number; end: number; title: string; triggers: Trigger[] } | undefined;
-  const close = (): void => {
-    if (open === undefined) return;
-    const { start } = open;
-    const whenLines = new Set(open.triggers.map(trigger => trigger.line - 1));
-    const body = lines
-      .slice(start, open.end)
-      .filter((_, offset) => !whenLines.has(start + offset))
-      .join('\n')
-      .trim();
-    const title = open.title === '' ? file : open.title;
-    lessons.push({
-      id: `${file}#${slug(title)}`,
-      file,
-      title,
-      text: body.length <= TEXT_MAX ? body : `${body.slice(0, TEXT_MAX - 1)}…`,
-      triggers: open.triggers,
-    });
-    open = undefined;
+  let unit: { start: number; end: number; title: string } | undefined;
+  const closeAt = (index: number): void => {
+    if (unit !== undefined) {
+      const found = units.get(unit.start);
+      if (found !== undefined) found.end = index;
+    }
+    unit = undefined;
   };
   lines.forEach((raw, index) => {
     const line = raw.trim();
-    if (FENCE.test(line)) {
+    if (FENCE.test(raw)) {
       fenced = !fenced;
       return;
     }
     if (fenced) return;
-    const when = WHEN.exec(line);
-    if (when !== null) {
-      const trigger: Trigger = { kind: when[1] as Kind, pattern: when[2] ?? '', line: index + 1 };
-      if (open !== undefined && open.end === index) {
-        open.triggers.push(trigger);
-        open.end = index + 1;
-        return;
-      }
-      close();
-      const ownsItem = item > heading && !blankSinceItem;
-      const start = ownsItem ? item : Math.max(heading, 0);
-      const lead = ownsItem ? BOLD_LEAD.exec(lines[item] ?? '') : null;
-      const head = heading >= 0 ? HEADING.exec((lines[heading] ?? '').trim()) : null;
-      const title = plain(lead?.[1] ?? (ownsItem ? '' : (head?.[2] ?? '')));
-      open = { start, end: index + 1, title, triggers: [trigger] };
+    if (raw.startsWith('#')) {
+      closeAt(index);
+      item = -1;
+      section = raw.startsWith('### ') ? index : -1;
+      if (section >= 0) unit = { start: index, end: lines.length, title: plain(raw.slice(4)) };
       return;
     }
-    close();
-    if (HEADING.test(line) && raw.startsWith('#')) {
-      heading = index;
-      item = -1;
-    } else if (BULLET.test(raw)) {
+    if (section < 0 && BULLET.test(raw)) {
+      closeAt(index);
       item = index;
-      blankSinceItem = false;
-    } else if (line === '') {
-      blankSinceItem = true;
+      unit = { start: index, end: lines.length, title: plain(BOLD_LEAD.exec(raw)?.[1] ?? raw.slice(2, 62)) };
+      return;
     }
+    // A column-0 paragraph ends a bullet; a column-0 marker line stays in it.
+    if (section < 0 && /^\S/.test(raw) && !raw.startsWith('<!--')) {
+      closeAt(index);
+      item = -1;
+    }
+    if (MARKER_LINE.test(line)) markers.add(index);
+    const when = WHEN.exec(line);
+    if (when === null) return;
+    const trigger: Trigger = { kind: when[1] as Kind, pattern: when[2] ?? '', line: index + 1 };
+    if (unit === undefined || (section < 0 && item < 0)) {
+      strays.push(`${file}:${index + 1}`);
+      return;
+    }
+    const found = units.get(unit.start) ?? { end: lines.length, title: unit.title, triggers: [] };
+    found.triggers.push(trigger);
+    units.set(unit.start, found);
   });
-  close();
-  return lessons;
+  closeAt(lines.length);
+  const lessons = [...units.entries()].map(([start, found]) => {
+    const body = lines
+      .slice(start, found.end)
+      .filter((_, offset) => !markers.has(start + offset))
+      .join('\n')
+      .trim();
+    const title = found.title === '' ? file : found.title;
+    return {
+      id: `${file}#${slug(title)}`,
+      file,
+      title,
+      text: body.length <= TEXT_MAX ? body : `${body.slice(0, TEXT_MAX - 1)}…`,
+      triggers: found.triggers,
+    };
+  });
+  return { lessons, strays };
 }
 
-/** The lessons in every `.md` file of the folders that exist, in folder then name order. */
-export function loadLessons(dirs: readonly string[]): Lesson[] {
-  const lessons: Lesson[] = [];
+/** The lessons with a `when` line in one doc's text. */
+export function parseLessons(text: string, file: string): Lesson[] {
+  return parseDoc(text, file).lessons;
+}
+
+/** Every `.md` file of the folders that exist, parsed, in folder then name order. */
+export function loadDocs(dirs: readonly string[]): Doc[] {
+  const docs: Doc[] = [];
   for (const dir of dirs) {
     let names: string[];
     try {
-      names = readdirSync(dir).filter(name => name.endsWith('.md')).sort();
+      names = readdirSync(dir)
+        .filter(name => name.endsWith('.md') && name !== 'README.md')
+        .sort();
     } catch {
       // fail-open: a folder that cannot be listed holds no lesson this call can show
       continue;
     }
     for (const name of names) {
       try {
-        lessons.push(...parseLessons(readFileSync(join(dir, name), 'utf8'), name));
+        docs.push(parseDoc(readFileSync(join(dir, name), 'utf8'), name));
       } catch {
         // fail-open: an unreadable file holds no lesson this call can show
       }
     }
   }
-  return lessons;
+  return docs;
+}
+
+/** The lessons in every `.md` file of the folders that exist. */
+export function loadLessons(dirs: readonly string[]): Lesson[] {
+  return loadDocs(dirs).flatMap(doc => doc.lessons);
+}
+
+/** What is wrong with the folders' `when` lines: strays outside a lesson, and patterns that never fire. */
+export function docProblems(dirs: readonly string[]): string[] {
+  const docs = loadDocs(dirs);
+  const lessons = docs.flatMap(doc => doc.lessons);
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const lesson of lessons) (seen.has(lesson.id) ? duplicates : seen).add(lesson.id);
+  return [
+    ...docs.flatMap(doc => doc.strays.map(where => `${where}: a when line outside a lesson (a ### section, or a column-0 bullet)`)),
+    ...[...duplicates].map(id => `${id}: two lessons with a when line share this id, so only the first can show`),
+    ...triggerProblems(lessons),
+  ];
 }
 
 /** A glob as a regular expression over a `/`-separated relative path. */

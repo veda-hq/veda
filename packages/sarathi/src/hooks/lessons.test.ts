@@ -11,9 +11,11 @@ import {
   gitPlaces,
   globToRegExp,
   kindOf,
+  docProblems,
   loadLessons,
   logDir,
   packagedLessons,
+  parseDoc,
   parseLessons,
   respond,
   shownIn,
@@ -46,13 +48,16 @@ Intro text.
 - **Relabelling a Compose volume.** Labels are part of the hash.
 - **Address pools exhausted.** "all predefined address pools have been fully
   subnetted" means leaked networks. Remove only empty ones you own.
-<!-- when: error "all predefined address pools have been fully subnetted" -->
-<!-- when: command "docker network create" -->
+  <!-- when: error "all predefined address pools have been fully subnetted" -->
+  <!-- when: command "docker network create" -->
+  <!-- held by: a check elsewhere -->
 - **No trigger here.** Plain bullet.
 
 ### Push by refspec
 
 A push by refspec records no upstream.
+
+- a bullet inside the section belongs to it
 
 \`\`\`sh
 # not a heading
@@ -66,10 +71,12 @@ Run \`git branch -u\` after it.
 ## Schema
 
 - **Prisma schema.** Run generate after editing.
-<!-- when: path "apps/*/prisma/**" -->
+  <!-- when: path "apps/*/prisma/**" -->
+
+Closing paragraph.
 `;
 
-test('a when line belongs to the bullet it follows, or else to its section', () => {
+test('a ### section is one lesson; outside one, a column-0 bullet with its indented lines', () => {
   const lessons = parseLessons(DOC, 'testing.md');
   assert.deepEqual(
     lessons.map(lesson => [lesson.id, lesson.title, lesson.triggers.map(trigger => `${trigger.kind}:${trigger.pattern}`)]),
@@ -86,24 +93,49 @@ test('a when line belongs to the bullet it follows, or else to its section', () 
   const pools = lessons[0]?.text ?? '';
   assert.ok(pools.startsWith('- **Address pools exhausted.**'));
   assert.ok(pools.endsWith('Remove only empty ones you own.'));
-  assert.ok(!pools.includes('<!--'));
+  assert.ok(!pools.includes('<!--'), 'when and held-by lines are left out');
   const push = lessons[1]?.text ?? '';
   assert.ok(push.startsWith('### Push by refspec'));
+  assert.ok(push.includes('- a bullet inside the section belongs to it'));
   assert.ok(push.includes('# not a heading'));
   assert.ok(push.includes('inside a fence'), 'a when line in a fence is text, not a trigger');
-  assert.equal(lessons[1]?.triggers[0]?.line, 25);
+  assert.ok(push.endsWith('Run `git branch -u` after it.'));
+  assert.equal(lessons[1]?.triggers[0]?.line, 28);
+  assert.equal(lessons[2]?.text, '- **Prisma schema.** Run generate after editing.');
 });
 
-test('a doc without when lines, or one with a bare when line, has the expected lessons', () => {
-  assert.deepEqual(parseLessons('# Title\n\n- **A.** text\n', 'a.md'), []);
-  const bare = parseLessons('<!-- when: error "boom" -->\n', 'b.md');
-  assert.equal(bare[0]?.id, 'b.md#bmd');
-  assert.equal(bare[0]?.title, 'b.md');
-  const unled = parseLessons('## Section\n\n- plain bullet with no bold lead\n<!-- when: error "x" -->\n', 'c.md');
-  assert.equal(unled[0]?.title, 'c.md');
-  const long = parseLessons(`- **Long.** ${'word '.repeat(600)}\n<!-- when: error "x" -->\n`, 'd.md');
+test('a when line outside a lesson is a stray; the unit is the one the counter reads', () => {
+  assert.deepEqual(parseDoc('# Title\n\n- **A.** text\n', 'a.md'), { lessons: [], strays: [] });
+  assert.deepEqual(parseDoc('<!-- when: error "boom" -->\n', 'b.md'), { lessons: [], strays: ['b.md:1'] });
+  const column0 = parseDoc('## S\n\n- **A.** text\n<!-- when: error "x" -->\n', 'c.md');
+  assert.deepEqual(
+    column0.lessons.map(lesson => lesson.id),
+    ['c.md#a'],
+    'a column-0 marker line stays in its bullet',
+  );
+  const ended = parseDoc('## S\n\n- **A.** text\n\nA paragraph.\n<!-- when: error "x" -->\n', 'c.md');
+  assert.deepEqual(ended, { lessons: [], strays: ['c.md:6'] }, 'a column-0 paragraph ends the bullet');
+  const unled = parseLessons('## Section\n\n- plain bullet with no bold lead\n  <!-- when: error "x" -->\n', 'd.md');
+  assert.equal(unled[0]?.title, 'plain bullet with no bold lead');
+  const long = parseLessons(`- **Long.** ${'word '.repeat(600)}\n  <!-- when: error "x" -->\n`, 'e.md');
   assert.equal(long[0]?.text.length, 2000);
   assert.ok(long[0]?.text.endsWith('…'));
+  const deeper = parseDoc('### Three\n\ntext\n#### Four\n<!-- when: error "x" -->\n', 'f.md');
+  assert.deepEqual(deeper, { lessons: [], strays: ['f.md:5'] }, 'only ### starts a section; any heading ends one');
+  const ended3 = parseLessons('### Three\n\ntext\n<!-- when: error "x" -->\n## Next\n- **B.** b\n', 'g.md');
+  assert.equal(ended3[0]?.text, '### Three\n\ntext');
+});
+
+test('docProblems names strays, shared ids and broken patterns; README.md is not a lesson file', () => {
+  const dir = scratch();
+  writeFileSync(join(dir, 'a.md'), '<!-- when: error "stray" -->\n### S\n<!-- when: command "(bad" -->\n### S\n<!-- when: error "y" -->\n');
+  writeFileSync(join(dir, 'README.md'), '- **R.** r\n  <!-- when: error "readme" -->\n');
+  const problems = docProblems([dir, join(dir, 'missing')]);
+  assert.equal(problems.length, 3);
+  assert.match(problems[0] ?? '', /^a\.md:1: a when line outside a lesson/);
+  assert.equal(problems[1], 'a.md#s: two lessons with a when line share this id, so only the first can show');
+  assert.match(problems[2] ?? '', /^a\.md:3: "\(bad" is not a regular expression/);
+  assert.ok(!loadLessons([dir]).some(lesson => lesson.file === 'README.md'));
 });
 
 test('slug follows GitHub anchors', () => {
@@ -113,9 +145,9 @@ test('slug follows GitHub anchors', () => {
 
 test('lessons load from every folder that exists, .md files only', () => {
   const dir = scratch();
-  writeFileSync(join(dir, 'b.md'), '- **B.** b\n<!-- when: error "b" -->\n');
-  writeFileSync(join(dir, 'a.md'), '- **A.** a\n<!-- when: error "a" -->\n');
-  writeFileSync(join(dir, 'notes.txt'), '- **T.** t\n<!-- when: error "t" -->\n');
+  writeFileSync(join(dir, 'b.md'), '- **B.** b\n  <!-- when: error "b" -->\n');
+  writeFileSync(join(dir, 'a.md'), '- **A.** a\n  <!-- when: error "a" -->\n');
+  writeFileSync(join(dir, 'notes.txt'), '- **T.** t\n  <!-- when: error "t" -->\n');
   mkdirSync(join(dir, 'dir.md'));
   assert.deepEqual(
     loadLessons([join(dir, 'missing'), dir]).map(lesson => lesson.id),
@@ -147,7 +179,7 @@ test('each kind fires on its own subject; a broken pattern never fires', () => {
 
 test('trigger problems name empty and uncompilable patterns', () => {
   const lessons = parseLessons(
-    '- **A.** a\n<!-- when: command "(bad" -->\n<!-- when: error "" -->\n<!-- when: error "fine" -->\n<!-- when: path "ok/*" -->\n<!-- when: command "ok" -->\n',
+    '- **A.** a\n  <!-- when: command "(bad" -->\n  <!-- when: error "" -->\n  <!-- when: error "fine" -->\n  <!-- when: path "ok/*" -->\n  <!-- when: command "ok" -->\n',
     'x.md',
   );
   const problems = triggerProblems(lessons);
@@ -357,7 +389,7 @@ test('the package carries its lessons beside dist/: copied at build, listed in f
 
 test("veda's own lessons: every when line compiles, and the Docker pools lesson fires on its error alone", () => {
   const lessons = loadLessons([REPO_LESSONS]);
-  assert.deepEqual(triggerProblems(lessons), []);
+  assert.deepEqual(docProblems([REPO_LESSONS]), []);
   const error = 'Exit code 1\nnetwork demo_default  Error\nfailed to create network demo_default: Error response from daemon: all predefined address pools have been fully subnetted';
   const fired = lessons.filter(lesson => lesson.triggers.some(trigger => trigger.kind === 'error' && fires(trigger, error)));
   assert.deepEqual(

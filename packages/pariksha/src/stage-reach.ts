@@ -71,10 +71,10 @@ export interface PackageRunner {
 
 /** What the stage walk reads from the config. */
 export interface StageConfig {
-  /** The validation dispatcher, a shell `case` over target names. */
-  readonly dispatcher: string;
-  /** `<dispatcher file name> <target>`, capturing the target. */
-  readonly dispatchCall: RegExp;
+  /** The validation dispatcher, a shell `case` over target names; undefined when the stages call each check directly. */
+  readonly dispatcher: string | undefined;
+  /** `<dispatcher file name> <target>`, capturing the target; undefined without a dispatcher. */
+  readonly dispatchCall: RegExp | undefined;
   readonly packageRunner: PackageRunner | undefined;
   readonly hooks: readonly string[];
   readonly workflows: readonly string[];
@@ -275,7 +275,7 @@ const isHook = (path: string, hooks: readonly string[]): boolean => hooks.some((
 export const resolveStageReach = (root: string, config: StageConfig): StageReach => {
   const workspaces = workspaceDirs(root, config.workspaceFile);
   const turbo = config.turbo === undefined ? '' : read(root, config.turbo);
-  const dispatch = read(root, config.dispatcher);
+  const dispatch = config.dispatcher === undefined ? '' : read(root, config.dispatcher);
   const reach: StageReach = { files: new Set(), scripts: new Map(), workspaces };
   const seen = new Set<string>();
   const runner = config.packageRunner;
@@ -323,8 +323,10 @@ export const resolveStageReach = (root: string, config: StageConfig): StageReach
   const visitText = (raw: string, cwd: string): void => {
     const text = codeLines(raw);
     for (const path of pathsIn(text, cwd, config.runnable)) visitFile(path, cwd);
-    for (const match of text.matchAll(new RegExp(config.dispatchCall.source, 'g'))) {
-      visitText(dispatcherCase(dispatch, match[1] as string), ROOT_DIR);
+    if (config.dispatchCall !== undefined) {
+      for (const match of text.matchAll(new RegExp(config.dispatchCall.source, 'g'))) {
+        visitText(dispatcherCase(dispatch, match[1] as string), ROOT_DIR);
+      }
     }
     for (const match of text.matchAll(/\bpnpm\s+(?:run\s+)?([a-z][\w:.-]*)/g)) visitScript(cwd, match[1] as string);
     for (const match of text.matchAll(/\bturbo\s+run((?:\s+[^-\s|&;>][^\s|&;>]*)+)/g)) {
@@ -371,11 +373,11 @@ export const findUncalledValidators = (root: string, standards: readonly Standar
   // claim has nothing to resolve, and its tree need not be a workspace.
   if (claims.length === 0) return [];
   const reach = given ?? resolveStageReach(root, config);
-  const dispatch = read(root, config.dispatcher);
+  const dispatch = config.dispatcher === undefined ? '' : read(root, config.dispatcher);
   const problems: Problem[] = [];
 
   for (const standard of claims) {
-    const target = config.dispatchCall.exec(standard.enforcementConfig);
+    const target = config.dispatchCall?.exec(standard.enforcementConfig) ?? null;
     // Once each: the script and the dispatcher target usually name one file.
     const named = [
       ...new Set([

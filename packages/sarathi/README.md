@@ -218,7 +218,7 @@ search, a label, a project board) stands only beside links marked
 before any session starts.
 
 **When the account is at its usage limit**, a publish prints `NOT PUBLISHED`
-and the page's `file://` URL and exits 0; a read, comments or reply exits 1
+and a local file URL of the page to open in the browser, and exits 0; a read, comments or reply exits 1
 and names the last saved copy, if any.
 
 The session runs under `CLAUDE_CODE_ENTRYPOINT=claude-desktop` (or `remote`,

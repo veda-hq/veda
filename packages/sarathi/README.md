@@ -87,7 +87,7 @@ folder, which holds handlers any TypeScript repository can list:
 | `code-quality-guard.sh` | PostToolUse, `Edit\|Write` | Refuses `@ts-ignore`, `@ts-nocheck`, `eslint-disable`, `any` and skipped tests in a `.ts`/`.tsx` edit. `.claude/`, `.agent/` and `docs/` are exempt. |
 | `arch-guard.sh` | PostToolUse, `Edit\|Write` | Runs the repository's `.dependency-cruiser.js` on a `.ts`/`.tsx` edit that touches imports; refuses what it refuses, and refuses when it cannot run. `scripts/` is exempt too. |
 | `session-dedupe-guard.sh` | PreToolUse, session starts | Refuses starting a session unless the conversation called `list_sessions` successfully in the last 15 minutes. |
-| `lessons.sh` | PreToolUse `Bash\|Edit\|Write`; PostToolUseFailure | Shows a lesson whose `when` line matches the call ("Lessons at their moment"). Never blocks. |
+| `lessons.sh` | PreToolUse `Bash\|Edit\|Write\|Agent\|Task\|mcp__ccd_session__start_session`; PostToolUseFailure | Shows a lesson whose `when` line matches the call ("Lessons at their moment"). Never blocks. |
 
 They act on the session's checkout, the git toplevel of the event's `cwd`:
 the desktop app runs a worktree session's hooks with `$CLAUDE_PROJECT_DIR`
@@ -113,6 +113,14 @@ lesson's end, so the text and its trigger stay in one place:
 | `error` | plain text, case and runs of whitespace ignored | a failed tool call's `error` (PostToolUseFailure: for Bash, `Exit code N` and the output) |
 | `command` | a JavaScript regular expression | a Bash call's command, before it runs |
 | `path` | a glob: `*` and `?` within a segment, `**` across segments | an Edit or Write call's file, relative to the session's checkout, before it runs |
+| `tool` | a regular expression on the whole tool name; optional `input "<regex>"` | a call to that tool, before it runs; `input` is tested against the call's input as compact JSON |
+| `content` | a regular expression; required `path "<glob>"` | the new text of an Edit or Write (`new_string`, `content`, or every `edits[].new_string`) to a file the glob matches, before it runs |
+
+A pattern cannot hold `"`: write `\x22` in a regular expression, as in
+`<!-- when: tool "Agent|Task" input "\x22subagent_type\x22:\x22worker\x22" -->`
+or `<!-- when: content "DROP DATABASE" path "**/*.test.*" -->`. A line whose
+second clause is missing, or names the wrong qualifier for its kind, never
+fires, and `docProblems` reports it.
 
 A lesson is the unit a "lessons nothing holds" counter counts (those with
 neither a `when` nor a `held by` line), in every `.md` file but `README.md`: a `### ` section, bullets inside it
@@ -124,8 +132,9 @@ sharing an id, and patterns that cannot fire. Fenced code is never read for
 them. The lesson's id is its file and the slug of its heading or bold lead.
 `<!-- held by: ... -->` lines, which name the check that holds a lesson, are
 left out of the text shown. A lessons folder's `when-samples.tsv` gives each
-`when` line one sample event (`lesson`, `kind`, `pattern`, `sample`: the error
-text, command or path); veda's tests check that every line has one, and that
+`when` line one sample event (`lesson`, `kind`, `pattern`, `scope`: the second
+clause or empty, `sample`: the error text, command or path; for `tool`, the name
+and its input as JSON; for `content`, the path and the text); veda's tests check that every line has one, and that
 each sample fires its own line and no other.
 
 `lessons.sh` reads the package's own `lessons/` (veda's
@@ -140,7 +149,7 @@ matches nothing reads the docs and writes nothing.
 ```json
 {
   "hooks": {
-    "PreToolUse": [{ "matcher": "Bash|Edit|Write", "command": "bash \"$SARATHI_HOOKS\"/lessons.sh ./docs/lessons", "timeout": 10 }],
+    "PreToolUse": [{ "matcher": "Bash|Edit|Write|Agent|Task|mcp__ccd_session__start_session", "command": "bash \"$SARATHI_HOOKS\"/lessons.sh ./docs/lessons", "timeout": 10 }],
     "PostToolUseFailure": [{ "command": "bash \"$SARATHI_HOOKS\"/lessons.sh ./docs/lessons", "timeout": 10 }]
   }
 }

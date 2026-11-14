@@ -12,12 +12,12 @@ undoing another.
   however narrow the rule, and the `update-config` skill hits the same block. Say so at once and
   hand over the remedy: the prompt's Always allow button, the Bypass permissions mode, or a
   script the user runs themselves when several rules are needed.
-  <!-- when: path ".claude/settings.local.json" -->
+  <!-- when: content "\x22(permissions|allow|deny|ask|defaultMode)\x22" path ".claude/settings*.json" -->
 - **Hook wiring edits read as self-modification.** The classifier refuses edits to
   `.claude/settings.json` hook wiring, even when an approved task removes those hooks. Ask the
   user up front to remove the entries or allow the edit, and keep the hook files until then:
   deleting a still-registered hook breaks every session.
-  <!-- when: path ".claude/settings.json" -->
+  <!-- when: content "\x22(hooks|matcher|PreToolUse|PostToolUse|PostToolUseFailure|Stop|SessionStart|UserPromptSubmit)\x22" path ".claude/settings.json" -->
 - **Hook-instructed PR tool calls can be denied.** The classifier can deny calls a hook asks for
   to the desktop app's PR tools (`bind_pr`, `set_monitor`) as dangerous, because their
   descriptions say to call them only when the user asks. Have the user add
@@ -50,6 +50,7 @@ undoing another.
   hide or shorten plugin skills (the plugin locks them), while bundled and synced skills obey
   it; re-check after a Claude Code upgrade. When measuring the skill listing headlessly, pass
   `--strict-mcp-config` so MCP connection timing does not skew it.
+  <!-- when: content "skillOverrides" path ".claude/settings*.json" -->
 - **Function-hook mods.** A plugin tool result must be a string, op hooks answer `{ value }`,
   matchers must be literals, and a timer's promise chain needs its own `.catch`. Plugin tools
   are deferred (load them with ToolSearch first). Dev mods hot reload only at a turn end, so a
@@ -81,6 +82,7 @@ undoing another.
   to the Explore subagent type: it starts with roughly half the context of general-purpose,
   because it loads neither CLAUDE.md nor memory. Put any repository rule it needs in the prompt,
   and keep general-purpose for subagents that must edit, write or publish.
+  <!-- when: tool "Agent|Task" input "^(?!.*\x22subagent_type\x22)|\x22subagent_type\x22:\x22general-purpose\x22" -->
 - **Standing context.** A bare tool name in `permissions.deny` (or `--disallowedTools`) removes
   that tool's definition from every request's standing context, the cheapest prefix cut;
   desktop-app MCP tools have no per-project switch. Auto-memory `MEMORY.md` loads only its first
@@ -160,6 +162,7 @@ undoing another.
   return without any cloud session ever being created. Check within a few minutes that the run
   exists in the web app's session list, and if not, fall back to `claude --cloud` in a terminal
   tab at once.
+  <!-- when: tool "mcp__ccd_session__start_session" input "\x22target\x22:\x22cloud\x22" -->
 - **`claude -p --cloud` only sends.** `claude -p "<msg>" --cloud <session-id>` only queues a
   message to a cloud session and prints "Sent to cloud session."; the reply never comes back to
   the laptop. End such a prompt with one block the user can copy back, tell them what to paste,

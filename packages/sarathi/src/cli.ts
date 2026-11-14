@@ -6,12 +6,16 @@
  * `sarathi check`: validates the hook list, and with `--settings` that the
  * settings run sarathi for every event it lists, with a matcher and timeout
  * that let every handler fire.
+ *
+ * `sarathi page`: publishes, reads and answers claude.ai pages through a
+ * one-off `claude -p` session (`page/page.ts`).
  */
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { ConfigError, compileMatcher, entriesFor, forbiddenSet, loadConfig, longestTimeout, settingsMatcher, type Config } from './config.ts';
 import { merge } from './merge.ts';
+import { main as page } from './page/page.ts';
 import { runAll, type Outcome } from './run.ts';
 
 export interface Io {
@@ -29,6 +33,10 @@ export const VERSION = '0.6.5';
 
 const USAGE = `usage: sarathi hook <Event> [--config <file>]
        sarathi check [--config <file>] [--settings <file>]
+       sarathi page <page.html> [--url <artifact>] [--title T] [--description D] [--icon I]
+       sarathi page --read <artifact> [--out <page.html>]
+       sarathi page --comments <artifact>
+       sarathi page --reply <artifact> --thread <id> --text-file <file> [--resolve]
        sarathi --version
 `;
 
@@ -262,6 +270,8 @@ export async function main(io: Io): Promise<number> {
     io.out(`${VERSION}\n`);
     return 0;
   }
+  // Before parseOptions: the page command has flags of its own.
+  if (io.argv[0] === 'page') return page(io.argv.slice(1), io);
   const options = parseOptions(io.argv);
   if (typeof options === 'string') {
     io.err(`sarathi: ${options}\n${USAGE}`);

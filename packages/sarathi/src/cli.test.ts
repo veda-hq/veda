@@ -277,6 +277,16 @@ describe('options', () => {
     assert.match((await run(['check', '--config'])).err, /--config needs a file/);
     assert.match((await run(['check', '--settings', ''])).err, /--settings needs a file/);
   });
+
+  it('hands page its own flags, which hook and check do not know', async () => {
+    assert.deepEqual(await run(['page', '--comments']), { code: 1, out: '', err: '--comments needs a value\n' });
+    assert.deepEqual(await run(['page', '--read', 'https://example.com/x']), {
+      code: 1,
+      out: '',
+      err: '--read needs a claude.ai artifact URL, got https://example.com/x\n',
+    });
+    assert.match((await run([])).err, /sarathi page --read <artifact>/);
+  });
 });
 
 describe('bin', () => {

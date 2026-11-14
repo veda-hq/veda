@@ -11,11 +11,10 @@ and PR state, and the GitHub API.
   explicit-path `git add` stops you sweeping theirs, not this. When someone else may commit in
   the same worktree, stage and commit in one command, never leave files staged across a long
   verification, and judge idleness by file mtimes rather than a session-list status.
-- **Shared checkouts need separate worktrees.** When several sessions share a checkout, do all
-  branch work in a separate worktree and never switch HEAD or stash in the shared tree. A fresh
-  worktree has no `node_modules`. If you symlink them in, `.gitignore`'s `node_modules/` matches
-  directories only, so `git add -A` stages the symlinks: add them to `.git/info/exclude` or run a
-  real `pnpm install` instead.
+- **A fresh worktree has no `node_modules`.** If you symlink them in, `.gitignore`'s
+  `node_modules/` matches directories only, so `git add -A` stages the symlinks: add them to
+  `.git/info/exclude` or run a real `pnpm install` instead.
+  <!-- held by: kavach worktree guard (refuses switching HEAD or stashing outside the session's own worktree) -->
 - **Handing a branch to another worktree.** Run `git -C <other worktree> switch --detach` there:
   it frees the branch name without touching refs (always pass `-C`, or the wrong checkout gets
   detached). Linked worktrees share one object store, so you can also branch at the peer's head
@@ -90,10 +89,11 @@ and PR state, and the GitHub API.
 
 ## Hooks and shell scripts
 
-- **`pipefail` with `grep -q` fails open.** In hook scripts under `set -euo pipefail`,
-  `printf "$LIST" | grep -q` can misreport: grep exits at its first match, the next write gets
-  EPIPE, and pipefail returns the writer's failure, intermittently for short lists and always
-  past the pipe buffer. Write `grep -q ... <<<"$LIST"` instead of piping from echo or printf.
+- **`pipefail` with `grep -q` fails open.** Under `set -euo pipefail`, `printf "$LIST" | grep -q`
+  can misreport: grep exits at its first match, the next write gets EPIPE, and pipefail returns
+  the writer's failure. Write `grep -q ... <<<"$LIST"`; the check covers only its
+  `pipefailScope` (default `.husky/`), so scripts elsewhere are yours to watch.
+  <!-- held by: pariksha masked-exit-codes (rule 3) -->
 - **`pre-merge-commit` has no MERGE_HEAD.** During a clean `git merge`, the `pre-merge-commit`
   hook runs before MERGE_HEAD exists (only a stopped merge writes it); the merged heads are in
   `GITHEAD_<sha>` env vars and `GIT_REFLOG_ACTION`. Do not trust those by name: accept a

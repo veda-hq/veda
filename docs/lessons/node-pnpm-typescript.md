@@ -29,8 +29,8 @@ library behaviour that surprised a working change.
   and KILL the group).
 - **Release age and audit fixes.** When `pnpm audit` blocks on a new advisory under a
   `minimumReleaseAge` policy, pin the newest patched version already older than the release age
-  (check `npm view <pkg> time`) and raise the override floor. If `pnpm install` silently adds a
-  `minimumReleaseAgeExclude` entry for a too-new version, revert it and pick an older patch.
+  (check `npm view <pkg> time`) and raise the override floor (pariksha `pnpm-settings` already
+  fails an unexplained `minimumReleaseAgeExclude` entry).
   The one standing entry is veda's own scope, `@veda-hq/*` (Alok, 2026-11-14): a new release
   installs at once, and `pnpm provenance` (in `pnpm check`) checks instead that veda's release
   workflow built and signed each `@veda-hq` package the lockfile resolves, from its own tag.

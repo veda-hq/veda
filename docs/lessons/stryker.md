@@ -78,6 +78,7 @@ without suppressing them, and the traps of a gate scoped to a diff.
   a `stryNS_...()` prelude, so any check that reads source text at test time sees mutated code
   and can misjudge it. In tests of a rejection rule, assert the rejection reason, not only the
   line number; line-only assertions let mutants survive.
+  <!-- when: error "stryNS_" -->
 
 ## Killing survivors without suppressing them
 

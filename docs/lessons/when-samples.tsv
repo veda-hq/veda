@@ -1,0 +1,40 @@
+lesson	kind	pattern	sample
+claude-code.md#a-429-can-read-as-success	command	claude -p .*--output-format[ =](stream-)?json	claude -p "ping" --output-format json --max-turns 1
+claude-code.md#a-session-cannot-grant-itself-permissions	path	.claude/settings.local.json	.claude/settings.local.json
+claude-code.md#capturing-a-mod-for-evidence	command	\bscreencapture\b	screencapture -x -o -l 4242 .tmp/band.png
+claude-code.md#claude--p---cloud-only-sends	command	claude -p .*--cloud\b	claude -p "rebase on main" --cloud 01HXYZ
+claude-code.md#dev-mod-hot-reload-needs-the-skill	command	\bln -s.*\.claude/dev-mods/	ln -s "$PWD/mods/band" ~/.claude/dev-mods/abc123/band
+claude-code.md#hook-wiring-edits-read-as-self-modification	path	.claude/settings.json	.claude/settings.json
+claude-code.md#no-do-not-merge-label-holds	command	gh pr edit .*--(add|remove)-label[ =]do-not-merge	gh pr edit 3640 --add-label do-not-merge
+claude-code.md#sendmessage-from-an-untrusted-device	error	elevated_session_untrusted_device	{"error":{"type":"elevated_session_untrusted_device","message":"This device is not trusted"}}
+claude-code.md#tail--f-grep--m1-lingers	command	tail -[fF] .*\| *grep .*-m ?1	tail -F .tmp/push.log | grep -m1 "pre-push done"
+git-github.md#a-refspec-push-leaves-no-upstream	command	git push \S+ \S+:refs/heads/	git push origin HEAD:refs/heads/claude/x
+git-github.md#eagain-is-a-container-limit	error	Resource temporarily unavailable	Exit code 128 fatal: cannot fork() for rev-list: Resource temporarily unavailable
+git-github.md#eagain-is-a-container-limit	error	spawn git EAGAIN	Error: spawn git EAGAIN
+git-github.md#every-worktree-fails-with-must-be-run-in-a-work-tree	error	this operation must be run in a work tree	Exit code 128 fatal: this operation must be run in a work tree
+git-github.md#handing-a-branch-to-another-worktree	error	already checked out at	Exit code 128 fatal: 'claude/x' is already checked out at '/repo/wt'
+git-github.md#handing-a-branch-to-another-worktree	error	is already used by worktree at	Exit code 128 fatal: 'claude/x' is already used by worktree at '/repo/.claude/worktrees/x'
+git-github.md#mutations-during-an-outage-may-have-landed	error	HTTP 502	Exit code 1 gh: HTTP 502: Bad Gateway (https://api.github.com/graphql)
+git-github.md#mutations-during-an-outage-may-have-landed	error	HTTP 504	Exit code 1 gh: HTTP 504: Gateway Timeout (https://api.github.com/graphql)
+git-github.md#squash-merges-defeat-merged-branch-checks	command	\bgit (branch -[dD]|cherry(?![-\w]))	git branch -d claude/old-slice
+github-actions.md#a-re-run-replays-the-original-event	command	\bgh run rerun\b	gh run rerun 1234567 --failed
+github-actions.md#billing-lock-every-job-fails-in-seconds	error	your spending limit needs to be increased	Exit code 1 X The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings
+github-actions.md#continue-on-error-reports-success	command	continue-on-error	grep -n continue-on-error .github/workflows/ci.yml
+github-actions.md#review-thread-checks-go-stale	path	.github/workflows/*.yml	.github/workflows/review-threads.yml
+node-pnpm-typescript.md#a-multiline-pem-in-a-env-file	error	error:1E08010C:DECODER routines::unsupported	Error: error:1E08010C:DECODER routines::unsupported at createPrivateKey
+node-pnpm-typescript.md#fresh-clones-have-no-nodemodules	error	Cannot find package 'tsx'	Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'tsx' imported from /repo/
+node-pnpm-typescript.md#one-new-bulk-suppressed-violation-reports-them-all	error	--prune-suppressions	Exit code 2 There are suppressions left that do not occur anymore. Consider re-running the command with `--prune-suppressions`.
+review-bots.md#a-bot-can-revert-your-body-edit	command	gh pr edit .*--body	gh pr edit 3640 --body-file .tmp/body.md
+review-bots.md#a-green-pr-that-never-queues	command	@[Mm]ergifyio (refresh|queue)\b	gh pr comment 3640 --body "@mergifyio refresh"
+review-bots.md#behind-means-unqueued	command	--json[ =]\S*mergeStateStatus	gh pr view 3640 --json mergeStateStatus,reviewDecision
+review-bots.md#checks-timed-out-needs-a-requeue-command	error	checks timed out	Exit code 1 Queue: Embarked in merge queue  fail  The pull request has been removed from the queue: checks timed out
+review-bots.md#re-triggering-a-review	command	gh pr comment .*@cubic	gh pr comment 3640 --body "@cubic review"
+review-bots.md#the-review-allowance	error	line limit reached	Exit code 8 cubic · AI code reviewer  neutral  0  https://cubic.dev  AI review line limit reached
+stryker.md#source-text-inside-the-sandbox-is-instrumented	error	stryNS_	AssertionError: expected 'function stryNS_9fa48() {' to match /^import/
+testing.md#a-server-freeze-not-a-lock-leak	error	Can't reach database server	PrismaClientInitializationError: Can't reach database server at localhost:5432
+testing.md#address-pools-exhausted-by-leaked-networks	error	all predefined address pools have been fully subnetted	Exit code 1 network demo_default  Error failed to create network demo_default: Error response from daemon: all predefined address pools have been fully subnetted
+testing.md#dsstore-sweep	error	ENOTDIR: not a directory, scandir	Error: ENOTDIR: not a directory, scandir '/repo/apps/.DS_Store'
+testing.md#loopback-inside-the-container-trusts-any-password	command	^(?=.*\bdocker (compose )?exec\b)(?=.*\bpsql\b)(?=.*(PGPASSWORD=|postgres(ql)?://[^:/@\s]+:[^@\s]+@))	docker exec -e PGPASSWORD=wrong pg psql -h 127.0.0.1 -U postgres -c "select 1"
+testing.md#pg-boss-brings-its-own-pool	error	too many clients already	error: sorry, too many clients already (FATAL 53300)
+testing.md#the-vm-disk-is-not-the-host-disk	error	could not write block	LOG: could not write block 4096 in file "base/16384/2619": wrote only 4096 of 8192 bytes
+testing.md#the-vm-disk-is-not-the-host-disk	error	no space left on device	ERROR: failed to solve: write /var/lib/docker/tmp/x: no space left on device

@@ -173,6 +173,7 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   `git ls-tree -d -r --name-only HEAD` directory from a script that records the list, run the
   suites that list directories, then remove exactly the recorded plants before any push.
   `.DS_Store` is usually gitignored, so `git status` stays clean either way.
+  <!-- when: error "ENOTDIR: not a directory, scandir" -->
 - **Suites that write into the checkout.** When some suites write throwaway files into the real
   checkout mid-run, a test that checks the live tree's git status against a second read races
   them and flakes both ways. Take the oracle from the same git read the code under test made
@@ -196,12 +197,14 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   overlapping runs on one shared Postgres hit `FATAL 53300` "sorry, too many clients already".
   Cap pg-boss's pool in tests and size per-worker pools against `max_connections`. Grep the log
   for "too many clients" before suspecting the branch, and gate a retry on a quiet machine.
+  <!-- when: error "too many clients already" -->
 - **A server freeze, not a lock leak.** With Prisma, a train of hook timeouts followed by new
   connections failing at about 5 s with "Can't reach database server" across many test files at
   once is a database server or host freeze (`docker pause` reproduces it), not a lock leak or
   code bug; connection exhaustion instead fails in milliseconds with "Too many database
   connections". Fix it with push or test concurrency, not per-file timeouts, and check any
   failure tally against Vitest's own "Tests N failed" line.
+  <!-- when: error "Can't reach database server" -->
 - **`DROP DATABASE` forces a checkpoint.** In PostgreSQL 16, `DROP DATABASE` forces a
   cluster-wide immediate checkpoint, so its time depends on fsync under disk contention from
   other databases, not on the database dropped. A suite dropping its own database in a 30 s
@@ -213,6 +216,7 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   container over loopback accepts any password while real host connections are checked. Probe
   with `psql -h "$(hostname)"`, and confirm the probe rejects a deliberately wrong password before
   trusting it.
+  <!-- when: command "^(?=.*\bdocker (compose )?exec\b)(?=.*\bpsql\b)(?=.*(PGPASSWORD=|postgres(ql)?://[^:/@\s]+:[^@\s]+@))" -->
 - **`pg_isready` over the socket passes mid-init.** A Postgres container healthcheck of
   `pg_isready` over the Unix socket passes against the image entrypoint's first-boot temporary
   server (`listen_addresses` empty), so `compose up --wait` returns mid-init and the next `psql`
@@ -239,6 +243,8 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   `docker system df` (and `nsenter -t 1 -m` into the VM for real free space). Reclaim with
   `docker builder prune -f`, then `-af` if reclaimable is 0B, then unused images. Never prune
   volumes, which hold other checkouts' databases.
+  <!-- when: error "no space left on device" -->
+  <!-- when: error "could not write block" -->
 - **A socket that accepts and never answers.** A Docker daemon or Postgres behind a VM port
   forward (for example OrbStack with its VM asleep through a DarkWake, or a paused container)
   can accept TCP connects and never answer, so a bare TCP-connect readiness check passes while

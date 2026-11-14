@@ -387,15 +387,79 @@ test('the package carries its lessons beside dist/: copied at build, listed in f
   assert.match(manifest.scripts.build, /cp -R \.\.\/\.\.\/docs\/lessons lessons$/);
 });
 
-test("veda's own lessons: every when line compiles, and the Docker pools lesson fires on its error alone", () => {
-  const lessons = loadLessons([REPO_LESSONS]);
+/** One row of `docs/lessons/when-samples.tsv`: a when line and an event it is written for. */
+interface Sample {
+  lesson: string;
+  kind: Trigger['kind'];
+  pattern: string;
+  sample: string;
+}
+
+function samplesIn(dir: string): Sample[] {
+  const [header, ...rows] = readFileSync(join(dir, 'when-samples.tsv'), 'utf8').trimEnd().split('\n');
+  assert.equal(header, 'lesson\tkind\tpattern\tsample');
+  return rows.map(row => {
+    const [lesson = '', kind = '', pattern = '', sample = '', ...rest] = row.split('\t');
+    assert.deepEqual(rest, [], `${lesson}: a sample row has four columns`);
+    assert.ok(kind === 'error' || kind === 'command' || kind === 'path', `${lesson}: kind ${kind}`);
+    return { lesson, kind, pattern, sample };
+  });
+}
+
+/** The event a sample stands for, in the checkout `root`. */
+function sampleEvent(sample: Sample, root: string, session: string): Record<string, unknown> {
+  const base = { session_id: session, cwd: root };
+  if (sample.kind === 'error') {
+    return { ...base, hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command: 'true' }, error: sample.sample };
+  }
+  if (sample.kind === 'command') return { ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: sample.sample } };
+  return { ...base, hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: join(root, sample.sample) } };
+}
+
+test("veda's own lessons: every when line has a sample, and each sample fires its line and no other", () => {
   assert.deepEqual(docProblems([REPO_LESSONS]), []);
-  const error = 'Exit code 1\nnetwork demo_default  Error\nfailed to create network demo_default: Error response from daemon: all predefined address pools have been fully subnetted';
-  const fired = lessons.filter(lesson => lesson.triggers.some(trigger => trigger.kind === 'error' && fires(trigger, error)));
-  assert.deepEqual(
-    fired.map(lesson => lesson.id),
-    ['testing.md#address-pools-exhausted-by-leaked-networks'],
+  const lines = loadLessons([REPO_LESSONS]).flatMap(lesson =>
+    lesson.triggers.map(trigger => ({ key: `${lesson.id}\t${trigger.kind}\t${trigger.pattern}`, trigger })),
   );
+  const samples = samplesIn(REPO_LESSONS);
+  const keys = samples.map(sample => `${sample.lesson}\t${sample.kind}\t${sample.pattern}`);
+  assert.deepEqual([...keys].sort(), lines.map(line => line.key).sort(), 'one sample per when line');
+  const root = scratch();
+  mkdirSync(join(root, '.git'));
+  samples.forEach((sample, index) => {
+    const key = keys[index];
+    const fired = lines.filter(line => line.trigger.kind === sample.kind && fires(line.trigger, sample.sample)).map(line => line.key);
+    assert.deepEqual(fired, [key], `${key}: fires its line alone`);
+    const out = respond(JSON.stringify(sampleEvent(sample, root, `sample-${index}`)), {
+      env: { SARATHI_LESSONS_DIR: join(root, 'log') },
+      now: () => new Date(0),
+      dirs: [REPO_LESSONS],
+    });
+    const context = (JSON.parse(out) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+    assert.equal(context.split('Lesson for this moment').length, 2, `${key}: the event shows one lesson`);
+    assert.ok(context.startsWith(`Lesson for this moment (${sample.lesson.split('#')[0]}, `), `${key}: from its file`);
+  });
+});
+
+test("veda's own lessons: everyday calls fire no when line", () => {
+  const triggers = loadLessons([REPO_LESSONS]).flatMap(lesson => lesson.triggers);
+  const everyday: [Trigger['kind'], string][] = [
+    ['command', 'git status -sb'],
+    ['command', 'git commit -F .tmp/msg.txt'],
+    ['command', 'git cherry-pick 1a2b3c4'],
+    ['command', 'git push -u origin HEAD'],
+    ['command', 'pnpm test'],
+    ['command', 'gh pr view 12 --json state,title'],
+    ['path', 'src/index.ts'],
+    ['path', 'scripts/release.mjs'],
+    ['path', 'docs/lessons/testing.md'],
+    ['path', '.claude/sarathi.json'],
+    ['error', 'Exit code 1\nAssertionError: expected 2 to equal 3'],
+  ];
+  for (const [kind, subject] of everyday) {
+    const fired = triggers.filter(trigger => trigger.kind === kind && fires(trigger, subject)).map(trigger => trigger.pattern);
+    assert.deepEqual(fired, [], `${kind} ${subject}`);
+  }
 });
 
 test('the hook runs as a script: lesson folders as arguments, the answer on stdout', () => {

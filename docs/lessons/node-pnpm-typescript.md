@@ -10,6 +10,7 @@ library behaviour that surprised a working change.
   has no `node_modules`, so the first `node --import tsx` fails with
   `ERR_MODULE_NOT_FOUND: Cannot find package 'tsx'`. Run `pnpm install --frozen-lockfile` from
   the clone root before any self-test, typecheck, lint or test command.
+  <!-- when: error "Cannot find package 'tsx'" -->
 - **The global pnpm must match `packageManager`.** A global pnpm that differs from the
   repository's `packageManager` pin hands off to the pinned version on every call, costing
   seconds each time and making hooks look load-bound. `pnpm -v` inside the repository answers
@@ -78,6 +79,7 @@ library behaviour that surprised a working change.
   flagged lines against `origin/main..HEAD` and fix only yours. When your file has fewer
   violations than counted, run `eslint --prune-suppressions <files>` from the package directory
   and re-run Prettier on the JSON, and keep scratch files out of linted package trees.
+  <!-- when: error "--prune-suppressions" -->
 - **Prettier reads two `$` as math.** Prettier's markdown parser pairs two `$` signs in one
   paragraph as inline math and reprints the paragraph with code-span spaces stripped and list
   continuations de-indented, while `--check` stays clean. Keep at most one `$` per paragraph or
@@ -100,6 +102,7 @@ library behaviour that surprised a working change.
   `error:1E08010C:DECODER routines::unsupported` and code may silently fall back to another
   token. Store the PEM on one line, double-quoted, with literal `\n` escapes, and expand them at
   the read point.
+  <!-- when: error "error:1E08010C:DECODER routines::unsupported" -->
 - **zod 4.6 counts code points.** zod 4.6 measures string `min`, `max` and `length` in Unicode
   code points, not UTF-16 units, with no switch back, so a bump silently loosens limits for
   astral characters (2,049 emoji pass `max(4096)`). Where a contract counts UTF-16 units, add

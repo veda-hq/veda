@@ -1,0 +1,13 @@
+{
+  "owner": "AlokBansal8",
+  "agent": "AthyaBot",
+  "features": [
+    "identity",
+    "pr-identity",
+    "board",
+    "work-rules",
+    "figma",
+    "decisions",
+    "review"
+  ]
+}

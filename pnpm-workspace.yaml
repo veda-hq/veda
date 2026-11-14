@@ -7,6 +7,7 @@ minimumReleaseAge: 1440
 # veda's own packages are standing exceptions (Alok, 2026-11-14): nobody else
 # watches them, so the day buys nothing, and it holds back every guard fix.
 # What checks them instead is `pnpm provenance` (scripts/own-provenance.mjs,
-# part of `pnpm check`): veda's release workflow built each one from its tag.
+# part of `pnpm check`): its own repository's release workflow (veda's, or
+# niyam's for @veda-hq/niyam) built each one from its tag.
 minimumReleaseAgeExclude:
   - '@veda-hq/*'

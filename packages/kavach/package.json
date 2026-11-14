@@ -1,6 +1,6 @@
 {
   "name": "@veda-hq/kavach",
-  "version": "0.6.0",
+  "version": "0.6.4",
   "description": "Guards for coding agents: refuses writes outside the agent's worktree, git-hook bypasses and history-destroying pushes, and runs a project's own rule checks on each tool call. Read-only commands pass.",
   "keywords": ["coding agents", "claude code", "hooks", "guard", "worktree", "git safety"],
   "license": "MIT",

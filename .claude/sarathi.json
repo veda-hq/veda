@@ -6,12 +6,23 @@
   "hooks": {
     "PreToolUse": [
       { "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit", "guard": "worktree" },
-      { "matcher": "Bash", "guard": "command" }
+      { "matcher": "Bash", "guard": "command" },
+      {
+        "matcher": "Bash",
+        "command": "input=$(cat); cmd=$(printf '%s' \"$input\" | sed -nE 's/.*\"command\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\\1/p'); printf '%s' \"$cmd\" | grep -Eq '(^|[^[:alnum:]_-])(gh|git)([^[:alnum:]_-]|$)' || exit 0; cli=\"$HOME/.config/niyam/bin/niyam\"; [ -x \"$cli\" ] || cli=niyam; printf '%s' \"$input\" | \"$cli\" guard && exit 0; [ $? -eq 2 ] && exit 2; echo \"niyam: refused, because the niyam CLI did not run here to check this command. Do not work around it; tell the owner.\" >&2; exit 2",
+        "failClosed": true
+      }
     ],
     "PostToolUse": [
       { "matcher": "Bash|mcp__ccd_pr__set_monitor|mcp__ccd_pr__get_status", "command": "bash \"$SARATHI_HOOKS\"/autofix-watch.sh", "timeout": 10 }
     ],
     "PostToolUseFailure": [{ "matcher": "mcp__ccd_pr__set_monitor", "command": "bash \"$SARATHI_HOOKS\"/autofix-watch.sh", "timeout": 10 }],
-    "Stop": [{ "command": "bash \"$SARATHI_HOOKS\"/autofix-watch.sh", "timeout": 10 }]
+    "Stop": [{ "command": "bash \"$SARATHI_HOOKS\"/autofix-watch.sh", "timeout": 10 }],
+    "SessionStart": [
+      {
+        "command": "cli=\"$HOME/.config/niyam/bin/niyam\"; [ -x \"$cli\" ] || cli=niyam; if [ \"${CLAUDE_CODE_REMOTE:-}\" = true ] && ! command -v \"$cli\" >/dev/null 2>&1; then setup=\"${CLAUDE_PROJECT_DIR:-.}/.github/niyam/cloud-setup.sh\"; if [ ! -f \"$setup\" ]; then printf '%s\\n' \"niyam: this cloud session has no niyam, and the clone has no .github/niyam/cloud-setup.sh to install it from; run niyam onboard, which writes it.\"; elif failed=$(bash \"$setup\" </dev/null 2>&1 >/dev/null); then printf '%s\\n' \"niyam: this cloud session had no niyam, so the SessionStart hook installed it from .github/niyam/cloud-setup.sh.\"; else printf '%s\\n' \"niyam: this cloud session has no niyam, and installing it from .github/niyam/cloud-setup.sh as $(id -un) (uid $(id -u)) failed: $(printf '%s\\n' \"$failed\" | tail -n 1)\"; fi; fi; if said=$(\"$cli\" session-start 2>&1); then printf '%s\\n' \"$said\"; else printf '%s\\n' \"niyam: STOP. niyam session-start did not run here ($said), so this session cannot be given the agent identity and GitHub is locked out of it. Do not push, fetch, or run gh in this session; tell the owner.\"; fi",
+        "timeout": 600
+      }
+    ]
   }
 }

@@ -33,8 +33,9 @@ library behaviour that surprised a working change.
   (check `npm view <pkg> time`) and raise the override floor (pariksha `pnpm-settings` already
   fails an unexplained `minimumReleaseAgeExclude` entry).
   The one standing entry is veda's own scope, `@veda-hq/*` (Alok, 2026-11-14): a new release
-  installs at once, and `pnpm provenance` (in `pnpm check`) checks instead that veda's release
-  workflow built and signed each `@veda-hq` package the lockfile resolves, from its own tag.
+  installs at once, and `pnpm provenance` (in `pnpm check`) checks instead that its own repository's
+  release workflow (veda's, or niyam's for `@veda-hq/niyam`) built and signed each `@veda-hq`
+  package the lockfile resolves, from its own tag.
   When Sigstore rotates a key, it fails until `scripts/sigstore-trusted-root.json` is refreshed.
   Check whether the default branch already carries the bump before making it.
 - **A lost patch looks like a code bug.** When pnpm warns that `node_modules` are out of sync

@@ -4,8 +4,9 @@
 // pnpm-workspace.yaml exempts @veda-hq/* from minimumReleaseAge (Alok,
 // 2026-11-14): the day's wait is a bet that someone else catches a hijacked
 // release, and nobody else watches these. Instead, every @veda-hq package the
-// lockfile resolves must carry npm provenance saying veda-hq/veda's release
-// workflow built it from the tag of its own version, for the very tarball the
+// lockfile resolves must carry npm provenance saying its own repository's
+// release workflow (veda-hq/veda's, or the one OTHER_REPOSITORIES names) built
+// it from the tag of its own version, for the very tarball the
 // lockfile installs. A release published any other way (a stolen token, a fork,
 // another workflow) fails here before anything runs it.
 //
@@ -15,7 +16,7 @@
 // - the signature over the statement;
 // - the signing certificate's chain to Sigstore's public-good Fulcio;
 // - its signed certificate timestamp, and the Rekor entry that times it;
-// - the certificate's identity. Its SAN must name veda-hq/veda's release
+// - the certificate's identity. Its SAN must name that repository's release
 //   workflow at the version's tag, and its issuer must be GitHub Actions.
 //
 // The trust anchors are sigstore-trusted-root.json beside this script: the
@@ -32,18 +33,29 @@ import { toSignedEntity, toTrustMaterial, Verifier } from '@sigstore/verify';
 
 export const SCOPE = '@veda-hq/';
 export const REPOSITORY = 'https://github.com/veda-hq/veda';
+/**
+ * The own packages another veda-hq repository releases, each by name: its
+ * release workflow, at the same path, must have built it. Every other
+ * @veda-hq package comes from REPOSITORY.
+ */
+export const OTHER_REPOSITORIES = Object.freeze({ '@veda-hq/niyam': 'https://github.com/veda-hq/niyam' });
 export const WORKFLOW = '.github/workflows/release.yml';
+
+/** The repository whose release must have built package `name`. @param {string} name */
+export const repositoryOf = name => (Object.hasOwn(OTHER_REPOSITORIES, name) ? OTHER_REPOSITORIES[name] : REPOSITORY);
 export const SLSA = 'https://slsa.dev/provenance/v1';
 /** The OIDC issuer Fulcio records for a GitHub Actions run. */
 export const ISSUER = 'https://token.actions.githubusercontent.com';
 export const TRUSTED_ROOT = fileURLToPath(new URL('sigstore-trusted-root.json', import.meta.url));
 
 /**
- * Who must have signed the provenance of `version`: veda's release workflow at its tag.
+ * Who must have signed the provenance of `version`: the release workflow of
+ * `repository` at its tag.
  * @param {string} version
+ * @param {string} [repository]
  */
-export const signingPolicy = version => ({
-  subjectAlternativeName: `${REPOSITORY}/${WORKFLOW}@refs/tags/v${version}`,
+export const signingPolicy = (version, repository = REPOSITORY) => ({
+  subjectAlternativeName: `${repository}/${WORKFLOW}@refs/tags/v${version}`,
   extensions: { issuer: ISSUER },
 });
 
@@ -106,7 +118,7 @@ function provenanceOf(document) {
 }
 
 /**
- * Why a package's provenance does not show veda's release built it; empty when it does.
+ * Why a package's provenance does not show its own repository's release built it; empty when it does.
  * @param {{ name: string, version: string, integrity: string }} pkg
  * @param {unknown} document the registry's attestations response
  * @param {ReturnType<typeof bundleVerifier>} verifyBundle
@@ -118,14 +130,15 @@ export function provenanceFailures(pkg, document, verifyBundle) {
   if (typeof provenance === 'string') return [`${at}: ${provenance}`];
   const { bundle, statement } = provenance;
   const failures = [];
+  const repository = repositoryOf(pkg.name);
   try {
-    verifyBundle(bundle, signingPolicy(pkg.version));
+    verifyBundle(bundle, signingPolicy(pkg.version, repository));
   } catch (error) {
     // fail-open: the error is recorded as a failure, so the check still fails
-    failures.push(`${at}: its provenance is not signed by veda's release of v${pkg.version} (${/** @type {Error} */ (error).message})`);
+    failures.push(`${at}: its provenance is not signed by ${repository.replace('https://github.com/', '')}'s release of v${pkg.version} (${/** @type {Error} */ (error).message})`);
   }
   const workflow = statement?.predicate?.buildDefinition?.externalParameters?.workflow ?? {};
-  const expected = { repository: REPOSITORY, path: WORKFLOW, ref: `refs/tags/v${pkg.version}` };
+  const expected = { repository, path: WORKFLOW, ref: `refs/tags/v${pkg.version}` };
   for (const [key, value] of Object.entries(expected)) {
     if (workflow[key] !== value) failures.push(`${at}: built with workflow ${key} ${JSON.stringify(workflow[key] ?? null)}, not ${JSON.stringify(value)}`);
   }
@@ -171,9 +184,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const { packages, failures } = await check(readFileSync('pnpm-lock.yaml', 'utf8'), fetchJson, bundleVerifier(readFileSync(TRUSTED_ROOT, 'utf8')));
   for (const failure of failures) console.error(`own-provenance: ${failure}`);
   if (failures.length > 0) {
-    console.error(`own-provenance: ${SCOPE}* skips the release age only when veda's release built it.`);
+    console.error(`own-provenance: ${SCOPE}* skips the release age only when its own repository's release built it.`);
     process.exit(1);
   }
-  console.log(`own-provenance: ${packages.map(p => `${p.name}@${p.version}`).join(', ')} built and signed by ${REPOSITORY} ${WORKFLOW}`);
+  console.log(`own-provenance: ${packages.map(p => `${p.name}@${p.version} (${repositoryOf(p.name)})`).join(', ')} built and signed by ${WORKFLOW}`);
 }
 /* node:coverage enable */

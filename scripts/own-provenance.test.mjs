@@ -8,9 +8,11 @@ import {
   bundleVerifier,
   check,
   ISSUER,
+  OTHER_REPOSITORIES,
   ownPackages,
   provenanceFailures,
   REPOSITORY,
+  repositoryOf,
   signingPolicy,
   SLSA,
   TRUSTED_ROOT,
@@ -153,7 +155,7 @@ describe('check', () => {
     assert.deepEqual(policies, [signingPolicy('0.6.0')]);
     assert.deepEqual(failures, [
       '@veda-hq/kavach@0.6.0: its attestations could not be read (HTTP 404)',
-      "@veda-hq/sarathi@0.6.0: its provenance is not signed by veda's release of v0.6.0 (no signature)",
+      "@veda-hq/sarathi@0.6.0: its provenance is not signed by veda-hq/veda's release of v0.6.0 (no signature)",
     ]);
   });
 
@@ -174,6 +176,23 @@ test('signingPolicy names the release workflow at the tag, issued by GitHub Acti
     extensions: { issuer: 'https://token.actions.githubusercontent.com' },
   });
   assert.equal(ISSUER, 'https://token.actions.githubusercontent.com');
+  assert.equal(signingPolicy('0.6.16', OTHER_REPOSITORIES['@veda-hq/niyam']).subjectAlternativeName, 'https://github.com/veda-hq/niyam/.github/workflows/release.yml@refs/tags/v0.6.16');
+});
+
+test('repositoryOf names niyam its own repository, and every other own package veda', () => {
+  assert.equal(repositoryOf('@veda-hq/niyam'), 'https://github.com/veda-hq/niyam');
+  for (const name of ['@veda-hq/sarathi', '@veda-hq/kavach', '@veda-hq/toString', '@veda-hq/__proto__']) assert.equal(repositoryOf(name), REPOSITORY);
+});
+
+test("a niyam statement naming veda's release fails, and a veda one naming niyam's", () => {
+  const niyam = { ...pkg, name: '@veda-hq/niyam' };
+  assert.deepEqual(provenanceFailures(niyam, release('0.6.0'), accept), [
+    '@veda-hq/niyam@0.6.0: built with workflow repository "https://github.com/veda-hq/veda", not "https://github.com/veda-hq/niyam"',
+  ]);
+  assert.deepEqual(provenanceFailures(niyam, release('0.6.0', { repository: 'https://github.com/veda-hq/niyam' }), accept), []);
+  assert.deepEqual(provenanceFailures(pkg, release('0.6.0', { repository: 'https://github.com/veda-hq/niyam' }), accept), [
+    '@veda-hq/sarathi@0.6.0: built with workflow repository "https://github.com/veda-hq/niyam", not "https://github.com/veda-hq/veda"',
+  ]);
 });
 
 // Real registry answers, verified against the committed trusted root with no network.
@@ -187,7 +206,7 @@ describe('the Sigstore bundle, on real attestations', () => {
     version: '0.6.0',
     integrity: 'sha512-Oc8MEAjnvKsmIYahAQ561gv4jTvktVLeMBo8otnDwqF0ywsK63H6cpVdkfrBGROqeuKO7v0slO5bl6tcWAFMdQ==',
   };
-  const notSigned = (version, reason) => `@veda-hq/kavach@${version}: its provenance is not signed by veda's release of v${version} (${reason})`;
+  const notSigned = (version, reason) => `@veda-hq/kavach@${version}: its provenance is not signed by veda-hq/veda's release of v${version} (${reason})`;
   /** `document` with its SLSA bundle changed by `edit`. @param {any} document @param {(bundle: any) => void} edit */
   const withBundle = (document, edit) => {
     const copy = structuredClone(document);
@@ -197,6 +216,34 @@ describe('the Sigstore bundle, on real attestations', () => {
 
   test("kavach 0.6.0, as veda's release published it, passes", () => {
     assert.deepEqual(provenanceFailures(kavach, KAVACH, verifyBundle), []);
+  });
+
+  const NIYAM = fixture('attestations-niyam-0.6.16.json');
+  const niyam = {
+    name: '@veda-hq/niyam',
+    version: '0.6.16',
+    integrity: 'sha512-CMHf45Qd3NIEkvWAsGWhInubulZmFcHbe2ABaFK7g46vt6BAYp5Kdd6LXDeRv71sz2y/skk80/rCJ8tmpWUJNA==',
+  };
+  const NIYAM_REPOSITORY = 'https://github.com/veda-hq/niyam';
+
+  test("niyam 0.6.16, as niyam's release published it, passes", () => {
+    assert.deepEqual(provenanceFailures(niyam, NIYAM, verifyBundle), []);
+  });
+
+  test("niyam's signed release offered as a veda package fails on the certificate and the repository", () => {
+    const asVeda = { ...niyam, name: '@veda-hq/sarathi' };
+    assert.deepEqual(provenanceFailures(asVeda, NIYAM, verifyBundle), [
+      `@veda-hq/sarathi@0.6.16: its provenance is not signed by veda-hq/veda's release of v0.6.16 (certificate identity error - expected ${REPOSITORY}/${WORKFLOW}@refs/tags/v0.6.16, got ${NIYAM_REPOSITORY}/${WORKFLOW}@refs/tags/v0.6.16)`,
+      `@veda-hq/sarathi@0.6.16: built with workflow repository "${NIYAM_REPOSITORY}", not "${REPOSITORY}"`,
+    ]);
+  });
+
+  test("veda's signed release offered as niyam fails on the certificate and the repository", () => {
+    const asNiyam = { ...kavach, name: '@veda-hq/niyam' };
+    assert.deepEqual(provenanceFailures(asNiyam, KAVACH, verifyBundle), [
+      `@veda-hq/niyam@0.6.0: its provenance is not signed by veda-hq/niyam's release of v0.6.0 (certificate identity error - expected ${NIYAM_REPOSITORY}/${WORKFLOW}@refs/tags/v0.6.0, got ${REPOSITORY}/${WORKFLOW}@refs/tags/v0.6.0)`,
+      `@veda-hq/niyam@0.6.0: built with workflow repository "${REPOSITORY}", not "${NIYAM_REPOSITORY}"`,
+    ]);
   });
 
   test('the same bundle offered for another version fails on the certificate and on the tag', () => {
@@ -231,7 +278,7 @@ describe('the Sigstore bundle, on real attestations', () => {
     const bare = withBundle(KAVACH, bundle => delete bundle.verificationMaterial.certificate);
     const failures = provenanceFailures(kavach, bare, verifyBundle);
     assert.equal(failures.length, 1);
-    assert.match(failures[0], /^@veda-hq\/kavach@0\.6\.0: its provenance is not signed by veda's release of v0\.6\.0 \(.+\)$/);
+    assert.match(failures[0], /^@veda-hq\/kavach@0\.6\.0: its provenance is not signed by veda-hq\/veda's release of v0\.6\.0 \(.+\)$/);
   });
 
   test('a trusted root without the signing authorities trusts nothing', () => {
@@ -239,6 +286,6 @@ describe('the Sigstore bundle, on real attestations', () => {
     const empty = bundleVerifier(JSON.stringify({ ...root, certificateAuthorities: [] }));
     const failures = provenanceFailures(kavach, KAVACH, empty);
     assert.equal(failures.length, 1);
-    assert.match(failures[0], /^@veda-hq\/kavach@0\.6\.0: its provenance is not signed by veda's release of v0\.6\.0 \(.+\)$/);
+    assert.match(failures[0], /^@veda-hq\/kavach@0\.6\.0: its provenance is not signed by veda-hq\/veda's release of v0\.6\.0 \(.+\)$/);
   });
 });

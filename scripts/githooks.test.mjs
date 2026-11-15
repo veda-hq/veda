@@ -13,16 +13,27 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
-const PIN = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).devDependencies['@veda-hq/dvara'];
+const PINS = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).devDependencies;
+const PIN = PINS['@veda-hq/dvara'];
+const NIYAM_PIN = PINS['@veda-hq/niyam'];
 const scratch = mkdtempSync(join(tmpdir(), 'githooks-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
 const bin = join(scratch, 'bin');
 const pnpmCalls = join(scratch, 'pnpm-calls');
 const niyamCalls = join(scratch, 'niyam-calls');
-// HOME is the scratch folder, so the hook finds the stand-in niyam on PATH,
-// never this machine's launcher.
-const env = { ...process.env, HOME: scratch, PATH: `${bin}${delimiter}${process.env.PATH}`, PNPM_CALLS: pnpmCalls, NIYAM_CALLS: niyamCalls };
+const strayCalls = join(scratch, 'stray-niyam-calls');
+// HOME is the scratch folder. A stand-in for the pinned niyam sits in the test
+// repo's node_modules; another on PATH, and one as the launcher in HOME, must
+// never run.
+const env = {
+  ...process.env,
+  HOME: scratch,
+  PATH: `${bin}${delimiter}${process.env.PATH}`,
+  PNPM_CALLS: pnpmCalls,
+  NIYAM_CALLS: niyamCalls,
+  STRAY_CALLS: strayCalls,
+};
 for (const name of Object.keys(env)) {
   if (name.startsWith('DVARA_') || name.startsWith('GIT_') || name === 'NIYAM_AGENT' || name === 'CLAUDECODE') delete env[name];
 }
@@ -55,8 +66,12 @@ before(() => {
   mkdirSync(bin);
   writeFileSync(join(bin, 'pnpm'), '#!/bin/sh\necho "$*" >> "$PNPM_CALLS"\n');
   chmodSync(join(bin, 'pnpm'), 0o755);
-  writeFileSync(join(bin, 'niyam'), '#!/bin/sh\n{ echo "args: $*"; cat; } >> "$NIYAM_CALLS"\n');
+  const stray = '#!/bin/sh\necho "$0 $*" >> "$STRAY_CALLS"\n';
+  writeFileSync(join(bin, 'niyam'), stray);
   chmodSync(join(bin, 'niyam'), 0o755);
+  mkdirSync(join(scratch, '.config', 'niyam', 'bin'), { recursive: true });
+  writeFileSync(join(scratch, '.config', 'niyam', 'bin', 'niyam'), stray);
+  chmodSync(join(scratch, '.config', 'niyam', 'bin', 'niyam'), 0o755);
 
   remote = join(scratch, 'remote.git');
   assert.equal(spawnSync('git', ['init', '-q', '--bare', '-b', 'main', remote], { env }).status, 0);
@@ -68,7 +83,14 @@ before(() => {
   cpSync(join(ROOT, '.githooks'), join(repo, '.githooks'), { recursive: true });
   cpSync(join(ROOT, 'scripts', 'released-pins.mjs'), join(repo, 'scripts', 'released-pins.mjs'));
   symlinkSync(realpathSync(join(ROOT, 'node_modules', '@veda-hq', 'dvara')), join(repo, 'node_modules', '@veda-hq', 'dvara'));
-  writeFileSync(join(repo, 'package.json'), JSON.stringify({ devDependencies: { '@veda-hq/dvara': PIN } }));
+  // The pinned niyam, installed: its package.json for released-pins, and a
+  // stand-in for the bin pnpm links.
+  mkdirSync(join(repo, 'node_modules', '@veda-hq', 'niyam'));
+  writeFileSync(join(repo, 'node_modules', '@veda-hq', 'niyam', 'package.json'), JSON.stringify({ name: '@veda-hq/niyam', version: NIYAM_PIN }));
+  mkdirSync(join(repo, 'node_modules', '.bin'));
+  writeFileSync(join(repo, 'node_modules', '.bin', 'niyam'), '#!/bin/sh\n{ echo "args: $*"; cat; } >> "$NIYAM_CALLS"\n');
+  chmodSync(join(repo, 'node_modules', '.bin', 'niyam'), 0o755);
+  writeFileSync(join(repo, 'package.json'), JSON.stringify({ devDependencies: { '@veda-hq/dvara': PIN, '@veda-hq/niyam': NIYAM_PIN } }));
   // veda's own stage lists, so a hook that strays from them fails here.
   const { stages } = JSON.parse(readFileSync(join(ROOT, '.dvara.json'), 'utf8'));
   writeFileSync(join(repo, '.dvara.json'), JSON.stringify({ stages, records: {} }));
@@ -122,7 +144,7 @@ describe('pre-push', () => {
     assert.ok(!existsSync(niyamCalls), 'niyam runs only once .github/niyam.json is there');
   });
 
-  test("once onboarded, an agent session's push goes through niyam pre-push with git's ref lines", () => {
+  test("once onboarded, an agent session's push goes through the pinned niyam's pre-push with git's ref lines", () => {
     mkdirSync(join(repo, '.github'));
     writeFileSync(join(repo, '.github', 'niyam.json'), '{}\n');
     git(repo, 'add', '.github/niyam.json');
@@ -133,6 +155,25 @@ describe('pre-push', () => {
     const calls = readFileSync(niyamCalls, 'utf8');
     assert.match(calls, new RegExp(`^args: pre-push origin ${remote.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n`));
     assert.match(calls, new RegExp(`^refs/heads/main ${head} refs/heads/main [0-9a-f]{40}$`, 'm'));
+    assert.ok(!existsSync(strayCalls), 'neither the niyam on PATH nor the launcher in ~/.config runs');
+  });
+
+  test("refuses an agent session's push when the pinned niyam's bin is missing", () => {
+    const shim = join(repo, 'node_modules', '.bin', 'niyam');
+    const text = readFileSync(shim, 'utf8');
+    rmSync(shim);
+    try {
+      writeFileSync(join(repo, 'more.md'), 'more\n');
+      git(repo, 'add', 'more.md');
+      assert.equal(git(repo, 'commit', '-q', '-m', 'more').code, 0);
+      const result = spawnSync('git', ['push', '-q', 'origin', 'main'], { cwd: repo, env: { ...env, CLAUDECODE: '1' }, encoding: 'utf8' });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}${result.stderr}`, /the pinned CLI is not installed/);
+      assert.ok(!existsSync(strayCalls), 'no other niyam stands in for it');
+    } finally {
+      writeFileSync(shim, text);
+      chmodSync(shim, 0o755);
+    }
   });
 
   test('refuses a pushed machine path the commit hook never saw', () => {

@@ -32,7 +32,7 @@ jobs:
         env:
           SARATHI_TRACE: '1'
         run: |
-          git --version; find --version | head -1; nproc; echo "TMPDIR=${TMPDIR:-unset}"; ls -la /tmp
+          git --version; dpkg-query -W findutils; grep PRETTY /etc/os-release; nproc; echo "TMPDIR=${TMPDIR:-unset}"; ls -la /tmp
           fails=0
           for i in $(seq 1 25); do
             if ! node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 \

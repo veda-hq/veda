@@ -8,10 +8,11 @@ judged before it runs. Part of [Veda](https://github.com/veda-hq/veda).
 | Guard | Refuses | Entry point |
 | --- | --- | --- |
 | Worktree boundary | Any write outside the agent's own git worktree: a Bash command, an Edit or a Write; and, while a push runs, any write into it (below). Read-only commands pass from any checkout. | `python3 python/kavach/worktree_guard.py` |
-| Command guard | Git-hook bypasses (`--no-verify`, `core.hooksPath`…), history-destroying pushes, and the project's own command rules (settings below). On trial, it warns of a message the shell would change (below). | `python3 python/kavach/command_guard.py` |
+| Command guard | Git-hook bypasses (`--no-verify`, `core.hooksPath`…), history-destroying pushes, and the project's own command rules (settings below). It also runs the Bash rules that hold a lesson (below), and warns of a message the shell would change. | `python3 python/kavach/command_guard.py` |
+| Tool guard | The rules that hold a lesson for tools other than Bash: Write, Edit, RemoteTrigger, the desktop app's sync tool and Workflow (below). | `python3 python/kavach/tool_guard.py` |
 | Rule checks | The project's own checks, written in TypeScript, refusing or warning with the rule's reason. | `kavach-rule-checks` (`dist/rule-checks/cli.js`) |
 
-The two Python guards read one Claude Code `PreToolUse` event on stdin. Exit
+The Python guards read one Claude Code `PreToolUse` event on stdin. Exit
 0 allows; exit 2 refuses, with `BLOCKED: <reason>` on stderr. Every other end
 (a crash, a missing module, unreadable settings) refuses: Claude Code lets a
 hook's exit 1 through, so a guard that fails must not allow. The rule-check
@@ -25,7 +26,9 @@ ahead with a warning, so a broken rule never stops every session.
       { "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [{ "type": "command", "command": "python3 node_modules/@veda-hq/kavach/python/kavach/worktree_guard.py" }] },
       { "matcher": "Bash",
-        "hooks": [{ "type": "command", "command": "python3 node_modules/@veda-hq/kavach/python/kavach/command_guard.py" }] }
+        "hooks": [{ "type": "command", "command": "python3 node_modules/@veda-hq/kavach/python/kavach/command_guard.py" }] },
+      { "matcher": "Write|Edit|MultiEdit|RemoteTrigger|mcp__ccd_host__sync_with_base_branch|Workflow",
+        "hooks": [{ "type": "command", "command": "python3 node_modules/@veda-hq/kavach/python/kavach/tool_guard.py" }] }
     ]
   }
 }
@@ -44,6 +47,14 @@ without writing options or programs, input redirection, `2>/dev/null`,
 cannot prove a command, it treats it as writing, and from outside an owned
 worktree that refuses. An expansion that could become an option (`git log
 $X`, where `X=--output=/elsewhere`) leaves the command unproven.
+
+`pnpm exec` and `pnpm run` run in the folder one selector before them names:
+`--dir`/`-C <folder>`, or `--filter`/`-F` with a folder (`./apps/server`)
+or one workspace package's name, with or without its scope. So a path after
+the subcommand is read from that folder (`pnpm --filter server exec tsx
+../../.tmp/x.ts` writes inside the worktree). A second selector, `-r`, a
+pattern (`@scope/*`, `server...`) or a name more than one package has leaves
+paths read from the command's own folder.
 
 `corpus/corpus.json` is the adversarial test set: commands that write outside
 the worktree, bypass hooks or force-push, each executed in real bash to prove
@@ -151,6 +162,10 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
     ],
     "shellExpansion": "warn",
     "shellExpansionRefusesFrom": "2026-11-21"
+  },
+  "rules": {
+    "pipe-masks-exit": "refuse",
+    "cd-out-of-worktree": { "mode": "warn", "refusesFrom": "2026-11-23" }
   }
 }
 ```
@@ -228,6 +243,45 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
   only shown in its warning; nothing switches on that day. A kavach older
   than this rule refuses every call on these unknown keys, so add them only
   once the pinned kavach knows them.
+- `rules`: the mode of each rule that holds a lesson (below), by its id:
+  `"warn"`, `"refuse"`, or `{ "mode": ..., "refusesFrom": "YYYY-MM-DD" }`
+  (the day is only shown in the warning). A rule not named warns. The
+  shell-expansion rule may be named here as `commit-message-shell-expansion`
+  instead of by `command.shellExpansion`, but not by both. An id the pinned
+  kavach does not know refuses every call, as an unknown key does.
+
+## Rules that hold a lesson
+
+Each rule is a mistake agents kept repeating, caught at the call that makes
+it. A new rule starts by warning, since a wrong refusal would stop every
+session at once: in `"warn"` the call runs and the agent reads the reason
+(the same PreToolUse answer as the shell-expansion rule's, below; several
+warnings share one answer), and once the project sets `"refuse"` the guard
+exits 2 with it. Every fire, in either mode, is a row of the refusal log
+naming the rule and the mode, so a trial's rows can be read for wrong fires
+before the switch. While a rule warns, an error in its own detection allows
+the call and logs a row naming the error's type; refusing, it fails closed.
+
+| Rule | Guard | Fires on |
+| --- | --- | --- |
+| `pipe-masks-exit` | command | A pipeline ending in `tail` or `head` joined by `&&` to `git push` (`pnpm test \| tail && git push` pushes after a failure), unless the line sets `pipefail`. |
+| `cd-out-of-worktree` | command | A literal top-level `cd` or `pushd` to a folder outside the session's checkout (the git work tree of the call's folder; a clone nested inside it counts as inside), naming a peer worktree when it is one. The shell keeps that folder, and the guards then refuse every write, the `cd` back included. A `cd` in a subshell or a pipeline, `cd -` and a computed target are not judged. |
+| `stryker-inplace` | command, tool | `stryker` run with `--inPlace`, and a Write or Edit that sets `inPlace: true` in a Stryker config (`stryker[.<name>].conf[ig].{js,mjs,cjs,ts,mts,cts,json}`). |
+| `checkout-discards-uncommitted` | command | `git checkout -- <path>`, `git checkout <ref> -- <path>`, `git checkout --ours\|--theirs <path>` and `git restore <path>` (not `--staged` alone) when `git status` shows the path with uncommitted changes. |
+| `commit-body-ref-line-length` | command | A `git commit` whose message (`-m` paragraphs, or the `-F` file) has a body line over 100 characters holding `#<number>`: commitlint reads it as a footer and fails `footer-max-line-length`. |
+| `case-fold-path-collision` | tool | A Write to a name absent from its folder that differs only by letter case from a file there: on a case-insensitive filesystem it overwrites that file. |
+| `routine-sources-shape` | tool | A RemoteTrigger `create` or `update` whose `job_config.ccr.session_context.sources` has an entry without a `git_repository` object, which the API accepts and drops. |
+| `sync-base-on-origin` | tool | The desktop app's `mcp__ccd_host__sync_with_base_branch` with no `base` (it then merges the branch the worktree was first cut from, which may be deleted), or a `base` with no `refs/remotes/origin/<base>` in the checkout. |
+| `workflow-name-in-worktree` | tool | `Workflow({name})` without `scriptPath` from a linked worktree whose `.claude/workflows/<name>.*` differs from the main checkout's, which is what runs. |
+
+The last two tools' names and fields are as recorded from real calls; the
+session that wrote these rules was not offered them, so they are tested on
+fixtures only. Keep them warning until a fire shows the live payload.
+
+The tool guard runs only for the tools its matcher gives it, so list them:
+`Write|Edit|MultiEdit|RemoteTrigger|mcp__ccd_host__sync_with_base_branch|Workflow`
+(`rules.TOOL_MATCHER`). Like the command guard, it refuses a payload it
+cannot read and settings it cannot load.
 
 ## A rule on trial: messages the shell changes
 
@@ -292,7 +346,7 @@ Without the marker, nothing here changes.
 
 ## Refusal log
 
-Each refusal of the two Python guards appends a row (time, guard, tool, first
+Each refusal of the Python guards appends a row (time, guard, tool, first
 line of the reason, start of the command) to
 `<git common dir>/kavach/refusals.jsonl`; a rule on trial adds a row for
 each warning too, and names itself in its rows (`rule`, `mode`). It is best effort and never changes

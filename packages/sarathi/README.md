@@ -43,6 +43,7 @@ settings' own `hooks` block, one entry per handler:
     "PreToolUse": [
       { "matcher": "Bash|Edit|Write|NotebookEdit", "guard": "worktree" },
       { "matcher": "Bash", "guard": "command" },
+      { "matcher": "Write|Edit|MultiEdit|RemoteTrigger|mcp__ccd_host__sync_with_base_branch|Workflow", "guard": "tool" },
       { "matcher": "Edit|Write", "command": "./scripts/check-edit.sh", "timeout": 10 }
     ],
     "Stop": [{ "command": "./scripts/keep-going.sh", "timeout": 120 }]
@@ -54,7 +55,7 @@ settings' own `hooks` block, one entry per handler:
 | --- | --- |
 | `matcher` | Claude Code's: absent or `*` for all, `A\|B` for exact names, else a regular expression |
 | `command` | Run through `sh -c` with the event on stdin, as Claude Code runs a hook |
-| `guard` | `worktree` or `command`: kavach's guard, run by `kavach.python` with `KAVACH_CONFIG` set to `kavach.config` |
+| `guard` | `worktree`, `command` or `tool`: kavach's guard, run by `kavach.python` with `KAVACH_CONFIG` set to `kavach.config` (`tool` reads the tools kavach's rules name besides Bash; its README gives the matcher) |
 | `timeout` | Seconds before the handler and its children are stopped (60) |
 | `failClosed` | Any end but exit 0 refuses the call; always true for guards |
 

@@ -25,6 +25,7 @@ export interface Outcome {
 const GUARD_SCRIPTS: Readonly<Record<Guard, string>> = {
   worktree: 'worktree_guard.py',
   command: 'command_guard.py',
+  tool: 'tool_guard.py',
 };
 
 /** The folder holding kavach's Python guards, from this package's own dependency. */

@@ -136,14 +136,17 @@ undoing another.
   <!-- held by: dvara run (refuses a pre-push run whose HEAD moved while it ran) -->
 - **The sync tool's default base can be stale.** In a reused worktree, the sync-with-base-branch
   tool defaults to the branch the worktree was first cut from, which may since have been
-  deleted, and fails at fetch; always pass base `main`. Conflicts on append-only files are
-  append/append: keep both sides.
+  deleted, and fails at fetch; always pass base `main`.
+- **Syncing append-only files.** Conflicts on append-only files are append/append: keep both
+  sides.
 - **Named workflows resolve from the main checkout.** From a git worktree, `Workflow({name})`
-  and `preview_start({name})` resolve from the main checkout's `.claude` directory, not the
-  worktree's, so a branch-local script or `launch.json` edit is silently ignored. Launch
-  workflows with an absolute `scriptPath` into the worktree. `preview_start` has no equivalent,
-  so a worktree dev server cannot be previewed while the main checkout holds the same name and
-  port.
+  resolves from the main checkout's `.claude` directory, not the worktree's, so a branch-local
+  script edit is silently ignored. Launch workflows with an absolute `scriptPath` into the
+  worktree.
+- **Named previews resolve from the main checkout.** `preview_start({name})` reads the main
+  checkout's `launch.json`, so a worktree edit is ignored, and it has no `scriptPath`
+  equivalent: a worktree dev server cannot be previewed while the main checkout holds the same
+  name and port.
 - **File links resolve against the launch directory.** The app resolves clicked file links
   against the session's launch directory, not the worktree it entered, so a file that exists
   only on the worktree branch shows "Couldn't read this file". Link worktree-only files as
@@ -181,8 +184,10 @@ undoing another.
 - **Routine create body shape.** When creating a cloud routine with RemoteTrigger, give the
   repository as `job_config.ccr.session_context.sources: [{"git_repository": {"url": "<url>"}}]`.
   The shape `{"type":"git_repository","url":...}` returns 200 but is dropped, so check
-  `session_request.sources` in the response. Set `notifications` with a separate update if
-  create ignored it, use `run_once_at` for one-offs, and give `events[].data.message` a `role`.
+  `session_request.sources` in the response.
+  <!-- held by: kavach tool guard, rule routine-sources-shape (warns, then refuses, a RemoteTrigger create or update whose sources lack a git_repository object) -->
+- **Routine create, the other fields.** Set `notifications` with a separate update if create
+  ignored it, use `run_once_at` for one-offs, and give `events[].data.message` a `role`.
 - **Scheduled-task state lives in the app.** The desktop app keeps scheduled-task runtime state
   (`enabled`, `nextRunAt`, `lastRunAt`) inside the app, not in `SKILL.md`, and the only
   supported reader is the `list_scheduled_tasks` MCP tool in a Claude session; a launchd job
@@ -229,8 +234,10 @@ undoing another.
   `until grep -qa "pattern" log; do sleep 30; done` instead, and stop any wait whose result you
   have read or whose target was superseded.
   <!-- when: command "tail -[fF] .*\| *grep .*-m ?1" -->
-- **Exit codes that lie.** `cmd | tail` returns tail's exit code and masks failures, so never
-  chain `... | tail && git push`; check `$?` or use pipefail. `pnpm --filter <pkg> <script>`
+- **A pipe masks the exit code.** `cmd | tail` returns tail's exit code and masks failures, so
+  never chain `... | tail && git push`; check `$?` or use pipefail.
+  <!-- held by: kavach command guard, rule pipe-masks-exit (warns, then refuses, a pipeline ending in tail or head joined by && to git push) -->
+- **Exit codes that lie.** `pnpm --filter <pkg> <script>`
   exits 0 when the package has no such script, so confirm the suite's summary line appears, not
   just the exit code. In zsh `for x in $var` does not word-split (use `${=var}`). A monitor that
   exits on a false "all done" looks identical to success, so validate its first event.

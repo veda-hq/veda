@@ -58,6 +58,8 @@ however much of it arrived, so it blocks. Settings that cannot be read
 not allow.
 """
 
+import contextlib
+import io
 import os
 import sys
 
@@ -169,14 +171,56 @@ def main():
         return 2
     if verdict("the git-command check", lambda: __import__("bash_guard"), "bash_guard.py", "bash_guard") == 2:
         return 2
+    contexts: list[str] = []
+    if verdict("the lesson rules", lambda: lesson_rules(loaded, contexts), "rules.py", "rules") == 2:
+        return 2
     if cannot_name_git():
-        return 0
-    return verdict(
-        "the shell-code check",
-        lambda: __import__("git_safety").hook_main(loaded, fired),
-        "git_safety.py",
-        "git_safety",
-    )
+        return answer(contexts, "")
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        code = verdict(
+            "the shell-code check",
+            lambda: __import__("git_safety").hook_main(loaded, fired),
+            "git_safety.py",
+            "git_safety",
+        )
+    if code == 2:
+        return 2
+    return answer(contexts, captured.getvalue())
+
+
+def lesson_rules(loaded, contexts):
+    """rules.py's Bash rules, in the modes the settings give them: a refusal
+    ends in SystemExit(2) with its reason on stderr; each warning's text is
+    added to ``contexts``, and the check ends in SystemExit(0)."""
+    import rules
+    call = rules.read_call(os.environ.get("HOOK_INPUT", ""))
+    if call is None:
+        # git_safety.py refuses a malformed payload, saying why.
+        raise SystemExit(0)
+    outcome = rules.judge(call, loaded, fired)
+    if outcome.refusals:
+        sys.stderr.write(rules.refusal(outcome.refusals) + "\n")
+        raise SystemExit(2)
+    contexts.extend(rules.context(fire) for fire in outcome.warnings)
+    raise SystemExit(0)
+
+
+def answer(contexts, printed):
+    """Allow the call: one PreToolUse answer on stdout holding every
+    warning, the shell-expansion rule's (``printed``, its own answer) first."""
+    import json
+    text = printed.strip()
+    if text:
+        try:
+            contexts = [json.loads(text)["hookSpecificOutput"]["additionalContext"], *contexts]
+        except (ValueError, KeyError, TypeError):
+            sys.stdout.write(printed)
+            return 0
+    if contexts:
+        import rules
+        print(rules.answer(contexts))
+    return 0
 
 
 def run():

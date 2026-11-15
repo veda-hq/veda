@@ -10,6 +10,7 @@ without suppressing them, and the traps of a gate scoped to a diff.
   files and in-place mode restores them only after a successful run, so an interrupted run
   leaves mutated sources and `stryker-setup` files behind. Measure one file with
   `npx stryker run stryker.config.mjs --mutate <file>` in the sandbox instead.
+  <!-- held by: kavach command guard, rule stryker-inplace (warns, then refuses, stryker run with --inPlace) -->
 - **In-place hand runs.** If you do run in place, its restore can drop the executable bit on
   files it never mutated (mode 100755 to 100644, content identical); check `git status` after
   every in-place run and `chmod +x` them back rather than committing the change.

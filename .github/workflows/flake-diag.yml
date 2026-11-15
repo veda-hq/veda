@@ -30,7 +30,7 @@ jobs:
       - name: mkdir race
         run: |
           command -v mkdir; readlink -f "$(command -v mkdir)"; mkdir --version | head -2
-          ls /usr/bin/gnumkdir /usr/lib/cargo/bin 2>&1 | head -5 || true
+          stat -c '%n %F' /usr/bin/gnumkdir /usr/lib/cargo/bin 2>&1 || true
           race() {
             local tool="$1" both=0
             for i in $(seq 1 2000); do

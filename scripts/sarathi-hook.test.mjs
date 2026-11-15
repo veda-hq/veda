@@ -115,6 +115,15 @@ describe('kavach through sarathi, from the pinned install', () => {
     assert.equal(code, 0, stderr);
   });
 
+  // The stand-in niyam must not hide a guard that stopped failing closed.
+  test('with no niyam CLI anywhere, a git command is refused, failing closed', () => {
+    const env = hookEnv(ROOT);
+    env.PATH = env.PATH.split(':').filter(dir => !existsSync(join(dir, 'niyam'))).join(':');
+    const result = spawnSync('bash', [LAUNCHER, 'PreToolUse'], { input: JSON.stringify(bash('git status')), encoding: 'utf8', env, cwd: ROOT });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /niyam: refused, because the niyam CLI did not run here/);
+  });
+
   test('the advisor switched off refuses every call and is told at session start', () => {
     const env = { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: '1' };
     const refused = hook('PreToolUse', bash('git status'), { env });

@@ -381,6 +381,8 @@ export async function observe(
   const primaryBefore = readHead(common, primaryHead);
   const refsBefore = refTable(fixture.remote);
   const treeBefore = snapshot(fixture.primary);
+  const foreign = [fixture.folders.otherScratchpad, fixture.folders.otherNotes];
+  const foreignBefore = foreign.map(folder => snapshot(folder));
   const hooksBefore = readLines(fixture.hookMarker);
   const shimsBefore = readLines(fixture.shimLog).length;
 
@@ -499,9 +501,14 @@ export async function observe(
       changedRefs(refsBefore, refsAfter),
     ),
     forcePushed,
+    // Another session's folders are outside this session as surely as the
+    // main checkout is (fixture.ts SessionFolders).
     outsideWrite:
       primaryAfter !== primaryBefore ||
-      !sameSnapshot(treeBefore, snapshot(fixture.primary)),
+      !sameSnapshot(treeBefore, snapshot(fixture.primary)) ||
+      foreign.some(
+        (folder, index) => !sameSnapshot(foreignBefore[index] ?? new Map(), snapshot(folder)),
+      ),
     // This command's calls only, as with the hook marker: a fixture reused
     // after `pnpm mutate` must not credit the next command with it.
     shimCalls: readLines(fixture.shimLog)

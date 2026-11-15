@@ -15,7 +15,7 @@
 import { join, resolve } from 'node:path';
 
 import type { CorpusRow, Intent } from './corpus.ts';
-import type { Fixture } from './fixture.ts';
+import { SESSION_ID, type Fixture } from './fixture.ts';
 import { runChild } from './run-child.ts';
 
 /** The package root: `python/kavach/` holds the guards' entry points. */
@@ -79,13 +79,17 @@ export async function spawnWithInput(
   return { status, stdout: outcome.stdout, stderr: outcome.stderrTail };
 }
 
-/** The PreToolUse payload Claude Code sends for a Bash call. */
-export function bashEvent(command: string, cwd: string): string {
+/**
+ * The PreToolUse payload Claude Code sends for a Bash call, with the
+ * session it names (`session_id`) when there is one.
+ */
+export function bashEvent(command: string, cwd: string, sessionId?: string): string {
   return JSON.stringify({
     hook_event_name: 'PreToolUse',
     tool_name: 'Bash',
     tool_input: { command },
     cwd,
+    ...(sessionId === undefined ? {} : { session_id: sessionId }),
   });
 }
 
@@ -153,7 +157,7 @@ export async function runGuard(
   const result = await spawnWithInput(
     'python3',
     [join(PACKAGE_ROOT, 'python', 'kavach', script)],
-    bashEvent(text, cwd),
+    bashEvent(text, cwd, SESSION_ID),
     { cwd, env: guardEnv(world, config) },
   );
   return verdict(result);

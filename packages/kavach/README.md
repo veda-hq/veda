@@ -50,6 +50,36 @@ the worktree, bypass hooks or force-push, each executed in real bash to prove
 it does what its row says, and near-miss commands that must pass. Each guard
 must refuse every attack row and pass every near-miss.
 
+## A session's own folders
+
+Besides its worktree, a session may write three places outside every
+checkout. The first is its agent memory, from any checkout. The other two
+are its own folders, from its owned worktree only:
+
+- **Its scratchpad**, `<base>/claude-<uid>/<project>/<session_id>/scratchpad`.
+  The base is `CLAUDE_CODE_TMPDIR`, or `/tmp`, as Claude Code 2.1.325 builds
+  it, and `session_id` comes from the `PreToolUse` payload.
+- **The side-session notes folders the desktop app granted it**,
+  `~/Library/Application Support/Claude/side-session-notes/local_<uuid>/`. A
+  side session's folder is named after the session that started it, so the
+  guard reads the app's record of the session,
+  `claude-code-sessions/<account>/<org>/<host session>.json`:
+  - The record counts only when the hook's environment names the host
+    session (`CLAUDE_CODE_HOST_SESSION_ID`), exactly one record is found, and
+    its `cliSessionId` is the payload's `session_id`.
+  - The folders it grants (`sessionPermissionUpdates`, `addDirectories`)
+    count, and so does the session's own folder, where the sessions it starts
+    leave it notes.
+
+Each folder must already be a real directory, with no symlink at it or on
+the way from its root, and outside every git work tree. Targets compare
+resolved, so a `..` or a symlink that leads out reaches nothing. The record
+is the app's own format: a missing, unreadable or mismatched one grants
+nothing.
+
+Another session's folders stay refused. So does everything else under the
+temp folder, `$TMPDIR` and the app's support folder.
+
 ## What a refusal says
 
 Each refusal names the way out. "mutation targets could not be resolved"

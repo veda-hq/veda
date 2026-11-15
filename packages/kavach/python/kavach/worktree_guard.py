@@ -16,6 +16,11 @@ the memory permanently unwritable — a session is told to record findings and
 then blocked with a message about worktrees. ``claude_memory_root`` derives
 that single directory from the checkout this session is already in and allows
 writes confined to it.
+
+Two more folders outside every checkout belong to one session, and from its
+owned checkout it may write them (``SessionFolders``): its scratchpad in
+Claude Code's temp folder, named by the payload's ``session_id``, and the
+side-session notes folders the desktop app granted it.
 """
 
 from __future__ import annotations
@@ -255,6 +260,178 @@ def claude_memory_root(primary: Path) -> Path | None:
     return resolved
 
 
+# A Claude Code session id, as the PreToolUse payload's `session_id` carries
+# it, and a desktop app session (`CLAUDE_CODE_HOST_SESSION_ID`). Each is
+# matched whole before it names a folder, so neither can carry a `..` or a `/`.
+SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+HOST_SESSION = re.compile(r"local_" + SESSION_ID.pattern)
+# One folder name in Claude Code's per-project temp folder (a slug of the
+# project's path).
+PROJECT_SLUG = re.compile(r"[A-Za-z0-9_-]{1,255}")
+# The desktop app's record of a session is a few hundred KB; past this it is
+# not read.
+RECORD_LIMIT = 8 * 1024 * 1024
+
+
+def claude_temp_root(environ: Mapping[str, str]) -> Path | None:
+    """Claude Code's own per-user temp folder, ``<base>/claude-<uid>``.
+
+    The base is ``CLAUDE_CODE_TMPDIR`` when set, else ``/tmp``, as Claude Code
+    builds it (2.1.325). Only an absolute base counts.
+    """
+
+    base = environ.get("CLAUDE_CODE_TMPDIR") or "/tmp"
+    if not base.startswith("/"):
+        return None
+    return Path(base).resolve() / f"claude-{os.getuid()}"
+
+
+def real_directory(path: Path) -> bool:
+    """A directory that is not a symlink."""
+
+    return not path.is_symlink() and path.is_dir()
+
+
+def claude_app_root() -> Path:
+    """The desktop app's support folder, where it keeps session notes."""
+
+    return Path.home() / "Library" / "Application Support" / "Claude"
+
+
+def notes_root() -> Path:
+    return claude_app_root() / "side-session-notes"
+
+
+class SessionFolders:
+    """The two folders outside every checkout that a session owns.
+
+    - Its scratchpad, ``<claude temp root>/<project>/<session id>/scratchpad``:
+      the payload's ``session_id`` names it.
+    - The side-session notes folders the desktop app granted it,
+      ``side-session-notes/local_<uuid>/``. A side session's folder is named
+      after the session that started it, so ``session_id`` cannot name it.
+      The app's record of the session lists the folders it granted
+      (``sessionPermissionUpdates``, ``addDirectories``); the record counts
+      only when the hook's environment names the app session and the record's
+      ``cliSessionId`` is the payload's ``session_id``. The session's own
+      folder, where the sessions it starts leave it notes, counts too.
+
+    Nothing here is read from the tool call. Each folder must already be a
+    real directory, no symlink at it or on the way from its root, and it must
+    not land in a git work tree. Targets are compared resolved, so a ``..`` or
+    a symlink that leads out of a folder reaches nothing. The record is the
+    app's own format: one that is missing, unreadable or does not match
+    grants nothing. Found only when a target needs it, so a write inside the
+    worktree pays nothing.
+    """
+
+    def __init__(self, session_id: object, environ: Mapping[str, str]) -> None:
+        self.session_id = (
+            session_id if isinstance(session_id, str) and SESSION_ID.fullmatch(session_id) else None
+        )
+        self.environ = environ
+        self._notes: tuple[Path, ...] | None = None
+
+    def scratchpad_of(self, target: Path) -> Path | None:
+        """This session's scratchpad, when ``target`` lies in it."""
+
+        root = claude_temp_root(self.environ)
+        if self.session_id is None or root is None:
+            return None
+        resolved = target.resolve()
+        if not boundary.is_inside(resolved, root):
+            return None
+        parts = resolved.relative_to(root).parts
+        if len(parts) < 3 or not PROJECT_SLUG.fullmatch(parts[0]):
+            return None
+        if parts[1] != self.session_id or parts[2] != "scratchpad":
+            return None
+        try:
+            if root.is_symlink() or root.stat().st_uid != os.getuid():
+                return None
+        except OSError:
+            return None
+        project = root / parts[0]
+        session = project / parts[1]
+        scratchpad = session / parts[2]
+        if not all(real_directory(path) for path in (root, project, session, scratchpad)):
+            return None
+        if lands_in_a_checkout(scratchpad):
+            return None
+        return scratchpad
+
+    def notes(self) -> tuple[Path, ...]:
+        if self._notes is None:
+            self._notes = self._find_notes()
+        return self._notes
+
+    def _find_notes(self) -> tuple[Path, ...]:
+        host = self.environ.get("CLAUDE_CODE_HOST_SESSION_ID", "")
+        if self.session_id is None or not HOST_SESSION.fullmatch(host):
+            return ()
+        app = claude_app_root()
+        notes = notes_root()
+        if not real_directory(notes) or app.is_symlink():
+            return ()
+        record = session_record(app, host)
+        if record is None or record.get("cliSessionId") != self.session_id:
+            return ()
+        names = [host, *granted_notes(record, notes)]
+        found: list[Path] = []
+        for name in names:
+            folder = notes / name
+            if folder in found or not real_directory(folder) or lands_in_a_checkout(folder):
+                continue
+            found.append(folder)
+        return tuple(found)
+
+    def holds(self, target: Path) -> bool:
+        if self.scratchpad_of(target) is not None:
+            return True
+        resolved = target.resolve()
+        if not boundary.is_inside(resolved, notes_root()):
+            return False
+        return any(boundary.is_inside(resolved, folder) for folder in self.notes())
+
+
+def session_record(app: Path, host: str) -> dict[str, Any] | None:
+    """The desktop app's record of session ``host``, when exactly one is
+    found (``claude-code-sessions/<account>/<org>/<host>.json``)."""
+
+    found = list((app / "claude-code-sessions").glob(f"*/*/{host}.json"))
+    if len(found) != 1:
+        return None
+    path = found[0]
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > RECORD_LIMIT:
+            return None
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    if not isinstance(record, dict) or record.get("sessionId") != host:
+        return None
+    return record
+
+
+def granted_notes(record: dict[str, Any], notes: Path) -> list[str]:
+    """The notes folders a session record grants: each ``addDirectories``
+    entry that names ``<notes>/local_<uuid>`` exactly."""
+
+    names: list[str] = []
+    updates = record.get("sessionPermissionUpdates")
+    for update in updates if isinstance(updates, list) else []:
+        if not isinstance(update, dict) or update.get("type") != "addDirectories":
+            continue
+        directories = update.get("directories")
+        for directory in directories if isinstance(directories, list) else []:
+            if not isinstance(directory, str):
+                continue
+            path = Path(directory)
+            if path.parent == notes and HOST_SESSION.fullmatch(path.name) and str(path) == directory.rstrip("/"):
+                names.append(path.name)
+    return names
+
+
 def lands_in_a_checkout(directory: Path) -> bool:
     """Whether ``directory``, once resolved, sits inside ANY git work tree.
 
@@ -386,8 +563,11 @@ def mutation_targets(
     return None  # unreachable; deny() raises
 
 
-def denial(target: Path, root: Path, primary: Path) -> str:
-    """Explain a refusal, and say so plainly for a near-miss on agent memory.
+def denial(
+    target: Path, root: Path, primary: Path, folders: SessionFolders | None = None
+) -> str:
+    """Explain a refusal, and say so plainly for a near-miss on agent memory
+    or on the session's own folders.
 
     Without the second clause a session that aimed at its own memory sees only
     a message about worktrees, concludes the write is impossible, and drops the
@@ -405,6 +585,9 @@ def denial(target: Path, root: Path, primary: Path) -> str:
         )
         return message
     try:
+        near = session_folder_hint(target, folders)
+        if near:
+            return message + near
         return message + where_instead(target, root, primary)
     except Exception:
         # Words only: a hint that fails must not turn the denial into a crash.
@@ -412,6 +595,30 @@ def denial(target: Path, root: Path, primary: Path) -> str:
 
 
 GENERIC_INSTEAD = "; write only inside this worktree, and keep scratch files in its .tmp/"
+
+
+def session_folder_hint(target: Path, folders: SessionFolders | None) -> str:
+    """Words for a write that aimed at Claude Code's temp folder or the
+    desktop app's notes folders and missed this session's own."""
+
+    if folders is None:
+        return ""
+    resolved = target.resolve()
+    temp = claude_temp_root(folders.environ)
+    if temp is not None and boundary.is_inside(resolved, temp):
+        own = folders.session_id or "<session id>"
+        return (
+            f"; in Claude Code's temp folder only this session's own scratchpad, "
+            f"{temp}/<project>/{own}/scratchpad, is writable, and only while it and the "
+            "folders above it are real directories, not symlinks"
+        )
+    if boundary.is_inside(resolved, notes_root()):
+        granted = ", ".join(str(folder) for folder in folders.notes()) or "none found"
+        return (
+            "; of the side-session notes folders only the ones the desktop app granted "
+            f"this session are writable ({granted})"
+        )
+    return ""
 
 
 def system_temp_roots() -> list[Path]:
@@ -934,7 +1141,13 @@ def is_owned_target(target: Path, root: Path, primary: Path, fences: tuple[Fence
     return boundary.is_session_target(target, root, primary)
 
 
-def refuse_target(target: Path, root: Path, primary: Path, fences: tuple[Fence, ...]) -> None:
+def refuse_target(
+    target: Path,
+    root: Path,
+    primary: Path,
+    fences: tuple[Fence, ...],
+    folders: SessionFolders | None = None,
+) -> None:
     fenced = fence_of(target, root, fences)
     if fenced is not None:
         (place, what), how = fenced
@@ -943,7 +1156,7 @@ def refuse_target(target: Path, root: Path, primary: Path, fences: tuple[Fence, 
             f"mutation target {target} {where} {place}, {what}; "
             "an owned plain clone does not open it"
         )
-    boundary.deny(denial(target, root, primary))
+    boundary.deny(denial(target, root, primary, folders))
 
 
 def reviewed(
@@ -1055,12 +1268,19 @@ def main() -> None:
         return
     if targets is None:
         boundary.deny(unresolved(tool, values, cwd))
+    folders = SessionFolders(data.get("session_id"), os.environ)
     for target in targets:
-        # From inside an owned worktree the two allowances compose, so
+        # From inside an owned worktree the allowances compose, so
         # `touch <memory>/note.md` works while the same command with a second
-        # operand outside both still fails on that operand.
-        if not (is_owned_target(target, root, primary, fences) or in_memory(target)):
-            refuse_target(target, root, primary, fences)
+        # operand outside all of them still fails on that operand. The
+        # session's own folders (`SessionFolders`) count only here, after
+        # ownership.
+        if not (
+            is_owned_target(target, root, primary, fences)
+            or in_memory(target)
+            or folders.holds(target)
+        ):
+            refuse_target(target, root, primary, fences, folders)
     refuse_during_push(tool, targets, root)
 
 

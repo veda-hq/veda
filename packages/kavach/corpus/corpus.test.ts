@@ -224,6 +224,20 @@ describe('render', () => {
   it('leaves text without placeholders as it is', () => {
     assert.equal(render('touch ./inside', values), 'touch ./inside');
   });
+
+  it("fills the session's folders and a stranger's, the longer names first", () => {
+    const folders = {
+      scratchpad: '/t/mine',
+      notes: '/n/mine',
+      otherScratchpad: '/t/theirs',
+      otherNotes: '/n/theirs',
+    };
+    assert.equal(
+      render('{SCRATCH} {NOTES} {OTHER_SCRATCH} {OTHER_NOTES} {SCRATCH}', { ...values, folders }),
+      '/t/mine /n/mine /t/theirs /n/theirs /t/mine',
+    );
+    assert.equal(render('{SCRATCH}', values), '{SCRATCH}');
+  });
 });
 
 describe('the corpus', () => {

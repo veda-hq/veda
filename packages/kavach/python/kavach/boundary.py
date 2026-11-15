@@ -3252,6 +3252,26 @@ def bun_run_is_package_script(words: list[str], cwd: Path) -> bool:
     return isinstance(scripts, dict) and isinstance(scripts.get(script), str)
 
 
+def pnpm_exec_program_index(name: str, args: list[str]) -> int | None:
+    """Where ``pnpm exec`` names the program it runs, or None.
+
+    Only the two plain shapes, ``pnpm exec <program>`` and
+    ``pnpm exec -- <program>``. Options before ``exec`` (``-C``, ``--filter``,
+    ``-r``) or after it (``-c``, ``--shell-mode``) change what the next words
+    mean, so any of them leaves every word confined, as before.
+    """
+
+    if name != "pnpm" or args[:1] != ["exec"]:
+        return None
+    index = 2 if args[1:2] == ["--"] else 1
+    if index >= len(args):
+        return None
+    program = args[index]
+    if program.startswith("-") or "=" in program:
+        return None
+    return index
+
+
 def generic_mutation_paths(
     name: str,
     args: list[str],
@@ -3287,7 +3307,8 @@ def generic_mutation_paths(
     turbo_run = (name == "turbo" and args[:1] == ["run"]) or (
         name == "pnpm" and args[:2] == ["turbo", "run"]
     )
-    for item in args:
+    program_index = pnpm_exec_program_index(name, args)
+    for index, item in enumerate(args):
         if turbo_run and item.startswith("--filter="):
             # Turbo filters are graph selectors rather than filesystem paths.
             continue
@@ -3307,6 +3328,10 @@ def generic_mutation_paths(
             # command-specific. Never reinterpret the complete token as a safe
             # relative path under the worktree.
             return None
+        if index == program_index:
+            # The program pnpm runs, not a place the command writes: after the
+            # dynamic-marker refusal above, `/bin/bash` reads as `bash` does.
+            continue
         if path_like:
             destinations.append(candidate)
     resolved = resolve_mutation_paths(destinations, cwd)

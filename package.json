@@ -22,7 +22,7 @@
     "@veda-hq/dvara": "0.5.16",
     "@veda-hq/eslint-plugin-shuddhi": "0.2.0",
     "@veda-hq/pariksha": "0.5.20",
-    "@veda-hq/sarathi": "0.6.0",
+    "@veda-hq/sarathi": "0.6.9",
     "eslint": "9.39.1",
     "typescript": "5.9.3",
     "typescript-eslint": "8.48.0"

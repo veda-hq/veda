@@ -172,6 +172,48 @@ class ParseTest(unittest.TestCase):
         )
         self.assertEqual(config.parse(read_only()), config.DEFAULT)
 
+    def test_own_checkout(self) -> None:
+        def own(entry: object) -> dict[str, object]:
+            return {"worktree": {"ownCheckout": entry}}
+
+        good = {"env": {"AGENT_REMOTE": ["true"]}, "reason": "a hosted session clones for itself"}
+        where = "worktree.ownCheckout"
+        self.refused(own([]), f"{where} must be a JSON object")
+        self.refused(own("x"), f"{where} must be a JSON object")
+        self.refused(own({**good, "pattern": "x"}), f"{where} has unknown key(s): pattern")
+        for env in (None, {}, [], "AGENT_REMOTE=true"):
+            with self.subTest(env=env):
+                entry = {key: value for key, value in good.items() if key != "env"}
+                if env is not None:
+                    entry["env"] = env
+                self.refused(own(entry), f"{where}.env must be a non-empty JSON object of variable names")
+        self.refused(own({**good, "env": {"A-B": ["x"]}}), f"{where}.env has a key that is not a variable name")
+        self.refused(own({**good, "env": {"A": []}}), f"{where}.env.A must list at least one value")
+        self.refused(own({**good, "env": {"A": [""]}}), f"{where}.env.A[0] must be a non-empty string")
+        self.refused(own({"env": good["env"]}), f"{where}.reason must be a non-empty string")
+        self.refused(own({**good, "reason": ""}), f"{where}.reason must be a non-empty string")
+        self.refused(own(None), f"{where} must be a JSON object")
+        self.refused(own({**good, "protectedPaths": ".claude/"}), f"{where}.protectedPaths must be a JSON array")
+        self.refused(own({**good, "protectedPaths": [""]}), f"{where}.protectedPaths[0] must be a non-empty string")
+        for path in ("/abs", "a/../b", "..", "/", ".", "./", "//"):
+            with self.subTest(path=path):
+                self.refused(
+                    own({**good, "protectedPaths": [".claude/hooks/", path]}),
+                    f"{where}.protectedPaths[1] must be a path inside the repository",
+                )
+        parsed = config.parse(own({**good, "env": {"AGENT_REMOTE": ["true"], "AGENT_ENTRY": ["remote"]}}))
+        self.assertEqual(
+            parsed.own_checkout,
+            config.OwnCheckout(
+                (("AGENT_REMOTE", ("true",)), ("AGENT_ENTRY", ("remote",))),
+                "a hosted session clones for itself",
+            ),
+        )
+        parsed = config.parse(own({**good, "protectedPaths": [".claude/hooks/", "..hidden/x", "node_modules"]}))
+        self.assertEqual(parsed.own_checkout.protected_paths, (".claude/hooks/", "..hidden/x", "node_modules"))
+        self.assertIsNone(config.parse({"worktree": {}}).own_checkout)
+        self.assertIsNone(config.DEFAULT.own_checkout)
+
     def test_protected_variables(self) -> None:
         def command(**values: object) -> dict[str, object]:
             return {"command": values}

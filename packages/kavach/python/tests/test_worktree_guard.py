@@ -726,6 +726,260 @@ class ReviewedCLITest(AdapterTest):
                 self.assertNotIn("reviewed CLI", result.stderr)
 
 
+OWN_CHECKOUT = {
+    "env": {"AGENT_REMOTE": ["true"]},
+    "reason": "a hosted session clones the repository for itself",
+    "protectedPaths": [".claude/hooks/", ".claude/guards.json", "node_modules"],
+}
+NOT_OWNED = "Claude mutations require this session's Claude-managed worktree"
+
+
+class OwnCheckoutTest(BoundaryFixture):
+    """`worktree.ownCheckout`: the plain clone a hosted session was started in
+    counts as its own, in the environment the setting names, with its git
+    folder still refused."""
+
+    def hosted_env(
+        self, project: Path | None = None, *, setting: bool = True, **variables: str
+    ) -> dict[str, str]:
+        """The hook's environment: the setting (unless ``setting`` is false),
+        ``CLAUDE_PROJECT_DIR`` naming ``project`` (``self.main`` by default),
+        and ``variables``, with AGENT_REMOTE=true unless they say otherwise."""
+
+        worktree: dict[str, object] = {"reviewedCLIs": [REVIEWED_CLI]}
+        if setting:
+            worktree["ownCheckout"] = OWN_CHECKOUT
+        # One file per setting: environments built together must not share one.
+        path = self.external / ("kavach.json" if setting else "kavach-without.json")
+        path.write_text(json.dumps({"worktree": worktree}), encoding="utf-8")
+        environment = hermetic_git_env()
+        environment.pop("CLAUDE_PROJECT_DIR", None)
+        environment.pop("AGENT_REMOTE", None)
+        environment["KAVACH_CONFIG"] = str(path)
+        environment["CLAUDE_PROJECT_DIR"] = str(self.main if project is None else project)
+        environment["AGENT_REMOTE"] = "true"
+        environment.update(variables)
+        return environment
+
+    def write(self, cwd: Path, target: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        return self.invoke(
+            cwd, tool_input={"file_path": str(target), "content": "x\n"}, env=env
+        )
+
+    def test_the_clone_is_owned_in_the_named_environment(self) -> None:
+        environment = self.hosted_env()
+        (self.main / "sub").mkdir()
+        for label, result in (
+            ("write a tracked file", self.write(self.main, self.main / "tracked.txt", environment)),
+            ("write a new file", self.write(self.main, self.main / "docs" / "new.md", environment)),
+            ("write from a subfolder", self.write(self.main / "sub", self.main / "sub" / "a.txt", environment)),
+            ("touch", self.claude_bash(self.main, "touch new.txt", environment)),
+            ("git add", self.claude_bash(self.main, "git add tracked.txt", environment)),
+            ("git commit", self.claude_bash(self.main, "git commit -q -m x", environment)),
+            ("reviewed CLI", self.claude_bash(self.main, "niyam pr-signals 12", environment)),
+        ):
+            with self.subTest(label):
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_trusted_script_runs_after_the_gate(self) -> None:
+        script = self.main / WORKTREE_SCRIPT
+        script.parent.mkdir()
+        script.write_text("", encoding="utf-8")
+        path = self.external / "trusted.json"
+        path.write_text(
+            json.dumps({"worktree": {**WORKTREE_SETTINGS["worktree"], "ownCheckout": OWN_CHECKOUT}}),
+            encoding="utf-8",
+        )
+        command = "python3 scripts/worktree.py status"
+        environment = {**self.hosted_env(), "KAVACH_CONFIG": str(path)}
+        result = self.claude_bash(self.main, command, environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.claude_bash(self.main, command, {**environment, "AGENT_REMOTE": "false"})
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(NOT_OWNED, result.stderr)
+
+    def test_its_git_folder_stays_refused(self) -> None:
+        environment = self.hosted_env()
+        git_dir = self.main / ".git"
+        (self.main / "hooks-link").symlink_to(git_dir / "hooks")
+        if (self.main / ".GIT").exists():
+            # A case-insensitive filesystem: another spelling is the same folder.
+            result = self.write(self.main, self.main / ".GIT" / "hooks" / "pre-commit", environment)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("git folder", result.stderr)
+        for label, result in (
+            ("write a hook", self.write(self.main, git_dir / "hooks" / "pre-commit", environment)),
+            ("write config", self.write(self.main, git_dir / "config", environment)),
+            ("touch a hook", self.claude_bash(self.main, "touch .git/hooks/pre-commit", environment)),
+            ("through a symlink", self.write(self.main, self.main / "hooks-link" / "pre-commit", environment)),
+            ("reviewed CLI path", self.claude_bash(self.main, "niyam brief .git/hooks/pre-commit", environment)),
+        ):
+            with self.subTest(label):
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("git folder", result.stderr)
+        # From inside the git folder, git finds no work tree, so nothing runs.
+        result = self.write(git_dir, git_dir / "config", environment)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("cannot determine this session's repository checkout", result.stderr)
+
+    def test_the_guards_files_stay_refused(self) -> None:
+        """The consumer's protected paths, existing or not, under any case
+        spelling or link; the guard's settings file when it sits inside."""
+
+        hooks = self.main / ".claude" / "hooks"
+        hooks.mkdir(parents=True)
+        (hooks / "guard.sh").write_text("", encoding="utf-8")
+        (self.main / "node_modules" / "pkg").mkdir(parents=True)
+        (self.main / "hooks-link").symlink_to(hooks)
+        environment = self.hosted_env()
+        settings_inside = self.main / ".claude" / "settings-in-clone.json"
+        settings_inside.write_text(Path(environment["KAVACH_CONFIG"]).read_text(encoding="utf-8"), encoding="utf-8")
+        inside = {**environment, "KAVACH_CONFIG": str(settings_inside)}
+        cases = [
+            ("a hook script", self.main / ".claude" / "hooks" / "guard.sh", environment),
+            ("a new hook script", self.main / ".claude" / "hooks" / "new.sh", environment),
+            ("a missing protected file", self.main / ".claude" / "guards.json", environment),
+            ("an installed package", self.main / "node_modules" / "pkg" / "index.js", environment),
+            ("through a link", self.main / "hooks-link" / "guard.sh", environment),
+            ("the settings file inside", settings_inside, inside),
+        ]
+        if (self.main / ".CLAUDE").exists():
+            # A case-insensitive filesystem: other spellings are the same paths.
+            cases += [
+                ("hooks in capitals", self.main / ".CLAUDE" / "HOOKS" / "guard.sh", environment),
+                ("a missing file in capitals", self.main / ".Claude" / "Guards.JSON", environment),
+            ]
+        for label, target, env in cases:
+            with self.subTest(label):
+                result = self.write(self.main, target, env)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("an owned plain clone does not open it", result.stderr)
+        with self.subTest("touch a hook script"):
+            result = self.claude_bash(self.main, "touch .claude/hooks/guard.sh", environment)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("protectedPaths", result.stderr)
+        for command in (
+            "cp tracked.txt .claude/hooks/guard.sh",
+            # A target that holds a fence removes or moves it whole.
+            "rm -rf .claude",
+            "mv .claude .claude-off",
+            "rm -rf node_modules",
+            "rm -rf .CLAUDE",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("an owned plain clone does not open it", result.stderr)
+        # The known gap (README, `ownCheckout`): a command whose writes count
+        # as the whole checkout still reaches them. Fixing it flips these.
+        for command in (
+            "git checkout HEAD -- .claude/hooks/guard.sh",
+            "git restore .claude/hooks/guard.sh",
+            "git apply .tmp/x.patch",
+            "pnpm install",
+        ):
+            with self.subTest(gap=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        # Next to them, the rest of `.claude` stays writable.
+        result = self.write(self.main, self.main / ".claude" / "guards.json.bak", environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.write(self.main, self.main / ".claude" / "notes.md", environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_fences_name_the_guards_own_places(self) -> None:
+        own = mock.Mock(protected_paths=(".claude/hooks/",))
+        settings_file = self.main / ".claude" / "kavach.json"
+        fences = ADAPTER.clone_fences(self.main, own, {"KAVACH_CONFIG": str(settings_file)})
+        places = [place for place, _what in fences]
+        self.assertEqual(
+            places,
+            [
+                (self.main / ".git").resolve(),
+                settings_file,
+                ADAPTER.HERE.parents[1],
+                self.main / ".claude/hooks/",
+            ],
+        )
+        self.assertEqual(ADAPTER.HERE.parents[1].name, "kavach")
+        self.assertTrue((ADAPTER.HERE.parents[1] / "package.json").is_file())
+        without = ADAPTER.clone_fences(self.main, own, {})
+        self.assertNotIn(settings_file, [place for place, _what in without])
+
+    def test_the_fences_compare_by_identity(self) -> None:
+        """`in_fence` directly: a path below a fence, the fence itself, a
+        sibling, and a fence whose own folder does not exist yet."""
+
+        fence = self.main / ".claude" / "hooks"
+        fence.mkdir(parents=True)
+        self.assertTrue(ADAPTER.in_fence(fence, fence))
+        self.assertTrue(ADAPTER.in_fence(fence / "a" / "b.sh", fence))
+        self.assertFalse(ADAPTER.in_fence(self.main / ".claude" / "hooks2", fence))
+        self.assertFalse(ADAPTER.in_fence(self.main / "tracked.txt", fence))
+        missing = self.main / "missing" / "deeper"
+        self.assertTrue(ADAPTER.in_fence(missing / "x", missing))
+        self.assertFalse(ADAPTER.in_fence(self.main / "missing" / "other", missing))
+        self.assertFalse(ADAPTER.in_fence(self.external / "missing" / "deeper", missing))
+
+    def test_targets_outside_the_clone_stay_refused(self) -> None:
+        environment = self.hosted_env()
+        for label, result in (
+            ("write outside", self.write(self.main, self.external / "x.txt", environment)),
+            ("write a worktree", self.write(self.main, self.manual / "tracked.txt", environment)),
+            ("touch outside", self.claude_bash(self.main, f"touch {self.external / 'x.txt'}", environment)),
+        ):
+            with self.subTest(label):
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("is outside this session's Claude worktree", result.stderr)
+
+    def test_without_the_setting_or_its_environment_the_clone_is_refused(self) -> None:
+        cases = (
+            ("no setting", self.hosted_env(setting=False)),
+            ("remote false", self.hosted_env(AGENT_REMOTE="false")),
+            ("remote upper case", self.hosted_env(AGENT_REMOTE="TRUE")),
+            ("remote empty", self.hosted_env(AGENT_REMOTE="")),
+        )
+        unset = self.hosted_env()
+        unset.pop("AGENT_REMOTE")
+        for label, environment in (*cases, ("remote unset", unset)):
+            with self.subTest(label):
+                result = self.write(self.main, self.main / "tracked.txt", environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(NOT_OWNED, result.stderr)
+
+    def test_only_the_clone_the_session_started_in(self) -> None:
+        other = self.external / "other"
+        self.make_repository(other)
+        unset = self.hosted_env()
+        unset.pop("CLAUDE_PROJECT_DIR")
+        for label, cwd, environment in (
+            ("project unset", self.main, unset),
+            ("project empty", self.main, {**unset, "CLAUDE_PROJECT_DIR": ""}),
+            ("project missing", self.main, self.hosted_env(self.external / "missing")),
+            ("project is another folder", self.main, self.hosted_env(self.external)),
+            ("project is a subfolder", self.main, self.hosted_env(self.main / ".claude")),
+            ("another clone", other, self.hosted_env()),
+        ):
+            with self.subTest(label):
+                result = self.write(cwd, cwd / "tracked.txt", environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(NOT_OWNED, result.stderr)
+        # The same other clone, named as the project, is owned.
+        result = self.write(other, other / "tracked.txt", self.hosted_env(other))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_linked_worktrees_are_judged_as_before(self) -> None:
+        # An unmanaged worktree gains nothing from the setting, even named as
+        # the project; a Claude-managed one is still owned, git folder rule aside.
+        result = self.write(
+            self.manual, self.manual / "tracked.txt", self.hosted_env(self.manual)
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(NOT_OWNED, result.stderr)
+        result = self.write(self.claude, self.claude / "tracked.txt", self.hosted_env())
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class ReviewedCLIWordsTest(unittest.TestCase):
     """`reviewed_cli_words` and `reviewed_cli_paths` need no settings module."""
 

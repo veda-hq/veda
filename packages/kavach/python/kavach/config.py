@@ -147,6 +147,8 @@ RULE_IDS = (
     "commit-body-ref-line-length",
     "case-fold-path-collision",
     "routine-sources-shape",
+    "sync-base-on-origin",
+    "workflow-name-in-worktree",
 )
 
 SHAPE: dict[str, set[str]] = {

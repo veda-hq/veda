@@ -158,6 +158,32 @@ class StrykerInPlace(unittest.TestCase):
                 self.assertIsNone(self.find(command))
 
 
+class StrykerConfigInPlace(unittest.TestCase):
+    def find(self, tool: str, tool_input: dict[str, object]) -> str | None:
+        return rules.stryker_inplace(rules.Call(tool, tool_input, "/"))
+
+    def test_a_config_written_with_in_place_fires(self) -> None:
+        for tool, tool_input in (
+            ("Write", {"file_path": "/r/stryker.config.mjs", "content": "export default { inPlace: true };"}),
+            ("Write", {"file_path": "/r/stryker.conf.json", "content": '{"inPlace": true}'}),
+            ("Edit", {"file_path": "/r/apps/m/stryker.mobile.config.ts", "old_string": "x", "new_string": "inPlace : true,"}),
+            ("MultiEdit", {"file_path": "/r/stryker.config.cjs", "edits": [{"new_string": "a"}, {"new_string": "'inPlace': true"}]}),
+        ):
+            with self.subTest(tool_input=tool_input):
+                self.assertIn("sets `inPlace: true`", self.find(tool, tool_input) or "")
+
+    def test_other_writes_pass(self) -> None:
+        for tool, tool_input in (
+            ("Write", {"file_path": "/r/stryker.config.mjs", "content": "export default { inPlace: false };"}),
+            ("Write", {"file_path": "/r/notes.md", "content": "inPlace: true"}),
+            ("Write", {"file_path": 3}),
+            ("MultiEdit", {"file_path": "/r/stryker.config.mjs", "edits": "x"}),
+            ("Edit", {"file_path": "/r/stryker.config.mjs", "new_string": "mutate: []"}),
+        ):
+            with self.subTest(tool_input=tool_input):
+                self.assertIsNone(self.find(tool, tool_input))
+
+
 class CheckoutDiscardsUncommitted(Repo):
     def setUp(self) -> None:
         super().setUp()
@@ -280,6 +306,70 @@ class RoutineSourcesShape(unittest.TestCase):
                 self.assertIsNone(self.find(tool_input))
 
 
+class SyncBaseOnOrigin(Repo):
+    def setUp(self) -> None:
+        super().setUp()
+        self.origin = os.path.join(self.work, "origin.git")
+        git(self.work, "init", "-q", "--bare", self.origin)
+        git(self.repo, "remote", "add", "origin", self.origin)
+        git(self.repo, "push", "-q", "origin", "HEAD:refs/heads/main")
+        git(self.repo, "fetch", "-q", "origin")
+
+    def find(self, tool_input: dict[str, object], cwd: str | None = None) -> str | None:
+        return rules.sync_base_on_origin(rules.Call(rules.SYNC_TOOL, tool_input, cwd or self.repo))
+
+    def test_no_base_or_a_base_origin_lacks_fires(self) -> None:
+        self.assertIn("with no `base` merges the branch", self.find({}) or "")
+        self.assertIn("with no `base`", self.find({"base": ""}) or "")
+        found = self.find({"base": "claude/gone"})
+        self.assertIn('`base: "claude/gone"` names no branch this checkout knows on origin', found or "")
+
+    def test_a_base_on_origin_passes(self) -> None:
+        for base in ("main", "origin/main"):
+            with self.subTest(base=base):
+                self.assertIsNone(self.find({"base": base}))
+        self.assertIsNone(self.find({"base": 3}))
+        self.assertIsNone(self.find({"base": "x"}, os.path.join(self.work, "elsewhere")))
+
+
+class WorkflowNameInWorktree(Repo):
+    def setUp(self) -> None:
+        super().setUp()
+        flows = Path(self.repo, ".claude", "workflows")
+        flows.mkdir(parents=True)
+        (flows / "pipeline.js").write_text("main\n", encoding="utf-8")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-q", "-m", "flows")
+        self.peer = os.path.join(self.work, "peer")
+        git(self.repo, "worktree", "add", "-q", self.peer)
+
+    def find(self, tool_input: dict[str, object], cwd: str | None = None) -> str | None:
+        return rules.workflow_name_in_worktree(rules.Call("Workflow", tool_input, cwd or self.peer))
+
+    def test_a_name_whose_worktree_copy_differs_fires(self) -> None:
+        Path(self.peer, ".claude", "workflows", "pipeline.js").write_text("branch\n", encoding="utf-8")
+        found = self.find({"name": "pipeline", "args": {}})
+        self.assertIn(f"runs the main checkout's copy in {self.repo}", found or "")
+        self.assertIn(os.path.join(self.peer, ".claude", "workflows", "pipeline.js"), found or "")
+        Path(self.peer, ".claude", "workflows", "only-here.js").write_text("x\n", encoding="utf-8")
+        self.assertIsNotNone(self.find({"name": "only-here"}))
+
+    def test_the_same_copy_a_script_path_or_the_main_checkout_passes(self) -> None:
+        self.assertIsNone(self.find({"name": "pipeline"}))
+        Path(self.peer, ".claude", "workflows", "pipeline.js").write_text("branch\n", encoding="utf-8")
+        self.assertIsNone(self.find({"name": "pipeline", "scriptPath": "/abs/pipeline.js"}))
+        self.assertIsNone(self.find({"name": "pipeline"}, self.repo))
+        self.assertIsNone(self.find({"name": "absent"}))
+        self.assertIsNone(self.find({}))
+        self.assertIsNone(self.find({"name": "pipeline"}, os.path.join(self.work, "elsewhere")))
+
+    def test_unreadable_workflow_folders_and_git_are_nothing(self) -> None:
+        self.assertEqual(rules.workflow_files(os.path.join(self.work, "elsewhere"), "pipeline"), {})
+        os.mkdir(os.path.join(self.repo, ".claude", "workflows", "pipeline.d"))
+        self.assertEqual(list(rules.workflow_files(self.repo, "pipeline")), ["pipeline.js"])
+        self.assertIsNone(rules.main_checkout(os.path.join(self.work, "elsewhere")))
+
+
 class Settings(unittest.TestCase):
     def test_every_rule_warns_unless_named(self) -> None:
         self.assertEqual(config.parse({}).rules, ())
@@ -315,6 +405,12 @@ class Settings(unittest.TestCase):
     def test_the_known_ids_are_the_rules(self) -> None:
         self.assertEqual(
             set(config.RULE_IDS), {rule.id for rule in rules.RULES} | {config.SHELL_EXPANSION_RULE}
+        )
+
+    def test_the_tool_matcher_names_every_tool_but_bash(self) -> None:
+        self.assertEqual(
+            rules.TOOL_MATCHER,
+            "Write|Edit|MultiEdit|RemoteTrigger|mcp__ccd_host__sync_with_base_branch|Workflow",
         )
 
 
@@ -473,7 +569,7 @@ class PnpmSelectedDirectory(unittest.TestCase):
         (self.root / "pnpm-workspace.yaml").write_text(
             "packages:\n  - 'apps/*'\n  - \"packages/shared\" # shared\n  - tools/x\nother: 1\n", encoding="utf-8"
         )
-        for folder, name in (("apps/server", "@athya/server"), ("apps/web", "web"), ("packages/shared", "@athya/shared"), ("apps/twin", "@other/web")):
+        for folder, name in (("apps/server", "@acme/server"), ("apps/web", "web"), ("packages/shared", "@acme/shared"), ("apps/twin", "@other/web")):
             (self.root / folder).mkdir(parents=True)
             (self.root / folder / "package.json").write_text(json.dumps({"name": name}), encoding="utf-8")
         (self.root / "apps" / "loose").mkdir()
@@ -486,7 +582,7 @@ class PnpmSelectedDirectory(unittest.TestCase):
         server = self.root / "apps" / "server"
         for line in (
             "pnpm --filter server exec tsx ../../.tmp/x.ts",
-            "pnpm -F @athya/server exec tsx x.ts",
+            "pnpm -F @acme/server exec tsx x.ts",
             "pnpm --filter=server run build",
             "pnpm --filter ./apps/server exec tsx x.ts",
             "pnpm --filter {./apps/server} exec tsx x.ts",
@@ -501,7 +597,7 @@ class PnpmSelectedDirectory(unittest.TestCase):
     def test_anything_less_certain_selects_nothing(self) -> None:
         for line in (
             "pnpm exec tsx x.ts",
-            "pnpm --filter '@athya/*' exec x",
+            "pnpm --filter '@acme/*' exec x",
             "pnpm --filter server... exec x",
             "pnpm --filter server --filter web exec x",
             "pnpm -r --filter server exec x",

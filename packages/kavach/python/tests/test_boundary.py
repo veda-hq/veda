@@ -1865,6 +1865,37 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_pnpm_reads_paths_after_the_subcommand_from_the_selected_package(self) -> None:
+        # `pnpm --filter server exec ...` runs in apps/server, so a path
+        # after `exec` is read from there; an escape from there is still one.
+        # Negative control, with `pnpm_selected_directory` returning None:
+        # AssertionError: 2 != 0 : BLOCKED: mutation target <main>/.claude/.tmp/x.ts
+        # is outside this session's Claude worktree ...
+        (self.claude / "pnpm-workspace.yaml").write_text("packages:\n  - 'apps/*'\n")
+        server = self.claude / "apps" / "server"
+        server.mkdir(parents=True)
+        (server / "package.json").write_text('{"name": "@x/server"}')
+        for command in (
+            "pnpm --filter server exec tsx ../../.tmp/x.ts",
+            "pnpm -F @x/server exec tsx ../../.tmp/x.ts",
+            "pnpm --dir apps/server exec tsx ../../.tmp/x.ts",
+            "pnpm --filter ./apps/server run build ../../.tmp/out",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        for command in (
+            "pnpm --filter server exec touch ../../../outside",
+            "pnpm --dir apps/server exec touch ../../../outside",
+            "pnpm -r --filter server exec tsx ../../.tmp/x.ts",
+            "pnpm --filter server... exec tsx ../../.tmp/x.ts",
+            "pnpm --filter server exec /bin/bash run.sh",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("is outside this session's Claude worktree", result.stderr)
+
     def test_pnpm_exec_program_path_is_not_a_mutation_target(self) -> None:
         # `pnpm exec /bin/bash x` runs the same program as `pnpm exec bash x`:
         # the word after `exec` is what pnpm runs, not a path it writes.

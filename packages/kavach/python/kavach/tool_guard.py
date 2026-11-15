@@ -1,8 +1,8 @@
 """The tool guard: a Claude Code PreToolUse hook for tools other than Bash.
 
 Run as ``python3 <kavach>/python/kavach/tool_guard.py`` with one PreToolUse
-event on stdin, for the tools whose calls rules.py reads (today Write and
-RemoteTrigger). Exit 0 allows the call, with any warning in a PreToolUse
+event on stdin, for the tools whose calls rules.py reads (its hook's
+matcher is ``rules.TOOL_MATCHER``). Exit 0 allows the call, with any warning in a PreToolUse
 answer on stdout; exit 2 refuses it, with ``BLOCKED: ...`` on stderr. Any
 other end refuses too.
 

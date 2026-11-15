@@ -20,8 +20,9 @@ The rules (README, "Rules that hold a lesson"):
   failed, since a pipeline exits with its last command's status.
 - ``cd-out-of-worktree``: a ``cd`` or ``pushd`` that leaves the session's
   checkout strands every later call of the turn outside it.
-- ``stryker-inplace``: ``stryker run --inPlace`` mutates the real files and
-  restores them only after a run that finishes.
+- ``stryker-inplace``: ``stryker run --inPlace``, or a Stryker config written
+  with ``inPlace: true``, mutates the real files and restores them only after
+  a run that finishes.
 - ``checkout-discards-uncommitted``: ``git checkout -- <path>``, ``--ours``,
   ``--theirs`` and ``git restore`` overwrite a path's uncommitted changes.
 - ``commit-body-ref-line-length``: commitlint reads a body line holding
@@ -33,6 +34,12 @@ The rules (README, "Rules that hold a lesson"):
 - ``routine-sources-shape``: a RemoteTrigger routine whose
   ``session_context.sources`` entries lack a ``git_repository`` object is
   accepted with its repository dropped.
+- ``sync-base-on-origin``: the desktop app's sync-with-base-branch tool with
+  no ``base`` merges the branch the worktree was first cut from, which may be
+  gone; a base origin lacks fails at fetch.
+- ``workflow-name-in-worktree``: ``Workflow({name})`` runs the main
+  checkout's script, so from a worktree whose copy differs the branch's edits
+  are ignored.
 """
 
 from __future__ import annotations
@@ -314,8 +321,8 @@ def cd_out_of_worktree(call: Call) -> str | None:
         )
         return (
             f"`{command.words[0].text} {target}` moves the shell to {where} ({root} is this session's). "
-            "The shell keeps that folder for later calls, and from outside the checkout the guards refuse "
-            "every write, the `cd` back included, for the rest of the turn. Stay in the checkout: read "
+            "Where the shell keeps that folder for later calls, each of them runs outside the checkout, "
+            "where the guards refuse every write, the `cd` back included. Stay in the checkout: read "
             "elsewhere with absolute paths, `git -C <dir>` or `ls <dir>`."
         )
     return None
@@ -325,7 +332,34 @@ def cd_out_of_worktree(call: Call) -> str | None:
 STRYKER_RUNNERS = {"stryker", "npx", "pnpm", "yarn", "bunx", "npm"}
 
 
+STRYKER_CONFIG = re.compile(r"^stryker(?:\.[\w-]+)*\.(?:conf|config)\.(?:[cm]?js|[cm]?ts|json)$")
+IN_PLACE_TRUE = re.compile(r"""["']?\binPlace\b["']?\s*:\s*true\b""")
+IN_PLACE_REASON = (
+    "Stryker's --inPlace mutates your real files, and disableTypeChecks writes "
+    "`// @ts-nocheck` into them; they are restored only after a run that finishes, so an "
+    "interrupted run leaves mutated sources behind."
+)
+
+
 def stryker_inplace(call: Call) -> str | None:
+    if call.tool == "Bash":
+        return stryker_inplace_command(call)
+    path = call.tool_input.get("file_path")
+    if not isinstance(path, str) or not STRYKER_CONFIG.search(os.path.basename(path)):
+        return None
+    texts = [call.tool_input.get(key) for key in ("content", "new_string")]
+    edits = call.tool_input.get("edits")
+    if isinstance(edits, list):
+        texts.extend(edit.get("new_string") for edit in edits if isinstance(edit, dict))
+    if any(isinstance(text, str) and IN_PLACE_TRUE.search(text) for text in texts):
+        return (
+            f"this sets `inPlace: true` in {os.path.basename(path)}. {IN_PLACE_REASON} Leave inPlace "
+            "out (Stryker's sandbox is the default)."
+        )
+    return None
+
+
+def stryker_inplace_command(call: Call) -> str | None:
     script = bash_command(call)
     if "inPlace" not in script or "stryker" not in script:
         return None
@@ -339,10 +373,8 @@ def stryker_inplace(call: Call) -> str | None:
             text = literal(word) or ""
             if text == "--inPlace" or (text.startswith("--inPlace=") and text.split("=", 1)[1] != "false"):
                 return (
-                    "Stryker's --inPlace mutates your real files, and disableTypeChecks writes "
-                    "`// @ts-nocheck` into them; they are restored only after a run that finishes, so an "
-                    "interrupted run leaves mutated sources behind. Run it in its sandbox (drop --inPlace), "
-                    "for one file `stryker run <config> --mutate <file>`."
+                    f"{IN_PLACE_REASON} Run it in its sandbox (drop --inPlace), for one file "
+                    "`stryker run <config> --mutate <file>`."
                 )
     return None
 
@@ -405,8 +437,9 @@ def checkout_discards_uncommitted(call: Call) -> str | None:
         how = f"`git {sub} {sided}`" if sided else f"`git {sub}`"
         return (
             f"{how} overwrites the whole of each file it names, and {shown} holds uncommitted changes "
-            "that would be lost (with --ours or --theirs, the other side's changes to the file). Commit or "
-            "copy the work first, or resolve the conflict hunk by hunk in the file itself."
+            "that would be lost (with --ours or --theirs, the other side's changes to the file). Resolve "
+            "a conflict hunk by hunk in the file itself; to throw local work away, first keep it: commit "
+            "it, or `git stash push -m <tag> -- <path>`, after which the path is clean and this passes."
         )
     return None
 
@@ -552,15 +585,117 @@ def routine_sources_shape(call: Call) -> str | None:
     return None
 
 
+# The desktop app's sync-with-base-branch tool. Its name and its `base` field
+# are as recorded from real calls (2026-10-22); the tool was not offered to
+# the session that wrote this rule, so it is tested on fixtures only.
+SYNC_TOOL = "mcp__ccd_host__sync_with_base_branch"
+SYNC_WAY_OUT = 'Pass `base: "main"` (or another branch that exists on origin).'
+
+
+def sync_base_on_origin(call: Call) -> str | None:
+    base = call.tool_input.get("base")
+    if base is None or base == "":
+        return (
+            "the sync-with-base-branch tool with no `base` merges the branch this worktree was first cut "
+            "from, which in a reused worktree may since have been deleted, and the sync then fails at "
+            "fetch. " + SYNC_WAY_OUT
+        )
+    if not isinstance(base, str):
+        return None
+    name = base[len("origin/") :] if base.startswith("origin/") else base
+    # The remote-tracking ref, not the network: a hook has no credentials of
+    # its own, and a fetch would cost every call.
+    done = subprocess.run(
+        ["git", "-C", call.cwd, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{name}"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    if done.returncode == 0:
+        return None
+    if git_toplevel(call.cwd) is None:
+        return None
+    return (
+        f"`base: {json.dumps(base)}` names no branch this checkout knows on origin "
+        f"(no refs/remotes/origin/{name}), so the sync would fail at fetch. " + SYNC_WAY_OUT
+    )
+
+
+def workflow_files(folder: str, name: str) -> dict[str, bytes]:
+    """The workflow scripts named ``name`` in a checkout's .claude/workflows,
+    by file name, with their bytes."""
+
+    directory = os.path.join(folder, ".claude", "workflows")
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return {}
+    found: dict[str, bytes] = {}
+    for entry in entries:
+        if os.path.splitext(entry)[0] != name:
+            continue
+        try:
+            with open(os.path.join(directory, entry), "rb") as handle:
+                found[entry] = handle.read()
+        except OSError:
+            continue
+    return found
+
+
+def main_checkout(top: str) -> str | None:
+    """The main checkout of the repository whose worktree is ``top``."""
+
+    done = subprocess.run(
+        ["git", "-C", top, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    common = done.stdout.strip()
+    return os.path.dirname(common) if done.returncode == 0 and common else None
+
+
+def workflow_name_in_worktree(call: Call) -> str | None:
+    """`Workflow({name})` resolves the script from the main checkout's
+    .claude/workflows, not the worktree's (recorded 2026-09-03; the tool was
+    not offered to the session that wrote this rule: fixtures only)."""
+
+    name = call.tool_input.get("name")
+    if not isinstance(name, str) or not name or call.tool_input.get("scriptPath"):
+        return None
+    top = git_toplevel(call.cwd)
+    if top is None or not os.path.isfile(os.path.join(top, ".git")):
+        return None  # not a linked worktree: the name resolves where the session is
+    main = main_checkout(top)
+    if main is None or os.path.realpath(main) == os.path.realpath(top):
+        return None
+    mine, theirs = workflow_files(top, name), workflow_files(main, name)
+    if not mine or mine == theirs:
+        return None
+    script = os.path.join(top, ".claude", "workflows", sorted(mine)[0])
+    return (
+        f"`Workflow({{name: {json.dumps(name)}}})` runs the main checkout's copy in {main}, and this "
+        "worktree's differs (or the main checkout has none), so the branch's edits are ignored. Pass "
+        f"`scriptPath: {json.dumps(script)}` with the same args."
+    )
+
+
 RULES: tuple[Rule, ...] = (
     Rule("pipe-masks-exit", ("Bash",), pipe_masks_exit),
     Rule("cd-out-of-worktree", ("Bash",), cd_out_of_worktree),
-    Rule("stryker-inplace", ("Bash",), stryker_inplace),
+    Rule("stryker-inplace", ("Bash", "Write", "Edit", "MultiEdit"), stryker_inplace),
     Rule("checkout-discards-uncommitted", ("Bash",), checkout_discards_uncommitted),
     Rule("commit-body-ref-line-length", ("Bash",), commit_body_ref_line_length),
     Rule("case-fold-path-collision", ("Write",), case_fold_path_collision),
     Rule("routine-sources-shape", ("RemoteTrigger",), routine_sources_shape),
+    Rule("sync-base-on-origin", (SYNC_TOOL,), sync_base_on_origin),
+    Rule("workflow-name-in-worktree", ("Workflow",), workflow_name_in_worktree),
 )
+
+# The tools the tool guard reads: give its hook this matcher.
+TOOL_MATCHER = "|".join(dict.fromkeys(tool for rule in RULES for tool in rule.tools if tool != "Bash"))
 
 
 # ---------------------------------------------------------------------------

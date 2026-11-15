@@ -136,14 +136,17 @@ undoing another.
   <!-- held by: dvara run (refuses a pre-push run whose HEAD moved while it ran) -->
 - **The sync tool's default base can be stale.** In a reused worktree, the sync-with-base-branch
   tool defaults to the branch the worktree was first cut from, which may since have been
-  deleted, and fails at fetch; always pass base `main`. Conflicts on append-only files are
-  append/append: keep both sides.
+  deleted, and fails at fetch; always pass base `main`.
+- **Syncing append-only files.** Conflicts on append-only files are append/append: keep both
+  sides.
 - **Named workflows resolve from the main checkout.** From a git worktree, `Workflow({name})`
-  and `preview_start({name})` resolve from the main checkout's `.claude` directory, not the
-  worktree's, so a branch-local script or `launch.json` edit is silently ignored. Launch
-  workflows with an absolute `scriptPath` into the worktree. `preview_start` has no equivalent,
-  so a worktree dev server cannot be previewed while the main checkout holds the same name and
-  port.
+  resolves from the main checkout's `.claude` directory, not the worktree's, so a branch-local
+  script edit is silently ignored. Launch workflows with an absolute `scriptPath` into the
+  worktree.
+- **Named previews resolve from the main checkout.** `preview_start({name})` reads the main
+  checkout's `launch.json`, so a worktree edit is ignored, and it has no `scriptPath`
+  equivalent: a worktree dev server cannot be previewed while the main checkout holds the same
+  name and port.
 - **File links resolve against the launch directory.** The app resolves clicked file links
   against the session's launch directory, not the worktree it entered, so a file that exists
   only on the worktree branch shows "Couldn't read this file". Link worktree-only files as

@@ -1865,6 +1865,75 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_pnpm_exec_program_path_is_not_a_mutation_target(self) -> None:
+        # `pnpm exec /bin/bash x` runs the same program as `pnpm exec bash x`:
+        # the word after `exec` is what pnpm runs, not a path it writes.
+        # Negative control, with `pnpm_exec_program_index` returning None:
+        # AssertionError: 2 != 0 : BLOCKED: mutation target /bin/bash is
+        # outside this session's Claude worktree ...
+        (self.claude / "run.sh").write_text("true\n")
+        bash = shutil.which("bash") or "/bin/bash"
+        for command in (
+            # The command the refusal was reported on (#116), as typed.
+            "pnpm exec /bin/bash .tmp/noclobber-race.sh",
+            "pnpm exec bash run.sh",
+            f"pnpm exec {bash} run.sh",
+            "pnpm exec /bin/bash ./run.sh",
+            "pnpm exec -- /bin/bash run.sh",
+        ):
+            with self.subTest(command=command):
+                result = self.invoke(
+                    self.claude,
+                    tool_name="Bash",
+                    tool_input={"command": command},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        # Its operands are still confined, whichever spelling names the
+        # program: the refusal names the outside operand, not the program.
+        for command, outside in (
+            (f"pnpm exec bash {self.external / 'run.sh'}", "run.sh"),
+            (f"pnpm exec /bin/bash {self.external / 'run.sh'}", "run.sh"),
+            (f"pnpm exec -- /bin/bash {self.external / 'run.sh'}", "run.sh"),
+            (f"pnpm exec /bin/cp run.sh {self.external / 'copied.sh'}", "copied.sh"),
+        ):
+            with self.subTest(command=command):
+                result = self.invoke(
+                    self.claude,
+                    tool_name="Bash",
+                    tool_input={"command": command},
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(
+                    f"mutation target {(self.external / outside).resolve()} is outside",
+                    result.stderr,
+                )
+        # Any other shape keeps the program word confined, as before.
+        for command in (
+            "pnpm -C . exec /bin/bash run.sh",
+            "pnpm --filter app exec /bin/bash run.sh",
+            "pnpm exec -r /bin/bash run.sh",
+            "pnpm exec -c /bin/bash run.sh",
+        ):
+            with self.subTest(command=command):
+                result = self.invoke(
+                    self.claude,
+                    tool_name="Bash",
+                    tool_input={"command": command},
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                # Resolved, so `/usr/bin/bash` where `/bin` is a link to it.
+                self.assertRegex(result.stderr, r"mutation target \S*/bash is outside")
+        # A program word the guard cannot expand stays unresolvable. Negative
+        # control, with the program skipped before the dynamic-marker check:
+        # AssertionError: 0 != 2
+        result = self.invoke(
+            self.claude,
+            tool_name="Bash",
+            tool_input={"command": "pnpm exec $HOME/bash run.sh"},
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("could not be resolved", result.stderr)
+
     def test_execution_wrappers_fail_closed_when_options_are_ambiguous(self) -> None:
         for command in (
             "time --format=%e pnpm test",

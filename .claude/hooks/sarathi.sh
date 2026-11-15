@@ -39,14 +39,25 @@ pins_current() {
   done < <(sed -nE 's/^[[:space:]]*"@veda-hq\/([a-z0-9-]+)":[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1 \2/p' "$root/package.json" 2>/dev/null)
 }
 install_pins() {
-  local common lock log waited=0
+  local common lock takeover log waited=0
   common="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || common="$root"
   lock="$common/sarathi-install.lock"
+  takeover="$lock.takeover"
   log="$common/sarathi-install.log"
   # A lock older than 10 minutes is an install that died: take it over. It is
-  # a file; an older sarathi.sh made it a directory.
-  find "$lock" -maxdepth 0 -mmin +10 -type d -exec rmdir {} \; 2>/dev/null
-  find "$lock" -maxdepth 0 -mmin +10 ! -type d -exec rm -f {} \; 2>/dev/null
+  # a file; an older sarathi.sh made it a directory. Two sessions can both
+  # find it so, and the first to remove it then holds a fresh lock. So the
+  # takeover is held too, by its own noclobber file, and the lock's age is
+  # judged again under it: a takeover removes only the stale lock, never a
+  # fresh one. A takeover another session holds is left to it, and the lock
+  # waited for as a held one. A takeover file over a minute old is a session
+  # killed inside it.
+  find "$takeover" -maxdepth 0 -mmin +1 -exec rm -f {} \; 2>/dev/null
+  if [ -n "$(find "$lock" -maxdepth 0 -mmin +10 2>/dev/null)" ] && (set -C; : >"$takeover") 2>/dev/null; then
+    find "$lock" -maxdepth 0 -mmin +10 -type d -exec rmdir {} \; 2>/dev/null
+    find "$lock" -maxdepth 0 -mmin +10 ! -type d -exec rm -f {} \; 2>/dev/null
+    rm -f "$takeover"
+  fi
   # The lock is bash's own noclobber create (O_EXCL), never mkdir: uutils
   # coreutils' mkdir (ubuntu-26.04's) lets two racing callers both succeed.
   # A directory there, an older sarathi.sh's lock, counts as held too.

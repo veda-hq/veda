@@ -5,6 +5,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { after, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
@@ -14,10 +15,32 @@ const LAUNCHER = join(ROOT, '.claude', 'hooks', 'sarathi.sh');
 const scratch = mkdtempSync(join(tmpdir(), 'sarathi-hook-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
+// A stand-in niyam CLI. .claude/sarathi.json runs niyam's identity guard on
+// every gh or git command and niyam session-start at session start, both
+// failing closed without the CLI, which CI does not install. HOME is a scratch
+// folder, so the hook finds this one first on PATH, never a real one in
+// ~/.config/niyam/bin.
+const niyamHome = join(scratch, 'home');
+const niyamBin = join(scratch, 'niyam-bin');
+mkdirSync(niyamHome, { recursive: true });
+mkdirSync(niyamBin, { recursive: true });
+writeFileSync(
+  join(niyamBin, 'niyam'),
+  ['#!/bin/sh', 'case "$1" in', '  guard) cat > /dev/null ;;', '  session-start) echo "niyam: the stand-in session-start ran" ;;', '  *) exit 9 ;;', 'esac', ''].join('\n'),
+  { mode: 0o755 },
+);
+
+/** The environment a hook runs in: `env` over this process's, with the stand-in niyam. @param {string} project @param {Record<string, string>} [env] */
+function hookEnv(project, env = {}) {
+  const merged = { ...process.env, CLAUDE_PROJECT_DIR: project, KAVACH_REFUSAL_LOG_OFF: '1', ...env, HOME: niyamHome };
+  merged.PATH = `${niyamBin}:${merged.PATH}`;
+  if (env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL === undefined) delete merged.CLAUDE_CODE_DISABLE_ADVISOR_TOOL;
+  return merged;
+}
+
 /** @param {string} event @param {object} input @param {{ project?: string, env?: Record<string, string>, unset?: string[] }} [options] */
 function hook(event, input, options = {}) {
-  const env = { ...process.env, CLAUDE_PROJECT_DIR: options.project ?? ROOT, KAVACH_REFUSAL_LOG_OFF: '1', ...options.env };
-  if (options.env?.CLAUDE_CODE_DISABLE_ADVISOR_TOOL === undefined) delete env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL;
+  const env = hookEnv(options.project ?? ROOT, options.env);
   for (const name of options.unset ?? []) delete env[name];
   const result = spawnSync('bash', [LAUNCHER, event], { input: JSON.stringify(input), encoding: 'utf8', env, cwd: ROOT });
   return { code: result.status, stdout: result.stdout, stderr: result.stderr };
@@ -80,8 +103,7 @@ describe('kavach through sarathi, from the pinned install', () => {
   });
 
   test('the settings command runs the launcher itself, so it must stay executable', () => {
-    const env = { ...process.env, CLAUDE_PROJECT_DIR: ROOT, KAVACH_REFUSAL_LOG_OFF: '1' };
-    delete env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL;
+    const env = hookEnv(ROOT);
     const input = JSON.stringify(bash('git commit --no-verify -m wip'));
     const result = spawnSync('/bin/sh', ['-c', '"$CLAUDE_PROJECT_DIR"/.claude/hooks/sarathi.sh PreToolUse'], { input, encoding: 'utf8', env, cwd: ROOT });
     assert.equal(result.status, 2);
@@ -241,19 +263,26 @@ describe('when the pinned sarathi cannot run', () => {
     assert.equal(hook('PreToolUse', bash('git status'), { project: broken, env: { PATH } }).code, 2);
   });
 
+  /**
+   * A session start in `dir`, with `bins` ahead on PATH and a slow install.
+   * @param {string} dir @param {string[]} bins @param {Record<string, string>} [extra]
+   * @returns {Promise<{ code: number | null, stderr: string }>}
+   */
+  const startSession = (dir, bins, extra = {}) => {
+    const env = { ...process.env, CLAUDE_PROJECT_DIR: dir, KAVACH_REFUSAL_LOG_OFF: '1', PATH: [...bins, process.env.PATH].join(':'), SLOW_INSTALL: '1', ...extra };
+    delete env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL;
+    return new Promise(resolve => {
+      const child = spawn('bash', [LAUNCHER, 'SessionStart'], { env, cwd: ROOT, stdio: ['pipe', 'ignore', 'pipe'] });
+      let stderr = '';
+      child.stderr.on('data', d => (stderr += d));
+      child.on('close', code => resolve({ code, stderr }));
+      child.stdin.end(JSON.stringify(start));
+    });
+  };
+
   /** Two session starts in `dir` at once, with `bins` ahead on PATH. @param {string} dir @param {string[]} bins */
   const startTogether = async (dir, bins) => {
-    const env = { ...process.env, CLAUDE_PROJECT_DIR: dir, KAVACH_REFUSAL_LOG_OFF: '1', PATH: [...bins, process.env.PATH].join(':'), SLOW_INSTALL: '1' };
-    delete env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL;
-    const run = () =>
-      new Promise(resolve => {
-        const child = spawn('bash', [LAUNCHER, 'SessionStart'], { env, cwd: ROOT, stdio: ['pipe', 'ignore', 'pipe'] });
-        let stderr = '';
-        child.stderr.on('data', d => (stderr += d));
-        child.on('close', code => resolve({ code, stderr }));
-        child.stdin.end(JSON.stringify(start));
-      });
-    const results = await Promise.all([run(), run()]);
+    const results = await Promise.all([startSession(dir, bins), startSession(dir, bins)]);
     for (const result of results) assert.equal(result.code, 0, result.stderr);
   };
 
@@ -291,6 +320,74 @@ describe('when the pinned sarathi cannot run', () => {
       assert.equal(started.code, 0, started.stderr);
       assert.equal(installs(dir), 1);
       assert.equal(existsSync(lock), false);
+      assert.equal(existsSync(`${lock}.takeover`), false);
+    });
+  }
+
+  test('a takeover file over a minute old is a session killed inside it, and the aged lock is still taken over', () => {
+    const PATH = `${pnpmBin}:${process.env.PATH}`;
+    const dir = project('died-in-takeover');
+    const lock = join(dir, 'sarathi-install.lock');
+    writeFileSync(lock, '');
+    writeFileSync(`${lock}.takeover`, '');
+    const eleven = Date.now() / 1000 - 11 * 60;
+    utimesSync(lock, eleven, eleven);
+    utimesSync(`${lock}.takeover`, eleven, eleven);
+    const started = hook('SessionStart', start, { project: dir, env: { PATH } });
+    assert.equal(started.code, 0, started.stderr);
+    assert.equal(installs(dir), 1);
+    assert.equal(existsSync(lock), false);
+    assert.equal(existsSync(`${lock}.takeover`), false);
+  });
+
+  // Two sessions can both judge one aged lock stale. The first to remove it
+  // then takes a fresh lock, which the other must not remove. Session B is
+  // parked at one step of its takeover until session A is installing (or for
+  // 5 s), which is that race every time: in its `rm` of the lock, or right
+  // after a `find` (with no -exec) has judged the lock stale.
+  const park = [
+    'park() {',
+    '  : > "$GATED_LOCK.parked"',
+    '  n=0; while [ ! -e "$GATED_INSTALLS" ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done',
+    '}',
+  ];
+  const gates = join(scratch, 'gates');
+  for (const [name, body] of /** @type {const} */ ([
+    ['rm', ['for last; do :; done', '[ "$last" = "$GATED_LOCK" ] && park', 'exec /bin/rm "$@"']],
+    [
+      'find',
+      [
+        'case " $* " in *" -exec "*) exec /usr/bin/find "$@" ;; esac',
+        '[ "$1" = "$GATED_LOCK" ] || exec /usr/bin/find "$@"',
+        'out="$(/usr/bin/find "$@")"; status=$?',
+        '[ -n "$out" ] && { park; printf "%s\\n" "$out"; }',
+        'exit "$status"',
+      ],
+    ],
+  ])) {
+    mkdirSync(join(gates, name), { recursive: true });
+    writeFileSync(join(gates, name, name), ['#!/bin/sh', ...park, ...body, ''].join('\n'), { mode: 0o755 });
+  }
+  for (const [gate, when] of [
+    ['rm', 'the second removing it once the first holds a fresh lock'],
+    ['find', 'the second having judged it before the first took it over'],
+  ]) {
+    test(`two sessions finding one aged lock install once: ${when}`, async () => {
+      const dir = project(`died-together-${gate}`);
+      const lock = join(dir, 'sarathi-install.lock');
+      writeFileSync(lock, '');
+      const eleven = Date.now() / 1000 - 11 * 60;
+      utimesSync(lock, eleven, eleven);
+      const b = startSession(dir, [join(gates, gate), pnpmBin], { GATED_LOCK: lock, GATED_INSTALLS: join(dir, 'installs') });
+      for (let n = 0; !existsSync(`${lock}.parked`); n++) {
+        assert.ok(n < 200, `session B never reached its ${gate} of the aged lock`);
+        await delay(100);
+      }
+      const a = startSession(dir, [pnpmBin]);
+      for (const result of await Promise.all([a, b])) assert.equal(result.code, 0, result.stderr);
+      assert.equal(installs(dir), 1);
+      assert.equal(existsSync(lock), false);
+      assert.equal(existsSync(`${lock}.takeover`), false);
     });
   }
 

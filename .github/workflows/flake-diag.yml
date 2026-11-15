@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -26,6 +26,22 @@ jobs:
         timeout-minutes: 3
         with:
           node-version-file: .nvmrc
+      # Does mkdir alone let two racing callers both succeed?
+      - name: mkdir race
+        run: |
+          command -v mkdir; readlink -f "$(command -v mkdir)"; mkdir --version | head -2
+          ls /usr/bin/gnumkdir /usr/lib/cargo/bin 2>&1 | head -5 || true
+          race() {
+            local tool="$1" both=0
+            for i in $(seq 1 2000); do
+              d="$RUNNER_TEMP/race-$2-$i"
+              out="$( { "$tool" "$d" 2>/dev/null && echo ok & "$tool" "$d" 2>/dev/null && echo ok & wait; } | grep -c ok)"
+              [ "$out" -eq 2 ] && both=$((both + 1))
+            done
+            echo "$tool: both succeeded in $both of 2000"
+          }
+          race mkdir default
+          if [ -x /usr/bin/gnumkdir ]; then race /usr/bin/gnumkdir gnu; fi
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r check
       - name: Loop Script tests

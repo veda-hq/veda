@@ -15,6 +15,7 @@ import { join, resolve } from 'node:path';
 
 import { ConfigError, compileMatcher, entriesFor, forbiddenSet, loadConfig, longestTimeout, settingsMatcher, type Config } from './config.ts';
 import { merge } from './merge.ts';
+import { autofixCommand } from './hooks/autofix.ts';
 import { main as page } from './page/page.ts';
 import { runAll, type Outcome } from './run.ts';
 
@@ -29,7 +30,7 @@ export interface Io {
   readonly run?: (entries: Parameters<typeof runAll>[0], config: Config, input: string, cwd: string) => Promise<Outcome[]>;
 }
 
-export const VERSION = '0.6.6';
+export const VERSION = '0.6.9';
 
 const USAGE = `usage: sarathi hook <Event> [--config <file>]
        sarathi check [--config <file>] [--settings <file>]
@@ -37,6 +38,8 @@ const USAGE = `usage: sarathi hook <Event> [--config <file>]
        sarathi page --read <artifact> [--out <page.html>]
        sarathi page --comments <artifact>
        sarathi page --reply <artifact> --thread <id> --text-file <file> [--resolve]
+       sarathi autofix add <pr-url> [--session <id>] [--source <name>]
+       sarathi autofix list [--session <id>]
        sarathi --version
 `;
 
@@ -272,6 +275,7 @@ export async function main(io: Io): Promise<number> {
   }
   // Before parseOptions: the page command has flags of its own.
   if (io.argv[0] === 'page') return page(io.argv.slice(1), io);
+  if (io.argv[0] === 'autofix') return autofixCommand(io.argv.slice(1), { ...io, now: () => new Date() });
   const options = parseOptions(io.argv);
   if (typeof options === 'string') {
     io.err(`sarathi: ${options}\n${USAGE}`);

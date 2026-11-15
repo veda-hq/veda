@@ -1,0 +1,1 @@
+{"hook_event_name":"PostToolUse","session_id":"smoke","tool_name":"Bash","tool_input":{"command":"gh -R veda-hq/veda pr create --fill"},"tool_response":{"stdout":"https://github.com/veda-hq/veda/pull/90\n","stderr":"","interrupted":false,"isImage":false}}

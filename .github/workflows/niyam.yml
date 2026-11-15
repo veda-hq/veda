@@ -1,4 +1,4 @@
-# Written by niyam onboard: the shared niyam checks at v0.6.14.
+# Written by niyam onboard: the shared niyam checks at v0.6.17.
 # To upgrade, change the version on every line that names it (two per job).
 # The weekly, merged and needs-owner jobs are split out so pull request and push runs stay read-only.
 name: niyam
@@ -34,9 +34,9 @@ jobs:
   niyam:
     name: niyam
     if: (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'push'
-    uses: veda-hq/niyam/.github/workflows/checks.yml@v0.6.14
+    uses: veda-hq/niyam/.github/workflows/checks.yml@v0.6.17
     with:
-      niyam-ref: v0.6.14
+      niyam-ref: v0.6.17
     secrets:
       FIGMA_TOKEN: ${{ secrets.FIGMA_TOKEN }}
       FIGMA_LIBRARY: ${{ secrets.FIGMA_LIBRARY }}
@@ -49,9 +49,9 @@ jobs:
       contents: read
       issues: write
       pull-requests: read
-    uses: veda-hq/niyam/.github/workflows/checks.yml@v0.6.14
+    uses: veda-hq/niyam/.github/workflows/checks.yml@v0.6.17
     with:
-      niyam-ref: v0.6.14
+      niyam-ref: v0.6.17
     secrets:
       FIGMA_TOKEN: ${{ secrets.FIGMA_TOKEN }}
       FIGMA_LIBRARY: ${{ secrets.FIGMA_LIBRARY }}
@@ -67,9 +67,9 @@ jobs:
       contents: read
       issues: write
       pull-requests: read
-    uses: veda-hq/niyam/.github/workflows/checks.yml@v0.6.14
+    uses: veda-hq/niyam/.github/workflows/checks.yml@v0.6.17
     with:
-      niyam-ref: v0.6.14
+      niyam-ref: v0.6.17
     secrets:
       FIGMA_TOKEN: ${{ secrets.FIGMA_TOKEN }}
       FIGMA_LIBRARY: ${{ secrets.FIGMA_LIBRARY }}
@@ -90,9 +90,9 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    uses: veda-hq/niyam/.github/workflows/checks.yml@v0.6.14
+    uses: veda-hq/niyam/.github/workflows/checks.yml@v0.6.17
     with:
-      niyam-ref: v0.6.14
+      niyam-ref: v0.6.17
     secrets:
       FIGMA_TOKEN: ${{ secrets.FIGMA_TOKEN }}
       FIGMA_LIBRARY: ${{ secrets.FIGMA_LIBRARY }}

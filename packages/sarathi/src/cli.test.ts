@@ -287,6 +287,11 @@ describe('options', () => {
     });
     assert.match((await run([])).err, /sarathi page --read <artifact>/);
   });
+
+  it('hands autofix its own flags', async () => {
+    assert.match((await run(['autofix', 'add', 'x', '--session'])).err, /--session needs a value/);
+    assert.match((await run([])).err, /sarathi autofix add <pr-url>/);
+  });
 });
 
 describe('bin', () => {

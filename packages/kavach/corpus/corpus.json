@@ -1540,5 +1540,177 @@
     "happens": true,
     "family": "PATH changes",
     "text": "printf -v PATH %s ./bin; ls"
+  },
+  {
+    "id": "rv-handoff-record",
+    "note": "A reviewed CLI (the sample config's reviewedCLIs; fixture.ts NIYAM_STANDIN) writes under its git toplevel, here the session's own worktree; quoted free text is data.",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "reviewed CLI",
+    "text": "niyam handoff --record --base origin/main --disposition own-work --reason \"text with spaces\""
+  },
+  {
+    "id": "rv-reply",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "reviewed CLI",
+    "text": "niyam review-thread PRRT_x --reply \"text\""
+  },
+  {
+    "id": "rv-body-file",
+    "note": "A declared path inside the worktree.",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "reviewed CLI",
+    "text": "niyam review-thread PRRT_x --body-file .tmp/r.md"
+  },
+  {
+    "id": "rv-brief",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "reviewed CLI",
+    "text": "niyam brief .tmp/d.md"
+  },
+  {
+    "id": "rv-keep-going-stop",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "reviewed CLI",
+    "text": "niyam keep-going --stop \"why\""
+  },
+  {
+    "id": "rv-pr-signals",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "reviewed CLI",
+    "text": "niyam pr-signals 12"
+  },
+  {
+    "id": "rv-redirect",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "reviewed CLI",
+    "text": "niyam pr-signals 12 > {P}/pwned"
+  },
+  {
+    "id": "rv-chain",
+    "note": "The second run stands in the main checkout, whose toplevel takes the log.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "reviewed CLI",
+    "text": "niyam pr-signals 12 && cd {P} && niyam pr-signals 12"
+  },
+  {
+    "id": "rv-substitution",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "reviewed CLI",
+    "text": "niyam review-thread PRRT_x --reply \"fixed $(touch {P}/pwned)\""
+  },
+  {
+    "id": "rv-backticks",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "reviewed CLI",
+    "text": "niyam review-thread PRRT_x --reply \"fixed `touch {P}/pwned`\""
+  },
+  {
+    "id": "rv-outside-body-file",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "reviewed CLI",
+    "text": "niyam review-thread PRRT_x --body-file {P}/r.md"
+  },
+  {
+    "id": "rv-outside-brief",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "reviewed CLI",
+    "text": "niyam brief {UP}d.md"
+  },
+  {
+    "id": "rv-unlisted-subcommand",
+    "note": "pr-autocreate writes under any --root it is given; no entry lists it.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "reviewed CLI",
+    "text": "niyam pr-autocreate watch --root {P} --branch x --sha y"
+  },
+  {
+    "id": "rv-env-prefix",
+    "note": "git's variables move the toplevel the CLI writes under.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "reviewed CLI",
+    "text": "GIT_DIR={P}/.git GIT_WORK_TREE={P} niyam pr-signals 12"
+  },
+  {
+    "id": "rv-primary-handoff-record",
+    "note": "From a checkout the session does not own, the toplevel the CLI writes under is that checkout.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "reviewed CLI",
+    "text": "niyam handoff --record --base origin/main --disposition own-work --reason \"text with spaces\"",
+    "inPrimary": true
+  },
+  {
+    "id": "rv-primary-reply",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "reviewed CLI",
+    "text": "niyam review-thread PRRT_x --reply \"text\"",
+    "inPrimary": true
+  },
+  {
+    "id": "rv-primary-body-file",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "reviewed CLI",
+    "text": "niyam review-thread PRRT_x --body-file .tmp/r.md",
+    "inPrimary": true
+  },
+  {
+    "id": "rv-primary-brief",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "reviewed CLI",
+    "text": "niyam brief .tmp/d.md",
+    "inPrimary": true
+  },
+  {
+    "id": "rv-primary-keep-going-stop",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "reviewed CLI",
+    "text": "niyam keep-going --stop \"why\"",
+    "inPrimary": true
+  },
+  {
+    "id": "rv-primary-pr-signals",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "reviewed CLI",
+    "text": "niyam pr-signals 12",
+    "inPrimary": true
   }
 ]

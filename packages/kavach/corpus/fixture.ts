@@ -19,8 +19,9 @@
  *   <root>/shims                  `pnpm`, `eslint`, `turbo` stand-ins that
  *                                 log their argv to <root>/shim-log;
  *                                 `pnpm mutate` fails unless
- *                                 <root>/gate-passes exists
- *   <root>/home                   HOME and CLAUDE_CONFIG_DIR for every child
+ *                                 <root>/gate-passes exists; and `niyam`,
+ *                                 a reviewed CLI's stand-in (NIYAM_STANDIN)
+ *   <root>/home                  HOME and CLAUDE_CONFIG_DIR for every child
  *
  * Nothing here reaches outside <root>: git runs under hermeticGitEnv, HOME is
  * the fixture's, and origin is a local bare repository.
@@ -146,6 +147,41 @@ const SHIM = (name: string, log: string, gatePass: string): string =>
     `[ "${name}" != pnpm ] || [ "$1" != mutate ] || [ -e '${gatePass}' ]`,
     '',
   ].join('\n');
+
+/**
+ * A reviewed CLI's stand-in, niyam as its 0.6.17 was audited (the sample
+ * config's `reviewedCLIs`): it writes a log under its git toplevel, and
+ * touches each path its command line declares (`--open-brief`,
+ * `--body-file`, `--from`, `brief`'s operands), the most a declared path may
+ * stand for. `pr-autocreate`, which no entry lists, writes under the
+ * `--root` it is given, as niyam's does.
+ */
+export const NIYAM_STANDIN = [
+  '#!/bin/sh',
+  'top=$(git rev-parse --show-toplevel) || exit 1',
+  'mkdir -p "$top/.tmp" || exit 1',
+  'printf \'%s\\n\' "$*" >> "$top/.tmp/niyam-standin.log"',
+  'touched() { mkdir -p "$(dirname "$1")" && : >> "$1"; }',
+  'sub=$1',
+  '[ "$#" -gt 0 ] && shift',
+  'next=',
+  'for word in "$@"; do',
+  '  if [ -n "$next" ]; then',
+  '    if [ "$next" = root ]; then touched "$word/.tmp/pr-autocreate/watch.log"; else touched "$word"; fi',
+  '    next=',
+  '    continue',
+  '  fi',
+  '  case "$word" in',
+  '    --open-brief|--body-file|--from) next=path ;;',
+  '    --open-brief=*|--body-file=*|--from=*) touched "${word#*=}" ;;',
+  '    --root) if [ "$sub" = pr-autocreate ]; then next=root; fi ;;',
+  '    -*) ;;',
+  '    *) if [ "$sub" = brief ]; then touched "$word"; fi ;;',
+  '  esac',
+  'done',
+  'exit 0',
+  '',
+].join('\n');
 
 /** stdout of a child that must succeed; anything else throws with why. */
 function succeeded(what: string, outcome: ChildOutcome): string {
@@ -323,6 +359,8 @@ async function populate(paths: Layout): Promise<Fixture> {
     writeFileSync(path, SHIM(name, shimLog, gatePass));
     chmodSync(path, 0o755);
   }
+  writeFileSync(join(shims, 'niyam'), NIYAM_STANDIN);
+  chmodSync(join(shims, 'niyam'), 0o755);
   // A repository-controlled program that shadows `ls` once PATH points at it.
   // Committed like the hooks, so it names the main checkout by variable.
   const shadow = join(primary, 'bin', 'ls');

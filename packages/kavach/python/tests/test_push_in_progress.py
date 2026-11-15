@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from .test_boundary import ADAPTER, BoundaryFixture, git, hermetic_git_env
-from .test_worktree_guard import WORKTREE_SCRIPT, WORKTREE_SETTINGS
+from .test_worktree_guard import REVIEWED_SETTINGS, WORKTREE_SCRIPT, WORKTREE_SETTINGS
 
 
 STARTED = "2026-11-10T03:05:00.000Z"
@@ -141,6 +141,18 @@ class PushInProgressTest(BoundaryFixture):
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text("", encoding="utf-8")
         command = "python3 scripts/worktree.py begin --branch claude/next-task"
+        self.assertEqual(self.claude_bash(self.claude, command, environment).returncode, 0)
+        self.mark(self.sleeper.pid)
+        result = self.claude_bash(self.claude, command, environment)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("this command may write in it", result.stderr)
+
+    def test_a_reviewed_cli_waits_too(self) -> None:
+        settings = self.external / "kavach.json"
+        settings.write_text(json.dumps(REVIEWED_SETTINGS), encoding="utf-8")
+        environment = hermetic_git_env()
+        environment["KAVACH_CONFIG"] = str(settings)
+        command = 'niyam review-thread PRRT_x --reply "done"'
         self.assertEqual(self.claude_bash(self.claude, command, environment).returncode, 0)
         self.mark(self.sleeper.pid)
         result = self.claude_bash(self.claude, command, environment)

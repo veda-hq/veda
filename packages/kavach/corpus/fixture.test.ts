@@ -192,7 +192,7 @@ describe('createFixture', () => {
     for (const script of [
       join(fixture.remote, 'hooks', 'update'),
       join(primary, GUARD_FILE),
-      ...['pnpm', 'eslint', 'turbo', 'vitest', 'tsc'].map(name =>
+      ...['pnpm', 'eslint', 'turbo', 'vitest', 'tsc', 'niyam'].map(name =>
         join(fixture.shims, name),
       ),
     ]) {

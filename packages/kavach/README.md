@@ -78,6 +78,15 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
     "readOnlyCommands": [
       { "pattern": "pnpm (?:health:check|(?:ls|list|why)(?: [A-Za-z0-9@][A-Za-z0-9@/._-]*)*(?: --depth [0-9]+)?)",
         "env": { "AGENT_REMOTE": ["true"] }, "reason": "the script and pnpm's listing commands only read" }
+    ],
+    "reviewedCLIs": [
+      { "program": "niyam",
+        "subcommands": {
+          "review-thread": { "pathOptions": ["--body-file"] },
+          "brief": { "pathOperands": true },
+          "keep-going --stop": {}
+        },
+        "reason": "writes only under the git toplevel (niyam 0.6.17 audited)" }
     ]
   },
   "command": {
@@ -105,6 +114,27 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
   the list to commands that write nothing however they are called, and
   name each option a pattern allows: a runner's own options after the
   subcommand (`pnpm ls -C elsewhere`, `--pnpmfile`) move or widen what runs.
+- `reviewedCLIs`: a CLI whose writes you reviewed, run from the agent's own
+  worktree with free-text arguments. List one only when every write it
+  makes lands under the git toplevel or on a path its command line names.
+  Each key of `subcommands` is the subcommand's leading words
+  (`keep-going --stop` is two), and what follows them is open; so name a
+  subcommand only when all of its options are reviewed, and name the
+  version you audited in `reason`. `pathOptions` names the options whose
+  value is a path (`--opt v`, `--opt=v`; list every spelling the CLI
+  accepts), and `pathOperands` makes every operand a path; each such path
+  must resolve inside the worktree. Every other word is data, quoted text
+  included. The line runs from the worktree root as one command of literal
+  words: the program named bare first, single-quoted text, or
+  double-quoted text with no `$`, backtick or backslash. A redirection, pipe,
+  chain, variable prefix, glob, `~`, `$(...)` or backticks make it no
+  reviewed CLI's, whatever `command.shellExpansion` says, and a line that
+  opens with a listed program but does not fit is refused, saying why. A
+  program this guard judges itself (`git`, `rm`, `pnpm`, a shell, an
+  interpreter, a wrapper) is never reviewed. While a push runs, the line
+  waits, as a trusted command does. The guard sees only the command line:
+  a symlink the agent planted inside the worktree still moves what the CLI
+  writes by itself, as it does for any reviewed runner.
 - `protectedVariables`: environment variables a command may not assign, declare or
   export.
 - `pairedChanges`: a commit that may record a path ending in `changes` must

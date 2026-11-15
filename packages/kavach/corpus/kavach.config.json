@@ -5,6 +5,20 @@
         "script": "scripts/worktree-tool.py",
         "pattern": "python3 scripts/worktree-tool\\.py (?:status|begin --branch agent/[A-Za-z0-9][A-Za-z0-9._-]{0,99})"
       }
+    ],
+    "reviewedCLIs": [
+      {
+        "program": "niyam",
+        "subcommands": {
+          "handoff": { "pathOptions": ["--open-brief"] },
+          "pr-signals": {},
+          "review-thread": { "pathOptions": ["--body-file"] },
+          "cubic-dismiss": { "pathOptions": ["--from"] },
+          "brief": { "pathOperands": true },
+          "keep-going --stop": {}
+        },
+        "reason": "the stand-in writes only under its git toplevel and on its declared paths (fixture.ts NIYAM_STANDIN)"
+      }
     ]
   },
   "command": {

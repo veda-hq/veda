@@ -1865,6 +1865,39 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_pnpm_exec_program_path_is_not_a_mutation_target(self) -> None:
+        # `pnpm exec /bin/bash x` runs the same program as `pnpm exec bash x`:
+        # the word after `exec` is what pnpm runs, not a path it writes.
+        (self.claude / "run.sh").write_text("true\n")
+        bash = shutil.which("bash") or "/bin/bash"
+        for command in (
+            "pnpm exec bash run.sh",
+            f"pnpm exec {bash} run.sh",
+            "pnpm exec /bin/bash ./run.sh",
+            "pnpm exec -- /bin/bash run.sh",
+        ):
+            with self.subTest(command=command):
+                result = self.invoke(
+                    self.claude,
+                    tool_name="Bash",
+                    tool_input={"command": command},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        # Its operands are still confined, whichever spelling names the program.
+        for command in (
+            f"pnpm exec bash {self.external / 'run.sh'}",
+            f"pnpm exec /bin/bash {self.external / 'run.sh'}",
+            f"pnpm exec /bin/cp run.sh {self.external / 'copied.sh'}",
+        ):
+            with self.subTest(command=command):
+                result = self.invoke(
+                    self.claude,
+                    tool_name="Bash",
+                    tool_input={"command": command},
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("outside this session's Claude worktree", result.stderr)
+
     def test_execution_wrappers_fail_closed_when_options_are_ambiguous(self) -> None:
         for command in (
             "time --format=%e pnpm test",

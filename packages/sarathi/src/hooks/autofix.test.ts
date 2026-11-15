@@ -54,7 +54,7 @@ function setup(): { deps: Deps; dir: string; session: string; file: string; tran
 }
 
 const VEDA = 'https://github.com/veda-hq/veda/pull/90';
-const RULES = 'https://github.com/athya-hq/athya-rules/pull/50';
+const RULES = 'https://github.com/acme/rules/pull/50';
 
 function bash(session: string, command: string, stdout: string, extra: Record<string, unknown> = {}): string {
   return JSON.stringify({
@@ -126,8 +126,8 @@ describe('recognising gh pr create', () => {
   it('finds it with global flags, a folder change, or an environment prefix', () => {
     for (const command of [
       'gh pr create --title t --body-file .tmp/b.md',
-      'gh -R athya-hq/athya-rules pr create --fill',
-      'cd .tmp/athya-rules && gh pr create --fill',
+      'gh -R acme/rules pr create --fill',
+      'cd .tmp/rules && gh pr create --fill',
       'GH_REPO=veda-hq/veda gh pr  create',
       '(gh pr create --draft)',
       '/opt/homebrew/bin/gh pr create',
@@ -157,7 +157,7 @@ describe('reading tool answers', () => {
     assert.deepEqual(prUrls(`${VEDA}\n${VEDA}\nhttps://ghe.example.com/a/b/pull/7 and ${RULES}`), [
       { pr: 'veda-hq/veda#90', url: VEDA },
       { pr: 'a/b#7', url: 'https://ghe.example.com/a/b/pull/7' },
-      { pr: 'athya-hq/athya-rules#50', url: RULES },
+      { pr: 'acme/rules#50', url: RULES },
     ]);
     assert.equal(fromUrl('https://github.com/veda-hq/veda/issues/9'), undefined);
   });
@@ -214,11 +214,11 @@ describe('recording', () => {
   it('puts every PR a gh pr create printed on the session list, any repository', () => {
     const { deps, session, file } = setup();
     respond(bash(session, 'gh pr create --fill', `${VEDA}\n`), deps);
-    respond(bash(session, 'cd .tmp/athya-rules && gh -R athya-hq/athya-rules pr create --fill', `Creating pull request\n${RULES}\n`), deps);
+    respond(bash(session, 'cd .tmp/rules && gh -R acme/rules pr create --fill', `Creating pull request\n${RULES}\n`), deps);
     respond(bash(session, 'gh pr create --fill', `${VEDA}\n`), deps);
     assert.deepEqual(states(file), [
       ['veda-hq/veda#90', 'opened'],
-      ['athya-hq/athya-rules#50', 'opened'],
+      ['acme/rules#50', 'opened'],
     ]);
     assert.equal(readRows(file).length, 2);
   });
@@ -236,7 +236,7 @@ describe('recording', () => {
     assert.equal(addOpened('not a url', session, 'pr-autocreate', deps), false);
     assert.equal(addOpened(RULES, '../x', 'pr-autocreate', deps), false);
     assert.deepEqual(readRows(file), [
-      { at: '2026-11-15T10:00:00.000Z', pr: 'athya-hq/athya-rules#50', url: RULES, event: 'opened', source: 'pr-autocreate' },
+      { at: '2026-11-15T10:00:00.000Z', pr: 'acme/rules#50', url: RULES, event: 'opened', source: 'pr-autocreate' },
     ]);
   });
 });
@@ -245,8 +245,8 @@ describe('confirming', () => {
   it('marks a PR on from the app’s set_monitor reply, keeping the URL the call named', () => {
     const { deps, session, file } = setup();
     respond(bash(session, 'gh pr create', `${RULES}\n`), deps);
-    respond(monitor(session, RULES, onReply('athya-hq/athya-rules#50')), deps);
-    assert.deepEqual(fold(readRows(file)), [{ pr: 'athya-hq/athya-rules#50', url: RULES, state: 'on' }]);
+    respond(monitor(session, RULES, onReply('acme/rules#50')), deps);
+    assert.deepEqual(fold(readRows(file)), [{ pr: 'acme/rules#50', url: RULES, state: 'on' }]);
   });
 
   it('records an on for a PR not on the list, at its GitHub URL when the call named another', () => {
@@ -290,7 +290,7 @@ describe('confirming', () => {
       refusal(
         session,
         RULES,
-        "Error: PreToolUse:mcp__ccd_pr__set_monitor hook error: athya-hq/athya-rules#50 is on the session's PR bar, but its repository could not be matched to the session's folders, so Auto-fix can't be enabled for it; tell the user.",
+        "Error: PreToolUse:mcp__ccd_pr__set_monitor hook error: acme/rules#50 is on the session's PR bar, but its repository could not be matched to the session's folders, so Auto-fix can't be enabled for it; tell the user.",
       ),
       deps,
     );
@@ -299,7 +299,7 @@ describe('confirming', () => {
       [
         ['veda-hq/veda#90', 'refused', 'GitHub does not list the account'],
         [
-          'athya-hq/athya-rules#50',
+          'acme/rules#50',
           'refused',
           "is on the session's PR bar, but its repository could not be matched to the session's folders, so Auto-fix can't be enabled for it; tell the user.",
         ],
@@ -332,7 +332,7 @@ describe('confirming', () => {
       status(session, {
         ...primary(VEDA, 'open', true),
         otherBoundPrs: [
-          { number: 50, repo: 'athya-hq/athya-rules', state: 'merged' },
+          { number: 50, repo: 'acme/rules', state: 'merged' },
           { number: 92, repo: 'veda-hq/veda', state: 'open' },
           { number: 7, repo: 'x/y', state: 'closed' },
           { repo: 'bad' },
@@ -343,7 +343,7 @@ describe('confirming', () => {
     );
     assert.deepEqual(states(file), [
       ['veda-hq/veda#90', 'on'],
-      ['athya-hq/athya-rules#50', 'closed'],
+      ['acme/rules#50', 'closed'],
       ['veda-hq/veda#92', 'opened'],
     ]);
     respond(status(session, primary(VEDA, 'open', false)), deps);
@@ -375,13 +375,13 @@ describe('warning at turn end', () => {
     respond(monitor(session, VEDA, onReply('veda-hq/veda#90')), deps);
     const answer = JSON.parse(respond(stop(session, transcript), deps)) as { systemMessage: string };
     assert.match(answer.systemMessage, /Auto-fix is not on for a pull request this session opened/);
-    assert.ok(answer.systemMessage.includes(`- athya-hq/athya-rules#50: ${SET_MONITOR} {"url":"${RULES}","auto_fix":true,"address_comments":true}`));
+    assert.ok(answer.systemMessage.includes(`- acme/rules#50: ${SET_MONITOR} {"url":"${RULES}","auto_fix":true,"address_comments":true}`));
     assert.doesNotMatch(answer.systemMessage, /veda#90/);
     assert.deepEqual(
       readRows(file)
         .filter(row => row.event === 'warned')
         .map(row => row.pr),
-      ['athya-hq/athya-rules#50'],
+      ['acme/rules#50'],
     );
     assert.deepEqual(Object.keys(answer), ['systemMessage']);
   });
@@ -402,7 +402,7 @@ describe('warning at turn end', () => {
     const { deps, session, transcript } = setup();
     respond(bash(session, 'gh pr create', `${VEDA}\n${RULES}\nhttps://github.com/a/b/pull/3\n`), deps);
     respond(monitor(session, VEDA, onReply('veda-hq/veda#90')), deps);
-    respond(refusal(session, RULES, "Auto-fix can't be enabled for athya-hq/athya-rules#50: not this session's"), deps);
+    respond(refusal(session, RULES, "Auto-fix can't be enabled for acme/rules#50: not this session's"), deps);
     respond(bash(session, 'true', ''), deps);
     respond(status(session, { ...primary(VEDA, 'open', true), otherBoundPrs: [{ number: 3, repo: 'a/b', state: 'closed' }] }), deps);
     assert.equal(respond(stop(session, transcript), deps), '');
@@ -514,7 +514,7 @@ describe('sarathi autofix', () => {
     assert.equal(readRows(file.replace(/[^/]+$/, 'other.jsonl'))[0]?.source, 'sarathi autofix add');
     respond(refusal('other', VEDA, "Auto-fix can't be enabled for veda-hq/veda#90: no"), deps);
     assert.deepEqual(cli(['list', '--session', 'other'], env), { code: 0, out: `veda-hq/veda#90\trefused\t${VEDA}\tno\n`, err: '' });
-    assert.deepEqual(cli(['list'], env), { code: 0, out: `athya-hq/athya-rules#50\topened\t${RULES}\n`, err: '' });
+    assert.deepEqual(cli(['list'], env), { code: 0, out: `acme/rules#50\topened\t${RULES}\n`, err: '' });
   });
 
   it('refuses what it cannot use', () => {

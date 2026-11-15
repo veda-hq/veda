@@ -47,3 +47,5 @@ jobs:
             grep -h "two sessions starting at once" "$RUNNER_TEMP/run-$i.log" | head -1
           done
           echo "failures: $fails of 25"
+          # Fail the job on a catch, so the failure is seen without polling.
+          [ "$fails" -eq 0 ]

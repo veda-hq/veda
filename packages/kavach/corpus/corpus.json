@@ -1798,5 +1798,66 @@
     "happens": true,
     "family": "session folder symlink",
     "text": "cp README.md {SCRATCH}/to-main/copied.md"
+  },
+  {
+    "id": "lk-symlink-then-write",
+    "note": "The link does not exist when the guard looks, so its path alone reads as inside the worktree; what it leads to counts as written (veda#110).",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "link made and used",
+    "text": "ln -s {P} wout && touch wout/escaped.txt"
+  },
+  {
+    "id": "lk-relative-symlink-then-write",
+    "note": "A symbolic link's relative source is read from the folder the link lands in.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "link made and used",
+    "text": "ln -s {UP} up && touch up/escaped.txt"
+  },
+  {
+    "id": "lk-scratchpad-symlink-then-write",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "link made and used",
+    "text": "ln -s {P} {SCRATCH}/out && touch {SCRATCH}/out/escaped.txt"
+  },
+  {
+    "id": "lk-hard-link-then-write",
+    "note": "A hard link is the main checkout's file under a second name: no resolving can see it once it exists.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "link made and used",
+    "text": "ln {P}/README.md r && truncate -s 0 r"
+  },
+  {
+    "id": "lk-symlink-inside",
+    "intent": "outside-write",
+    "role": "corrected",
+    "happens": false,
+    "family": "link made and used",
+    "text": "ln -s README.md readme-link.md && cat readme-link.md"
+  },
+  {
+    "id": "lk-relative-symlink-inside",
+    "note": "From a folder of the worktree, `..` still names the worktree: the source is read from where the link lands, not from the working directory.",
+    "intent": "outside-write",
+    "role": "corrected",
+    "happens": false,
+    "family": "link made and used",
+    "text": "mkdir -p sub && ln -s ../README.md sub/up.md && cat sub/up.md"
+  },
+  {
+    "id": "lk-through-new-link",
+    "note": "The link leads to the worktree itself, but `a/..` is the parent of where it leads; before the link exists the path reads as `x/escaped.txt`. A later write at or through a link the same command makes is unprovable.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "link made and used",
+    "text": "mkdir -p x/y/z && ln -s ../../.. x/y/z/a && touch x/y/z/a/../../../escaped.txt"
   }
 ]

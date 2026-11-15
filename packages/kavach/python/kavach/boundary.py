@@ -15,7 +15,7 @@ import shlex
 import stat
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Mapping, Protocol, Sequence
 
 
@@ -3006,6 +3006,215 @@ def command_positionals(
     return positionals, target_directory
 
 
+def option_words(args: list[str], value_options: set[str]) -> tuple[set[str], list[str]]:
+    """The short option letters and the long option names before ``--``,
+    skipping each value ``value_options`` takes (``-S .bak`` or ``-S.bak``)."""
+
+    letters: set[str] = set()
+    longs: list[str] = []
+    index = 0
+    while index < len(args):
+        item = args[index]
+        index += 1
+        if item == "--":
+            break
+        if item.startswith("--"):
+            option = item.split("=", 1)[0]
+            longs.append(option)
+            if option in value_options and "=" not in item:
+                index += 1
+        elif item.startswith("-") and len(item) > 1:
+            for position, letter in enumerate(item[1:]):
+                letters.add(letter)
+                if f"-{letter}" in value_options:
+                    if position == len(item) - 2:
+                        index += 1
+                    break
+    return letters, longs
+
+
+# Options of `ln` and `cp` that take a value, which is never read as flags
+# (`ln -ts/b/c` names the folder `s/b/c`).
+LINK_VALUE_OPTIONS = {"-S", "--suffix", "-t", "--target-directory"}
+
+
+NOT_AN_ENTRY = Path("/")
+
+
+def link_location(raw: str, base: Path) -> Path | None:
+    """Where a path names an entry, without following the entry itself: its
+    folder resolved, then its own name. ``NOT_AN_ENTRY`` for a name no link
+    can have (``.``, ``..``, a root); ``None`` when it cannot be read."""
+
+    if "~" in raw or has_dynamic_markers(raw):
+        return None
+    pure = PurePath(raw)
+    if pure.name in {"", ".", ".."}:
+        return NOT_AN_ENTRY
+    folder = resolve_shell_path(str(pure.parent), base, empty_is_current=True)
+    return None if folder is None else folder / pure.name
+
+
+def abbreviates(longs: list[str], full: str) -> bool:
+    """Whether a long option names ``full``, as getopt reads an abbreviation."""
+
+    return any(len(option) >= 3 and full.startswith(option) for option in longs)
+
+
+def link_modes(name: str, args: list[str]) -> set[str]:
+    """How ``ln``, or ``cp`` in link mode, links (veda#110): ``symbolic``,
+    ``hard``, ``relative`` (``ln -r``, read from the working directory).
+    Empty for a command that makes no link."""
+
+    if name not in {"ln", "cp"}:
+        return set()
+    letters, longs = option_words(args, LINK_VALUE_OPTIONS)
+    modes: set[str] = set()
+    if name == "ln":
+        symbolic = "s" in letters or abbreviates(longs, "--symbolic")
+        modes.add("symbolic" if symbolic else "hard")
+        if "r" in letters or abbreviates(longs, "--relative"):
+            modes.add("relative")
+        return modes
+    if "s" in letters or abbreviates(longs, "--symbolic-link"):
+        modes.add("symbolic")
+    if "l" in letters or abbreviates(longs, "--link"):
+        modes.add("hard")
+    return modes
+
+
+def link_sources(
+    positionals: list[str], target_directory: str | None, cwd: Path, modes: set[str]
+) -> list[Path] | None:
+    """What the links a command makes lead to, as mutation targets.
+
+    A link to a place makes every later write through it a write there, and
+    a link the same command makes does not exist yet when the guard looks
+    (veda#110): so each operand counts as written. A hard link's operand, and
+    ``ln -r``'s, is read from the working directory; a symbolic link's from
+    the folder the link lands in, which is the named folder or the
+    destination's parent, both taken when the guard cannot tell which.
+    ``None`` when an operand cannot be read.
+    """
+
+    folders: list[Path] = []
+    if modes & {"hard", "relative"}:
+        folders.append(cwd)
+    if "symbolic" in modes:
+        if target_directory is not None:
+            places = [target_directory]
+        elif len(positionals) >= 2:
+            places = positionals[-1:]
+        else:
+            # `ln -s <source>` makes the link in the working directory.
+            places = []
+            folders.append(cwd)
+        for raw in places:
+            # The link lands in the named folder when it is one, else beside
+            # the named entry (`ln -n`, `-T`, or a new name): both are read.
+            place = resolve_shell_path(raw, cwd)
+            beside = link_location(raw, cwd)
+            if place is None or beside is None:
+                return None
+            folders.append(place)
+            if beside != NOT_AN_ENTRY:
+                folders.append(beside.parent)
+    sources = positionals if target_directory is not None else positionals[:-1] or positionals
+    targets: list[Path] = []
+    for raw in sources:
+        for folder in folders:
+            target = resolve_shell_path(raw, folder)
+            if target is None:
+                return None
+            if target not in targets:
+                targets.append(target)
+    return targets
+
+
+def relinked_locations(words: list[str], cwd: Path) -> list[Path] | None:
+    """Entries an ``ln``, ``cp`` or ``mv`` segment may make into links.
+
+    A later segment of the same command resolves through them as they are
+    before the command runs, not as it leaves them (veda#110): ``ln -s ../..
+    a && touch a/../x`` or a moved relative symlink, ``mv deep/S S && touch
+    S/x``. ``ln`` always counts; ``cp`` when it makes links, copies a tree
+    (``-R``, ``-r``, ``-a``) or keeps links (``-P``, ``-d``), or a source is
+    a symlink or a folder; ``mv`` when a source is a symlink or a folder.
+    ``None`` when a path cannot be read.
+    """
+
+    name = os.path.basename(words[0])
+    if name not in {"ln", "cp", "mv"}:
+        return []
+    args = words[1:]
+    parsed = command_positionals(
+        args,
+        value_options={"-S", "--suffix"},
+        target_options={"-t", "--target-directory"},
+    )
+    if parsed is None:
+        return None
+    positionals, target_directory = parsed
+    if target_directory is not None:
+        sources = positionals
+    elif len(positionals) >= 2:
+        sources = positionals[:-1]
+    else:
+        sources = positionals
+    if name != "ln":
+        letters, longs = option_words(args, LINK_VALUE_OPTIONS)
+        keeps_links = name == "cp" and (
+            bool(link_modes(name, args))
+            or bool(letters & {"R", "r", "a", "P", "d"})
+            or any(
+                abbreviates(longs, full)
+                for full in ("--recursive", "--archive", "--no-dereference")
+            )
+        )
+        if not keeps_links:
+            for raw in sources:
+                place = link_location(raw, cwd)
+                if place is None:
+                    return None
+                if place != NOT_AN_ENTRY and (place.is_symlink() or place.is_dir()):
+                    break
+            else:
+                return []
+    named: list[str] = []
+    if target_directory is not None:
+        named = [f"{target_directory}/{PurePath(raw).name}" for raw in sources]
+    elif len(positionals) >= 2:
+        destination = positionals[-1]
+        named = [destination, *(f"{destination}/{PurePath(raw).name}" for raw in sources)]
+    else:
+        named = [PurePath(raw).name for raw in sources]
+    locations: list[Path] = []
+    for raw in named:
+        place = link_location(raw, cwd)
+        if place is None:
+            return None
+        if place != NOT_AN_ENTRY:
+            locations.append(place)
+    return locations
+
+
+def goes_through(words: list[str], cwd: Path, relinked: list[Path]) -> bool:
+    """Whether a word of the segment names a path at or through an entry an
+    earlier segment of the same command may have made into a link."""
+
+    for word in words[1:]:
+        candidates = [word]
+        if word.startswith("-") and "=" in word:
+            candidates.append(word.split("=", 1)[1])
+        for candidate in candidates:
+            parts = PurePath(candidate).parts
+            for end in range(1, len(parts) + 1):
+                place = link_location(str(PurePath(*parts[:end])), cwd)
+                if place is not None and place != NOT_AN_ENTRY and place in relinked:
+                    return True
+    return False
+
+
 def resolve_mutation_paths(raw_values: list[str], cwd: Path) -> list[Path] | None:
     targets: list[Path] = []
     for raw_value in raw_values:
@@ -4068,7 +4277,12 @@ def mutation_path_operands(
             destinations = positionals[-1:]
         else:
             destinations = []
-        return resolve_mutation_paths(destinations, cwd)
+        written = resolve_mutation_paths(destinations, cwd)
+        modes = link_modes(name, words[1:])
+        if written is None or not modes:
+            return written
+        linked = link_sources(positionals, target_directory, cwd, modes)
+        return None if linked is None else written + linked
     if name in ALL_OPERAND_MUTATORS:
         value_options = {
             "mkdir": {"-m", "--mode"},
@@ -4111,11 +4325,19 @@ def mutation_directories(
     *,
     nested_depth: int = 0,
     read_namespaces: tuple[Path, ...] = (),
+    relinked: list[Path] | None = None,
 ) -> list[Path] | None:
-    """Resolve the directory in which each mutating segment would run."""
+    """Resolve the directory in which each mutating segment would run.
+
+    ``relinked`` holds the entries earlier segments may have made into links
+    (`relinked_locations`), shared with a nested shell's program: a later
+    write at or through one is unprovable.
+    """
 
     if nested_depth > 8:
         return None
+    if relinked is None:
+        relinked = []
     tokens = tokenize_command(command)
     if tokens is None:
         return None
@@ -4174,6 +4396,8 @@ def mutation_directories(
             return None
         if name in {"pushd", "popd"}:
             return None
+        if relinked and (name == "cd" or not read_only) and goes_through(words, current, relinked):
+            return None
         if name in {"for", "read"} and read_only:
             # The variable it sets may be exported in the Bash tool's shell,
             # which this hook's environment does not show, and so reach every
@@ -4229,6 +4453,7 @@ def mutation_directories(
                 current,
                 nested_depth=nested_depth + 1,
                 read_namespaces=read_namespaces,
+                relinked=relinked,
             )
             if nested is None:
                 return None
@@ -4275,6 +4500,10 @@ def mutation_directories(
             if operand_targets is None:
                 return None
             mutations.extend(operand_targets)
+            made = relinked_locations(words, current)
+            if made is None:
+                return None
+            relinked.extend(made)
     return mutations
 
 

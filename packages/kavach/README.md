@@ -80,6 +80,25 @@ nothing.
 Another session's folders stay refused. So does everything else under the
 temp folder, `$TMPDIR` and the app's support folder.
 
+## Links
+
+A link makes every later write through it a write where it leads, and a link
+the command itself makes does not exist yet when the guard looks. So `ln`,
+and `cp` in link mode (`-s`, `-l`, `--symbolic-link`, `--link`), count what
+each link leads to as written. A symbolic link's relative source is read from
+the folder the link lands in. A hard link's, or `ln -r`'s, is read from the
+working directory. A link to anything outside the session's places is refused,
+even one nothing would write through, such as `ln -s /usr/bin/python3
+.tmp/py`, or a worktree's `.local` link to the main checkout's. Copy the file,
+or run the program by its path, instead.
+
+Within one command, a write at or through an entry that an earlier part may
+have made into a link is unprovable and refused. That covers a new link
+(`ln -s ../.. a && touch a/../x`), and a moved or copied symlink or folder
+whose relative links now lead elsewhere (`mv deep/S S && touch S/x`). Make
+the link in one call and write through it in the next: by then it exists, and
+the path resolves to where it leads.
+
 ## What a refusal says
 
 Each refusal names the way out. "mutation targets could not be resolved"

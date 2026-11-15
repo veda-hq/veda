@@ -1066,7 +1066,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "chgrp 1000 tracked.txt",
             "cp tracked.txt copied.txt",
             f"cp {self.external / 'readable-source.txt'} copied-from-outside.txt",
-            f"ln -s {self.external / 'link-target.txt'} inside-link.txt",
+            "ln -s tracked.txt inside-link.txt",
             "git worktree add nested-worktree HEAD",
             "sed --in-place s/base/changed/ tracked.txt",
             "find . -delete",
@@ -1087,6 +1087,104 @@ class WorktreeBoundaryTest(BoundaryFixture):
                     self.claude,
                     tool_name="Bash",
                     tool_input={"command": command},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_link_that_leads_out_is_refused(self) -> None:
+        """A link makes every write through it a write where it leads, and
+        one the same command makes does not exist when the guard looks
+        (veda#110): what it leads to counts as written."""
+
+        main_file = self.main / "tracked.txt"
+        refused = (
+            f"ln -s {self.main} wout && touch wout/x.txt",
+            f"ln -s {self.main} wout",
+            f"ln {main_file} hard-link.txt",
+            f"ln -sf {main_file} .tmp-link",
+            f"ln -s -t . {main_file}",
+            f"ln --symbolic --target-directory=. {main_file}",
+            f"ln -s {main_file}",
+            f"ln -s {self.external / 'link-target.txt'} inside-link.txt",
+            "ln -s ../../../escaped wout",
+            "ln ../../../tracked.txt hard-up.txt",
+            "mkdir -p sub && ln -sr ../../../tracked.txt sub/relative-up.txt",
+            "ln --sym ../../../tracked.txt short-option.txt",
+            "ln -S.s ../../../tracked.txt suffixed-hard.txt",
+            f"cp -s {main_file} sym-copy.txt",
+            f"cp -l {main_file} hard-copy.txt",
+            f"cp -al {self.main} tree-copy",
+            f"cp --symbolic-link {main_file} sym-copy.txt",
+            f"cp --link {main_file} hard-copy.txt",
+            f"cp --sym {main_file} sym-copy.txt",
+        )
+        for command in refused:
+            with self.subTest(command=command):
+                result = self.invoke(
+                    self.claude, tool_name="Bash", tool_input={"command": command}
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertFalse((self.main / "x.txt").exists())
+        # The link leads inside, but a later write goes through it before it
+        # exists (`a/..` is the link's target's parent, not `x/y/z`), or a
+        # move re-aims a relative link. Each such write is unprovable.
+        (self.claude / "deep" / "er").mkdir(parents=True)
+        (self.claude / "deep" / "er" / "S").symlink_to("../..")
+        (self.claude / "kept").symlink_to("deep")
+        through = (
+            "mkdir -p x/y/z && ln -s ../../.. x/y/z/a && touch x/y/z/a/../../../escaped.txt",
+            "ln -s deep/er d1 && cd d1/../.. && touch escaped.txt",
+            "mv deep/er/S S2 && touch S2/escaped.txt",
+            "mv deep/er/S S3 && truncate -s 0 S3",
+            "cp -R deep copy && touch copy/er/S/escaped.txt",
+            "ln -sfn deep/er kept && touch kept/../../escaped.txt",
+            "sh -c 'ln -s deep/er q && touch q/../../escaped.txt'",
+            "ln -s deep/er q5 && sh -c 'touch q5/../../escaped.txt'",
+            "ln -s README.md readme-link.md && touch readme-link.md",
+        )
+        for command in through:
+            with self.subTest(command=command):
+                result = self.invoke(
+                    self.claude, tool_name="Bash", tool_input={"command": command}
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("could not be resolved", result.stderr)
+        # A `-t` value is a folder, never flags: `s` there is no `-s`, so this
+        # stays a hard link read from the working directory (GNU ln).
+        self.assertEqual(
+            MODULE.link_modes("ln", ["-ts/b/c/d", "../../../tracked.txt"]), {"hard"}
+        )
+        self.assertEqual(
+            MODULE.link_modes("ln", ["--target-directory", "s", "x"]), {"hard"}
+        )
+        self.assertEqual(MODULE.link_modes("ln", ["-S", "s", "x", "y"]), {"hard"})
+        self.assertEqual(MODULE.link_modes("ln", ["-sr", "x", "y"]), {"symbolic", "relative"})
+        self.assertEqual(MODULE.link_modes("cp", ["-al", "x", "y"]), {"hard"})
+        self.assertEqual(MODULE.link_modes("cp", ["--sym", "x", "y"]), {"symbolic"})
+        self.assertEqual(MODULE.link_modes("cp", ["-S.s", "x", "y"]), set())
+        self.assertEqual(MODULE.link_modes("mv", ["-s", "x", "y"]), set())
+        self.assertEqual(
+            MODULE.link_sources(["../../../tracked.txt"], "s/b/c/d", self.claude, {"hard"}),
+            [(self.claude / "../../../tracked.txt").resolve()],
+        )
+        allowed = (
+            "ln -s tracked.txt inside-link.txt",
+            "ln tracked.txt hard-inside.txt",
+            f"ln -s {self.claude / 'tracked.txt'} absolute-inside.txt",
+            "mkdir -p sub && ln -s ../tracked.txt sub/up-link.txt",
+            "mkdir -p deep/er && ln -s ../../tracked.txt deep/er/two-up.txt",
+            "mkdir -p rel && ln -sr tracked.txt rel/relative.txt",
+            "ln -s tracked.txt read-link.txt && cat read-link.txt",
+            "mv tracked.txt moved.txt && touch moved.txt",
+            "mkdir -p made && touch made/file.txt",
+            "cp tracked.txt plain-copy.txt",
+            f"cp {main_file} copied-from-main.txt",
+            f"cp -S.s {main_file} suffix-is-no-link.txt",
+            f"cp --suffix=s {main_file} long-suffix-is-no-link.txt",
+        )
+        for command in allowed:
+            with self.subTest(command=command):
+                result = self.invoke(
+                    self.claude, tool_name="Bash", tool_input={"command": command}
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
 

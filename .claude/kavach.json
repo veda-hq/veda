@@ -21,6 +21,20 @@
         "env": { "CLAUDECODE": ["1"] },
         "reason": "a dry run holds its changes in memory and writes nothing (niyam 0.6.14 audited); it reads GitHub, the owner and agent logins included, and the keychain"
       }
-    ]
+    ],
+    "ownCheckout": {
+      "env": { "CLAUDE_CODE_REMOTE": ["true"] },
+      "reason": "a Claude cloud session clones the repository for itself, with no worktree; Claude Code sets CLAUDE_CODE_REMOTE there and leaves it unset on the desktop (checked 2026-11-15)",
+      "protectedPaths": [
+        ".claude/hooks/",
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        ".claude/kavach.json",
+        ".claude/sarathi.json",
+        "node_modules/",
+        "package.json",
+        "pnpm-lock.yaml"
+      ]
+    }
   }
 }

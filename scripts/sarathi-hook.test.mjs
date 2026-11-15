@@ -2,7 +2,7 @@
 // CLAUDE_PROJECT_DIR set. The repository's own install must be there
 // (`pnpm install`), as it is in CI.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -241,10 +241,9 @@ describe('when the pinned sarathi cannot run', () => {
     assert.equal(hook('PreToolUse', bash('git status'), { project: broken, env: { PATH } }).code, 2);
   });
 
-  test('two sessions starting at once install once', async () => {
-    const PATH = `${pnpmBin}:${process.env.PATH}`;
-    const dir = project('together');
-    const env = { ...process.env, CLAUDE_PROJECT_DIR: dir, KAVACH_REFUSAL_LOG_OFF: '1', PATH, SLOW_INSTALL: '1' };
+  /** Two session starts in `dir` at once, with `bins` ahead on PATH. @param {string} dir @param {string[]} bins */
+  const startTogether = async (dir, bins) => {
+    const env = { ...process.env, CLAUDE_PROJECT_DIR: dir, KAVACH_REFUSAL_LOG_OFF: '1', PATH: [...bins, process.env.PATH].join(':'), SLOW_INSTALL: '1' };
     delete env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL;
     const run = () =>
       new Promise(resolve => {
@@ -256,8 +255,44 @@ describe('when the pinned sarathi cannot run', () => {
       });
     const results = await Promise.all([run(), run()]);
     for (const result of results) assert.equal(result.code, 0, result.stderr);
-    assert.equal(installs(dir), 1, results.map(r => r.stderr).join('\n---\n'));
+  };
+
+  test('two sessions starting at once install once', async () => {
+    const dir = project('together');
+    await startTogether(dir, [pnpmBin]);
+    assert.equal(installs(dir), 1);
   });
+
+  // uutils coreutils 0.10.0, /usr/bin/mkdir on ubuntu-26.04, lets two racing
+  // `mkdir`s of one path both succeed (#108). A mkdir that says yes to a
+  // directory already there is that race every time.
+  test('two sessions install once where mkdir says yes to a directory already there', async () => {
+    const lenient = join(scratch, 'lenient-mkdir');
+    mkdirSync(lenient, { recursive: true });
+    writeFileSync(join(lenient, 'mkdir'), '#!/bin/sh\nexec /bin/mkdir -p "$@"\n', { mode: 0o755 });
+    const dir = project('together-lenient');
+    await startTogether(dir, [pnpmBin, lenient]);
+    assert.equal(installs(dir), 1);
+  });
+
+  // The lock is a file; a sarathi.sh before #108 left a directory.
+  for (const [name, kind, make] of /** @type {const} */ ([
+    ['died-file', 'a file', (/** @type {string} */ p) => writeFileSync(p, '')],
+    ['died-dir', "an older hook's directory", (/** @type {string} */ p) => mkdirSync(p)],
+  ])) {
+    test(`a lock left as ${kind} for over 10 minutes is an install that died, and is taken over`, () => {
+      const PATH = `${pnpmBin}:${process.env.PATH}`;
+      const dir = project(name);
+      const lock = join(dir, 'sarathi-install.lock');
+      make(lock);
+      const eleven = Date.now() / 1000 - 11 * 60;
+      utimesSync(lock, eleven, eleven);
+      const started = hook('SessionStart', start, { project: dir, env: { PATH } });
+      assert.equal(started.code, 0, started.stderr);
+      assert.equal(installs(dir), 1);
+      assert.equal(existsSync(lock), false);
+    });
+  }
 
   test('a sarathi that crashes refuses PreToolUse and passes its exit on elsewhere', () => {
     const dir = project('crashing', d => fakeSarathi(join(d, 'node_modules', '@veda-hq', 'sarathi'), '0.5.15', 'process.exit(1)'));

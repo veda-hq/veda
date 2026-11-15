@@ -181,8 +181,10 @@ undoing another.
 - **Routine create body shape.** When creating a cloud routine with RemoteTrigger, give the
   repository as `job_config.ccr.session_context.sources: [{"git_repository": {"url": "<url>"}}]`.
   The shape `{"type":"git_repository","url":...}` returns 200 but is dropped, so check
-  `session_request.sources` in the response. Set `notifications` with a separate update if
-  create ignored it, use `run_once_at` for one-offs, and give `events[].data.message` a `role`.
+  `session_request.sources` in the response.
+  <!-- held by: kavach tool guard, rule routine-sources-shape (warns, then refuses, a RemoteTrigger create or update whose sources lack a git_repository object) -->
+- **Routine create, the other fields.** Set `notifications` with a separate update if create
+  ignored it, use `run_once_at` for one-offs, and give `events[].data.message` a `role`.
 - **Scheduled-task state lives in the app.** The desktop app keeps scheduled-task runtime state
   (`enabled`, `nextRunAt`, `lastRunAt`) inside the app, not in `SKILL.md`, and the only
   supported reader is the `list_scheduled_tasks` MCP tool in a Claude session; a launchd job
@@ -229,8 +231,10 @@ undoing another.
   `until grep -qa "pattern" log; do sleep 30; done` instead, and stop any wait whose result you
   have read or whose target was superseded.
   <!-- when: command "tail -[fF] .*\| *grep .*-m ?1" -->
-- **Exit codes that lie.** `cmd | tail` returns tail's exit code and masks failures, so never
-  chain `... | tail && git push`; check `$?` or use pipefail. `pnpm --filter <pkg> <script>`
+- **A pipe masks the exit code.** `cmd | tail` returns tail's exit code and masks failures, so
+  never chain `... | tail && git push`; check `$?` or use pipefail.
+  <!-- held by: kavach command guard, rule pipe-masks-exit (warns, then refuses, a pipeline ending in tail or head joined by && to git push) -->
+- **Exit codes that lie.** `pnpm --filter <pkg> <script>`
   exits 0 when the package has no such script, so confirm the suite's summary line appears, not
   just the exit code. In zsh `for x in $var` does not word-split (use `${=var}`). A monitor that
   exits on a false "all done" looks identical to success, so validate its first event.

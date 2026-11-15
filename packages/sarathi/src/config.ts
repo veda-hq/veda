@@ -10,7 +10,11 @@ import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 
 /** A kavach guard sarathi runs from its own dependency. */
-export type Guard = 'worktree' | 'command';
+export type Guard = 'worktree' | 'command' | 'tool';
+
+const GUARDS: ReadonlySet<unknown> = new Set<Guard>(['worktree', 'command', 'tool']);
+
+const isGuard = (value: unknown): value is Guard => GUARDS.has(value);
 
 export interface Entry {
   /** Claude Code's matcher: a tool name, `A|B`, a regular expression, or absent for all. */
@@ -90,8 +94,8 @@ function parseEntry(raw: unknown, where: string): Entry {
   if (command !== undefined && (typeof command !== 'string' || command.trim() === '')) {
     throw new ConfigError(`${where}: "command" must be a non-empty string`);
   }
-  if (guard !== undefined && guard !== 'worktree' && guard !== 'command') {
-    throw new ConfigError(`${where}: "guard" must be "worktree" or "command"`);
+  if (guard !== undefined && !isGuard(guard)) {
+    throw new ConfigError(`${where}: "guard" must be "worktree", "command" or "tool"`);
   }
   if ((command === undefined) === (guard === undefined)) {
     throw new ConfigError(`${where}: give exactly one of "command" and "guard"`);
@@ -106,7 +110,7 @@ function parseEntry(raw: unknown, where: string): Entry {
   return {
     ...(typeof matcher === 'string' ? { matcher } : {}),
     ...(typeof command === 'string' ? { command } : {}),
-    ...(guard === 'worktree' || guard === 'command' ? { guard } : {}),
+    ...(isGuard(guard) ? { guard } : {}),
     ...(typeof timeout === 'number' ? { timeout } : {}),
     ...(typeof failClosed === 'boolean' ? { failClosed } : {}),
   };

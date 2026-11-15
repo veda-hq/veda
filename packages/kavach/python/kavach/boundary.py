@@ -3272,6 +3272,111 @@ def pnpm_exec_program_index(name: str, args: list[str]) -> int | None:
     return index
 
 
+PNPM_SELECTOR_OPTIONS = {"-C": "dir", "--dir": "dir", "-F": "filter", "--filter": "filter"}
+
+
+def workspace_packages(root: Path) -> list[tuple[Path, str]] | None:
+    """Each package of the pnpm workspace at ``root`` and its name, from
+    ``pnpm-workspace.yaml``'s ``packages`` list; None when a pattern is one
+    this reading does not follow (only a folder and ``folder/*`` are)."""
+
+    try:
+        lines = (root / "pnpm-workspace.yaml").read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    patterns: list[str] = []
+    listing = False
+    for line in lines:
+        if re.match(r"packages\s*:\s*$", line):
+            listing = True
+            continue
+        if listing and re.match(r"\s+-\s", line):
+            patterns.append(line.split("-", 1)[1].split(" #", 1)[0].strip().strip("'\""))
+            continue
+        if listing and line.strip() and not line.startswith((" ", "\t", "#")):
+            listing = False
+    folders: list[Path] = []
+    for pattern in patterns:
+        if pattern.startswith("!"):
+            return None
+        parts = pattern.rstrip("/").split("/")
+        if any(re.search(r"[*?\[\]{}]", part) for part in parts[:-1]) or ".." in parts:
+            return None
+        last = parts[-1]
+        if last == "*":
+            base = root.joinpath(*parts[:-1])
+            try:
+                folders.extend(sorted(entry for entry in base.iterdir() if entry.is_dir()))
+            except OSError:
+                continue
+        elif re.search(r"[*?\[\]{}]", last):
+            return None
+        else:
+            folders.append(root.joinpath(*parts))
+    found: list[tuple[Path, str]] = []
+    for folder in folders:
+        try:
+            manifest = json.loads((folder / "package.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            continue
+        if isinstance(manifest, dict) and isinstance(manifest.get("name"), str):
+            found.append((folder, manifest["name"]))
+    return found
+
+
+def pnpm_selected_directory(args: list[str], cwd: Path) -> tuple[Path, int] | None:
+    """Where ``pnpm exec``/``pnpm run`` runs when one selector before the
+    subcommand names exactly one folder, and the index of the subcommand.
+
+    ``--dir``/``-C`` name the folder; ``--filter``/``-F`` name it by a path
+    (``./apps/server``, ``{./apps/server}``) or by one package's name, with or
+    without its scope, as pnpm matches it. Anything else before the
+    subcommand, a second selector, a pattern (``@scope/*``, ``server...``) or
+    a name more than one package has leaves the operands resolved from the
+    command's own folder, as before."""
+
+    index = 0
+    selector: tuple[str, str] | None = None
+    while index < len(args) and args[index].startswith("-"):
+        item = args[index]
+        option, attached = (item.split("=", 1) + [None])[:2] if item.startswith("--") else (item, None)
+        kind = PNPM_SELECTOR_OPTIONS.get(option)
+        if kind is None or selector is not None:
+            return None
+        if attached is None:
+            if index + 1 >= len(args):
+                return None
+            value = args[index + 1]
+            index += 2
+        else:
+            value = shell_option_value(item)
+            index += 1
+        if not value or has_dynamic_markers(value) and not re.fullmatch(r"\{\.{1,2}/[^{}$`*?\[]*\}", value):
+            return None
+        selector = (kind, value)
+    if selector is None or index >= len(args) or args[index] not in ("exec", "run"):
+        return None
+    kind, value = selector
+    if kind == "dir" or value.startswith(("./", "../", "{./", "{../")) or value in (".", ".."):
+        relative = value[1:-1] if value.startswith("{") and value.endswith("}") else value
+        target = resolve_shell_path(relative, cwd)
+        if target is None or not target.is_dir():
+            return None
+        if kind == "filter" and not (target / "package.json").is_file():
+            return None
+        return target, index
+    if re.search(r"[^A-Za-z0-9@/._-]", value) or value.startswith(("-", ".")):
+        return None
+    root = next((folder for folder in (cwd, *cwd.parents) if (folder / "pnpm-workspace.yaml").is_file()), None)
+    packages = workspace_packages(root) if root is not None else None
+    if not packages:
+        return None
+    exact = [folder for folder, package in packages if package == value]
+    if not exact and "/" not in value:
+        exact = [folder for folder, package in packages if package.startswith("@") and package.split("/", 1)[-1] == value]
+    return (exact[0].resolve(), index) if len(exact) == 1 else None
+
+
 def generic_mutation_paths(
     name: str,
     args: list[str],
@@ -3304,6 +3409,17 @@ def generic_mutation_paths(
     """
 
     destinations: list[str] = []
+    selected = pnpm_selected_directory(args, cwd) if name == "pnpm" else None
+    if selected is not None:
+        # `pnpm --filter server exec tsx ../../.tmp/x.ts` runs in the
+        # package's folder, so what follows the subcommand is read from
+        # there; the selector itself is still read from the command's folder.
+        # The program word stays confined, as for any shape but the plain
+        # `pnpm exec <program>`.
+        folder, subcommand = selected
+        before = generic_mutation_paths(name, args[:subcommand], cwd, read_namespaces=read_namespaces)
+        after = generic_mutation_paths(name, args[subcommand + 1 :], folder, read_namespaces=read_namespaces)
+        return None if before is None or after is None else before + after
     turbo_run = (name == "turbo" and args[:1] == ["run"]) or (
         name == "pnpm" and args[:2] == ["turbo", "run"]
     )

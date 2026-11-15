@@ -35,11 +35,14 @@ describe('plan', () => {
     });
     assert.deepEqual(plan({ guard: 'command' }, config(), () => '/kavach').args, ['/kavach/command_guard.py']);
     assert.deepEqual(plan({ guard: 'command' }, config(), () => '/kavach').env, {});
+    assert.deepEqual(plan({ guard: 'tool' }, config(), () => '/kavach').args, ['/kavach/tool_guard.py']);
+    assert.equal(plan({ guard: 'tool' }, config(), () => '/kavach').label, 'kavach tool guard');
   });
 
   it('finds kavach’s guards in its own dependency', () => {
     assert.ok(existsSync(join(kavachDir(), 'worktree_guard.py')));
     assert.ok(existsSync(join(kavachDir(), 'command_guard.py')));
+    assert.ok(existsSync(join(kavachDir(), 'tool_guard.py')));
   });
 
   it('gives every command SARATHI_HOOKS, the folder of sarathi’s own handlers', () => {

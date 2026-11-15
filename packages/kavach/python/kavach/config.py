@@ -4,8 +4,9 @@ the environment variable KAVACH_CONFIG.
 kavach knows no product. What one product trusts or requires (a script its
 agents may run from any checkout, a command it reviewed as only reading and allows in one
 environment, a CLI whose writes it reviewed, the environment where a plain clone is a session's own checkout, environment variables an agent must leave alone, a file whose change needs another in the same commit) comes from this
-file, and with no file every such rule is off. So does the mode of a rule on
-trial (`command.shellExpansion`), which warns until the file says "refuse".
+file, and with no file every such rule is off. So does the mode of each rule
+that holds a lesson (`rules`, rules.py; the shell-expansion rule may also be
+set by `command.shellExpansion`), which warns until the file says "refuse".
 
 A file that cannot be read, is not JSON, has a key this module does not know,
 or a value of the wrong shape raises ConfigError. Each guard's entry point
@@ -101,6 +102,16 @@ class PairedChange:
 
 
 @dataclass(frozen=True)
+class RuleMode:
+    """How one rule that holds a lesson runs (rules.py): "warn" allows the
+    call with the reason in front of the agent, "refuse" blocks it.
+    `refuses_from` (YYYY-MM-DD) is only shown in a warning."""
+
+    mode: str
+    refuses_from: str = ""
+
+
+@dataclass(frozen=True)
 class Config:
     trusted_commands: tuple[TrustedCommand, ...] = ()
     protected_variables: tuple[str, ...] = ()
@@ -116,14 +127,30 @@ class Config:
     shell_expansion_refuses_from: str = ""
     reviewed_clis: tuple[ReviewedCLI, ...] = ()
     own_checkout: OwnCheckout | None = None
+    # The mode of each rule in rules.py the settings name; one not named warns.
+    rules: tuple[tuple[str, RuleMode], ...] = ()
 
 
 DEFAULT = Config()
 SHELL_EXPANSION_MODES = ("warn", "refuse")
+RULE_MODES = SHELL_EXPANSION_MODES
 DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+# The shell-expansion rule's id, which `rules` may name too.
+SHELL_EXPANSION_RULE = "commit-message-shell-expansion"
+# Every rule `rules` may name: rules.RULES and the shell-expansion rule.
+RULE_IDS = (
+    SHELL_EXPANSION_RULE,
+    "pipe-masks-exit",
+    "cd-out-of-worktree",
+    "stryker-inplace",
+    "checkout-discards-uncommitted",
+    "commit-body-ref-line-length",
+    "case-fold-path-collision",
+    "routine-sources-shape",
+)
 
 SHAPE: dict[str, set[str]] = {
-    "": {"worktree", "command"},
+    "": {"worktree", "command", "rules"},
     "worktree": {"trustedCommands", "readOnlyCommands", "reviewedCLIs", "ownCheckout"},
     "command": {
         "protectedVariables", "protectedVariablesReason", "pairedChanges",
@@ -265,9 +292,31 @@ def _paired(value: Any, index: int) -> PairedChange:
     )
 
 
+def _rule_mode(key: str, value: Any) -> RuleMode:
+    where = f"rules.{key}"
+    if isinstance(value, str):
+        value = {"mode": value}
+    entry = _object(value, where, {"mode", "refusesFrom"})
+    mode = entry.get("mode")
+    if mode not in RULE_MODES:
+        raise ConfigError(f"{where}.mode must be one of {', '.join(RULE_MODES)}")
+    refuses_from = entry.get("refusesFrom", "")
+    if refuses_from != "" and not (isinstance(refuses_from, str) and DAY.fullmatch(refuses_from)):
+        raise ConfigError(f"{where}.refusesFrom must be a day, YYYY-MM-DD")
+    return RuleMode(mode, refuses_from)
+
+
+def _rules(value: Any) -> tuple[tuple[str, RuleMode], ...]:
+    """`rules`: a rule id to "warn", "refuse" or {"mode", "refusesFrom"}. An
+    id this kavach does not know is an error, as an unknown key is."""
+    entries = _object(value, "rules", set(RULE_IDS))
+    return tuple((key, _rule_mode(key, item)) for key, item in entries.items())
+
+
 def parse(data: Any) -> Config:
     """The Config a decoded JSON document describes."""
     top = _object(data, "", SHAPE[""])
+    rules = _rules(top.get("rules", {}))
     worktree = _object(top.get("worktree", {}), "worktree", SHAPE["worktree"])
     command = _object(top.get("command", {}), "command", SHAPE["command"])
     trusted = tuple(
@@ -300,13 +349,20 @@ def parse(data: Any) -> Config:
     refuses_from = command.get("shellExpansionRefusesFrom", "")
     if refuses_from != "" and not (isinstance(refuses_from, str) and DAY.fullmatch(refuses_from)):
         raise ConfigError("command.shellExpansionRefusesFrom must be a day, YYYY-MM-DD")
+    named = dict(rules).get(SHELL_EXPANSION_RULE)
+    if named is not None:
+        if "shellExpansion" in command or "shellExpansionRefusesFrom" in command:
+            raise ConfigError(
+                f"rules.{SHELL_EXPANSION_RULE} and command.shellExpansion name the same rule: keep one"
+            )
+        mode, refuses_from = named.mode, named.refuses_from
     reviewed = tuple(
         _reviewed(entry, index)
         for index, entry in enumerate(_list(worktree.get("reviewedCLIs", []), "worktree.reviewedCLIs"))
     )
     own = _own_checkout(worktree["ownCheckout"]) if "ownCheckout" in worktree else None
     return Config(
-        trusted, variables, reason, paired, read_only, mode, refuses_from, reviewed, own_checkout=own
+        trusted, variables, reason, paired, read_only, mode, refuses_from, reviewed, own_checkout=own, rules=rules
     )
 
 

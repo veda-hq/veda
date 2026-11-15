@@ -88,6 +88,7 @@ and PR state, and the GitHub API.
   `#<number>` reference as a footer, so a long line such as "... describes only PR #N. Keep ..."
   fails `footer-max-line-length` (100) after every other hook has run. Wrap body lines well under
   100 and keep issue references off long lines.
+  <!-- held by: kavach command guard, rule commit-body-ref-line-length (warns, then refuses, a commit body line over 100 characters holding #<number>) -->
 - **The shell eats commit messages.** In zsh, backticks, `$()` or `!` inside a double-quoted
   `git commit -m` are expanded and the word silently vanishes; commitlint checks only the
   header, so the damage ships. Write the message to a file and use `git commit -F <file>`, and
@@ -117,6 +118,7 @@ and PR state, and the GitHub API.
   `git checkout --ours <file>` or `--theirs` is file-wide and drops the other side's changes to
   that file. Never use `git checkout -- <file>` to restore while uncommitted work is present;
   commit or copy it first.
+  <!-- held by: kavach command guard, rule checkout-discards-uncommitted (warns, then refuses, checkout -- / --ours / --theirs / restore over a path with uncommitted changes) -->
 - **Review bots that need a seat; verified commits without a key.** Some review bots review only
   PRs whose author holds a seat, so a PR opened by an unseated bot sits skipped and never
   merges. To get a GitHub-verified commit without a local signing key, create it with GraphQL
@@ -135,7 +137,10 @@ and PR state, and the GitHub API.
 - **Thread ids collide on a case-insensitive filesystem.** Review-thread node ids are
   case-sensitive base64 and can differ only by case, so naming one reply file per thread id on
   macOS APFS merges two files and posts the wrong reply. Key reply files by index or comment
-  `databaseId`, check the posted count, and fix a misposted reply with
+  `databaseId`.
+  <!-- held by: kavach tool guard, rule case-fold-path-collision (warns, then refuses, a Write whose name differs only by case from a file in its folder) -->
+- **Fix a misposted review reply in place.** After posting replies in a batch, check the posted
+  count, and fix a reply that landed on the wrong thread with
   `gh api -X PATCH repos/<owner>/<repo>/pulls/comments/<databaseId> -f body=...`.
 
 ## Git internals

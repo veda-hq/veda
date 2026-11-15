@@ -29,6 +29,7 @@ describe('parseConfig', () => {
       hooks: {
         PreToolUse: [
           { matcher: 'Bash', guard: 'command' },
+          { matcher: 'Write|RemoteTrigger', guard: 'tool' },
           { matcher: 'Edit|Write', command: './check.sh', timeout: 5, failClosed: true },
         ],
       },
@@ -37,6 +38,7 @@ describe('parseConfig', () => {
     assert.equal(config.kavach.python, '/project/tools/python.sh');
     assert.deepEqual(config.hooks.PreToolUse, [
       { matcher: 'Bash', guard: 'command' },
+      { matcher: 'Write|RemoteTrigger', guard: 'tool' },
       { matcher: 'Edit|Write', command: './check.sh', timeout: 5, failClosed: true },
     ]);
   });
@@ -62,7 +64,7 @@ describe('parseConfig', () => {
     refuses({ hooks: { Stop: [{ command: 'x', when: 1 }] } }, /unknown key "when"/);
     refuses({ hooks: { Stop: [{ command: 'x', matcher: 1 }] } }, /"matcher" must be a string/);
     refuses({ hooks: { Stop: [{ command: ' ' }] } }, /"command" must be a non-empty string/);
-    refuses({ hooks: { Stop: [{ guard: 'other' }] } }, /"guard" must be/);
+    refuses({ hooks: { Stop: [{ guard: 'other' }] } }, /"guard" must be "worktree", "command" or "tool"/);
     refuses({ hooks: { Stop: [{}] } }, /exactly one of/);
     refuses({ hooks: { Stop: [{ command: 'x', guard: 'command' }] } }, /exactly one of/);
     refuses({ hooks: { Stop: [{ command: 'x', timeout: 0 }] } }, /"timeout" must be/);

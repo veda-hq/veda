@@ -265,12 +265,17 @@ class Loading(unittest.TestCase):
     fails in any way blocks: Claude Code lets a hook's exit 1 through, so a
     crash would let every command through. Each copy's module is the bug."""
 
-    def copy(self, *names: str, log: bool = True) -> str:
+    def copy(self, *names: str, log: bool = True, rules: bool = True) -> str:
         directory = tempfile.mkdtemp(dir=WORK)
         self.addCleanup(shutil.rmtree, directory, True)
-        for name in ("command_guard.py", *(("refusal_log.py",) if log else ()), *names):
+        extra = (*(("refusal_log.py",) if log else ()), *(("rules.py",) if rules else ()))
+        for name in ("command_guard.py", *extra, *names):
             shutil.copy(KAVACH / name, directory)
         return directory
+
+    def test_a_copy_without_its_lesson_rules_blocks(self) -> None:
+        directory = self.copy("config.py", "bash_guard.py", "git_safety.py", rules=False)
+        self.assert_blocks(os.path.join(directory, "command_guard.py"), "the lesson rules could not load rules.py")
 
     def test_a_copy_without_its_refusal_log_blocks(self) -> None:
         directory = self.copy("config.py", "bash_guard.py", "git_safety.py", log=False)

@@ -15,10 +15,32 @@ const LAUNCHER = join(ROOT, '.claude', 'hooks', 'sarathi.sh');
 const scratch = mkdtempSync(join(tmpdir(), 'sarathi-hook-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
+// A stand-in niyam CLI. .claude/sarathi.json runs niyam's identity guard on
+// every gh or git command and niyam session-start at session start, both
+// failing closed without the CLI, which CI does not install. HOME is a scratch
+// folder, so the hook finds this one first on PATH, never a real one in
+// ~/.config/niyam/bin.
+const niyamHome = join(scratch, 'home');
+const niyamBin = join(scratch, 'niyam-bin');
+mkdirSync(niyamHome, { recursive: true });
+mkdirSync(niyamBin, { recursive: true });
+writeFileSync(
+  join(niyamBin, 'niyam'),
+  ['#!/bin/sh', 'case "$1" in', '  guard) cat > /dev/null ;;', '  session-start) echo "niyam: the stand-in session-start ran" ;;', '  *) exit 9 ;;', 'esac', ''].join('\n'),
+  { mode: 0o755 },
+);
+
+/** The environment a hook runs in: `env` over this process's, with the stand-in niyam. @param {string} project @param {Record<string, string>} [env] */
+function hookEnv(project, env = {}) {
+  const merged = { ...process.env, CLAUDE_PROJECT_DIR: project, KAVACH_REFUSAL_LOG_OFF: '1', ...env, HOME: niyamHome };
+  merged.PATH = `${niyamBin}:${merged.PATH}`;
+  if (env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL === undefined) delete merged.CLAUDE_CODE_DISABLE_ADVISOR_TOOL;
+  return merged;
+}
+
 /** @param {string} event @param {object} input @param {{ project?: string, env?: Record<string, string>, unset?: string[] }} [options] */
 function hook(event, input, options = {}) {
-  const env = { ...process.env, CLAUDE_PROJECT_DIR: options.project ?? ROOT, KAVACH_REFUSAL_LOG_OFF: '1', ...options.env };
-  if (options.env?.CLAUDE_CODE_DISABLE_ADVISOR_TOOL === undefined) delete env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL;
+  const env = hookEnv(options.project ?? ROOT, options.env);
   for (const name of options.unset ?? []) delete env[name];
   const result = spawnSync('bash', [LAUNCHER, event], { input: JSON.stringify(input), encoding: 'utf8', env, cwd: ROOT });
   return { code: result.status, stdout: result.stdout, stderr: result.stderr };
@@ -81,8 +103,7 @@ describe('kavach through sarathi, from the pinned install', () => {
   });
 
   test('the settings command runs the launcher itself, so it must stay executable', () => {
-    const env = { ...process.env, CLAUDE_PROJECT_DIR: ROOT, KAVACH_REFUSAL_LOG_OFF: '1' };
-    delete env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL;
+    const env = hookEnv(ROOT);
     const input = JSON.stringify(bash('git commit --no-verify -m wip'));
     const result = spawnSync('/bin/sh', ['-c', '"$CLAUDE_PROJECT_DIR"/.claude/hooks/sarathi.sh PreToolUse'], { input, encoding: 'utf8', env, cwd: ROOT });
     assert.equal(result.status, 2);

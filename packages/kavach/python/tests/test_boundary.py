@@ -1912,6 +1912,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm -C . exec /bin/bash run.sh",
             "pnpm --filter app exec /bin/bash run.sh",
             "pnpm exec -r /bin/bash run.sh",
+            "pnpm exec -c /bin/bash run.sh",
         ):
             with self.subTest(command=command):
                 result = self.invoke(
@@ -1920,8 +1921,11 @@ class WorktreeBoundaryTest(BoundaryFixture):
                     tool_input={"command": command},
                 )
                 self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertIn("mutation target /bin/", result.stderr)
-        # A program word the guard cannot expand stays unresolvable.
+                # Resolved, so `/usr/bin/bash` where `/bin` is a link to it.
+                self.assertRegex(result.stderr, r"mutation target \S*/bash is outside")
+        # A program word the guard cannot expand stays unresolvable. Negative
+        # control, with the program skipped before the dynamic-marker check:
+        # AssertionError: 0 != 2
         result = self.invoke(
             self.claude,
             tool_name="Bash",

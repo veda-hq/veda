@@ -122,6 +122,12 @@ function handTemplate(t: TestContext): Fixture {
     remoteMain: 'remote-main',
     gitPath: '/usr/bin/git',
     env: {},
+    folders: {
+      scratchpad: join(root, 'tmp', 'mine'),
+      notes: join(root, 'home', 'mine'),
+      otherScratchpad: join(root, 'tmp', 'theirs'),
+      otherNotes: join(root, 'home', 'theirs'),
+    },
   };
 }
 

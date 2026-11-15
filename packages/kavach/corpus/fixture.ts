@@ -22,6 +22,16 @@
  *                                 <root>/gate-passes exists; and `niyam`,
  *                                 a reviewed CLI's stand-in (NIYAM_STANDIN)
  *   <root>/home                  HOME and CLAUDE_CONFIG_DIR for every child
+ *   <root>/tmp                   CLAUDE_CODE_TMPDIR: Claude Code's temp
+ *                                folder, holding this session's scratchpad
+ *                                and another session's (SessionFolders)
+ *   <home>/Library/Application Support/Claude
+ *                                the desktop app's notes folders, this
+ *                                session's and a stranger's, and its record
+ *                                of this session granting its own
+ *
+ * The payload a guard is given names this session (SESSION_ID); the hook's
+ * environment names its desktop session (CLAUDE_CODE_HOST_SESSION_ID).
  *
  * Nothing here reaches outside <root>: git runs under hermeticGitEnv, HOME is
  * the fixture's, and origin is a local bare repository.
@@ -38,10 +48,11 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 
 import { hermeticGitEnv, removeFixtureRoot } from './isolation.ts';
 import { runChild, type ChildOutcome } from './run-child.ts';
@@ -67,6 +78,65 @@ export interface Fixture {
   readonly gitPath: string;
   /** Environment every child process of a row runs under. */
   readonly env: NodeJS.ProcessEnv;
+  /** The session's own folders outside every checkout, and a stranger's. */
+  readonly folders: SessionFolders;
+}
+
+/**
+ * The folders the worktree guard opens for this session alone (veda#68), and
+ * the same kind of folder belonging to another session: writing one of the
+ * others' is a breach, as writing the main checkout is.
+ */
+export interface SessionFolders {
+  readonly scratchpad: string;
+  readonly notes: string;
+  readonly otherScratchpad: string;
+  readonly otherNotes: string;
+}
+
+/** The session the guard's payload names (`session_id`). */
+export const SESSION_ID = '11111111-2222-4333-8444-555555555555';
+/** Another session in the same project, with its own scratchpad. */
+export const OTHER_SESSION_ID = '66666666-7777-4888-8999-aaaaaaaaaaaa';
+/** This session in the desktop app, and the session that started it. */
+const HOST_SESSION = 'local_0a0a0a0a-1b1b-4c2c-8d3d-4e4e4e4e4e4e';
+const STARTER_SESSION = 'local_5f5f5f5f-6a6a-4b7b-8c8c-9d9d9d9d9d9d';
+const STRANGER_SESSION = 'local_e0e0e0e0-f1f1-4a2a-8b3b-c4c4c4c4c4c4';
+/** Claude Code's slug of the project folder a session started in. */
+const PROJECT_SLUG = '-Users-x-code-acme--claude-worktrees-task';
+
+function sessionFolders(root: string, home: string): SessionFolders {
+  const project = join(root, 'tmp', `claude-${String(process.getuid?.() ?? 0)}`, PROJECT_SLUG);
+  const notes = join(home, 'Library', 'Application Support', 'Claude', 'side-session-notes');
+  return {
+    scratchpad: join(project, SESSION_ID, 'scratchpad'),
+    notes: join(notes, STARTER_SESSION),
+    otherScratchpad: join(project, OTHER_SESSION_ID, 'scratchpad'),
+    otherNotes: join(notes, STRANGER_SESSION),
+  };
+}
+
+/**
+ * Make the folders, the app's record of this session granting its notes
+ * folder, and one link from the scratchpad to the main checkout, relative so
+ * a copy of the fixture points at its own.
+ */
+function makeSessionFolders(folders: SessionFolders, home: string, primary: string): void {
+  const nested = { recursive: true } as const;
+  for (const folder of Object.values(folders)) mkdirSync(folder, { ...nested, mode: 0o700 });
+  const records = join(home, 'Library', 'Application Support', 'Claude', 'claude-code-sessions', 'account', 'org');
+  mkdirSync(records, nested);
+  writeFileSync(
+    join(records, `${HOST_SESSION}.json`),
+    JSON.stringify({
+      sessionId: HOST_SESSION,
+      cliSessionId: SESSION_ID,
+      sessionPermissionUpdates: [
+        { type: 'addDirectories', directories: [folders.notes], destination: 'session' },
+      ],
+    }),
+  );
+  symlinkSync(relative(folders.scratchpad, primary), join(folders.scratchpad, 'to-main'));
 }
 
 /** Where every fixture root is made, under the temporary directory. */
@@ -264,6 +334,7 @@ interface Layout {
   readonly shimLog: string;
   readonly gatePass: string;
   readonly env: NodeJS.ProcessEnv;
+  readonly folders: SessionFolders;
 }
 
 function layout(root: string): Layout {
@@ -278,6 +349,8 @@ function layout(root: string): Layout {
     // Read by the committed hooks and `bin/ls` (see HOOK).
     CORPUS_HOOK_MARKER: join(root, 'hook-marker'),
     CORPUS_PRIMARY: primary,
+    CLAUDE_CODE_TMPDIR: join(root, 'tmp'),
+    CLAUDE_CODE_HOST_SESSION_ID: HOST_SESSION,
     GIT_AUTHOR_NAME: 'Corpus',
     GIT_AUTHOR_EMAIL: 'corpus@example.invalid',
     GIT_COMMITTER_NAME: 'Corpus',
@@ -297,6 +370,7 @@ function layout(root: string): Layout {
     shimLog: join(root, 'shim-log'),
     gatePass: join(root, 'gate-passes'),
     env,
+    folders: sessionFolders(root, home),
   };
 }
 
@@ -370,6 +444,7 @@ async function populate(paths: Layout): Promise<Fixture> {
   );
   chmodSync(shadow, 0o755);
   writeFileSync(join(primary, 'README.md'), 'alpha\n');
+  makeSessionFolders(paths.folders, home, primary);
 
   await git(root, env, 'init', '-q', '-b', 'main', primary);
   await git(primary, env, 'config', 'core.hooksPath', '.hooks');

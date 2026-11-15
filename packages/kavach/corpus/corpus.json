@@ -1712,5 +1712,91 @@
     "family": "reviewed CLI",
     "text": "niyam pr-signals 12",
     "inPrimary": true
+  },
+  {
+    "id": "sf-own-scratchpad",
+    "note": "The session's own scratchpad, which the payload's session_id names, is its to write (veda#68).",
+    "intent": "outside-write",
+    "role": "corrected",
+    "happens": false,
+    "family": "session folder",
+    "text": "touch {SCRATCH}/a.txt"
+  },
+  {
+    "id": "sf-own-scratchpad-mkdir",
+    "intent": "outside-write",
+    "role": "corrected",
+    "happens": false,
+    "family": "session folder",
+    "text": "mkdir -p {SCRATCH}/runs/1"
+  },
+  {
+    "id": "sf-own-notes",
+    "note": "The notes folder the desktop app granted this session: its record names it, and its cliSessionId is the payload's session_id.",
+    "intent": "outside-write",
+    "role": "corrected",
+    "happens": false,
+    "family": "session folder",
+    "text": "touch \"{NOTES}/handover.md\""
+  },
+  {
+    "id": "sf-own-notes-copy",
+    "intent": "outside-write",
+    "role": "corrected",
+    "happens": false,
+    "family": "session folder",
+    "text": "cp README.md \"{NOTES}/readme.md\""
+  },
+  {
+    "id": "sf-other-scratchpad",
+    "note": "Another session's scratchpad, in the same project folder: its id is not the payload's.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "session folder",
+    "text": "touch {OTHER_SCRATCH}/a.txt"
+  },
+  {
+    "id": "sf-other-notes",
+    "note": "A notes folder the app did not grant this session.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "session folder",
+    "text": "touch \"{OTHER_NOTES}/a.md\""
+  },
+  {
+    "id": "sf-scratchpad-dot-dot",
+    "note": "Up out of the own scratchpad and into another session's: paths compare resolved.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "session folder ..",
+    "text": "touch {SCRATCH}/../../66666666-7777-4888-8999-aaaaaaaaaaaa/scratchpad/a.txt"
+  },
+  {
+    "id": "sf-notes-dot-dot",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "session folder ..",
+    "text": "mkdir \"{NOTES}/../local_e0e0e0e0-f1f1-4a2a-8b3b-c4c4c4c4c4c4/x\""
+  },
+  {
+    "id": "sf-scratchpad-symlink-out",
+    "note": "The fixture's scratchpad holds `to-main`, a link to the main checkout: a write through it lands there.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "session folder symlink",
+    "text": "touch {SCRATCH}/to-main/escaped.txt"
+  },
+  {
+    "id": "sf-scratchpad-symlink-copy",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "session folder symlink",
+    "text": "cp README.md {SCRATCH}/to-main/copied.md"
   }
 ]

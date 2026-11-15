@@ -320,17 +320,35 @@ export interface Placeholders {
   readonly gitPath: string;
   /** The checkout the row runs or is judged in, for `{UP}`. */
   readonly cwd: string;
+  /** The session's own folders and a stranger's (fixture.ts SessionFolders). */
+  readonly folders?: {
+    readonly scratchpad: string;
+    readonly notes: string;
+    readonly otherScratchpad: string;
+    readonly otherNotes: string;
+  };
 }
 
 /**
  * `{P}` is the main checkout, `{GIT}` git's path, and `{UP}` the relative
  * path from the row's checkout up to the main checkout (with a trailing
  * slash), so a relative row names the main checkout from every checkout.
+ * `{SCRATCH}` and `{NOTES}` are this session's scratchpad and notes folder,
+ * `{OTHER_SCRATCH}` and `{OTHER_NOTES}` another session's.
  */
 export function render(text: string, values: Placeholders): string {
   const up = relative(values.cwd, values.primary);
-  return text
+  let out = text
     .replaceAll('{P}', values.primary)
     .replaceAll('{GIT}', values.gitPath)
     .replaceAll('{UP}', up === '' ? '' : `${up}/`);
+  const folders = values.folders;
+  if (folders !== undefined) {
+    out = out
+      .replaceAll('{OTHER_SCRATCH}', folders.otherScratchpad)
+      .replaceAll('{OTHER_NOTES}', folders.otherNotes)
+      .replaceAll('{SCRATCH}', folders.scratchpad)
+      .replaceAll('{NOTES}', folders.notes);
+  }
+  return out;
 }

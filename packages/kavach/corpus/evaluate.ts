@@ -76,6 +76,7 @@ export async function evaluate(
           primary: fixture.primary,
           gitPath: fixture.gitPath,
           cwd: standIn(row, fixture),
+          folders: fixture.folders,
         });
       try {
         const text = world ? textIn(world) : row.text;

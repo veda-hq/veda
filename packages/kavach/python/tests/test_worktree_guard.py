@@ -1311,6 +1311,301 @@ class ClaudeAgentMemoryTest(GuardFixture):
         self.assertEqual(allowed.returncode, 0, allowed.stderr)
 
 
+SESSION = "11111111-2222-4333-8444-555555555555"
+OTHER_SESSION = "66666666-7777-4888-8999-aaaaaaaaaaaa"
+HOST = "local_0a0a0a0a-1b1b-4c2c-8d3d-4e4e4e4e4e4e"
+STARTER = "local_5f5f5f5f-6a6a-4b7b-8c8c-9d9d9d9d9d9d"
+STRANGER = "local_e0e0e0e0-f1f1-4a2a-8b3b-c4c4c4c4c4c4"
+
+
+class SessionFoldersTest(GuardFixture):
+    """A session's scratchpad and its granted notes folders (veda#68).
+
+    Claude Code gives each session a scratchpad under its own temp folder, and
+    the desktop app grants a side session its starter's notes folder. Both are
+    writable for the session that owns them and for no other, and nothing
+    else under the temp folder or the app's support folder opens with them.
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        temp = Path(self.temporary.name).resolve()
+        self.main = temp / "main"
+        self.claude = self.main / ".claude" / "worktrees" / "claude-task"
+        self.make_repository(self.main)
+        self.claude.parent.mkdir(parents=True)
+        git(self.main, "worktree", "add", "-qb", "claude-task", str(self.claude))
+        self.home = temp / "home"
+        self.tmp = temp / "tmp"
+        self.temp_root = self.tmp / f"claude-{os.getuid()}"
+        self.project = self.temp_root / "-Users-x-code-acme--claude-worktrees-task"
+        self.scratchpad = self.project / SESSION / "scratchpad"
+        self.others = self.project / OTHER_SESSION / "scratchpad"
+        for folder in (self.scratchpad, self.others):
+            folder.mkdir(parents=True)
+        self.app = self.home / "Library" / "Application Support" / "Claude"
+        self.notes = self.app / "side-session-notes"
+        for name in (HOST, STARTER, STRANGER):
+            (self.notes / name).mkdir(parents=True)
+        self.records = self.app / "claude-code-sessions" / "account" / "org"
+        self.records.mkdir(parents=True)
+        self.write_record()
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def write_record(
+        self, cli: str = SESSION, host: str = HOST, granted: tuple[str, ...] | None = None
+    ) -> None:
+        directories = (
+            [str(self.notes / STARTER)] if granted is None else list(granted)
+        )
+        record = {
+            "sessionId": host,
+            "cliSessionId": cli,
+            "spawnedFrom": {"sessionId": STARTER},
+            "sessionPermissionUpdates": [
+                {"type": "addRules", "rules": []},
+                {"type": "addDirectories", "directories": directories, "destination": "session"},
+            ],
+        }
+        (self.records / f"{host}.json").write_text(json.dumps(record), encoding="utf-8")
+
+    def environment(self, **changes: str | None) -> dict[str, str]:
+        environment = hermetic_git_env()
+        environment.update(
+            {
+                "HOME": str(self.home),
+                "CLAUDE_CONFIG_DIR": str(self.home / ".claude"),
+                "CLAUDE_CODE_TMPDIR": str(self.tmp),
+                "CLAUDE_CODE_HOST_SESSION_ID": HOST,
+            }
+        )
+        for name, value in changes.items():
+            if value is None:
+                environment.pop(name, None)
+            else:
+                environment[name] = value
+        return environment
+
+    def adapter(
+        self,
+        tool_input: dict[str, str],
+        tool_name: str = "Write",
+        session: str | None = SESSION,
+        cwd: Path | None = None,
+        **changes: str | None,
+    ) -> subprocess.CompletedProcess[str]:
+        payload: dict[str, object] = {
+            "cwd": str(cwd or self.claude),
+            "tool_name": tool_name,
+            "tool_input": tool_input,
+        }
+        if session is not None:
+            payload["session_id"] = session
+        return subprocess.run(
+            [sys.executable, str(ADAPTER_PATH)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=self.environment(**changes),
+        )
+
+    def assert_allowed(self, result: subprocess.CompletedProcess[str]) -> None:
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def assert_refused(self, result: subprocess.CompletedProcess[str]) -> None:
+        self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_this_sessions_folders_are_writable(self) -> None:
+        for target in (
+            self.scratchpad / "a.txt",
+            self.scratchpad / "deep" / "er" / "b.md",
+            self.notes / STARTER / "handover.md",
+            self.notes / HOST / "for-my-children.md",
+        ):
+            for tool in ("Write", "Edit"):
+                with self.subTest(target=target, tool=tool):
+                    self.assert_allowed(self.adapter({"file_path": str(target)}, tool))
+        shell = self.adapter(
+            {"command": f"touch {shlex.quote(str(self.scratchpad / 'c.txt'))}"}, "Bash"
+        )
+        self.assert_allowed(shell)
+        notes = self.adapter(
+            {"command": f"mkdir -p {shlex.quote(str(self.notes / STARTER / 'logs'))}"}, "Bash"
+        )
+        self.assert_allowed(notes)
+
+    def test_another_sessions_folders_are_refused(self) -> None:
+        for target in (
+            self.others / "a.txt",
+            self.notes / STRANGER / "a.md",
+        ):
+            with self.subTest(target=target):
+                self.assert_refused(self.adapter({"file_path": str(target)}))
+        # The other session's own payload is what opens its scratchpad.
+        self.assert_allowed(
+            self.adapter({"file_path": str(self.others / "a.txt")}, session=OTHER_SESSION)
+        )
+
+    def test_the_rest_of_the_temp_and_app_folders_stays_refused(self) -> None:
+        for target in (
+            self.temp_root / "a.txt",
+            self.project / "a.txt",
+            self.project / SESSION / "a.txt",
+            self.project / SESSION / "tasks" / "a.output",
+            self.tmp / "a.txt",
+            self.notes / "a.md",
+            self.notes / "local_not-a-uuid" / "a.md",
+            self.app / "config.json",
+            self.records / f"{HOST}.json",
+        ):
+            with self.subTest(target=target):
+                self.assert_refused(self.adapter({"file_path": str(target)}))
+
+    def test_dot_dot_and_symlink_escapes_are_refused(self) -> None:
+        self.assert_refused(
+            self.adapter({"file_path": str(self.scratchpad / ".." / ".." / OTHER_SESSION / "scratchpad" / "a")})
+        )
+        self.assert_refused(
+            self.adapter({"file_path": str(self.notes / STARTER / ".." / STRANGER / "a.md")})
+        )
+        self.assert_refused(
+            self.adapter({"file_path": str(self.scratchpad / ".." / "a.txt")})
+        )
+        # A symlink inside an allowed folder that leads out of it.
+        (self.scratchpad / "out").symlink_to(self.main, target_is_directory=True)
+        self.assert_refused(self.adapter({"file_path": str(self.scratchpad / "out" / "x.txt")}))
+        (self.notes / STARTER / "peer").symlink_to(self.notes / STRANGER, target_is_directory=True)
+        self.assert_refused(self.adapter({"file_path": str(self.notes / STARTER / "peer" / "x.md")}))
+        shell = self.adapter(
+            {"command": f"touch {shlex.quote(str(self.scratchpad / 'out' / 'y.txt'))}"}, "Bash"
+        )
+        self.assert_refused(shell)
+        self.assertFalse((self.main / "y.txt").exists())
+
+    def test_a_symlinked_folder_opens_nothing(self) -> None:
+        # The scratchpad itself a link to the main checkout.
+        shutil.rmtree(self.scratchpad)
+        self.scratchpad.symlink_to(self.main, target_is_directory=True)
+        self.assert_refused(self.adapter({"file_path": str(self.scratchpad / "x.txt")}))
+        # A granted notes folder that is a link to elsewhere.
+        shutil.rmtree(self.notes / STARTER)
+        elsewhere = Path(self.temporary.name).resolve() / "elsewhere"
+        elsewhere.mkdir()
+        (self.notes / STARTER).symlink_to(elsewhere, target_is_directory=True)
+        self.assert_refused(self.adapter({"file_path": str(self.notes / STARTER / "x.md")}))
+
+    def test_a_symlinked_temp_root_opens_nothing(self) -> None:
+        shutil.rmtree(self.temp_root)
+        real = Path(self.temporary.name).resolve() / "real-root"
+        (real / "p" / SESSION / "scratchpad").mkdir(parents=True)
+        self.temp_root.symlink_to(real, target_is_directory=True)
+        self.assert_refused(
+            self.adapter({"file_path": str(self.temp_root / "p" / SESSION / "scratchpad" / "x")})
+        )
+
+    def test_a_scratchpad_inside_a_checkout_opens_nothing(self) -> None:
+        inside = self.claude / "tmp"
+        target = inside / f"claude-{os.getuid()}" / "p" / SESSION / "scratchpad"
+        target.mkdir(parents=True)
+        # Inside the owned worktree it was writable anyway; from the main
+        # checkout's own copy it must not become so.
+        other = self.main / "tmp"
+        (other / f"claude-{os.getuid()}" / "p" / SESSION / "scratchpad").mkdir(parents=True)
+        self.assert_refused(
+            self.adapter(
+                {"file_path": str(other / f"claude-{os.getuid()}" / "p" / SESSION / "scratchpad" / "x")},
+                CLAUDE_CODE_TMPDIR=str(other),
+            )
+        )
+
+    def test_the_payload_and_environment_decide(self) -> None:
+        note = {"file_path": str(self.notes / STARTER / "a.md")}
+        scratch = {"file_path": str(self.scratchpad / "a.txt")}
+        # No session id: neither folder.
+        self.assert_refused(self.adapter(scratch, session=None))
+        self.assert_refused(self.adapter(note, session=None))
+        # A session id that is no UUID names nothing.
+        self.assert_refused(self.adapter(scratch, session="../" + SESSION))
+        # No host session in the hook's environment, or one of the wrong
+        # shape: no notes folder, the scratchpad still.
+        self.assert_refused(self.adapter(note, CLAUDE_CODE_HOST_SESSION_ID=None))
+        self.assert_refused(self.adapter(note, CLAUDE_CODE_HOST_SESSION_ID="local_../x"))
+        self.assert_allowed(self.adapter(scratch, CLAUDE_CODE_HOST_SESSION_ID=None))
+        # A host session whose record belongs to another CLI session.
+        self.assert_refused(self.adapter(note, session=OTHER_SESSION))
+        # A relative temp base names nothing.
+        self.assert_refused(self.adapter(scratch, CLAUDE_CODE_TMPDIR="tmp"))
+
+    def test_the_record_must_match_and_be_one(self) -> None:
+        note = {"file_path": str(self.notes / STARTER / "a.md")}
+        self.assert_allowed(self.adapter(note))
+        self.write_record(cli=OTHER_SESSION)
+        self.assert_refused(self.adapter(note))
+        self.write_record()
+        # A second record of the same host session: neither counts.
+        second = self.app / "claude-code-sessions" / "account" / "org2"
+        second.mkdir()
+        shutil.copy(self.records / f"{HOST}.json", second / f"{HOST}.json")
+        self.assert_refused(self.adapter(note))
+        shutil.rmtree(second)
+        self.assert_allowed(self.adapter(note))
+        # Unreadable, or a record whose own id is not the host session.
+        (self.records / f"{HOST}.json").write_text("{not json", encoding="utf-8")
+        self.assert_refused(self.adapter(note))
+        self.write_record()
+        record = json.loads((self.records / f"{HOST}.json").read_text(encoding="utf-8"))
+        record["sessionId"] = STRANGER
+        (self.records / f"{HOST}.json").write_text(json.dumps(record), encoding="utf-8")
+        self.assert_refused(self.adapter(note))
+        # The own folder needs the record too.
+        self.assert_refused(self.adapter({"file_path": str(self.notes / HOST / "a.md")}))
+
+    def test_only_exact_grants_count(self) -> None:
+        note = {"file_path": str(self.notes / STARTER / "a.md")}
+        for granted in (
+            (),
+            (str(self.notes / STARTER / "sub"),),
+            (f"{self.notes}/./{STARTER}",),
+            (f"{self.notes}//{STARTER}",),
+            (f"{self.notes}/{STRANGER}/../{STARTER}",),
+            (str(self.app / STARTER),),
+            ("side-session-notes/" + STARTER,),
+        ):
+            with self.subTest(granted=granted):
+                self.write_record(granted=granted)
+                self.assert_refused(self.adapter(note))
+        self.write_record(granted=(str(self.notes / STARTER) + "/",))
+        self.assert_allowed(self.adapter(note))
+
+    def test_the_folders_count_only_after_ownership(self) -> None:
+        # From the main checkout, which this session does not own, its
+        # scratchpad is no way around the gate.
+        self.assert_refused(
+            self.adapter({"file_path": str(self.scratchpad / "a.txt")}, cwd=self.main)
+        )
+        # One command, two operands: the one outside every allowance decides.
+        mixed = self.adapter(
+            {
+                "command": "touch "
+                f"{shlex.quote(str(self.scratchpad / 'a'))} {shlex.quote(str(self.main / 'b'))}"
+            },
+            "Bash",
+        )
+        self.assert_refused(mixed)
+
+    def test_a_near_miss_says_which_folders_are_this_sessions(self) -> None:
+        scratch = self.adapter({"file_path": str(self.others / "a.txt")})
+        self.assert_refused(scratch)
+        self.assertIn(f"/{SESSION}/scratchpad, is writable", scratch.stderr)
+        note = self.adapter({"file_path": str(self.notes / STRANGER / "a.md")})
+        self.assert_refused(note)
+        self.assertIn("granted this session are writable", note.stderr)
+        self.assertIn(str(self.notes / STARTER), note.stderr)
+
+
 class ClaudeHarnessStateTest(GuardFixture):
     """The read-namespace that lets a report read a worktree run's transcripts.
 

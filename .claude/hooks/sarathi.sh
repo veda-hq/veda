@@ -44,6 +44,7 @@ install_pins() {
   lock="$common/sarathi-install.lock"
   log="$common/sarathi-install.log"
   # A lock older than 10 minutes is an install that died: take it over.
+  [ -n "$SARATHI_TRACE" ] && echo "trace $$ $(date +%s.%N): common=$common lock=$lock exists=$([ -d "$lock" ] && echo y || echo n) stale=$(find "$lock" -maxdepth 0 -mmin +10 2>&1) now=$(date +%s) mtime=$(stat -c %Y "$lock" 2>&1)" >&2
   find "$lock" -maxdepth 0 -mmin +10 -exec rmdir {} \; 2>/dev/null
   until mkdir "$lock" 2>/dev/null; do
     [ "$waited" -ge 90 ] && { echo "sarathi.sh: another session's install in $root is still running after 90 s ($lock)." >&2; return 1; }
@@ -51,7 +52,9 @@ install_pins() {
     waited=$((waited + 1))
   done
   # Another session may have installed while this one waited.
+  [ -n "$SARATHI_TRACE" ] && echo "trace $$ $(date +%s.%N): locked after $waited s; inspect=$(inspect; echo $?) found=$found" >&2
   if ! { inspect && pins_current; }; then
+    [ -n "$SARATHI_TRACE" ] && echo "trace $$ $(date +%s.%N): installing" >&2
     if ! (cd "$root" && pnpm install --frozen-lockfile) </dev/null >"$log" 2>&1; then
       echo "sarathi.sh: pnpm install --frozen-lockfile failed in $root; its output is in $log: $(tail -n 1 "$log")" >&2
     fi

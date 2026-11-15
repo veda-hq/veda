@@ -256,7 +256,7 @@ describe('when the pinned sarathi cannot run', () => {
       });
     const results = await Promise.all([run(), run()]);
     for (const result of results) assert.equal(result.code, 0, result.stderr);
-    assert.equal(installs(dir), 1);
+    assert.equal(installs(dir), 1, results.map(r => r.stderr).join('\n---\n'));
   });
 
   test('a sarathi that crashes refuses PreToolUse and passes its exit on elsewhere', () => {

@@ -43,9 +43,14 @@ install_pins() {
   common="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || common="$root"
   lock="$common/sarathi-install.lock"
   log="$common/sarathi-install.log"
-  # A lock older than 10 minutes is an install that died: take it over.
-  find "$lock" -maxdepth 0 -mmin +10 -exec rmdir {} \; 2>/dev/null
-  until mkdir "$lock" 2>/dev/null; do
+  # A lock older than 10 minutes is an install that died: take it over. It is
+  # a file; an older sarathi.sh made it a directory.
+  find "$lock" -maxdepth 0 -mmin +10 -type d -exec rmdir {} \; 2>/dev/null
+  find "$lock" -maxdepth 0 -mmin +10 ! -type d -exec rm -f {} \; 2>/dev/null
+  # The lock is bash's own noclobber create (O_EXCL), never mkdir: uutils
+  # coreutils' mkdir (ubuntu-26.04's) lets two racing callers both succeed.
+  # A directory there, an older sarathi.sh's lock, counts as held too.
+  until (set -C; : >"$lock") 2>/dev/null; do
     [ "$waited" -ge 90 ] && { echo "sarathi.sh: another session's install in $root is still running after 90 s ($lock)." >&2; return 1; }
     sleep 1
     waited=$((waited + 1))
@@ -56,7 +61,7 @@ install_pins() {
       echo "sarathi.sh: pnpm install --frozen-lockfile failed in $root; its output is in $log: $(tail -n 1 "$log")" >&2
     fi
   fi
-  rmdir "$lock"
+  rm -f "$lock"
 }
 inspect
 current=$?

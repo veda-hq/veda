@@ -87,7 +87,12 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
           "keep-going --stop": {}
         },
         "reason": "writes only under the git toplevel (niyam 0.6.17 audited)" }
-    ]
+    ],
+    "ownCheckout": {
+      "env": { "AGENT_REMOTE": ["true"] },
+      "reason": "a hosted session clones the repository for itself, with no worktree",
+      "protectedPaths": [".claude/hooks/", ".claude/settings.json", ".claude/settings.local.json", ".claude/kavach.json", "node_modules/"]
+    }
   },
   "command": {
     "protectedVariables": ["AGENT_REMOTE"],
@@ -135,6 +140,32 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
   waits, as a trusted command does. The guard sees only the command line:
   a symlink the agent planted inside the worktree still moves what the CLI
   writes by itself, as it does for any reviewed runner.
+- `ownCheckout`: where an agent's own checkout is a plain clone rather than
+  a linked worktree (a hosted session that clones the repository for
+  itself), that clone counts as the agent's own. That holds only while the
+  hook's own environment holds one of the listed values for every variable
+  in `env`, which is required, and only for the clone named by
+  `CLAUDE_PROJECT_DIR`, the one the session started in: a session that
+  changes directory into another clone gains nothing there. Every other rule
+  still applies inside it. Linked worktrees are judged as before. Name
+  variables only the agent's host sets, never ones a developer exports on a
+  laptop, or a laptop's main checkout opens too.
+
+  A worktree session finds the files its guards run from in the main
+  checkout, outside its worktree; a clone's session finds them inside its
+  own checkout. So inside an owned clone these stay refused: its git folder,
+  the guard's settings file (`KAVACH_CONFIG`) and its own code, and each
+  path in `protectedPaths` (relative to the clone's root; a folder covers
+  everything below it). List there the hook scripts and settings your
+  guards run from (a local settings file can turn hooks off too) and the
+  folder they are installed in. A target that holds one of them (`rm -rf
+  .claude`, `mv .claude elsewhere`) is refused as well. Paths compare by
+  file identity as well as by name, so another case spelling or a symlink
+  reaches nothing. The limit: like every target, these are judged from the
+  command line, so a command whose writes the guard counts as the whole
+  checkout (`git checkout <ref> -- <path>`, `git apply`, a package install)
+  can still change them. A kavach older than this setting refuses every
+  call on the unknown key, so add it only once the pinned kavach knows it.
 - `protectedVariables`: environment variables a command may not assign, declare or
   export.
 - `pairedChanges`: a commit that may record a path ending in `changes` must

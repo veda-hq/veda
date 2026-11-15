@@ -3,7 +3,9 @@
 
 The boundary module (``boundary.py``, beside this file) supplies parsing
 only; this adapter owns Claude event semantics and requires this session's own
-Claude-managed checkout. The consumer's settings (``config.py``, named by the
+Claude-managed checkout: a linked worktree under ``.claude/worktrees``, or, in
+the environment the consumer's ``worktree.ownCheckout`` names, the plain clone
+the session was started in. The consumer's settings (``config.py``, named by the
 environment variable ``KAVACH_CONFIG``) are read once per event here and
 handed down; a settings file that cannot be used refuses every event.
 
@@ -28,7 +30,7 @@ import sys
 import tempfile
 from pathlib import Path
 from types import ModuleType
-from typing import Any, NoReturn
+from typing import Any, Mapping, NoReturn
 
 
 HERE = Path(__file__).resolve().parent
@@ -813,7 +815,140 @@ def refuse_during_push(tool: object, targets: list[Path], root: Path) -> None:
     )
 
 
-def reviewed(command: str, cwd: Path, root: Path, primary: Path, entries: Any) -> bool:
+def owns_plain_checkout(
+    own: Any, root: Path, environ: Mapping[str, str]
+) -> bool:
+    """Whether the plain (unlinked) checkout at ``root`` is this session's own.
+
+    Only with the consumer's `worktree.ownCheckout`, only where the hook's own
+    environment holds one of its values for every variable it names, and only
+    for the checkout the session was started in (``CLAUDE_PROJECT_DIR``), so a
+    session that changes directory into another clone gains nothing there. The
+    environment is the hook's, which no tool call can change.
+    """
+
+    if own is None:
+        return False
+    if not all(environ.get(name) in values for name, values in own.env):
+        return False
+    project = environ.get("CLAUDE_PROJECT_DIR", "")
+    if not project:
+        return False
+    try:
+        return Path(project).resolve(strict=True) == root.resolve()
+    except OSError:
+        return False
+
+
+# A place inside an owned plain clone that stays refused, and what to say.
+Fence = tuple[Path, str]
+
+
+def clone_fences(root: Path, own: Any, environ: Mapping[str, str]) -> tuple[Fence, ...]:
+    """The places inside an owned plain clone that stay refused.
+
+    A desktop session finds each of them outside its worktree, so owning the
+    clone must not open them: the clone's git folder (a write there could
+    plant a hook or rewrite config), the guard's own settings file and code,
+    and the consumer's `protectedPaths` (the hook scripts and settings the
+    guards run from). A git folder that cannot be found refuses.
+    """
+
+    git_dir = git_dir_of(root)
+    if git_dir is None:
+        boundary.deny(f"cannot find the git folder of this session's checkout {root}")
+    fences: list[Fence] = [
+        (git_dir.resolve(), "this checkout's git folder: change it only through git commands")
+    ]
+    settings_file = environ.get(config.ENV_VAR, "")
+    if settings_file:
+        fences.append((Path(settings_file), "the guard's own settings file"))
+    # The package this file ships in (`python/kavach/` sits two below it).
+    fences.append((HERE.parents[1], "the guard's own code"))
+    for path in own.protected_paths:
+        fences.append(
+            (root / path, f"a path worktree.ownCheckout.protectedPaths keeps from this session ({path})")
+        )
+    return tuple(fences)
+
+
+def in_fence(target: Path, fence: Path) -> bool:
+    """Whether ``target`` is ``fence`` or lies under it.
+
+    Compared by file identity as well as by path: on a case-insensitive
+    filesystem `.GIT/hooks` is the same folder as `.git/hooks`, though no
+    path comparison says so. The fence's nearest existing ancestor is found
+    by identity among the target's; below it, names compare without case,
+    which refuses more on a case-sensitive one and never less.
+    """
+
+    resolved, fence = target.resolve(), fence.resolve()
+    if boundary.is_inside(resolved, fence):
+        return True
+    anchor, rest = fence, []
+    while not os.path.lexists(anchor) and anchor != anchor.parent:
+        rest.insert(0, anchor.name.casefold())
+        anchor = anchor.parent
+    for ancestor in (resolved, *resolved.parents):
+        try:
+            same = os.path.samefile(ancestor, anchor)
+        except OSError:
+            continue
+        if same:
+            below = [part.casefold() for part in resolved.parts[len(ancestor.parts):]]
+            return below[: len(rest)] == rest
+    return False
+
+
+def is_root(target: Path, root: Path) -> bool:
+    if target.resolve() == root.resolve():
+        return True
+    try:
+        return os.path.samefile(target, root)
+    except OSError:
+        return False
+
+
+def fence_of(target: Path, root: Path, fences: tuple[Fence, ...]) -> tuple[Fence, str] | None:
+    """The fence ``target`` reaches, and how: it lies inside one, or holds
+    one (`rm -rf .claude` removes `.claude/hooks/` whole). The clone's root
+    is exempt from holding: a command whose writes count as the whole
+    checkout is the gap the README names."""
+
+    for fence in fences:
+        if in_fence(target, fence[0]):
+            return fence, "inside"
+    if is_root(target, root):
+        return None
+    for fence in fences:
+        if in_fence(fence[0], target):
+            return fence, "holds"
+    return None
+
+
+def is_owned_target(target: Path, root: Path, primary: Path, fences: tuple[Fence, ...]) -> bool:
+    """A session target (`boundary.is_session_target`) that reaches no fence."""
+
+    if fence_of(target, root, fences) is not None:
+        return False
+    return boundary.is_session_target(target, root, primary)
+
+
+def refuse_target(target: Path, root: Path, primary: Path, fences: tuple[Fence, ...]) -> None:
+    fenced = fence_of(target, root, fences)
+    if fenced is not None:
+        (place, what), how = fenced
+        where = "is inside" if how == "inside" else "holds"
+        boundary.deny(
+            f"mutation target {target} {where} {place}, {what}; "
+            "an owned plain clone does not open it"
+        )
+    boundary.deny(denial(target, root, primary))
+
+
+def reviewed(
+    command: str, cwd: Path, root: Path, primary: Path, entries: Any, fences: tuple[Fence, ...] = ()
+) -> bool:
     """Admit a reviewed CLI's line (`worktree.reviewedCLIs`), reached only
     after ownership; refuse a line that names one but is not admitted.
 
@@ -826,8 +961,8 @@ def reviewed(command: str, cwd: Path, root: Path, primary: Path, entries: Any) -
     declared = boundary.reviewed_cli_paths(command, cwd, root, entries)
     if declared is not None:
         for target in declared:
-            if not boundary.is_session_target(target, root, primary):
-                boundary.deny(denial(target, root, primary))
+            if not is_owned_target(target, root, primary, fences):
+                refuse_target(target, root, primary, fences)
         refuse_during_push("Bash", [root, *declared], root)
         return True
     named = boundary.reviewed_cli_named(command, entries)
@@ -896,7 +1031,15 @@ def main() -> None:
     # among its targets, because this parser cannot prove what it writes there.
     if targets and all(in_memory(target) for target in targets):
         return
-    if not linked or not boundary.is_claude_managed(root, primary):
+    # A plain clone the consumer marks as the session's own
+    # (`worktree.ownCheckout`) passes the gate in place of a Claude-managed
+    # worktree. Everything after it still applies, and the places inside it
+    # that a worktree session finds outside its own (`clone_fences`) stay
+    # refused as targets.
+    fences: tuple[Fence, ...] = ()
+    if not linked and owns_plain_checkout(loaded.own_checkout, root, os.environ):
+        fences = clone_fences(root, loaded.own_checkout, os.environ)
+    elif not linked or not boundary.is_claude_managed(root, primary):
         boundary.deny("Claude mutations require this session's Claude-managed worktree; use EnterWorktree")
     if tool == "Bash" and boundary.trusted_request(
         boundary.tool_command(values), cwd, root, trusted
@@ -907,7 +1050,7 @@ def main() -> None:
         refuse_during_push(tool, [root], root)
         return
     if tool == "Bash" and reviewed(
-        boundary.tool_command(values), cwd, root, primary, loaded.reviewed_clis
+        boundary.tool_command(values), cwd, root, primary, loaded.reviewed_clis, fences
     ):
         return
     if targets is None:
@@ -916,8 +1059,8 @@ def main() -> None:
         # From inside an owned worktree the two allowances compose, so
         # `touch <memory>/note.md` works while the same command with a second
         # operand outside both still fails on that operand.
-        if not (boundary.is_session_target(target, root, primary) or in_memory(target)):
-            boundary.deny(denial(target, root, primary))
+        if not (is_owned_target(target, root, primary, fences) or in_memory(target)):
+            refuse_target(target, root, primary, fences)
     refuse_during_push(tool, targets, root)
 
 

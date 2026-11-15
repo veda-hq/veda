@@ -3,7 +3,7 @@ the environment variable KAVACH_CONFIG.
 
 kavach knows no product. What one product trusts or requires (a script its
 agents may run from any checkout, a command it reviewed as only reading and allows in one
-environment, a CLI whose writes it reviewed, environment variables an agent must leave alone, a file whose change needs another in the same commit) comes from this
+environment, a CLI whose writes it reviewed, the environment where a plain clone is a session's own checkout, environment variables an agent must leave alone, a file whose change needs another in the same commit) comes from this
 file, and with no file every such rule is off. So does the mode of a rule on
 trial (`command.shellExpansion`), which warns until the file says "refuse".
 
@@ -49,6 +49,22 @@ class ReadOnlyCommand:
     pattern: re.Pattern[str]
     env: tuple[tuple[str, tuple[str, ...]], ...]
     reason: str
+
+
+@dataclass(frozen=True)
+class OwnCheckout:
+    """Where the session's own checkout is a plain clone rather than a linked
+    worktree (a hosted session that clones the repository for itself): that
+    clone counts as the session's own, but only where the hook's own
+    environment holds one of the listed values for every variable in `env`.
+    `reason` says why that environment marks such a session.
+    `protected_paths` are paths relative to the clone's root that stay
+    refused inside it: the files the guards themselves run from, which a
+    desktop session finds in the main checkout, outside its worktree."""
+
+    env: tuple[tuple[str, tuple[str, ...]], ...]
+    reason: str
+    protected_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,6 +115,7 @@ class Config:
     # shows no wrong fire.
     shell_expansion_refuses_from: str = ""
     reviewed_clis: tuple[ReviewedCLI, ...] = ()
+    own_checkout: OwnCheckout | None = None
 
 
 DEFAULT = Config()
@@ -107,7 +124,7 @@ DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 SHAPE: dict[str, set[str]] = {
     "": {"worktree", "command"},
-    "worktree": {"trustedCommands", "readOnlyCommands", "reviewedCLIs"},
+    "worktree": {"trustedCommands", "readOnlyCommands", "reviewedCLIs", "ownCheckout"},
     "command": {
         "protectedVariables", "protectedVariablesReason", "pairedChanges",
         "shellExpansion", "shellExpansionRefusesFrom",
@@ -161,7 +178,13 @@ def _read_only(value: Any, index: int) -> ReadOnlyCommand:
     # The environment is required: an entry with no condition would widen the
     # guard on every machine, which is what kavach's own read-only list is
     # kept narrow to avoid.
-    raw_env = entry.get("env")
+    env = _env(entry.get("env"), where)
+    reason = _text(entry.get("reason"), f"{where}.reason")
+    return ReadOnlyCommand(pattern, env, reason)
+
+
+def _env(raw_env: Any, where: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """A required environment condition: each variable and the values it may hold."""
     if not isinstance(raw_env, dict) or not raw_env:
         raise ConfigError(f"{where}.env must be a non-empty JSON object of variable names")
     env: list[tuple[str, tuple[str, ...]]] = []
@@ -172,8 +195,24 @@ def _read_only(value: Any, index: int) -> ReadOnlyCommand:
         if not listed:
             raise ConfigError(f"{where}.env.{name} must list at least one value")
         env.append((name, tuple(_text(item, f"{where}.env.{name}[{at}]") for at, item in enumerate(listed))))
+    return tuple(env)
+
+
+def _own_checkout(value: Any) -> OwnCheckout:
+    where = "worktree.ownCheckout"
+    entry = _object(value, where, {"env", "reason", "protectedPaths"})
+    # Required for the same reason as a read-only command's: with no
+    # condition, every plain clone on every machine would count as owned.
+    env = _env(entry.get("env"), where)
     reason = _text(entry.get("reason"), f"{where}.reason")
-    return ReadOnlyCommand(pattern, tuple(env), reason)
+    paths = tuple(
+        _text(item, f"{where}.protectedPaths[{at}]")
+        for at, item in enumerate(_list(entry.get("protectedPaths", []), f"{where}.protectedPaths"))
+    )
+    for at, path in enumerate(paths):
+        if path.startswith("/") or ".." in path.split("/") or path.strip("/") in ("", "."):
+            raise ConfigError(f"{where}.protectedPaths[{at}] must be a path inside the repository")
+    return OwnCheckout(env, reason, paths)
 
 
 # A program is named bare, as the shell finds it on PATH: a path-qualified
@@ -265,7 +304,10 @@ def parse(data: Any) -> Config:
         _reviewed(entry, index)
         for index, entry in enumerate(_list(worktree.get("reviewedCLIs", []), "worktree.reviewedCLIs"))
     )
-    return Config(trusted, variables, reason, paired, read_only, mode, refuses_from, reviewed)
+    own = _own_checkout(worktree["ownCheckout"]) if "ownCheckout" in worktree else None
+    return Config(
+        trusted, variables, reason, paired, read_only, mode, refuses_from, reviewed, own_checkout=own
+    )
 
 
 def load(environ: Mapping[str, str] | None = None) -> Config:

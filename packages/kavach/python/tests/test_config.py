@@ -228,6 +228,75 @@ class ParseTest(unittest.TestCase):
             (config.PairedChange("a.sql", "b/", "r"),) * 2,
         )
 
+    def test_reviewed_clis(self) -> None:
+        def reviewed(*entries: object) -> dict[str, object]:
+            return {"worktree": {"reviewedCLIs": list(entries)}}
+
+        good = {
+            "program": "niyam",
+            "subcommands": {
+                "review-thread": {"pathOptions": ["--body-file"]},
+                "brief": {"pathOperands": True},
+                "keep-going --stop": {},
+            },
+            "reason": "writes only under the git toplevel",
+        }
+        where = "worktree.reviewedCLIs[0]"
+        self.refused({"worktree": {"reviewedCLIs": {}}}, "worktree.reviewedCLIs must be a JSON array")
+        self.refused(reviewed(good, "x"), "worktree.reviewedCLIs[1] must be a JSON object")
+        self.refused(reviewed({**good, "extra": 1}), f"{where} has unknown key(s): extra")
+        for key in ("program", "reason"):
+            with self.subTest(missing=key):
+                self.refused(
+                    reviewed({name: value for name, value in good.items() if name != key}),
+                    f"{where}.{key} must be a non-empty string",
+                )
+        for program in ("bin/niyam", "./niyam", "-niyam", "ni yam", "NIYAM=1"):
+            with self.subTest(program=program):
+                self.refused(reviewed({**good, "program": program}), f"{where}.program must be a bare program name")
+        for subcommands in (None, {}, [], "brief"):
+            with self.subTest(subcommands=subcommands):
+                self.refused(
+                    reviewed({**good, "subcommands": subcommands}),
+                    f"{where}.subcommands must be a non-empty JSON object",
+                )
+        for key in ("", " brief", "brief ", "keep-going  --stop", "a;b", "$(x)", "=ls", "/x"):
+            with self.subTest(key=key):
+                self.refused(
+                    reviewed({**good, "subcommands": {key: {}}}),
+                    f"{where}.subcommands has a key that is not words separated by single spaces",
+                )
+        def one(value: object) -> dict[str, object]:
+            return reviewed({**good, "subcommands": {"brief": value}})
+
+        self.refused(one([]), f"{where}.subcommands.brief must be a JSON object")
+        self.refused(one({"paths": []}), f"{where}.subcommands.brief has unknown key(s): paths")
+        self.refused(one({"pathOptions": "--x"}), f"{where}.subcommands.brief.pathOptions must be a JSON array")
+        self.refused(one({"pathOptions": [""]}), f"{where}.subcommands.brief.pathOptions[0] must be a non-empty string")
+        for option in ("x", "-", "---x", "--x=", "--a b"):
+            with self.subTest(option=option):
+                self.refused(
+                    one({"pathOptions": [option]}),
+                    f"{where}.subcommands.brief.pathOptions[0] is not an option name",
+                )
+        self.refused(one({"pathOperands": "yes"}), f"{where}.subcommands.brief.pathOperands must be true or false")
+        parsed = config.parse(reviewed(good))
+        self.assertEqual(
+            parsed.reviewed_clis,
+            (
+                config.ReviewedCLI(
+                    "niyam",
+                    (
+                        config.ReviewedSubcommand(("review-thread",), ("--body-file",), False),
+                        config.ReviewedSubcommand(("brief",), (), True),
+                        config.ReviewedSubcommand(("keep-going", "--stop"), (), False),
+                    ),
+                    "writes only under the git toplevel",
+                ),
+            ),
+        )
+        self.assertEqual(config.parse({"worktree": {"reviewedCLIs": []}}), config.DEFAULT)
+
     def test_the_settings_are_frozen(self) -> None:
         parsed = config.parse({})
         with self.assertRaises(AttributeError):

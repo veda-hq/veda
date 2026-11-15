@@ -72,6 +72,47 @@ READ_ONLY_SETTINGS = {
 HOSTED = {"AGENT_REMOTE": "true", "AGENT_ENTRY": "remote"}
 
 
+# A sample consumer setting: one CLI whose writes the consumer reviewed (only
+# under the git toplevel), with the options and operands that are paths.
+REVIEWED_CLI = {
+    "program": "niyam",
+    "subcommands": {
+        "handoff": {"pathOptions": ["--open-brief"]},
+        "pr-signals": {},
+        "review-thread": {"pathOptions": ["--body-file"]},
+        "cubic-dismiss": {"pathOptions": ["--from"]},
+        "brief": {"pathOperands": True},
+        "keep-going --stop": {},
+        "propose": {},
+        "--version": {},
+    },
+    "reason": "writes only under the git toplevel (niyam 0.6.17 audited)",
+}
+REVIEWED_SETTINGS = {"worktree": {"reviewedCLIs": [REVIEWED_CLI]}}
+# The lines a session types, each admitted from the owned worktree's root.
+REVIEWED_LINES = (
+    'niyam handoff --record --base origin/main --disposition own-work --reason "text with spaces"',
+    "niyam handoff --record --base origin/main --disposition handed-off --reason 'why' --open-brief .tmp/b.md",
+    "niyam handoff --record --disposition carrying --reason=why --open-brief=.tmp/b.md --brief '#12,#13'",
+    'niyam review-thread PRRT_x --reply "text"',
+    "niyam review-thread PRRT_x --reply 'it costs $5 and `x` runs nothing here'",
+    'niyam review-thread PRRT_x --reply "two\nlines"',
+    "niyam review-thread PRRT_x --body-file .tmp/r.md",
+    "niyam review-thread PRRT_x --resolve",
+    "niyam brief .tmp/d.md",
+    "niyam brief --lint ./.tmp/d.md",
+    'niyam keep-going --stop "why"',
+    "niyam pr-signals 12",
+    "niyam pr-signals 12 --ci-only",
+    'niyam cubic-dismiss --evidence src/a.ts:12 --title "A title" --reason "it is wrong"',
+    "niyam cubic-dismiss --decision https://github.com/o/r/issues/1 --from .tmp/findings.json",
+    "niyam propose 67 --page https://claude.ai/artifact/abc",
+    "niyam --version",
+    '"niyam" pr-signals 12',
+    "  niyam\tpr-signals  12  ",
+)
+
+
 class AdapterTest(BoundaryFixture):
     def settings_env(self, document: object, name: str = "kavach.json") -> dict[str, str]:
         """The hook's environment with KAVACH_CONFIG naming ``document``.
@@ -527,6 +568,211 @@ class AdapterTest(BoundaryFixture):
                 ADAPTER.settings()
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("the settings must be a JSON object", stderr.getvalue())
+
+
+class ReviewedCLITest(AdapterTest):
+    """A reviewed CLI runs from the owned worktree's root, as one command of
+    literal words, with its declared paths inside the worktree."""
+
+    def reviewed_env(self, **settings: object) -> dict[str, str]:
+        document = {"worktree": dict(REVIEWED_SETTINGS["worktree"])}
+        if settings:
+            document["command"] = settings
+        return self.settings_env(document)
+
+    def test_its_lines_run_from_the_owned_worktree_root(self) -> None:
+        environment = self.reviewed_env()
+        for command in REVIEWED_LINES:
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command, environment)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_without_the_setting_they_stay_refused(self) -> None:
+        for environment in (hermetic_git_env(), self.settings_env(WORKTREE_SETTINGS)):
+            result = self.claude_bash(self.claude, REVIEWED_LINES[0], environment)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("mutation targets could not be resolved", result.stderr)
+            self.assertNotIn("reviewed CLI", result.stderr)
+
+    def test_no_other_checkout_and_no_subfolder_runs_them(self) -> None:
+        environment = self.reviewed_env()
+        (self.claude / "sub").mkdir()
+        for cwd, message in (
+            (self.main, "Claude-managed worktree"),
+            (self.manual, "Claude-managed worktree"),
+            (self.external, "cannot determine this session's repository checkout"),
+            (self.claude / "sub", "runs only as one plain command from this worktree's root"),
+        ):
+            for command in (REVIEWED_LINES[0], REVIEWED_LINES[3], "niyam pr-signals 12"):
+                with self.subTest(cwd=cwd, command=command):
+                    result = self.claude_bash(cwd, command, environment)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn(message, result.stderr)
+
+    def test_a_declared_path_outside_the_worktree_is_refused(self) -> None:
+        environment = self.reviewed_env()
+        outside = self.external / "r.md"
+        (self.claude / "link").symlink_to(self.external)
+        for command in (
+            f"niyam review-thread PRRT_x --body-file {outside}",
+            f"niyam review-thread PRRT_x --body-file '{outside}'",
+            "niyam review-thread PRRT_x --body-file ../../../r.md",
+            f"niyam brief {self.main}/d.md",
+            f"niyam brief --lint {self.manual}/d.md",
+            "niyam brief link/d.md",
+            f"niyam handoff --record --disposition carrying --reason x --open-brief={outside}",
+            f"niyam cubic-dismiss --evidence x --from {outside}",
+            f"niyam brief -- {outside}",
+            "niyam brief -x/../../../../r.md",
+            "niyam brief --lint/../../../../r.md",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("outside this session's Claude worktree", result.stderr)
+
+    def test_anything_but_literal_words_is_refused_even_while_expansion_warns(self) -> None:
+        outside = self.external / "made.txt"
+        refused = (
+            f"niyam pr-signals 12 > {outside}",
+            "niyam pr-signals 12 > .tmp/out.txt",
+            "niyam pr-signals 12 2>&1",
+            "niyam pr-signals 12 2>/dev/null",
+            "niyam pr-signals 12 | tail -5",
+            f"niyam pr-signals 12 && touch {outside}",
+            "niyam pr-signals 12; niyam pr-signals 13",
+            "niyam pr-signals 12\nniyam pr-signals 13",
+            "niyam pr-signals 12 &",
+            f'niyam review-thread PRRT_x --reply "fixed $(touch {outside})"',
+            f"niyam review-thread PRRT_x --reply \"fixed `touch {outside}`\"",
+            f"niyam review-thread PRRT_x --reply fixed`touch {outside}`",
+            'niyam review-thread PRRT_x --reply "$HOME"',
+            'niyam review-thread PRRT_x --reply "a \\" b"',
+            "niyam review-thread PRRT_x --reply \\$x",
+            "niyam review-thread PRRT_x --reply $'x'",
+            "niyam review-thread PRRT_x --reply 'unclosed",
+            'niyam review-thread PRRT_x --reply "unclosed',
+            "niyam review-thread PRRT_x --body-file ~/r.md",
+            "niyam review-thread PRRT_x --body-file .tmp/*.md",
+            "niyam review-thread PRRT_x --body-file =ls",
+            "niyam brief {a,b}.md",
+            "niyam pr-signals #12",
+            "niyam pr-signals <(echo 12)",
+            "niyam review-thread PRRT_x --body-file",
+            "niyam review-thread PRRT_x --body-file ''",
+        )
+        for mode in ("warn", "refuse"):
+            environment = self.reviewed_env(shellExpansion=mode)
+            for command in refused:
+                with self.subTest(mode=mode, command=command):
+                    result = self.claude_bash(self.claude, command, environment)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("mutation targets could not be resolved", result.stderr)
+        self.assertFalse(outside.exists())
+
+    def test_the_program_must_open_the_line_bare(self) -> None:
+        environment = self.reviewed_env()
+        for command in (
+            "GIT_DIR=../.. niyam pr-signals 12",
+            "GIT_WORK_TREE=/tmp niyam handoff --record --disposition own-work --reason x",
+            "FOO=1 niyam pr-signals 12",
+            "env niyam pr-signals 12",
+            "command niyam pr-signals 12",
+            "./niyam pr-signals 12",
+            "node_modules/.bin/niyam pr-signals 12",
+            "/usr/local/bin/niyam pr-signals 12",
+            "sudo niyam pr-signals 12",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_only_listed_subcommands_run(self) -> None:
+        environment = self.reviewed_env()
+        for command in (
+            "niyam",
+            "niyam onboard",
+            "niyam onboard owner agent --dry-run",
+            "niyam machine",
+            "niyam pr-autocreate watch --root ../.. --branch x --sha y",
+            "niyam keep-going",
+            "niyam keep-going --stopx",
+            "niyam handoffs --record",
+            "niyam HANDOFF --record",
+            "niyam -- handoff --record",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("niyam is a reviewed CLI here", result.stderr)
+                self.assertIn("(handoff, pr-signals, review-thread, cubic-dismiss", result.stderr)
+
+    def test_a_program_the_guard_judges_itself_is_never_reviewed(self) -> None:
+        for program, command in (
+            ("rm", f"rm -rf {self.external}"),
+            ("git", f"git -C {self.external} commit -m x"),
+            ("bash", f"bash -c 'touch {self.external}/x'"),
+            ("pnpm", f"pnpm exec touch {self.external}/x"),
+            ("python3", "python3 x.py"),
+            ("env", f"env touch {self.external}/x"),
+        ):
+            flag = "-rf" if program == "rm" else command.split()[1]
+            entry = {**REVIEWED_CLI, "program": program, "subcommands": {flag: {}}}
+            environment = self.settings_env({"worktree": {"reviewedCLIs": [entry]}})
+            with self.subTest(program=program):
+                self.assertTrue(MODULE.judged_here(program))
+                result = self.claude_bash(self.claude, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertNotIn("reviewed CLI", result.stderr)
+
+
+class ReviewedCLIWordsTest(unittest.TestCase):
+    """`reviewed_cli_words` and `reviewed_cli_paths` need no settings module."""
+
+    def test_words_are_what_the_shell_passes(self) -> None:
+        for command, words in (
+            ("niyam a", ["niyam", "a"]),
+            ('niyam --reply "a b" c', ["niyam", "--reply", "a b", "c"]),
+            ("niyam --reply='a b'c\"d\"", ["niyam", "--reply=a bcd"]),
+            ("niyam '' \"\"", ["niyam", "", ""]),
+            ("niyam a=b", ["niyam", "a=b"]),
+            ("niyam '=ls' \"=x\"", ["niyam", "=ls", "=x"]),
+            ("", []),
+            (" \t", []),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(MODULE.reviewed_cli_words(command), words)
+        for command in ("niyam =ls", "niyam a\\ b", "niyam a~", "niyam (a)", "niyam a|b", "niyam !x"):
+            with self.subTest(command=command):
+                self.assertIsNone(MODULE.reviewed_cli_words(command))
+
+    def test_paths_resolve_against_the_root_and_need_their_entries(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        sub = mock.Mock(words=("brief",), path_options=("--body-file", "-f"), path_operands=True)
+        entry = mock.Mock(program="niyam", subcommands=(sub,))
+        self.assertEqual(MODULE.reviewed_cli_paths("niyam brief a", root, root, ()), None)
+        self.assertEqual(MODULE.reviewed_cli_paths("niyam brief a", root / "x", root, (entry,)), None)
+        self.assertEqual(MODULE.reviewed_cli_paths("", root, root, (entry,)), None)
+        self.assertEqual(MODULE.reviewed_cli_paths("niyam other a", root, root, (entry,)), None)
+        self.assertEqual(
+            MODULE.reviewed_cli_paths("niyam brief a -f b -fc --body-file=d --x e -- -g", root, root, (entry,)),
+            [root / name for name in ("a", "b", "c", "d", "--x", "e", "-g")],
+        )
+        # Without operand paths, only the declared options' values are paths.
+        options_only = mock.Mock(words=("reply",), path_options=("--body-file",), path_operands=False)
+        other = mock.Mock(program="niyam", subcommands=(options_only,))
+        self.assertEqual(
+            MODULE.reviewed_cli_paths("niyam reply a -x/../b --body-file c -- d", root, root, (other,)),
+            [root / "c"],
+        )
+        self.assertEqual(MODULE.reviewed_cli_paths("niyam brief /x", root, root, (entry,)), [Path("/x").resolve()])
+        self.assertIsNone(MODULE.reviewed_cli_paths("niyam brief -f", root, root, (entry,)))
+        self.assertIsNone(MODULE.reviewed_cli_paths("niyam brief --body-file=", root, root, (entry,)))
+        self.assertIs(MODULE.reviewed_cli_named("  niyam x", (entry,)), entry)
+        self.assertIsNone(MODULE.reviewed_cli_named("", (entry,)))
+        self.assertIsNone(MODULE.reviewed_cli_named("niyamx", (entry,)))
 
 
 class TrustedRequestTest(unittest.TestCase):

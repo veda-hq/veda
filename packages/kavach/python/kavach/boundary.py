@@ -186,6 +186,11 @@ ALL_OPERAND_MUTATORS = {
     "touch",
     "unlink",
 }
+# The other mutators with a parser of their own here (`mutation_path_operands`).
+PARSED_MUTATORS = {
+    "adb", "chgrp", "chmod", "chown", "cp", "dd", "find", "git", "install",
+    "ln", "sed", "tee", "truncate",
+}
 
 
 def git_environment() -> dict[str, str]:
@@ -3327,6 +3332,214 @@ def read_only_request(
         ):
             return True
     return False
+
+
+class ReviewedSubcommandEntry(Protocol):
+    """One subcommand of a reviewed CLI, as `config.ReviewedSubcommand`
+    carries it: its leading words, the options whose value is a path, and
+    whether its operands are paths."""
+
+    words: tuple[str, ...]
+    path_options: tuple[str, ...]
+    path_operands: bool
+
+
+class ReviewedCLIEntry(Protocol):
+    """One reviewed CLI, as `config.ReviewedCLI` carries it."""
+
+    program: str
+    subcommands: tuple[ReviewedSubcommandEntry, ...]
+
+
+# What a bare (unquoted) word of a reviewed CLI's line may hold: characters no
+# shell gives a meaning to, mid-word. Everything else -- an operator, a
+# redirection, `$`, a backtick, a backslash, a glob, `~`, `#`, a brace --
+# makes the line no reviewed CLI's at all.
+REVIEWED_BARE = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/=:,@+%-"
+)
+# Inside double quotes, the characters that still expand (`$`, a backtick) or
+# escape (`\`).
+REVIEWED_DOUBLE_QUOTED_UNSAFE = frozenset("$`\\")
+
+
+def reviewed_cli_words(command: str) -> list[str] | None:
+    """The words of ``command`` as the shell passes them, quotes removed; None
+    unless every character is literal.
+
+    The grammar is a small one, so nothing in it needs evaluating: words split
+    by spaces and tabs, each made of bare characters (``REVIEWED_BARE``),
+    single-quoted text (anything but a single quote) and double-quoted text
+    holding no ``$``, backtick or backslash. An unquoted ``=`` may not start a
+    word: zsh replaces ``=name`` with the path of the program ``name``. So a
+    line with a redirection, a pipe, a chain, a newline outside quotes, a
+    comment, a substitution, an expansion or a glob is no list of words here.
+    """
+
+    words: list[str] = []
+    current: list[str] | None = None
+    index = 0
+    while index < len(command):
+        character = command[index]
+        if character in " \t":
+            if current is not None:
+                words.append("".join(current))
+                current = None
+            index += 1
+            continue
+        if current is None:
+            if character == "=":
+                return None
+            current = []
+        if character == "'":
+            end = command.find("'", index + 1)
+            if end < 0:
+                return None
+            current.append(command[index + 1 : end])
+            index = end + 1
+        elif character == '"':
+            end = command.find('"', index + 1)
+            if end < 0:
+                return None
+            text = command[index + 1 : end]
+            if any(unsafe in text for unsafe in REVIEWED_DOUBLE_QUOTED_UNSAFE):
+                return None
+            current.append(text)
+            index = end + 1
+        elif character in REVIEWED_BARE:
+            current.append(character)
+            index += 1
+        else:
+            return None
+    if current is not None:
+        words.append("".join(current))
+    return words
+
+
+def judged_here(name: str) -> bool:
+    """Whether this module reads ``name``'s writes itself (a reader, a
+    mutator, a runner, a shell, a wrapper or an interpreter), so no consumer
+    may list it as a reviewed CLI: its own parser keeps judging it."""
+
+    return (
+        name in READ_COMMANDS
+        or name in READ_ONLY_COMMANDS
+        or name in GENERIC_SCOPED_COMMANDS
+        or name in SHELL_INTERPRETERS
+        or name in SHELL_COMMAND_WRAPPERS
+        or name in SHELL_CONTROL_WORDS
+        or name in NAVIGATION_COMMANDS
+        or name in ALL_OPERAND_MUTATORS
+        or name in PARSED_MUTATORS
+        or is_non_shell_interpreter(name)
+    )
+
+
+def declared_path_values(
+    args: list[str], subcommand: ReviewedSubcommandEntry
+) -> list[str] | None:
+    """The values ``args`` gives the subcommand's declared paths; None when a
+    declared option has no value.
+
+    Every word is looked at, without knowing which other options take a
+    value, so this finds every path the CLI could read the line as naming,
+    and perhaps a few more: an operand that is really an option's value, or
+    an option, is still confined when operands are paths. After a literal
+    ``--`` every word is an operand.
+    """
+
+    values: list[str] = []
+    options = subcommand.path_options
+    operands_only = False
+    index = 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        if not operands_only:
+            if word == "--":
+                operands_only = True
+                continue
+            if word in options:
+                if index >= len(args):
+                    return None
+                values.append(args[index])
+                index += 1
+                continue
+            attached = next(
+                (
+                    option
+                    for option in options
+                    if word.startswith(f"{option}=")
+                    or (not option.startswith("--") and word.startswith(option))
+                ),
+                None,
+            )
+            if attached is not None:
+                value = word[len(attached) :]
+                values.append(value[1:] if value.startswith("=") else value)
+                continue
+            if word.startswith("-") and not subcommand.path_operands:
+                continue
+        # An operand path is confined even when it starts with `-`: a CLI
+        # may read `-x/../../r.md` as one, and `--lint` resolves inside.
+        if subcommand.path_operands:
+            values.append(word)
+    return values
+
+
+def reviewed_cli_paths(
+    command: str, cwd: Path, root: Path, entries: Sequence[ReviewedCLIEntry]
+) -> list[Path] | None:
+    """The paths a reviewed CLI's command line declares, resolved; None when
+    the line is no reviewed CLI's.
+
+    Such a CLI writes off its command line, so this parser cannot follow it;
+    the consumer reviewed what it writes instead (the settings'
+    ``worktree.reviewedCLIs``): only under the git toplevel, and on the paths
+    its options and operands declare. So the line is admitted only as tight
+    as that review: one command of literal words (``reviewed_cli_words``),
+    the program named bare first (no variable prefix, no path), one listed
+    subcommand's words next, run from the worktree's root. What the caller
+    confines is the returned paths; every other word is data, however it
+    reads. Callers must establish ownership first.
+    """
+
+    if not entries or cwd.resolve() != root.resolve():
+        return None
+    words = reviewed_cli_words(command)
+    if not words:
+        return None
+    for entry in entries:
+        if words[0] != entry.program or judged_here(entry.program):
+            continue
+        for subcommand in entry.subcommands:
+            end = 1 + len(subcommand.words)
+            if tuple(words[1:end]) != subcommand.words:
+                continue
+            values = declared_path_values(words[end:], subcommand)
+            if values is None or "" in values:
+                continue
+            return [
+                (Path(value) if Path(value).is_absolute() else cwd / value).resolve()
+                for value in values
+            ]
+    return None
+
+
+def reviewed_cli_named(
+    command: str, entries: Sequence[ReviewedCLIEntry]
+) -> ReviewedCLIEntry | None:
+    """The reviewed CLI whose program opens ``command``, admitted or not."""
+
+    first = command.strip().split(maxsplit=1)
+    return next(
+        (
+            entry
+            for entry in entries
+            if first and first[0] == entry.program and not judged_here(entry.program)
+        ),
+        None,
+    )
 
 
 def trusted_opening(command: str) -> tuple[str, list[list[str]]]:

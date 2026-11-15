@@ -813,6 +813,39 @@ def refuse_during_push(tool: object, targets: list[Path], root: Path) -> None:
     )
 
 
+def reviewed(command: str, cwd: Path, root: Path, primary: Path, entries: Any) -> bool:
+    """Admit a reviewed CLI's line (`worktree.reviewedCLIs`), reached only
+    after ownership; refuse a line that names one but is not admitted.
+
+    Its writes are unproven, so it counts as writing in the checkout while a
+    push runs, as a trusted command does; its declared paths are confined like
+    any other destination. False: the line names no reviewed CLI, and the
+    checks after this one judge it.
+    """
+
+    declared = boundary.reviewed_cli_paths(command, cwd, root, entries)
+    if declared is not None:
+        for target in declared:
+            if not boundary.is_session_target(target, root, primary):
+                boundary.deny(denial(target, root, primary))
+        refuse_during_push("Bash", [root, *declared], root)
+        return True
+    named = boundary.reviewed_cli_named(command, entries)
+    if named is None:
+        return False
+    listed = ", ".join(" ".join(subcommand.words) for subcommand in named.subcommands)
+    boundary.deny(
+        f"{UNRESOLVED}: {named.program} is a reviewed CLI here (worktree.reviewedCLIs), "
+        "and runs only as one plain command from this worktree's root: "
+        f"`{named.program}` itself (no path, no variable before it), one listed subcommand "
+        f"({listed}), then words that are literal: text in single quotes, or in double quotes "
+        "with no $, backtick or backslash inside; no redirection, pipe, chain, comment, glob "
+        "or `$(...)`. Write long text to a file under .tmp/ and pass the file where the "
+        "subcommand takes one."
+    )
+    return False
+
+
 def main() -> None:
     # First, so a misread settings file refuses every event, a read-only one
     # included.
@@ -872,6 +905,10 @@ def main() -> None:
         # ownership above. What it writes is unproven, so it counts as
         # writing in the checkout while a push runs.
         refuse_during_push(tool, [root], root)
+        return
+    if tool == "Bash" and reviewed(
+        boundary.tool_command(values), cwd, root, primary, loaded.reviewed_clis
+    ):
         return
     if targets is None:
         boundary.deny(unresolved(tool, values, cwd))

@@ -1137,6 +1137,40 @@
     "text": "git -C {P} status --short"
   },
   {
+    "id": "ow-git-C-ls-tree",
+    "note": "veda#66: kavach 0.6.0 read ls-tree and grep under -C as writes to the other checkout.",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git -C",
+    "text": "git -C {P} ls-tree -r --name-only HEAD | grep -i readme"
+  },
+  {
+    "id": "ow-git-C-grep",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git -C",
+    "text": "git -C {P} grep -n -i -E 'alpha|beta' HEAD -- README.md"
+  },
+  {
+    "id": "ow-git-C-cat-file",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git -C",
+    "text": "git -C {P} cat-file -p HEAD:README.md"
+  },
+  {
+    "id": "ow-git-C-grep-pager",
+    "note": "git grep -O runs its pager with the matching files: here, touch.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git -C",
+    "text": "git -C {P} grep -O'touch {P}/pwned' alpha"
+  },
+  {
     "id": "pw-touch",
     "note": "The main checkout is read-only for a session standing in it.",
     "intent": "outside-write",

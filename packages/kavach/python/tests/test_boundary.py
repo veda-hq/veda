@@ -783,6 +783,30 @@ class WorktreeBoundaryTest(BoundaryFixture):
                     self.assertEqual(result.returncode, 2, result.stderr)
                     self.assertIn("outside this session's Claude worktree", result.stderr)
 
+    def test_reads_of_another_checkout_pass_from_the_worktree(self) -> None:
+        """veda#66: kavach 0.6.0 refused these as writes to the other
+        checkout, or as "mutation targets could not be resolved"."""
+
+        for command in (
+            f'git -C {self.main} ls-tree -r --name-only main | grep -iE "tracked|other"',
+            f"git -C {self.main} grep -n -i -E 'base|x' main -- ':!.gitignore'",
+            f"git -C {self.main} cat-file -p main:tracked.txt",
+            "gh api repos/o/r/contents/package.json --jq .content | base64 -d",
+            f"shasum -a 256 {self.main}/tracked.txt",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        for command in (
+            f"git -C {self.main} grep -O 'touch {self.external}/x' base",
+            f"git -C {self.main} grep --open-files-in-pager=vi base",
+            f"base64 -o {self.external}/x < {self.main}/tracked.txt",
+            f"openssl x509 -in cert.pem -out {self.external}/x",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+
     def test_git_c_own_worktree_keeps_every_other_refusal(self) -> None:
         commands = (
             # cd under control flow or a wrapper still fails closed, so a
@@ -2578,6 +2602,26 @@ class ReadOnlyFormsTest(unittest.TestCase):
         "printf '%s\\n' \"$x\"",
         "file tracked.txt",
         "git branch --list codex/*",
+        # veda#66: read-only commands a session ran against other checkouts.
+        "git -C /elsewhere ls-tree -r --name-only origin/main | grep -iE \"pariksha|run-validation\"",
+        "git -C /elsewhere grep -n -i -E \"ownScopes|OWN_SCOPE\" origin/main -- ':!pnpm-lock.yaml'",
+        "gh api repos/o/r/contents/package.json --jq .content | base64 -d",
+        "for p in a.json b.json; do gh api repos/o/r/contents/$p --jq .content | base64 -d; done",
+        "gh api repos/o/r/commits/$(git rev-parse HEAD) --jq .sha",
+        "shasum -a 256 tracked.txt",
+        "openssl x509 -noout -text < cert.pem",
+        "git -C /elsewhere cat-file -p HEAD:package.json",
+        "git -C /elsewhere diff --stat origin/main",
+        "git grep -rniE 'a|b' -- '*.py'",
+        "git grep -n -e -x -A 2 -C3 -3 --max-depth 2 --color=never x HEAD",
+        "git grep --max-count=1 -fpatterns.txt HEAD",
+        "git ls-tree -rt --long --abbrev=8 --format '%(path)' HEAD -- src",
+        "git cat-file --batch-check='%(objectname)' --buffer < tracked.txt",
+        "git cat-file -e HEAD && echo yes",
+        "base64 tracked.txt",
+        "base64 -D < tracked.txt",
+        "base64 --decode -",
+        "openssl x509 -in cert.pem -noout -subject -enddate -nameopt RFC2253",
     )
 
     WRITES = (
@@ -2675,6 +2719,35 @@ class ReadOnlyFormsTest(unittest.TestCase):
         "file -C -m magic",
         "file --compile -m magic",
         "git branch --list $X",
+        # git grep -O runs a program on the matches; git takes abbreviations.
+        "git grep -O less x",
+        "git grep -Oless x",
+        "git grep -nO x",
+        "git grep --open-files-in-pager=less x",
+        "git grep --open x",
+        "git grep --textconv x",
+        "git grep $X x",
+        "git grep -c x",
+        "git grep -e",
+        "git -c core.pager=x grep x",
+        "git --exec-path=/x grep x",
+        "git ls-tree --no-such HEAD",
+        "git ls-tree --format",
+        "git cat-file --textconv HEAD:x",
+        "git cat-file --filters HEAD:x",
+        "git cat-file --path=x blob HEAD",
+        "base64 -o out",
+        "base64 --output=out",
+        "base64 -do out",
+        "base64 -i in -o out",
+        "base64 a b",
+        "base64 $X",
+        "openssl x509 -in a -out b",
+        "openssl x509 -engine x -text",
+        "openssl x509 -in",
+        "openssl req -new -out b",
+        "openssl",
+        "OPENSSL_CONF=x.cnf openssl x509 -noout -text",
     )
 
     def test_read_only_forms_are_read_only(self) -> None:

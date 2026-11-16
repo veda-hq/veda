@@ -29,7 +29,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 
 @dataclass(frozen=True)
@@ -241,6 +241,13 @@ def judge_git(words: list[str], segment: Segment, context: Context) -> None:
         runs = next((word for word in args if runs_program(sub, word)), None)
         if runs is not None:
             raise Refused(f"`git {sub} {runs}` runs a program for git, and {WAY_OUT}")
+        # `--output=<file>` (the diff and log family) writes a file this
+        # guard does not read as a target for every subcommand.
+        writes = next((word for word in args if is_long_option(word, "--output")), None)
+        if writes is not None:
+            raise Refused(
+                f"`git {sub} {writes}` writes a file, and {WAY_OUT}: drop it and read the output"
+            )
         return
     handler = GIT_HANDLERS.get(sub)
     if handler is None:
@@ -273,6 +280,14 @@ def git_start(words: list[str], cwd: Path, context: Context) -> tuple[int, Path]
     return index, cwd
 
 
+def is_long_option(word: str, option: str) -> bool:
+    """Whether ``word`` is ``option`` or an abbreviation git would take for
+    it (any prefix of three letters or more after the dashes)."""
+
+    name = word.split("=", 1)[0]
+    return name.startswith("--") and len(name) >= 5 and option.startswith(name)
+
+
 def runs_program(sub: str, word: str) -> bool:
     if sub == "grep" and word.startswith("-") and not word.startswith("--") and "O" in word:
         # `-O<pager>`, alone or after other short flags (`-iO`).
@@ -301,7 +316,7 @@ def git_refusal(sub: str) -> str:
     )
 
 
-Options = dict[str, list[str | None]]
+Options = Dict[str, List[Optional[str]]]
 
 
 def parse_options(args: Sequence[str], spec: Table, command: str) -> tuple[Options, list[str], list[str]]:
@@ -417,23 +432,32 @@ def check_switch(rev: str, segment: Segment, cwd: Path, command: str, context: C
     the work tree, so the switch leaves every one of them as it is."""
 
     require_alone(segment, command)
-    sha = resolve_commit(rev, cwd, command, context)
+    commits = {resolve_commit(rev, cwd, command, context)}
+    if rev != "-" and not rev.startswith("refs/"):
+        # `checkout <name>` takes the branch where a tag has the same name,
+        # which `rev-parse` would not: judge every commit the name can mean.
+        branch = context.git(
+            cwd, "rev-parse", "--verify", "--quiet", "--end-of-options", f"refs/heads/{rev}^{{commit}}"
+        )
+        if branch.returncode == 0 and branch.stdout.strip():
+            commits.add(branch.stdout.strip())
     specs = fence_pathspecs(context)
     if not specs:
         return
-    result = context.git(
-        context.root, "diff", "--name-only", "-z", "--no-ext-diff", "--no-textconv",
-        "--no-renames", sha, "--", *specs,
-    )
-    if result.returncode != 0:
-        raise Refused(f"`{command}`: this guard could not compare {rev} with the checkout, and {WAY_OUT}")
-    changed = [path for path in result.stdout.split("\0") if path]
-    if changed:
-        raise Refused(
-            f"`{command}` would change {changed[0]}, one of the guard's own files, and {WAY_OUT}. "
-            "Stay on this branch, or start one where those files match: "
-            "a new session clones the updated `main`"
+    for sha in sorted(commits):
+        result = context.git(
+            context.root, "diff", "--name-only", "-z", "--no-ext-diff", "--no-textconv",
+            "--no-renames", sha, "--", *specs,
         )
+        if result.returncode != 0:
+            raise Refused(f"`{command}`: this guard could not compare {rev} with the checkout, and {WAY_OUT}")
+        changed = [path for path in result.stdout.split("\0") if path]
+        if changed:
+            raise Refused(
+                f"`{command}` would change {changed[0]}, one of the guard's own files, and {WAY_OUT}. "
+                "Stay on this branch, or start one where those files match: "
+                "a new session clones the updated `main`"
+            )
 
 
 def git_checkout(args: list[str], cwd: Path, segment: Segment, context: Context) -> None:

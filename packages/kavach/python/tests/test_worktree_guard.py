@@ -982,6 +982,8 @@ class OwnCheckoutTest(BoundaryFixture):
             "git grep -iO.tmp/x.sh guard",
             "git --exec-path=.tmp commit -qm x",
             "git co evil",
+            "git diff-files --output=.claude/hooks/guard.sh",
+            "git whatchanged --outpu=.claude/hooks/guard.sh",
         )
         for command in refused:
             with self.subTest(command=command):
@@ -1034,6 +1036,35 @@ class OwnCheckoutTest(BoundaryFixture):
             with self.subTest(command=command):
                 result = self.claude_bash(self.main, command, environment)
                 self.assertEqual(result.returncode, 2, result.stderr)
+        # Only this check refuses these: the runner itself is one kavach knows.
+        for command in ("pnpm exec git checkout HEAD -- .claude", "mise exec -- git restore .claude"):
+            with self.subTest(reason=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertIn("would run `git`", result.stderr)
+
+    def test_a_name_both_a_tag_and_a_branch_is_judged_both_ways(self) -> None:
+        """`git checkout twin` takes branch `twin` where `rev-parse twin`
+        names tag `twin`: both commits are compared."""
+
+        environment = self.writers_fixture()
+        git(self.main, "tag", "twin", "safe")
+        git(self.main, "branch", "twin", "evil")
+        for command in ("git checkout twin", "git switch twin", "git checkout -b fresh twin"):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(".claude/hooks/guard.sh", result.stderr)
+
+    def test_git_config_from_the_environment_is_refused(self) -> None:
+        """A line that exports git's config injectors before git runs."""
+
+        environment = self.writers_fixture()
+        command = (
+            "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor "
+            "GIT_CONFIG_VALUE_0=.tmp/x.sh; git add ."
+        )
+        result = self.claude_bash(self.main, command, environment)
+        self.assertEqual(result.returncode, 2, result.stderr)
 
     def test_git_that_misses_the_fences_runs(self) -> None:
         environment = self.writers_fixture()

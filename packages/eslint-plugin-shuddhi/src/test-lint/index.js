@@ -13,10 +13,13 @@
  * a module here, owned by the colocated suite of the same name:
  * `vacuous-assertion` (TEST-WEAK-03), `test-structure` (TEST-STRUCT-02),
  * `process-hygiene` (SHELL-09 and TEST-STRUCT-11), `sql-fake` (TEST-WEAK-10)
- * and `detox` (TEST-WEAK-01), with two single-rule modules:
+ * and `detox` (TEST-WEAK-01), with single-rule modules:
  * `jsonnull-in-matcher` (a TEST-WEAK-03 shape: a Prisma null sentinel inside
- * a partial matcher) and `import-meta-cjs` (a SHELL-09 script rule:
- * `import.meta.dirname` in a file tsx runs as CommonJS). `helpers.js` holds
+ * a partial matcher), `import-meta-cjs` (a SHELL-09 script rule:
+ * `import.meta.dirname` in a file tsx runs as CommonJS),
+ * `stubenv-in-beforeall`, `assert-imported-constant` and
+ * `signal-handler-before-spawn` (a SHELL-09 script rule). `clock` holds the
+ * two rules that read where fake timers are on. `helpers.js` holds
  * only what two or more families read; a family imports nothing from another.
  *
  * `c05.js` adds three to the same test-file block: a test that returns before
@@ -46,8 +49,10 @@
  * receiver syntax shows is the built-in.
  */
 
+import { assertImportedConstant } from './assert-imported-constant.js';
 import { c05CandidateRules } from './c05-candidates.js';
 import { c05Rules } from './c05.js';
+import { expectOnWallClock, pollUnderFakeTimers } from './clock.js';
 import { detoxTapById } from './detox.js';
 import {
   assertion,
@@ -80,9 +85,12 @@ import {
   noRawGroupKill,
   SHELL_SPAWNERS,
   SPAWNERS,
+  spawnTimeoutSigkill,
   spawnTimeout,
 } from './process-hygiene.js';
+import { signalHandlerBeforeSpawn } from './signal-handler-before-spawn.js';
 import { noSqlFake } from './sql-fake.js';
+import { noStubenvInBeforeAll } from './stubenv-in-beforeall.js';
 import {
   e2eUsesSupertest,
   eachTitleUnique,
@@ -206,6 +214,12 @@ export const rules = {
   'detached-teardown': detachedTeardown,
   'jsonnull-in-matcher': jsonnullInMatcher,
   'no-import-meta-dirname-cjs': noImportMetaDirnameCjs,
+  'poll-under-fake-timers': pollUnderFakeTimers,
+  'expect-on-wall-clock': expectOnWallClock,
+  'spawn-timeout-sigkill': spawnTimeoutSigkill,
+  'no-stubenv-in-beforeall': noStubenvInBeforeAll,
+  'assert-imported-constant': assertImportedConstant,
+  'signal-handler-before-spawn': signalHandlerBeforeSpawn,
 };
 
 /** The c05 candidate extensions (`c05-candidates.js`), in catalogue order. */

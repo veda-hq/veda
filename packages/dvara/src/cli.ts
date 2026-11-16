@@ -193,11 +193,9 @@ const execBits = (args: readonly string[], { io, cwd, env }: Context): number =>
     io.err(EXEC_BITS_USAGE);
     return 2;
   }
-  let dropped;
-  try {
-    dropped = stagedDroppedBits({ cwd, env });
-  } catch (error) {
-    io.err(`dvara exec-bits: ${(error as Error).message}`);
+  const dropped = stagedDroppedBits({ cwd, env });
+  if ("error" in dropped) {
+    io.err(`dvara exec-bits: ${dropped.error}`);
     return 2;
   }
   if (dropped.length === 0) return 0;
@@ -229,6 +227,7 @@ const reviewSize = (args: readonly string[], { io, cwd, env }: Context): number 
     const lines = reviewSizeWarning(branchSize(repo, base, parsed.ignore), parsed.cap, base);
     for (const line of lines) io.err(line);
   } catch (error) {
+    // fail-open: a size warning must never stop a push; the line says it was not checked.
     io.err(`⚠ review-size: not checked: ${(error as Error).message.split("\n")[0] ?? ""}`);
   }
   return 0;

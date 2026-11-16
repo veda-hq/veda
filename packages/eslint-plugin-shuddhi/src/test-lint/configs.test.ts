@@ -58,6 +58,7 @@ describe('testLintBlocks', () => {
       'shuddhi/no-process-exit',
       'shuddhi/cli-entry-helper',
       'shuddhi/no-import-meta-dirname-cjs',
+      'shuddhi/signal-handler-before-spawn',
     ]);
   });
 
@@ -119,22 +120,36 @@ describe('plugin and config blocks', () => {
     'git-fixture-env',
     'spawn-timeout',
     'no-raw-group-kill',
+    'spawn-timeout-sigkill',
     'no-partial-git-mask',
     'env-via-stub',
     'detached-teardown',
     'jsonnull-in-matcher',
+    'poll-under-fake-timers',
+    'no-stubenv-in-beforeall',
   ];
+  /** Test-file rules turned on as warnings: each has a right use it cannot see. */
+  const TEST_WARNING_NAMES = ['expect-on-wall-clock', 'assert-imported-constant'];
   /** The blocks every option builds, under `namespace`. */
   const expected = (namespace: string, bound: unknown) => {
     const plugins = { [namespace]: bound };
-    const on = (names: string[]) =>
-      Object.fromEntries(names.map(name => [`${namespace}/${name}`, 'error']));
+    const on = (names: string[], severity = 'error') =>
+      Object.fromEntries(names.map(name => [`${namespace}/${name}`, severity]));
     return {
-      testBlock: { files: ['t'], plugins, rules: on(TEST_RULE_NAMES) },
+      testBlock: {
+        files: ['t'],
+        plugins,
+        rules: { ...on(TEST_RULE_NAMES), ...on(TEST_WARNING_NAMES, 'warn') },
+      },
       supportBlock: {
         files: ['s'],
         plugins,
-        rules: on(['no-void-async-iife', 'spawn-timeout', 'no-raw-group-kill']),
+        rules: on([
+          'no-void-async-iife',
+          'spawn-timeout',
+          'no-raw-group-kill',
+          'spawn-timeout-sigkill',
+        ]),
       },
       serverBlock: {
         files: ['t'],
@@ -144,11 +159,14 @@ describe('plugin and config blocks', () => {
       scriptBlock: {
         files: ['c'],
         plugins,
-        rules: on([
-          'no-process-exit',
-          'cli-entry-helper',
-          'no-import-meta-dirname-cjs',
-        ]),
+        rules: {
+          ...on([
+            'no-process-exit',
+            'cli-entry-helper',
+            'no-import-meta-dirname-cjs',
+          ]),
+          ...on(['signal-handler-before-spawn'], 'warn'),
+        },
       },
       detoxBlock: { files: ['d'], plugins, rules: on(['detox-tap-by-id']) },
     };
@@ -219,6 +237,7 @@ describe('plugin and config blocks', () => {
     assert.deepEqual(PROCESS_HYGIENE_RULES, {
       'shuddhi/spawn-timeout': 'error',
       'shuddhi/no-raw-group-kill': 'error',
+      'shuddhi/spawn-timeout-sigkill': 'error',
     });
     assert.deepEqual(SERVER_TEST_RULES, serverBlock.rules);
     assert.deepEqual(SCRIPT_RULES, scriptBlock.rules);
@@ -240,12 +259,14 @@ describe('Process-hygiene wiring', () => {
       'shuddhi/env-via-stub': 'error',
       'shuddhi/spawn-timeout': 'error',
       'shuddhi/no-raw-group-kill': 'error',
+      'shuddhi/spawn-timeout-sigkill': 'error',
       'shuddhi/detached-teardown': 'error',
     });
     assert.deepEqual(support?.rules, {
       'shuddhi/no-void-async-iife': 'error',
       'shuddhi/spawn-timeout': 'error',
       'shuddhi/no-raw-group-kill': 'error',
+      'shuddhi/spawn-timeout-sigkill': 'error',
     });
   });
 });
@@ -275,6 +296,7 @@ describe('namespaces', () => {
       'product-test/no-process-exit': 'error',
       'product-test/cli-entry-helper': 'error',
       'product-test/no-import-meta-dirname-cjs': 'error',
+      'product-test/signal-handler-before-spawn': 'warn',
     });
     assert.deepEqual(
       Object.keys(withNamespace(TEST_FILE_RULES, 'x')),

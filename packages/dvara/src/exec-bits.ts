@@ -8,7 +8,8 @@
 //
 // A new hook refusal warns first (veda's lessons: a refusal that fires wrongly
 // costs every commit), so it warns unless `--refuse` is given.
-import { git, type Git } from "./records/git.ts";
+import { spawnSync } from "node:child_process";
+import type { Git } from "./records/git.ts";
 
 export const USAGE = "usage: dvara exec-bits --staged [--refuse]";
 
@@ -41,11 +42,23 @@ export const droppedBits = (raw: string): Dropped[] => {
   return dropped;
 };
 
-/** The staged entries whose executable bit was dropped. */
-export const stagedDroppedBits = (repo: Git): Dropped[] =>
-  droppedBits(
-    git(repo, ["diff", "--cached", "--raw", "-z", "--no-abbrev", "--no-renames"]),
+/** The staged entries whose executable bit was dropped, or why git could not say. */
+export const stagedDroppedBits = (repo: Git): Dropped[] | { error: string } => {
+  const result = spawnSync(
+    "git",
+    ["diff", "--cached", "--raw", "-z", "--no-abbrev", "--no-renames"],
+    {
+      cwd: repo.cwd,
+      env: repo.env ?? process.env,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    },
   );
+  if (result.status === 0) return droppedBits(result.stdout);
+  return {
+    error: `git diff failed (${String(result.status ?? result.error)}): ${result.stderr.trim()}`,
+  };
+};
 
 export const ADVICE =
   "The content is unchanged, so this is a tool dropping the bit (Stryker's in-place restore does), not an edit. Put it back with `git update-index --chmod=+x <path>` (and `chmod +x <path>`).";

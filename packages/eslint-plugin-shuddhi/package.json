@@ -28,7 +28,11 @@
     "./server-boundary/configs": "./src/server-boundary/configs.js",
     "./test-lint": "./src/test-lint/index.js",
     "./test-lint/configs": "./src/test-lint/configs.js",
-    "./nest-prisma/helpers": "./src/nest-prisma/helpers.js"
+    "./nest-prisma/helpers": "./src/nest-prisma/helpers.js",
+    "./hermetic-git": {
+      "types": "./src/hermetic-git.d.ts",
+      "default": "./src/hermetic-git.js"
+    }
   },
   "files": [
     "src",
@@ -36,7 +40,7 @@
     "!src/**/fixtures"
   ],
   "scripts": {
-    "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts --test-coverage-exclude=src/**/fixtures/** src/**/*.test.ts",
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts --test-coverage-exclude=src/**/fixtures/** src/*.test.ts src/**/*.test.ts",
     "smoke": "node --input-type=module -e \"const p = (await import('@veda-hq/eslint-plugin-shuddhi')).default; if (Object.keys(p.rules).length === 0) throw new Error('no rules');\"",
     "check": "pnpm test && pnpm smoke"
   },

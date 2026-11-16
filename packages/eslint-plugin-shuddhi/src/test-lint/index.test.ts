@@ -53,7 +53,20 @@ const RULE_NAMES = [
   'detached-teardown',
   'jsonnull-in-matcher',
   'no-import-meta-dirname-cjs',
+  'poll-under-fake-timers',
+  'expect-on-wall-clock',
+  'spawn-timeout-sigkill',
+  'no-stubenv-in-beforeall',
+  'assert-imported-constant',
+  'signal-handler-before-spawn',
 ];
+
+/** The rules configured as warnings: each has a right use it cannot see. */
+const SUGGESTIONS = new Set([
+  'expect-on-wall-clock',
+  'assert-imported-constant',
+  'signal-handler-before-spawn',
+]);
 
 describe('the test-lint rule map', () => {
   it('names every rule, in order', () => {
@@ -61,15 +74,22 @@ describe('the test-lint rule map', () => {
   });
 
   it('binds each name to a distinct rule with a create function and messages', () => {
-    const modules = Object.values(rules) as {
-      create: unknown;
-      meta: { type: string; messages: Record<string, string> };
-    }[];
-    assert.equal(new Set(modules).size, RULE_NAMES.length);
-    for (const rule of modules) {
-      assert.equal(typeof rule.create, 'function');
-      assert.equal(rule.meta.type, 'problem');
-      assert.ok(Object.keys(rule.meta.messages).length > 0);
+    const modules = Object.entries(rules) as [
+      string,
+      {
+        create: unknown;
+        meta: { type: string; messages: Record<string, string> };
+      },
+    ][];
+    assert.equal(new Set(modules.map(([, rule]) => rule)).size, RULE_NAMES.length);
+    for (const [name, rule] of modules) {
+      assert.equal(typeof rule.create, 'function', name);
+      assert.equal(
+        rule.meta.type,
+        SUGGESTIONS.has(name) ? 'suggestion' : 'problem',
+        name,
+      );
+      assert.ok(Object.keys(rule.meta.messages).length > 0, name);
     }
   });
 

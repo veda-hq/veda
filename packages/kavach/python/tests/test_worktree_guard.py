@@ -983,13 +983,19 @@ class OwnCheckoutTest(BoundaryFixture):
             "git --exec-path=.tmp commit -qm x",
             "git co evil",
             "git diff-files --output=.claude/hooks/guard.sh",
-            "git whatchanged --outpu=.claude/hooks/guard.sh",
         )
         for command in refused:
             with self.subTest(command=command):
                 result = self.claude_bash(self.main, command, environment)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("an owned plain clone does not open it", result.stderr)
+        # An abbreviated --output is unproven in any checkout, before the
+        # owned clone's fences are read.
+        result = self.claude_bash(
+            self.main, "git whatchanged --outpu=.claude/hooks/guard.sh", environment,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("mutation targets could not be resolved", result.stderr)
         # From a subfolder, and through `-C`: the paths, not the folder, count.
         for cwd, command in (
             (self.main / "sub", "git checkout HEAD -- ../.claude/hooks/guard.sh"),

@@ -91,6 +91,7 @@ folder, which holds handlers any TypeScript repository can list:
 | `session-dedupe-guard.sh` | PreToolUse, session starts | Refuses starting a session unless the conversation called `list_sessions` successfully in the last 15 minutes. |
 | `lessons.sh` | PreToolUse `Bash\|Edit\|Write\|Agent\|Task\|mcp__ccd_session__start_session`; PostToolUseFailure | Shows a lesson whose `when` line matches the call ("Lessons at their moment"). Never blocks. |
 | `autofix-watch.sh` | PostToolUse `Bash\|mcp__ccd_pr__set_monitor\|mcp__ccd_pr__get_status\|mcp__ccd_turn__wrap_up`; PostToolUseFailure `mcp__ccd_pr__set_monitor` | Lists every pull request the session opens and tells the model, in its context, about each open one that Auto-fix is not on for ("Auto-fix for every pull request"). Never blocks. |
+| `worktree-archive.sh` | PreToolUse `ExitWorktree` (and Codex's `set_thread_archived`) | Denies removing or archiving the session's worktree while `sarathi worktree archive-check` finds work that would be lost ("Worktrees"). List it with `"failClosed": true`. |
 
 They act on the session's checkout, the git toplevel of the event's `cwd`:
 the desktop app runs a worktree session's hooks with `$CLAUDE_PROJECT_DIR`
@@ -279,6 +280,39 @@ and names the last saved copy, if any.
 The session runs under `CLAUDE_CODE_ENTRYPOINT=claude-desktop` (or `remote`,
 from a cloud session), the entrypoint that offers the Artifact tools, and
 stops if it started without them.
+
+## Worktrees
+
+`sarathi worktree` carries one agent worktree through its life, from the
+worktree root. It never creates or removes a worktree, and it reads only
+in `status` and `archive-check`. It acts only in a linked worktree under
+Claude Code's `.claude/worktrees/` or Codex's worktree root.
+
+```sh
+sarathi worktree begin --branch claude/next   # a new branch from fresh origin/main
+sarathi worktree retire --pr 123              # after the PR merged: branch gone, worktree kept
+sarathi worktree archive-check                # may this worktree be removed? exit 2 if not
+sarathi worktree status                       # the same report, exit 0
+```
+
+Each prints JSON and exits 2 when blocked, naming why. `begin` refuses
+uncommitted work and commits not in origin/main. `retire` needs GitHub's
+word that the PR merged from this branch into main of the same repository
+(`gh`, or in a cloud session a REST read through the proxy), keeps a
+recovery ref first, and moves commits made after the merge to a successor
+branch. `archive-check` lists every blocker: changes, a git operation,
+ignored files other than rebuildable caches, work not in origin/main.
+
+Settings are the `worktree` object of `.claude/sarathi.json`:
+
+```json
+{ "worktree": { "name": "acme", "owner": "Ana", "cloudCheck": "scripts/cloud-check.sh" } }
+```
+
+`name` names the receipt (`<name>-lifecycle.json` in the git dir) and the
+recovery refs (`refs/<name>/lifecycle/…`); `owner` is who may discard
+scratch files; `cloudCheck` confirms a cloud session (exit 0), else
+`CLAUDE_CODE_REMOTE=true` alone does. All three are optional.
 
 ## The working rules
 

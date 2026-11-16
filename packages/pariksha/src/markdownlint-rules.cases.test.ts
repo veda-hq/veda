@@ -133,6 +133,15 @@ export const CASES: readonly Case[] = [
       '   a. one\n   Text at the step indent.\n     b. two\n',
     ],
   },
+  {
+    rule: 'paired-dollars',
+    detail:
+      '2 unescaped `$` in one paragraph: Prettier pairs them as inline math and reprints the paragraph (code-span spaces stripped, list continuations de-indented) while --check stays clean; escape them as `\\$` or put them in code spans',
+    example: 'Intro.\n\nThe runner costs $229 a month,\nagainst $220 invoiced.\n',
+    line: 3,
+    corrected: 'Intro.\n\nThe runner costs \\$229 a month,\nagainst \\$220 invoiced.\n',
+    nearMisses: ['One price, $229.\n', 'Run `echo $A $B` here.\n', '$5 here.\n\n$6 there.\n', '```sh\necho $A $B\n```\n', '- a $1\n- b $2\n'],
+  },
 ];
 
 /** The fence languages in which a heading means a missing close, by default. */

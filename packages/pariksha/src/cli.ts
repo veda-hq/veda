@@ -24,7 +24,7 @@ import { diskReads, formatReads, listFiles, needsTypescript, parseConfig as pars
 import { loadTypescript, typescriptLoaders, type Ts } from './typescript.ts';
 import { checkExportDeletions, formatReport } from './export-deletions.ts';
 import { findMissing, formatFindings, parseRequirements } from './required-settings.ts';
-import { BASE_CANDIDATES, gitAt, gitAtTop, must, resolveBase, topOf, trackedUnder } from './git.ts';
+import { BASE_CANDIDATES, gitAt, gitAtTop, must, PLAIN_DIFF, resolveBase, topOf, trackedUnder } from './git.ts';
 import { discover as discoverCodecs, fileOf as codecFileOf, findings as codecFindings, formatFindings as formatCodecFindings, parseBaseline as parseCodecBaseline, parseConfig as parseCodecConfig, type Config as CodecConfig, type Discovery, type Format } from './codec-registry.ts';
 import { discoverGroup, findings as faultFindings, formatFindings as formatFaultFindings, parseBaseline as parseFaultBaseline, parseConfig as parseFaultConfig, type Config as FaultConfig } from './fault-injection-registry.ts';
 import { emptyRoots, growthSince, readBaseline, wholeId, type Baseline } from './registry-ratchet.ts';
@@ -33,6 +33,11 @@ import { parseConfig as parseDuplicateConfig, runDuplicateTests } from './duplic
 import { DEFAULT_RUNS, npxVitest, parseConfig as parseFlakyConfig, parseRuns, runFlakyTests, type VitestRunner } from './flaky-tests.ts';
 import { inheritRunner, runPythonFloor, type Options as PythonFloorOptions, type PythonRunner } from './python-floor.ts';
 import { checkSchemaRoots, jsonFiles, readDocuments } from './schema-roots.ts';
+import { diskRepo, parseConfig as parseRepoRulesConfig, runRules, staleAllowances, type Config as RepoRulesConfig, type Rule as RepoRule, type Side } from './repo-rules.ts';
+import { WORKFLOW_RULES } from './repo-rules-workflows.ts';
+import { FILE_RULES } from './repo-rules-files.ts';
+import { CONFIG_RULES } from './repo-rules-configs.ts';
+import { turboInputsCoverReads } from './repo-rules-turbo.ts';
 import { CONFIG_FILE, entryObject, entryText, loadProjectConfig, type Entry } from './project-config.ts';
 import { selectedList, selectionOf } from './selection.ts';
 import { DEFAULT_CONFIG as DEFAULT_ESLINT_TARGETS, parseConfig as parseEslintTargetsConfig, rangeTargets } from './eslint-targets.ts';
@@ -153,6 +158,7 @@ const USAGE = [
   '       pariksha non-synced-resources [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha pnpm-settings [--config <file>] [--root <dir>]',
   '       pariksha python-floor --python <interpreter> --floor-file <path> [--exclude <regex>] [--selector <path>] [--root <dir>]',
+  '       pariksha repo-rules [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha required-settings --require <file> [--settings <file>] [--root <dir>]',
   '       pariksha schema-roots [--files-from <file>|-] [--root <dir>] [<file>...]',
   '       pariksha shell-gates [--config <file>] [--staged | --all | --base <ref> | --files-from <file>|-] [--only <checks>] [--root <dir>]',
@@ -1016,6 +1022,58 @@ const schemaRoots = (rest: readonly string[], io: Io): number => {
   return result.ok ? 0 : 1;
 };
 
+/** Every repo-rules rule, in the order a run reports them. */
+export const REPO_RULES: readonly RepoRule[] = [...WORKFLOW_RULES, ...FILE_RULES, ...CONFIG_RULES, turboInputsCoverReads];
+
+/** The old paths a selection deletes or renames away. */
+const removedPaths = (top: string, f: Map<string, string>): string[] => {
+  const selection = selectionOf(f);
+  if (selection === undefined || 'error' in selection || selection.kind === 'all') return [];
+  const git = gitAt(top);
+  const range = selection.kind === 'staged' ? ['--cached'] : [`${must(git, ['rev-parse', '--verify', '--end-of-options', `${selection.base}^{commit}`]).trim()}...${must(git, ['rev-parse', '--verify', '--end-of-options', `${selection.head}^{commit}`]).trim()}`];
+  const fields = must(git, ['diff', '--name-status', '-z', '-M', '--diff-filter=DR', ...PLAIN_DIFF.filter((o) => o !== '--no-renames'), ...range]).split('\0');
+  const out: string[] = [];
+  for (let i = 0; i < fields.length; ) {
+    const status = fields[i] ?? '';
+    if (status === '') break;
+    out.push(fields[i + 1] as string);
+    i += status.startsWith('R') ? 3 : 2;
+  }
+  return out;
+};
+
+/**
+ * repo-rules: the files `--staged`, `--base`, `--all` or `--files-from`
+ * select (every tracked file by default), judged by every rule that is on.
+ */
+const repoRules = (f: Map<string, string>, io: Io): number => {
+  const P = 'pariksha repo-rules:';
+  const root = resolve(f.get('--root') ?? '.');
+  const outcome = unchecked(P, io, (): ReturnType<typeof runRules> | 'stale' => {
+    const top = topOf(root);
+    if (top === undefined) throw new Error(`${root} is not in a git repository`);
+    const git = gitAt(top);
+    const config: RepoRulesConfig = f.has('--config') ? parseRepoRulesConfig(configText(f, root), REPO_RULES) : { rules: new Map() };
+    const tracked = (): string[] => must(git, ['ls-files', '-z']).split('\0').filter(Boolean);
+    const listed = listOf(f, io, root);
+    const base = real(root);
+    const files = (listed === undefined ? tracked().map((p) => join(top, p)) : entries(listed).map((p) => resolve(base, p))).map((p) => relative(real(top), real(p)));
+    const stale = staleAllowances(config, tracked());
+    if (stale.length > 0) {
+      for (const s of stale) io.err(`${P} ${s} names a file git does not track; drop the stale allowance`);
+      return 'stale';
+    }
+    const selection = selectionOf(f);
+    const side: Side = selection !== undefined && !('error' in selection) && selection.kind === 'staged' ? { kind: 'index' } : selection !== undefined && !('error' in selection) && selection.kind === 'range' ? { kind: 'commit', commit: selection.head } : { kind: 'tree' };
+    return runRules(diskRepo(top, files, tracked, () => removedPaths(top, f), git, side), REPO_RULES, config);
+  });
+  if (outcome === undefined) return 2;
+  if (outcome === 'stale') return 1;
+  outcome.out.forEach(io.out);
+  outcome.err.forEach(io.err);
+  return outcome.ok ? 0 : 1;
+};
+
 const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly string[]; run: (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv) => number | Promise<number> }> = {
   'codec-registry': { allowed: ['--config', '--base', '--root'], switches: ['--no-base'], run: codecRegistry },
   'coverage-exemptions': { allowed: ['--config', '--package', '--root'], run: coverageExemptions },
@@ -1037,6 +1095,7 @@ const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly
   'env-gate-switches': { allowed: ['--config', '--mode', '--root'], run: envGateSwitches },
   'export-deletions': { allowed: ['--base', '--root'], run: exportDeletions },
   'masked-exit-codes': { allowed: ['--config', '--root'], switches: ['--staged'], run: maskedExitCodes },
+  'repo-rules': { allowed: ['--config', '--files-from', '--base', '--head', '--root'], switches: ['--staged', '--all'], run: repoRules },
   'required-settings': { allowed: ['--require', '--settings', '--root'], run: requiredSettings },
   'shell-gates': { allowed: ['--config', '--base', '--files-from', '--only', '--root'], switches: ['--staged', '--all'], run: shellGates },
 };

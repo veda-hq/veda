@@ -56,6 +56,16 @@ describe('trailers', () => {
     assert.deepEqual(declaredExports(body), ['oldThing', 'other']);
   });
 
+  it('reads a comma list of symbols before the reason, so one line declares a module', () => {
+    const body = ['Removes-Export: a, b,c — the module is gone', 'Removes-Export: d , e - also gone', 'Removes-Export: f, g', 'Removes-Export: h – en dash'].join('\n');
+    assert.deepEqual(declaredExports(body), ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
+  });
+
+  it('never declares a word of the reason: anything but a clean list names its first word only', () => {
+    const body = ['Removes-Export: one, two words — why', 'Removes-Export: lone, because x, y', 'Removes-Export: p,q extra', 'Removes-Export: a.b, c — x'].join('\n');
+    assert.deepEqual(declaredExports(body), ['a.b', 'lone', 'one', 'p,q']);
+  });
+
   it('reads Removes-File paths up to the reason, spaces kept', () => {
     const body = ['Removes-File: src/a b.ts — gone', 'REMOVES-FILE: src/c.ts - also gone', 'Removes-File: src/d.ts;', 'Removes-File: '].join('\n');
     assert.deepEqual(declaredFiles(body), ['src/a b.ts', 'src/c.ts', 'src/d.ts']);
@@ -122,6 +132,17 @@ describe('checkExportDeletions', () => {
       'pariksha export-deletions: gone removed from src/a.ts; a Removes-Export trailer declares it',
       'pariksha export-deletions: no undeclared export removals since main',
     ]);
+  });
+
+  it('accepts one Removes-Export line naming every symbol a module lost', () => {
+    const root = branch({ 'src/a.ts': 'export const p = 1;\nexport const q = 2;\nexport function r() {}\nexport const x = 3;\n' }, { 'src/a.ts': 'export const x = 3;\n' }, 'drop\n\nRemoves-Export: p, q, r — the old API');
+    const report = checkExportDeletions(gitAt(root), 'main');
+    assert.deepEqual(report.violations, []);
+    assert.deepEqual(
+      report.declared.map((d) => d.symbol),
+      ['p', 'q', 'r'],
+    );
+    assert.ok(formatReport({ ...report, violations: [{ symbol: 's', file: 'src/a.ts' }] }).err.includes('  Removes-Export: <a>, <b>, <c> — <why they are safe to remove>'));
   });
 
   it('accepts Removes-File for a deleted file only', () => {

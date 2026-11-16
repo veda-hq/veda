@@ -21,7 +21,9 @@ library behaviour that surprised a working change.
   (a Rust binary, no `.cjs`), so install pnpm standalone.
 - **pnpm 12 lockfiles hold two documents.** pnpm 12 writes `pnpm-lock.yaml` as two YAML
   documents (the package-manager record first, the project lockfile last), so any script that
-  parses the lockfile must read the last non-empty document. A `packageManager` pin bump fails
+  parses the lockfile must read the last non-empty document.
+  <!-- held by: pariksha repo-rules lockfile-single-doc-parse (a single-document parse whose argument reads pnpm-lock.yaml) -->
+- **A `packageManager` bump needs its lockfile.** A `packageManager` pin bump fails
   `--frozen-lockfile` until the regenerated lockfile, with its `packageManagerDependencies`, is
   committed.
 - **An install that prints "Done" and never exits.** pnpm 11.22.0 with `nodeLinker: hoisted`
@@ -62,6 +64,7 @@ library behaviour that surprised a working change.
 - **Narrow task inputs hide docs checks.** If a task's `inputs` are `src/**/*.ts` only, a
   repository-wide docs check run inside it cache-hits on markdown-only diffs and dead links ship
   green; widen the inputs or run such checks outside turbo.
+  <!-- held by: pariksha repo-rules turbo-inputs-cover-reads (a test task's source naming a file its inputs miss) -->
 
 ## tsx and module format
 
@@ -88,6 +91,7 @@ library behaviour that surprised a working change.
   continuations de-indented, while `--check` stays clean. Keep at most one `$` per paragraph or
   escape it as `\$`, and review the diff after `prettier --write` on markdown that mentions
   prices.
+  <!-- held by: pariksha markdownlint pariksha-paired-dollars (two unescaped `$` in one paragraph) -->
 
 ## Libraries and runtime
 

@@ -22,10 +22,13 @@ scanning. Each lesson names the symptom and the fix.
   exclusions and derive every figure from it.
 - **Every job is rounded up to a minute.** GitHub bills each job rounded up to a whole minute,
   plus about 90 s of fixed setup per job, so many sub-minute jobs cost far more than their run
-  time. Cost a CI change by counting jobs, not seconds. A step-level `if:` still starts and bills
-  the job, so build the matrix upstream or drop the job. Measure `sum(ceil(secs/60))` against
+  time. Cost a CI change by counting jobs, not seconds. Measure `sum(ceil(secs/60))` against
   `sum(secs)/60` from the jobs API, and treat per-second billing as a criterion when choosing a
   runner provider.
+- **A step-level `if:` still bills the job.** A job whose every step is skipped still starts,
+  sets up and bills its minute; put the condition on the job, build the matrix upstream, or
+  drop the job.
+  <!-- held by: pariksha repo-rules job-level-if-not-step (a job whose every step has an if: and the job none) -->
 
 ## Runner images and Node
 
@@ -56,8 +59,10 @@ scanning. Each lesson names the symptom and the fix.
   so `cond && 0 || 1` always gives `1` and the fix silently does nothing; actionlint and
   text-reading tests pass both spellings. Quote falsy values (`cond && '0' || '1'`) with a
   comment saying why.
+  <!-- held by: pariksha repo-rules falsy-ternary-expression (`&& <falsy literal> ||` in a workflow or action) -->
 - **ESLint from the root walks nested worktrees.** ESLint run from a repository root can run out
   of memory by traversing nested worktrees under `.claude/worktrees/`; ignore that directory.
+  <!-- held by: pariksha repo-rules eslint-ignores-worktrees (the root flat config) -->
 
 ## Path filters
 
@@ -66,6 +71,7 @@ scanning. Each lesson names the symptom and the fix.
   root-only, and a leading `/` matches nothing and silently stops the workflow. Refuse reviewer
   suggestions to add a leading `/`, citing the filter cheat sheet in GitHub's workflow-syntax
   docs.
+  <!-- held by: pariksha repo-rules actions-path-leading-slash (the leading `/`; a `*` meant to cross `/` is not checked) -->
 - **A new category narrows the catch-all.** Adding a `dorny/paths-filter` category takes paths
   out of any catch-all ("unmatched") category, silently narrowing every job whose `if:` relied on
   it. A job that does not run reports skipped, and an aggregate gate that reads skipped as pass
@@ -123,12 +129,14 @@ scanning. Each lesson names the symptom and the fix.
   default, so a gate that filters on `.level == "error"` misses most error-level alerts. Compute
   the effective level from the rule's `defaultConfiguration.level` (else `"warning"`) before
   counting, and prove the gate with a planted known alert.
-- **CodeQL suppression comments.** `// codeql[rule-id]` comments do nothing unless
+- **CodeQL suppression comments.** A `// codeql[rule-id]` comment covers only the next line,
+  which must be the alert's start line, and nothing may precede it on its line (JSX `{/* */}` is
+  ignored). Write `codeql[a] codeql[b]`, not a comma list.
+  <!-- held by: pariksha repo-rules codeql-suppression-comment-form (a comma list, or code before the comment) -->
+- **Suppressions need `AlertSuppression.ql`.** `// codeql[rule-id]` comments do nothing unless
   `AlertSuppression.ql` runs with the suite; `security-and-quality` omits it, so add it via
-  `packs:`. A comment covers only the next line, which must be the alert's start line, and
-  nothing may precede it on its line (JSX `{/* */}` is ignored). Write `codeql[a] codeql[b]`, not
-  a comma list. For `js/request-forgery`, a literal `https://host/` prefix does not clear a
-  tainted path.
+  `packs:`. For `js/request-forgery`, a literal `https://host/` prefix does not clear a tainted
+  path.
 - **CodeQL upload without Code Security.** On a private repository without Code Security,
   `github/codeql-action/analyze` with upload fails 403 ("Code Security must be enabled"); use
   `upload: never` and gate on the SARIF.

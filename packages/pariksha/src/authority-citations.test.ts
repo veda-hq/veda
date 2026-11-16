@@ -551,6 +551,11 @@ describe('findUncited and formatClaims', () => {
     assert.equal(r.err.filter((l) => l.startsWith('pariksha authority-citations: uncited')).length, 2);
     assert.ok(r.err.includes('  an issue id                       ABC-447'));
     assert.ok(r.err.includes('3 claim(s) across 2 file(s).'));
+    // A chat answer is no citation: the way out is a comment to cite, not the allow marker.
+    const text = r.err.join('\n');
+    assert.match(text, /neither\nis an answer in a chat: ask the authority to say it in a comment on the pull request/);
+    assert.ok(text.indexOf("cite that comment's URL") < text.indexOf('ALLOW-AUTHORITY-PHRASE'));
+    assert.match(text, /Only for words\nthat are no authority claim at all, add\n {2}ALLOW-AUTHORITY-PHRASE: <reason>/);
     assert.ok(!formatClaims([{ file: 'a.md', line: 1, phrase: 'p', text: 't' }], DEFAULTS).err.some((l) => l.includes('issue id')));
   });
 });

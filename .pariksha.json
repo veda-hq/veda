@@ -1,0 +1,19 @@
+{
+  "checks": {
+    "repo-rules": {
+      "rules": {
+        "lockfile-single-doc-parse": {
+          "allow": {
+            "packages/pariksha/src/repo-rules-configs.test.ts": "the rule's own fixtures: single-document parses of pnpm-lock.yaml, written as test input"
+          }
+        },
+        "rollup-state-gate": {
+          "allow": {
+            "packages/pariksha/src/repo-rules-configs.ts": "the rule itself: its pattern and lesson name statusCheckRollup.state",
+            "packages/pariksha/src/repo-rules-configs.test.ts": "the rule's own fixtures: gates on statusCheckRollup.state, written as test input"
+          }
+        }
+      }
+    }
+  }
+}

@@ -85,9 +85,11 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
 - **Worker counts and Turborepo env.** Vitest 4 honours `VITEST_MAX_WORKERS` over a config
   `maxWorkers`, but Turborepo strict env mode strips it unless it is listed in
   `globalPassThroughEnv`. Vitest 4 removed `poolOptions`, so `poolOptions.forks.maxForks` is
-  inert, and with no `maxWorkers` the pool picks `availableParallelism - 1` at run time. Measure
-  each package's worker-scaling knee before raising caps, and check with `turbo --dry=json` that
-  every named task really runs (root-only scripts show as nonexistent workspace tasks).
+  inert, and with no `maxWorkers` the pool picks `availableParallelism - 1` at run time.
+  <!-- held by: pariksha repo-rules vitest4-inert-pool-config (poolOptions in a Vitest config; VITEST_MAX_WORKERS handed to turbo unlisted) -->
+- **Measure the worker knee.** Measure each package's worker-scaling knee before raising caps,
+  and check with `turbo --dry=json` that every named task really runs (root-only scripts show as
+  nonexistent workspace tasks).
 - **File order is per checkout.** Vitest's default sequencer orders test files from each
   checkout's own results cache (last failed first, then longest), so the same sequential
   integration suite runs in a different order per worktree, and order-dependent pollution
@@ -192,6 +194,7 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   only at the later full tooling run. Before deleting any file, `git grep -ln` its
   repository-relative path. Treat hits in validator tests as live and hits in docs or synthetic
   fixtures as inert, and replace a live pin with a sibling the same glob reaches.
+  <!-- held by: pariksha repo-rules deleted-path-still-pinned (a deleted or renamed path a test file still quotes) -->
 
 ## Postgres and connection pools
 
@@ -231,6 +234,7 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   server (`listen_addresses` empty), so `compose up --wait` returns mid-init and the next `psql`
   sees "the database system is starting up" or "shutting down". Probe over TCP
   (`pg_isready -h 127.0.0.1`) so healthy means the real server accepts connections.
+  <!-- held by: pariksha repo-rules pg-isready-over-socket (compose healthchecks and workflow services) -->
 
 ## Docker
 

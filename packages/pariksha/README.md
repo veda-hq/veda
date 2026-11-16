@@ -1116,6 +1116,83 @@ floor file that is not in the index, not a regular file there, or not one
 `MAJOR.MINOR` (one line on stderr), and a `--root` outside a git repository
 (a Python traceback).
 
+## `regression-controls`
+
+```sh
+pariksha regression-controls --config <file> [--staged] [--root <dir>]
+```
+
+A targeted regression control answers one finding with four tests: a bad
+case (the historical test, shown blind to the fault), a fixed case, a near
+miss and a guard flip. Those tests are the proof, and a rename, a deletion or
+a skip ends it silently while every suite still passes. This check keeps a
+registry of controls whole. The JSON `--config` (relative to the root) is
+the registry:
+
+```json
+{
+  "gates": {
+    "unit": ["^src/(?!.+\\.integration\\.test\\.ts$).+\\.test\\.ts$"],
+    "integration": ["^src/.+\\.integration\\.test\\.ts$"]
+  },
+  "requiredFindings": ["F-1042"],
+  "controls": [
+    {
+      "id": "pool-cap",
+      "finding": "F-1042",
+      "family": "concurrency",
+      "file": "src/queue/boot.integration.test.ts",
+      "gate": "integration",
+      "guard": "max: POOL_MAX in src/queue/scheduler.ts",
+      "cases": {
+        "bad": "bad: the sequential probe stays under the cap with the cap removed",
+        "fixed": "holds no more connections than the cap, under concurrent sends",
+        "nearMiss": "holds no more connections than the cap, under concurrent sends",
+        "guardFlip": "guard flip: the same burst drives a pool without the cap past it"
+      }
+    }
+  ]
+}
+```
+
+- Each of `bad`, `fixed`, `nearMiss` and `guardFlip` is the title of a live
+  case in `file`: the string first argument of an `it(…)`, `test(…)`,
+  `it.each(rows)(…)` or `test.each(rows)(…)` call, read from the syntax
+  tree, so a title left in a comment, a string or a `describe` names no case.
+  One title may serve two kinds.
+- `file` uses no skip: `.skip`, `.todo`, `.only`, `.skipIf` or `.runIf` on
+  any receiver, node:test's `{ skip: … }`, `{ todo: … }` or `{ only: … }`,
+  and what the text cannot show (`it['skip']`, `describe[mode]`,
+  `const s = it.skip`, `const { only } = test`, a case's options naming one
+  anywhere).
+- `guard` ends ` in <path>`, and that production file exists.
+- `gates` maps each gate to path patterns, one of which must match `file`:
+  the test files that gate's runner collects. A control naming a gate not in
+  `gates` is refused.
+- `requiredFindings` lists findings some control must answer, so dropping a
+  control is a change to the registry's own list.
+- Ids are unique. `$comment` and `$schema` are allowed beside the keys.
+
+`gates` and `requiredFindings` are required: a forgotten key would drop its
+check silently. `null` opts a check out, and the run says what it did not
+check (`not checked: gates, requiredFindings`). The files are read
+under the root from the working tree, or from the index with `--staged`
+(several at once, through one `git cat-file --batch`; a hook's
+`GIT_INDEX_FILE` is honoured). With `--staged` the registry is read from the
+index too when it lies under the root and the index holds it, so a commit is
+judged on the registry it records.
+
+A clean run prints `pariksha regression-controls: N control(s) whole, M
+required finding(s) answered` to stdout. Refused (exit 1): a title that is
+not a case, a skip, a missing test or guarded file, a guard without a path,
+an unknown gate or one that does not collect the file, a duplicate id, a
+required finding no control answers. Exit 2: a bad registry (not JSON, an
+unknown or missing key (`gates` and `requiredFindings` included), an empty
+`controls`, a `file` that is not a
+normalized root-relative path, a gate pattern that is not a regular
+expression), `--staged` outside a git repository, a failed git call, or no
+`typescript`. Needs `typescript` `>=5.4 <6`, as `coverage-by-type` does.
+
 ## `required-settings`
 
 ```sh

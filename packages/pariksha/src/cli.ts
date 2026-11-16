@@ -2,7 +2,7 @@
 // pariksha: repository checks. One subcommand per check.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkAbsolutePaths, DEFAULT_GUIDANCE as ABSOLUTE_PATHS_GUIDANCE } from './absolute-paths.ts';
 import { checkGates, DEFAULT_GATE_CONFIG, parseGateConfig as parseAggregateConfig } from './aggregate-gate-needs.ts';
@@ -27,7 +27,8 @@ import { findMissing, formatFindings, parseRequirements } from './required-setti
 import { BASE_CANDIDATES, gitAt, gitAtTop, must, resolveBase, topOf, trackedUnder } from './git.ts';
 import { discover as discoverCodecs, fileOf as codecFileOf, findings as codecFindings, formatFindings as formatCodecFindings, parseBaseline as parseCodecBaseline, parseConfig as parseCodecConfig, type Config as CodecConfig, type Discovery, type Format } from './codec-registry.ts';
 import { discoverGroup, findings as faultFindings, formatFindings as formatFaultFindings, parseBaseline as parseFaultBaseline, parseConfig as parseFaultConfig, type Config as FaultConfig } from './fault-injection-registry.ts';
-import { emptyRoots, growthSince, readBaseline, wholeId, type Baseline } from './registry-ratchet.ts';
+import { emptyRoots, growthSince, isRepoPath, readBaseline, wholeId, type Baseline } from './registry-ratchet.ts';
+import { checkRegressionControls, formatControls, indexReader, parseRegistry, worktreeReader, type Reader } from './regression-controls.ts';
 import { checkClaims, formatOutcome, loadEslint, parseConfig as parseClaimsConfig, type LinterClass } from './enforcement-claims.ts';
 import { parseConfig as parseDuplicateConfig, runDuplicateTests } from './duplicate-tests.ts';
 import { DEFAULT_RUNS, npxVitest, parseConfig as parseFlakyConfig, parseRuns, runFlakyTests, type VitestRunner } from './flaky-tests.ts';
@@ -153,6 +154,7 @@ const USAGE = [
   '       pariksha non-synced-resources [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha pnpm-settings [--config <file>] [--root <dir>]',
   '       pariksha python-floor --python <interpreter> --floor-file <path> [--exclude <regex>] [--selector <path>] [--root <dir>]',
+  '       pariksha regression-controls --config <file> [--staged] [--root <dir>]',
   '       pariksha required-settings --require <file> [--settings <file>] [--root <dir>]',
   '       pariksha schema-roots [--files-from <file>|-] [--root <dir>] [<file>...]',
   '       pariksha shell-gates [--config <file>] [--staged | --all | --base <ref> | --files-from <file>|-] [--only <checks>] [--root <dir>]',
@@ -969,6 +971,59 @@ const pythonFloor = (f: Map<string, string>, io: Io): number => {
   return runPythonFloor(options, io.python ?? inheritRunner, io.err);
 };
 
+/**
+ * The registry text: with `--staged`, as the index holds it when it lies
+ * under the root and the index has it, so a commit is judged on the registry
+ * it records; otherwise as `--config`, or the inline entry, gives it.
+ */
+const registryText = (f: Map<string, string>, root: string, read: Reader, staged: boolean): string => {
+  if (staged && !f.has(INLINE)) {
+    const under = relative(real(root), real(resolve(root, f.get('--config') as string)))
+      .split(sep)
+      .join('/');
+    const indexed = isRepoPath(under) ? read(under) : null;
+    if (indexed !== null) return indexed;
+  }
+  return configText(f, root);
+};
+
+/**
+ * regression-controls: the registry `--config` names, each control's files
+ * read under `--root` from the working tree, or from the index with
+ * `--staged`. Exit 1 on a control that is not whole; 2 on a bad registry, a
+ * failed git call or no `typescript`.
+ */
+const regressionControls = (f: Map<string, string>, io: Io): number => {
+  const P = 'pariksha regression-controls:';
+  const configPath = f.get('--config');
+  if (configPath === undefined) {
+    io.err(USAGE);
+    return 2;
+  }
+  const root = resolve(f.get('--root') ?? '.');
+  const staged = f.has('--staged');
+  const ts = (io.typescript ?? (() => loadTypescript(typescriptLoaders(root))))();
+  if (typeof ts === 'string') {
+    io.err(`${P} ${ts}`);
+    return 2;
+  }
+  const result = unchecked(P, io, () => {
+    const read = staged ? indexReader(root) : worktreeReader(root);
+    const source = registryText(f, root, read, staged);
+    let registry: ReturnType<typeof parseRegistry>;
+    try {
+      registry = parseRegistry(source);
+    } catch (e) {
+      throw new Error(`${configPath}: ${(e as Error).message}`);
+    }
+    return formatControls(checkRegressionControls(ts, read, registry), registry, configPath, staged);
+  });
+  if (result === undefined) return 2;
+  result.out.forEach(io.out);
+  result.err.forEach(io.err);
+  return result.ok ? 0 : 1;
+};
+
 /** `rest` split into its `--name value` pairs and the bare words around them, the files a command names. */
 export const splitFiles = (rest: readonly string[]): { flagArgs: string[]; files: string[] } => {
   const flagArgs: string[] = [];
@@ -1025,6 +1080,7 @@ const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly
   'non-synced-resources': { allowed: ['--config', '--files-from', '--base', '--head', '--root'], switches: ['--staged', '--all'], run: nonSyncedResources },
   'pnpm-settings': { allowed: ['--config', '--root'], run: pnpmSettings },
   'python-floor': { allowed: ['--python', '--floor-file', '--exclude', '--selector', '--root'], run: pythonFloor },
+  'regression-controls': { allowed: ['--config', '--root'], switches: ['--staged'], run: regressionControls },
   'authority-citations': { allowed: ['--mode', '--authority', '--issue-prefix', '--adr-dir', '--root'], run: authorityCitations },
   boundary: { allowed: ['--root', '--deny'], run: boundary },
   'coverage-by-type': { allowed: ['--config', '--files-from', '--base', '--head', '--root'], switches: ['--staged', '--all'], run: coverageByType },

@@ -90,7 +90,7 @@ folder, which holds handlers any TypeScript repository can list:
 | `arch-guard.sh` | PostToolUse, `Edit\|Write` | Runs the repository's `.dependency-cruiser.js` on a `.ts`/`.tsx` edit that touches imports; refuses what it refuses, and refuses when it cannot run. `scripts/` is exempt too. |
 | `session-dedupe-guard.sh` | PreToolUse, session starts | Refuses starting a session unless the conversation called `list_sessions` successfully in the last 15 minutes. |
 | `lessons.sh` | PreToolUse `Bash\|Edit\|Write\|Agent\|Task\|mcp__ccd_session__start_session`; PostToolUseFailure | Shows a lesson whose `when` line matches the call ("Lessons at their moment"). Never blocks. |
-| `autofix-watch.sh` | PostToolUse `Bash\|mcp__ccd_pr__set_monitor\|mcp__ccd_pr__get_status`; PostToolUseFailure `mcp__ccd_pr__set_monitor`; Stop | Lists every pull request the session opens and warns at turn end about each open one that Auto-fix is not on for ("Auto-fix for every pull request"). Never blocks. |
+| `autofix-watch.sh` | PostToolUse `Bash\|mcp__ccd_pr__set_monitor\|mcp__ccd_pr__get_status\|mcp__ccd_turn__wrap_up`; PostToolUseFailure `mcp__ccd_pr__set_monitor` | Lists every pull request the session opens and tells the model, in its context, about each open one that Auto-fix is not on for ("Auto-fix for every pull request"). Never blocks. |
 
 They act on the session's checkout, the git toplevel of the event's `cwd`:
 the desktop app runs a worktree session's hooks with `$CLAUDE_PROJECT_DIR`
@@ -105,7 +105,11 @@ The desktop app's Auto-fix wakes a session when its pull request fails CI,
 gets a conflict or a review comment, but only once the session switches it on
 with `mcp__ccd_pr__set_monitor`. A hook cannot make that call, and the app
 tells hooks nothing about Auto-fix, so `autofix-watch.sh` keeps the session's
-own list and reads the app's answers:
+own list and reads the app's answers. No warning blocks, and each is silent
+where the transcript does not show `mcp__ccd_pr__set_monitor` (a cloud
+session, a terminal). Stop says nothing: a Stop `systemMessage` reached
+neither the model nor the user, and a config that still wires Stop gets no
+answer.
 
 | Step | Event | What it reads |
 | --- | --- | --- |
@@ -113,7 +117,8 @@ own list and reads the app's answers:
 | Confirm | PostToolUse, `mcp__ccd_pr__set_monitor` | The app's "Auto-fix is on for owner/repo#N" (and "is off"). |
 | Confirm | PostToolUse, `mcp__ccd_pr__get_status` | This session's primary `pr` and its `monitor.auto_fix`; a primary or `otherBoundPrs` entry merged or closed leaves the list. |
 | Refused | PostToolUse or PostToolUseFailure, `mcp__ccd_pr__set_monitor` | The app's "Auto-fix can't be enabled for owner/repo#N: <reason>" (or its pre-call "owner/repo#N is on the session's PR bar, but …"), kept with the reason. Transcripts show it as a tool error; both events' `tool_response` and `error` are read. |
-| Warn | Stop | Every PR still waiting, with the exact call, in one `systemMessage`. Silent when `stop_hook_active` is set, and where the transcript does not show `mcp__ccd_pr__set_monitor` (a cloud session, a terminal). |
+| Warn | PostToolUse, `mcp__ccd_turn__wrap_up` | Every PR still waiting (`opened` or `off`), with the exact call, as `hookSpecificOutput.additionalContext`, which reaches the model, and a `warned` row each. A PR another hook added is warned here. |
+| Warn | PostToolUse, `Bash` | The PR a `gh … pr create` just recorded, at once, the same way. A `gh pr create` run with `run_in_background: true` is told that its PR is not on the list, and the way out in the foreground: a foreground `gh pr create`, or a `<pr-created>URL</pr-created>` tag, then `mcp__ccd_pr__set_monitor`. |
 
 The list is keyed by the Claude session id, so nested clones and other
 repositories count: `<dir>/<session id>.jsonl`, where `<dir>` is
@@ -141,9 +146,8 @@ the shape of the app's answers can be checked against a real session.
 ```json
 {
   "hooks": {
-    "PostToolUse": [{ "matcher": "Bash|mcp__ccd_pr__set_monitor|mcp__ccd_pr__get_status", "command": "bash \"$SARATHI_HOOKS\"/autofix-watch.sh", "timeout": 10 }],
-    "PostToolUseFailure": [{ "matcher": "mcp__ccd_pr__set_monitor", "command": "bash \"$SARATHI_HOOKS\"/autofix-watch.sh", "timeout": 10 }],
-    "Stop": [{ "command": "bash \"$SARATHI_HOOKS\"/autofix-watch.sh", "timeout": 10 }]
+    "PostToolUse": [{ "matcher": "Bash|mcp__ccd_pr__set_monitor|mcp__ccd_pr__get_status|mcp__ccd_turn__wrap_up", "command": "bash \"$SARATHI_HOOKS\"/autofix-watch.sh", "timeout": 10 }],
+    "PostToolUseFailure": [{ "matcher": "mcp__ccd_pr__set_monitor", "command": "bash \"$SARATHI_HOOKS\"/autofix-watch.sh", "timeout": 10 }]
   }
 }
 ```

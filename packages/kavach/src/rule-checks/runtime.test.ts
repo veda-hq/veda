@@ -302,6 +302,12 @@ describe('refusal and warning', () => {
     );
   });
 
+  it('names the lessons in place of the notes when the registry lists them', () => {
+    const taught = { ...RULE, lessons: ['owner/repo:docs/lessons/review.md#merges', 'docs/b.md'] };
+    assert.equal(refusal(check(), 'D.', taught, 'Bash', OWNER).split('\n')[4], 'Lesson: owner/repo:docs/lessons/review.md#merges, docs/b.md');
+    assert.equal(warning(check(), 'D.', { ...RULE, lessons: [] }).split('\n')[4], 'Lesson: none beyond this check');
+  });
+
   it('names no origin when the registry records none', () => {
     const { origin: _origin, ...bare } = { ...RULE, id: 'H-19', title: 'File work issues with their type and parent' };
     assert.equal(

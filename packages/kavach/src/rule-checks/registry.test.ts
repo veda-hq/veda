@@ -66,6 +66,12 @@ describe('parseRegistry', () => {
     });
   });
 
+  it('keeps the lessons of a rule, an empty list included', () => {
+    const taught = row({ lessons: ['owner/repo:docs/lessons/review.md#threads'] });
+    const whole = row({ id: 'H-02', lessons: [] });
+    assert.deepEqual(parseRegistry(registry([taught, whole])).rules, [taught, whole]);
+  });
+
   for (const [name, value, expected] of rows([
     ['not an object', null, 'registry: expected an object'],
     ['a list', [], 'registry: expected an object'],
@@ -92,6 +98,9 @@ describe('parseRegistry', () => {
     ['a note with a trailing dash', row({ notes: ['note-'] }), 'registry.rules[0].notes[0]'],
     ['an empty origin', row({ origin: '' }), 'registry.rules[0].origin: expected a non-empty string'],
     ['an origin that is not text', row({ origin: 12 }), 'registry.rules[0].origin: expected a non-empty string'],
+    ['lessons not a list', row({ lessons: 'docs/x.md' }), 'registry.rules[0].lessons: expected a list'],
+    ['an empty lesson', row({ lessons: [' '] }), 'registry.rules[0].lessons[0]: expected a non-empty string'],
+    ['a lesson with a space', row({ lessons: ['docs/x.md #a'] }), 'registry.rules[0].lessons[0]'],
     ['a missing enforcer', row({ enforcer: undefined }), 'registry.rules[0].enforcer: expected an object'],
     ['an enforcer that is not an object', row({ enforcer: 'x' }), 'registry.rules[0].enforcer: expected an object'],
     [

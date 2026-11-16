@@ -228,10 +228,44 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
   folder they are installed in. A target that holds one of them (`rm -rf
   .claude`, `mv .claude elsewhere`) is refused as well. Paths compare by
   file identity as well as by name, so another case spelling or a symlink
-  reaches nothing. The limit: like every target, these are judged from the
-  command line, so a command whose writes the guard counts as the whole
-  checkout (`git checkout <ref> -- <path>`, `git apply`, a package install)
-  can still change them. A kavach older than this setting refuses every
+  reaches nothing.
+
+  git and package managers write paths their command lines do not name, so
+  inside an owned clone they are judged by what they can write:
+  - git runs only subcommands that never write the work tree (`add`,
+    `commit`, `push`, `fetch`, `branch`, `tag`, the reads and the plumbing
+    that writes only the git folder), without an option that runs a program
+    (`--upload-pack`, `--receive-pack`, `--exec`, `grep -O`).
+  - `checkout -- <path>`, `restore`, `rm` and `mv` run when each path they
+    name misses every fence; `.` names the whole checkout, which holds them.
+    `git apply` runs when the paths its own `--numstat` lists miss every
+    fence. A branch switch (`checkout <commit>`, `switch`, and `-f` back to
+    `HEAD`) runs when `git diff` finds the fenced paths alike in the target
+    and the work tree. These three are judged by the checkout as it is now,
+    so each runs only as a command of its own. `reset` runs without
+    `--hard`, `--merge` or `--keep`; `read-tree` without `-u`; `config` only
+    to read.
+  - Everything else refuses: `merge`, `pull`, `rebase`, `cherry-pick`,
+    `revert`, `am`, `stash`, `clean`, `sparse-checkout`, `switch --orphan`,
+    `clone`, an alias, and any option or subcommand not in this guard's own
+    tables (git's abbreviations included). `git` with anything before it
+    (`env git`, `GIT_DIR=… git`) refuses too.
+  - Of package installs, only `pnpm install --frozen-lockfile
+    --ignore-scripts --ignore-pnpmfile` runs, alone on its line: it
+    reinstalls what the lockfile pins, and runs no lifecycle script and no
+    pnpmfile. Fence the manifest, the lockfile and what steers an install
+    (`pnpm-workspace.yaml`, `.npmrc`, `.pnpmfile.cjs`) in `protectedPaths`.
+    Every other install, update or removal by pnpm, npm, yarn or bun, and
+    `npx`, `bunx` and `corepack`, refuses.
+  - Another program that would run git or a package manager (`xargs git`,
+    `pnpm exec git`, `timeout 60 pnpm install`) refuses.
+
+  The limit: a package script, a test or any other repository code a
+  command runs writes what it likes, and the guard sees only the command
+  line. A session that edits `scripts/check.mjs` and runs `pnpm check`, or
+  writes `.tmp/x.ts` and runs `pnpm exec tsx .tmp/x.ts`, can reach every
+  fence through it. So can a `trustedCommands` script, which runs before
+  these checks. A kavach older than this setting refuses every
   call on the unknown key, so add it only once the pinned kavach knows it.
 - `protectedVariables`: environment variables a command may not assign, declare or
   export.
@@ -368,3 +402,13 @@ A checks module exports `CHECKS`, a list of `Check` (`@veda-hq/kavach/rule-check
 an id, the events and tools it applies to, and a function returning a
 refusal, a warning or nothing. A Bash command passes one named check when it
 ends with `# rule-pass <id>: <reason>`; the pass is logged.
+
+Checks build on the engine's parts, each with its types: `rule-checks/shell-words`
+(a command's simple commands and words), `rule-checks/live-runs` (a push or
+preflight running in the checkout), `rule-checks/edit-text` (a file's text
+after an Edit or Write), `rule-checks/spawn` (git and other programs) and
+`rule-checks/fire-log` (the fire log's types).
+
+A refusal names the rule's memory notes, or, when its registry row lists
+`lessons` (where the notes' lessons live now), those: `Lesson: <list>`, or
+`Lesson: none beyond this check` for an empty list.

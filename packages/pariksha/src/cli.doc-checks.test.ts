@@ -8,6 +8,20 @@ import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { run } from './cli.ts';
 
+/**
+ * Git hermetic for the whole process: `run` is called in-process and spawns
+ * git with this process's environment, as the fixtures' own git calls do. A
+ * machine's global config can name a trace2 target, a daemon that hears of
+ * every git call and then writes into the fixture (git-ai creates `.git/ai`)
+ * while `after` removes it, so the removal fails with ENOTEMPTY. Both config
+ * files point at /dev/null, trace2 is off, and every other inherited `GIT_*`
+ * (a hook's `GIT_DIR`, `GIT_CONFIG_COUNT` and its keys) is dropped.
+ */
+const HERMETIC = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TRACE2: '0', GIT_TRACE2_EVENT: '0', GIT_TRACE2_PERF: '0' };
+const inherited = Object.entries(process.env).filter(([name]) => name.startsWith('GIT_'));
+for (const [name] of inherited) delete process.env[name];
+Object.assign(process.env, HERMETIC);
+
 const temps: string[] = [];
 /** A fresh temporary directory, removed when this file's tests end. */
 const temp = (prefix: string): string => {
@@ -17,6 +31,8 @@ const temp = (prefix: string): string => {
 };
 after(() => {
   for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+  for (const name of Object.keys(HERMETIC)) delete process.env[name];
+  Object.assign(process.env, Object.fromEntries(inherited));
 });
 
 const capture = (stdin?: string) => {

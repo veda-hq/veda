@@ -23,7 +23,9 @@
  *
  * `owner` (optional) is who a refusal without a pass tells the agent to ask;
  * absent, "the repository owner". `origin` (optional) is printed after the
- * rule's title. `enforcer` is `null` for a rule nothing checks yet. Other keys
+ * rule's title. `lessons` (optional) lists where the rule's lessons live now
+ * (paths or `owner/repo:path#anchor`); present, a refusal names them in place
+ * of the notes. `enforcer` is `null` for a rule nothing checks yet. Other keys
  * are left alone, so a consumer may keep its own bookkeeping beside these.
  *
  * A rule counts as enforced only when its enforcer names files that exist in
@@ -49,6 +51,11 @@ export type Rule = {
   readonly notes: readonly string[];
   /** Where the rule came from, printed after its title; absent: nothing printed. */
   readonly origin?: string;
+  /**
+   * Where the rule's lessons live now, printed in place of the notes when
+   * present; an empty list prints that the check is the whole lesson.
+   */
+  readonly lessons?: readonly string[];
   readonly enforcer: Enforcer | null;
 };
 
@@ -67,6 +74,7 @@ export const REGISTRY_ENV = 'KAVACH_RULE_REGISTRY';
 const RULE_ID = /^[A-Z]-\d{2}$/;
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const REPO_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[^\s]+$/;
+const LESSON = /^\S+$/;
 
 function record(value: unknown, where: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -90,6 +98,12 @@ function texts(value: unknown, where: string, shape: RegExp): string[] {
     throw new Error(`${where}: expected a non-empty list`);
   }
   return value.map((item: unknown, i) => text(item, `${where}[${i}]`, shape));
+}
+
+/** A rule's lessons: a list, possibly empty, of references with no spaces. */
+function lessonList(value: unknown, where: string): string[] {
+  if (!Array.isArray(value)) throw new Error(`${where}: expected a list`);
+  return value.map((item: unknown, i) => text(item, `${where}[${i}]`, LESSON));
 }
 
 function enforcer(value: unknown, where: string): Enforcer | null {
@@ -117,11 +131,13 @@ export function parseRegistry(value: unknown): Registry {
     if (seen.has(id)) throw new Error(`${where}.id: ${id} is listed twice`);
     seen.add(id);
     const origin = row['origin'] === undefined ? undefined : text(row['origin'], `${where}.origin`);
+    const lessons = row['lessons'] === undefined ? undefined : lessonList(row['lessons'], `${where}.lessons`);
     return {
       id,
       title: text(row['title'], `${where}.title`),
       notes: texts(row['notes'], `${where}.notes`, SLUG),
       ...(origin === undefined ? {} : { origin }),
+      ...(lessons === undefined ? {} : { lessons }),
       enforcer: enforcer(row['enforcer'], `${where}.enforcer`),
     };
   });

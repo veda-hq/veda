@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, type TestContext } from 'node:test';
@@ -89,19 +95,42 @@ describe('runChild', () => {
     assert.equal(existsSync(late), false);
   });
 
-  it('cuts the pipes a descendant outside the group holds open', async () => {
+  it('cuts the pipes a descendant outside the group holds open', async t => {
     // The descendant starts a session of its own, so the group kill misses
-    // it, and it keeps stdout open past the child's exit. The child waits
-    // for it to have left the group before exiting.
+    // it, and it keeps stdout open past the child's exit. It records its pid
+    // once it has left the group, and the child waits for that record, not
+    // for a delay: python can take over a second to start (a pyenv shim).
+    const dir = scratch(t);
+    const left = join(dir, 'left');
+    let holder = 0;
+    t.after(() => {
+      if (holder <= 0) return;
+      try {
+        process.kill(holder, 'SIGKILL');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+    });
     const started = Date.now();
-    const outcome = await runChild('/bin/sh', [
-      '-c',
-      `python3 -c 'import os, time; os.setsid(); print("left", flush=True); time.sleep(3)' & sleep 0.5; echo started`,
-    ]);
+    const outcome = await runChild(
+      '/bin/sh',
+      [
+        '-c',
+        `python3 -c 'import os, pathlib, sys, time; os.setsid(); print("left", flush=True); p = sys.argv[1]; pathlib.Path(p + ".tmp").write_text(f"{os.getpid()}\\n"); os.rename(p + ".tmp", p); time.sleep(60)' '${left}' & until [ -e '${left}' ]; do sleep 0.02; done; echo started`,
+      ],
+      // A hang guard only: a descendant that never records itself fails
+      // the test as a timeout instead of hanging the suite.
+      { timeoutMs: 20_000 },
+    );
+    const record = readFileSync(left, 'utf8');
+    assert.match(record, /^[1-9]\d*\n$/);
+    holder = Number(record);
     assert.equal(outcome.kind, 'ok');
     assert.equal(outcome.stdout, 'left\nstarted\n');
     const took = Date.now() - started;
     assert.ok(took >= EXIT_DRAIN_MS - 50, `took ${String(took)} ms`);
-    assert.ok(took < 2900, `took ${String(took)} ms`);
+    // The holder still has the pipes open, so the outcome came back because
+    // they were cut.
+    assert.doesNotThrow(() => process.kill(holder, 0));
   });
 });

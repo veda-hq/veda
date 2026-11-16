@@ -18,6 +18,7 @@ const RULE_NAMES = [
   'safe-log',
   'no-raw-error-string',
   'no-direct-child-process',
+  'google-auth-error-message',
 ];
 
 /** The rule ids that fire on `code` linted as `filename` under `blocks`. */
@@ -45,6 +46,7 @@ describe('errorHandling', () => {
       'shuddhi/safe-log': 'error',
       'shuddhi/no-raw-error-string': 'error',
       'shuddhi/no-direct-child-process': 'error',
+      'shuddhi/google-auth-error-message': 'error',
     });
   });
 
@@ -72,6 +74,7 @@ describe('errorHandling', () => {
             root: '/work/repo',
           },
         ],
+        'acme/google-auth-error-message': 'error',
       },
     );
   });

@@ -54,8 +54,11 @@ const fromModule = module => (module ? ` from ${module}` : '');
 const GIT_ENV_DEFAULTS = {
   /** The function that builds a hermetic git env for a child. */
   envHelper: 'hermeticGitEnv',
-  /** Where that function lives, named in the message. */
-  envHelperModule: '',
+  /**
+   * Where that function lives, named in the message: by default the one this
+   * package ships (`hermetic-git.js`).
+   */
+  envHelperModule: '@veda-hq/eslint-plugin-shuddhi/hermetic-git',
 };
 const GIT_MASK_DEFAULTS = {
   /** The function that masks this process's own git env. */
@@ -943,6 +946,106 @@ const spawnTimeout = {
   },
 };
 
+/**
+ * The value `object` gives `key`: the node of the last property that sets it
+ * (three spreads deep), `UNREAD` when a spread this file cannot read may set
+ * it, or null when nothing does.
+ */
+const UNREAD = Symbol('unread');
+function optionValue(object, key, context, depth = 0) {
+  let found = null;
+  for (const property of object.properties) {
+    if (property.type === 'Property') {
+      if (keyOf(property) === key) found = property.value;
+      continue;
+    }
+    const spread = objectOf(property.argument, context);
+    if (!spread || depth >= 3) {
+      found = UNREAD;
+      continue;
+    }
+    const inner = optionValue(spread, key, context, depth + 1);
+    if (inner !== null) found = inner;
+  }
+  return found;
+}
+
+/**
+ * A blocking spawn's `timeout` that the child can outlive
+ * (`spawn-timeout-sigkill`). A rule of its own, not `spawn-timeout`
+ * messages, so that rule's suppressed counts stay as they were.
+ *
+ * WHY. A sync spawn's `timeout` sends `killSignal`, SIGTERM by default, and
+ * the worker stays blocked until the child actually exits: a child that
+ * traps or ignores SIGTERM, or is stuck writing a large `input` back and
+ * forth under load, keeps the worker past every test budget, since no test
+ * timeout can interrupt a sync spawn. SIGKILL cannot be trapped. A large
+ * `input` is not checked: a product monorepo's dry run found `input` mostly carrying
+ * a hook's short stdin, so a rule on it would flag sound code.
+ *
+ * FIX. When the options are an object literal written in the call with its
+ * own `timeout` property and no `killSignal`, `--fix` adds
+ * `killSignal: 'SIGKILL'` after the timeout.
+ */
+const spawnTimeoutSigkill = {
+  meta: {
+    type: 'problem',
+    docs: {
+      description:
+        "A blocking child process in a test is killed with SIGKILL at its timeout",
+    },
+    fixable: 'code',
+    schema: [],
+    messages: {
+      killSignal:
+        "`{{name}}` sends SIGTERM at its `timeout`, which the child can trap or ignore, and the worker stays blocked until the child exits: no test timeout can interrupt a sync spawn. Add `killSignal: 'SIGKILL'`.",
+    },
+  },
+  create(context) {
+    return {
+      CallExpression(node) {
+        const name = childProcessFunction(node, context);
+        if (!BLOCKING_SPAWNS.has(name)) return;
+        const options =
+          node.arguments.length >= 3 ? node.arguments[2] : node.arguments[1];
+        const object = objectOf(options, context);
+        if (!object) return; // none (spawn-timeout's case) or built elsewhere
+        const timeout = optionValue(object, 'timeout', context);
+        const signal = optionValue(object, 'killSignal', context);
+        if (timeout === null || timeout === UNREAD || signal === UNREAD) return;
+        // No killSignal, or a literal other than SIGKILL, is the finding; a
+        // value built elsewhere is not provable here.
+        const value = signal && unwrap(signal);
+        if (
+          value &&
+          (value.type !== 'Literal' ||
+            value.value === 'SIGKILL' ||
+            value.value === 9)
+        ) {
+          return;
+        }
+        const own =
+          unwrap(options) === object && signal === null
+            ? object.properties.find(
+                property =>
+                  property.type === 'Property' &&
+                  keyOf(property) === 'timeout' &&
+                  property.value === timeout,
+              )
+            : undefined;
+        context.report({
+          node,
+          messageId: 'killSignal',
+          data: { name },
+          fix: own
+            ? fixer => fixer.insertTextAfter(own, ", killSignal: 'SIGKILL'")
+            : null,
+        });
+      },
+    };
+  },
+};
+
 /** The message data the group helper options give. */
 const groupData = options => ({
   trackHelper: options.trackHelper,
@@ -1121,5 +1224,6 @@ export {
   noRawGroupKill,
   SHELL_SPAWNERS,
   SPAWNERS,
+  spawnTimeoutSigkill,
   spawnTimeout,
 };

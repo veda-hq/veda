@@ -33,7 +33,11 @@
         ".claude/sarathi.json",
         "node_modules/",
         "package.json",
-        "pnpm-lock.yaml"
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        ".pnpmfile.cjs",
+        ".pnpmfile.mjs",
+        ".npmrc"
       ]
     }
   }

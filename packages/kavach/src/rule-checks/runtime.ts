@@ -193,8 +193,14 @@ function heading(verb: string, rule: string, entry: Rule | undefined): string {
   return `${verb} ${rule}, "${entry.title}"${origin}.`;
 }
 
+/**
+ * Where the rule's lesson lives: its `lessons` when the registry lists them
+ * (a consumer whose memory notes moved into docs), else the notes it came from.
+ */
 function memory(entry: Rule | undefined): string {
-  return `Memory: ${entry === undefined ? 'none recorded' : entry.notes.join(', ')}`;
+  if (entry === undefined) return 'Memory: none recorded';
+  if (entry.lessons === undefined) return `Memory: ${entry.notes.join(', ')}`;
+  return entry.lessons.length === 0 ? 'Lesson: none beyond this check' : `Lesson: ${entry.lessons.join(', ')}`;
 }
 
 /** Search tools: their checks pass only for the same search run in the shell. */

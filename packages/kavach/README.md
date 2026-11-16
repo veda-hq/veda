@@ -365,3 +365,13 @@ A checks module exports `CHECKS`, a list of `Check` (`@veda-hq/kavach/rule-check
 an id, the events and tools it applies to, and a function returning a
 refusal, a warning or nothing. A Bash command passes one named check when it
 ends with `# rule-pass <id>: <reason>`; the pass is logged.
+
+Checks build on the engine's parts, each with its types: `rule-checks/shell-words`
+(a command's simple commands and words), `rule-checks/live-runs` (a push or
+preflight running in the checkout), `rule-checks/edit-text` (a file's text
+after an Edit or Write), `rule-checks/spawn` (git and other programs) and
+`rule-checks/fire-log` (the fire log's types).
+
+A refusal names the rule's memory notes, or, when its registry row lists
+`lessons` (where the notes' lessons live now), those: `Lesson: <list>`, or
+`Lesson: none beyond this check` for an empty list.

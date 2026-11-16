@@ -9,9 +9,12 @@
       { "matcher": "Bash", "guard": "command" }
     ],
     "PostToolUse": [
-      { "matcher": "Bash|mcp__ccd_pr__set_monitor|mcp__ccd_pr__get_status", "command": "bash \"$SARATHI_HOOKS\"/autofix-watch.sh", "timeout": 10 }
+      {
+        "matcher": "Bash|mcp__ccd_pr__set_monitor|mcp__ccd_pr__get_status|mcp__ccd_turn__wrap_up",
+        "command": "bash \"$SARATHI_HOOKS\"/autofix-watch.sh",
+        "timeout": 10
+      }
     ],
-    "PostToolUseFailure": [{ "matcher": "mcp__ccd_pr__set_monitor", "command": "bash \"$SARATHI_HOOKS\"/autofix-watch.sh", "timeout": 10 }],
-    "Stop": [{ "command": "bash \"$SARATHI_HOOKS\"/autofix-watch.sh", "timeout": 10 }]
+    "PostToolUseFailure": [{ "matcher": "mcp__ccd_pr__set_monitor", "command": "bash \"$SARATHI_HOOKS\"/autofix-watch.sh", "timeout": 10 }]
   }
 }

@@ -1,13 +1,13 @@
 /**
- * PostToolUse, PostToolUseFailure and Stop handler: keeps the list of pull
- * requests a session opened, marks each one when the desktop app says
- * Auto-fix is on for it, and warns at turn end about every open one that is
+ * PostToolUse and PostToolUseFailure handler: keeps the list of pull requests
+ * a session opened, marks each one when the desktop app says Auto-fix is on
+ * for it, and tells the model, in its context, about every open one that is
  * neither on nor refused. Warn-only: it never blocks.
  *
  * - Record (PostToolUse, Bash): a command that runs `gh … pr create` adds
  *   every pull request URL its output names, whatever the repository, `-R`,
- *   `--repo` or folder. A background run prints nothing to read, so it adds
- *   nothing.
+ *   `--repo` or folder. A background run (`run_in_background`) prints
+ *   nothing to read, so it adds nothing.
  * - Confirm (`mcp__ccd_pr__set_monitor`): the app's reply "Auto-fix is on for
  *   owner/repo#N" marks that PR on; "Auto-fix is off for owner/repo#N" marks
  *   it off again. `mcp__ccd_pr__get_status` for this session marks its
@@ -22,11 +22,20 @@
  *   answer is looked for in both `tool_response` and `error`, on PostToolUse
  *   and PostToolUseFailure alike. An error that names no PR (a missing url)
  *   changes nothing.
- * - Warn (Stop): one `systemMessage` naming each open PR on the list that is
- *   neither on nor refused, with the exact call that switches it on. Silent
- *   when `stop_hook_active` is set, and in any session whose transcript does
- *   not show `mcp__ccd_pr__set_monitor` (a cloud session, a terminal), where
- *   the call cannot be made.
+ * - Warn (PostToolUse): `hookSpecificOutput.additionalContext`, which
+ *   reaches the model, naming each waiting PR (`opened` or `off`) with the
+ *   exact call that switches it on, and a `warned` row per PR:
+ *   - on `mcp__ccd_turn__wrap_up`, every waiting PR on the list, so one
+ *     another hook added (`sarathi autofix add`) is warned at the next one;
+ *   - on the Bash call that records a PR, that PR at once;
+ *   - on a Bash call with `run_in_background: true` that runs `gh pr create`,
+ *     that the PR is not on the list and the way out in the foreground (no
+ *     row: there is no PR to name).
+ *   Silent in any session whose transcript does not show
+ *   `mcp__ccd_pr__set_monitor` (a cloud session, a terminal), where the call
+ *   cannot be made. Stop says nothing: a Stop `systemMessage` reached neither
+ *   the model nor the user (veda#92), and a config that still wires Stop
+ *   gets ''.
  *
  * The list, the shared state: `<dir>/<session id>.jsonl`, one JSON row per
  * fact, where <dir> is `SARATHI_AUTOFIX_DIR`, else
@@ -57,6 +66,7 @@ import { fileURLToPath } from 'node:url';
 
 export const SET_MONITOR = 'mcp__ccd_pr__set_monitor';
 export const GET_STATUS = 'mcp__ccd_pr__get_status';
+export const WRAP_UP = 'mcp__ccd_turn__wrap_up';
 
 const SESSION = /^[\w.-]{1,128}$/;
 /** A pull request URL on any GitHub host: https://<host>/<owner>/<repo>/pull/<N>. */
@@ -216,7 +226,6 @@ interface HookEvent {
   readonly tool_input?: unknown;
   readonly tool_response?: unknown;
   readonly error?: unknown;
-  readonly stop_hook_active?: unknown;
 }
 
 export type Fact = Omit<Row, 'at' | 'event'> & { readonly event: State };
@@ -376,32 +385,66 @@ export function callFor(pr: Pr): string {
   return `${SET_MONITOR} ${JSON.stringify({ url: pr.url, auto_fix: true, address_comments: true })}`;
 }
 
-/** The turn-end warning for the PRs still waiting, or '' for none. */
-export function warning(waiting: readonly Pr[]): string {
+/**
+ * The warning for the PRs still waiting, or '' for none. `opened`: the Bash
+ * call that just recorded them; `wrap_up`: the turn's wrap-up.
+ */
+export function warning(waiting: readonly Pr[], when: 'opened' | 'wrap_up' = 'wrap_up'): string {
   if (waiting.length === 0) return '';
   const lines = waiting.map(pr => `- ${pr.pr}${pr.state === 'off' ? ' (switched off)' : ''}: ${callFor(pr)}`);
+  const what = waiting.length === 1 ? 'a pull request' : `${waiting.length} pull requests`;
+  const lead =
+    when === 'opened'
+      ? `sarathi: you just opened ${what}, and Auto-fix is not on for ${waiting.length === 1 ? 'it' : 'them'}, so nothing will wake this session for its CI failures, merge conflicts or review comments. Make this call now for each:`
+      : `sarathi: Auto-fix is not on for ${what} this session opened, so nothing wakes this session for its CI failures, merge conflicts or review comments. Make this call for each before you end the turn:`;
   return [
-    `sarathi: Auto-fix is not on for ${waiting.length === 1 ? 'a pull request' : `${waiting.length} pull requests`} this session opened, so nothing wakes it for CI failures, conflicts or review comments. Make the call for each:`,
+    lead,
     ...lines,
-    'If the app refuses one, tell the user its reason; they can switch it on themselves from the PR bar. One that has merged or closed leaves this list at the next mcp__ccd_pr__get_status that shows it so. (Warn-only for now: the turn ends either way.)',
+    `If the app refuses one, tell the user its reason; they can switch it on themselves from the PR bar. One that has merged or closed leaves this list at the next ${GET_STATUS} that shows it so. (Warn-only: nothing is blocked.)`,
   ].join('\n');
 }
 
-function stop(event: HookEvent, file: string, deps: Deps): string {
-  if (event.stop_hook_active === true) return '';
-  const waiting = fold(readRows(file)).filter(pr => pr.state === 'opened' || pr.state === 'off');
-  if (waiting.length === 0) return '';
-  if (deps.env.CLAUDE_CODE_REMOTE === 'true' || !hasSetMonitor(event.transcript_path)) return '';
+/** What a background `gh pr create` gets: the PR is not on the list, and the way out in the foreground. */
+export const BACKGROUND_NOTE = [
+  'sarathi: this `gh pr create` runs in the background, so its output, the pull request URL, never reaches this hook: the PR is not on this session’s Auto-fix list, and the app will not trust it as this session’s PR, so Auto-fix cannot be switched on for it as it stands.',
+  'For this PR: once the background run ends, take the PR URL from its output (or from `gh pr view --json url`), write `<pr-created>URL</pr-created>` with it in your reply, and do not run `gh pr create` again: the PR exists.',
+  `Then call ${SET_MONITOR} {"url":"<the PR URL>","auto_fix":true,"address_comments":true}.`,
+  'Next time, run `gh pr create` in the foreground, so its URL reaches the list and the app. (Warn-only: nothing is blocked.)',
+].join('\n');
+
+/** Can this session make the set_monitor call? Not in a cloud session, nor where the transcript does not show the tool. */
+function canCall(event: HookEvent, deps: Deps): boolean {
+  return deps.env.CLAUDE_CODE_REMOTE !== 'true' && hasSetMonitor(event.transcript_path);
+}
+
+/** The hook answer that puts `text` in the model's context after this tool call. */
+function toModel(text: string): string {
+  return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: text } });
+}
+
+function isWaiting(pr: Pr): boolean {
+  return pr.state === 'opened' || pr.state === 'off';
+}
+
+/** Warns the model about `waiting` and logs a `warned` row for each; '' for none or where the call cannot be made. */
+function warn(waiting: readonly Pr[], when: 'opened' | 'wrap_up', event: HookEvent, file: string, deps: Deps): string {
+  if (waiting.length === 0 || !canCall(event, deps)) return '';
   const at = deps.now().toISOString();
+  const source = when === 'opened' ? 'gh pr create' : WRAP_UP;
   try {
     appendRows(
       file,
-      waiting.map(pr => ({ at, pr: pr.pr, url: pr.url, event: 'warned', source: 'Stop' })),
+      waiting.map(pr => ({ at, pr: pr.pr, url: pr.url, event: 'warned', source })),
     );
   } catch {
-    // fail-open: the warning still shows when its log row cannot be written
+    // fail-open: the warning still reaches the model when its log row cannot be written
   }
-  return JSON.stringify({ systemMessage: warning(waiting) });
+  return toModel(warning(waiting, when));
+}
+
+function runsInBackground(event: HookEvent): boolean {
+  const input = event.tool_input;
+  return isRecord(input) && input.run_in_background === true && typeof input.command === 'string' && runsPrCreate(input.command);
 }
 
 /** The most of one event `keepRaw` keeps. */
@@ -434,8 +477,11 @@ export function respond(raw: string, deps: Deps): string {
     const event = parsed as HookEvent;
     const file = listFile(event.session_id, deps.env);
     if (file === undefined) return '';
-    if (event.hook_event_name === 'Stop') return stop(event, file, deps);
+    if (event.hook_event_name !== 'PostToolUse' && event.hook_event_name !== 'PostToolUseFailure') return '';
     keepRaw(event, file, deps);
+    const post = event.hook_event_name === 'PostToolUse';
+    if (post && event.tool_name === WRAP_UP) return warn(fold(readRows(file)).filter(isWaiting), 'wrap_up', event, file, deps);
+    if (post && event.tool_name === 'Bash' && runsInBackground(event)) return canCall(event, deps) ? toModel(BACKGROUND_NOTE) : '';
     const facts = factsOf(event);
     if (facts.length === 0) return '';
     const fresh = news(facts, fold(readRows(file)));
@@ -444,7 +490,15 @@ export function respond(raw: string, deps: Deps): string {
       file,
       fresh.map(fact => ({ at, ...fact })),
     );
-    return '';
+    if (!post || event.tool_name !== 'Bash') return '';
+    const named = new Set(facts.map(fact => key(fact.pr)));
+    return warn(
+      fold(readRows(file)).filter(pr => named.has(key(pr.pr)) && isWaiting(pr)),
+      'opened',
+      event,
+      file,
+      deps,
+    );
   } catch {
     // fail-open: a warning is advice; on any doubt the call goes ahead with none
     return '';

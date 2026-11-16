@@ -43,7 +43,10 @@ every part of it writes nothing: pipes, `sort`, `uniq`, `awk` and `sed`
 without writing options or programs, input redirection, `2>/dev/null`,
 `tee /dev/null`, `$(...)` and `<(...)` whose bodies are themselves read-only,
 `for` loops over literal words, `xargs` running a read-only command, `[`,
-`test`, read subcommands of `git` and `gh` (`gh api` with GET only). When it
+`test`, read subcommands of `git` and `gh` (`gh api` with GET only), `git
+grep`, `ls-tree` and `cat-file` with their listing options (never `grep -O`,
+`--textconv` or `--filters`, which run programs), `shasum`, `base64` to
+stdout, and `openssl x509` printing a certificate. When it
 cannot prove a command, it treats it as writing, and from outside an owned
 worktree that refuses. An expansion that could become an option (`git log
 $X`, where `X=--output=/elsewhere`) leaves the command unproven.

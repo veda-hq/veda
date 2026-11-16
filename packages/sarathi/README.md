@@ -117,7 +117,7 @@ answer.
 | Record | PostToolUse, `Bash` | Every pull request URL a `gh … pr create` printed, in any repository or folder. A background run prints nothing to read. |
 | Confirm | PostToolUse, `mcp__ccd_pr__set_monitor` | The app's "Auto-fix is on for owner/repo#N" (and "is off"). |
 | Confirm | PostToolUse, `mcp__ccd_pr__get_status` | This session's primary `pr` and its `monitor.auto_fix`; a primary or `otherBoundPrs` entry merged or closed leaves the list. |
-| Refused | PostToolUse or PostToolUseFailure, `mcp__ccd_pr__set_monitor` | The app's "Auto-fix can't be enabled for owner/repo#N: <reason>" (or its pre-call "owner/repo#N is on the session's PR bar, but …"), kept with the reason. Transcripts show it as a tool error; both events' `tool_response` and `error` are read. |
+| Refused | PostToolUse or PostToolUseFailure, `mcp__ccd_pr__set_monitor` | The app's "Auto-fix can't be enabled for owner/repo#N: <reason>" (or its pre-call "owner/repo#N is on the session's PR bar, but …", or "owner/repo#N is not bound to this session."), kept with the reason. Transcripts show it as a tool error; both events' `tool_response` and `error` are read. |
 | Warn | PostToolUse, `mcp__ccd_turn__wrap_up` | Every PR still waiting (`opened` or `off`), with the exact call, as `hookSpecificOutput.additionalContext`, which reaches the model, and a `warned` row each. A PR another hook added is warned here. |
 | Warn | PostToolUse, `Bash` | The PR a `gh … pr create` just recorded, at once, the same way. A `gh pr create` run with `run_in_background: true` is told that its PR is not on the list, and the way out in the foreground: a foreground `gh pr create`, or a `<pr-created>URL</pr-created>` tag, then `mcp__ccd_pr__set_monitor`. |
 

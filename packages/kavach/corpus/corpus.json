@@ -1097,6 +1097,15 @@
     "text": "git -C {P} log -1 --output={P}/pwned"
   },
   {
+    "id": "ow-git-diff-files-output",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "--output",
+    "note": "diff-files is not a listed read verb; kavach once counted only its folder (#161).",
+    "text": "git diff-files --output={P}/pwned"
+  },
+  {
     "id": "ow-corrected-inside",
     "intent": "outside-write",
     "role": "corrected",
@@ -1135,6 +1144,40 @@
     "happens": false,
     "family": "git -C",
     "text": "git -C {P} status --short"
+  },
+  {
+    "id": "ow-git-C-ls-tree",
+    "note": "veda#66: kavach 0.6.0 read ls-tree and grep under -C as writes to the other checkout.",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git -C",
+    "text": "git -C {P} ls-tree -r --name-only HEAD | grep -i readme"
+  },
+  {
+    "id": "ow-git-C-grep",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git -C",
+    "text": "git -C {P} grep -n -i -E 'alpha|beta' HEAD -- README.md"
+  },
+  {
+    "id": "ow-git-C-cat-file",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git -C",
+    "text": "git -C {P} cat-file -p HEAD:README.md"
+  },
+  {
+    "id": "ow-git-C-grep-pager",
+    "note": "git grep -O runs its pager with the matching files: here, touch.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git -C",
+    "text": "git -C {P} grep -O'touch {P}/pwned' alpha"
   },
   {
     "id": "pw-touch",

@@ -58,7 +58,7 @@ or a CI step runs `pariksha <check> --staged` and names no settings file.
 ## Choosing files
 
 `absolute-paths`, `non-synced-resources`, `coverage-by-type`,
-`duplicate-tests` and `flaky-tests` judge a list of files. Beside
+`duplicate-tests`, `flaky-tests` and `repo-rules` judge a list of files. Beside
 `--files-from`, each takes one of:
 
 - `--staged`: the files the index adds, changes or renames (by the new path);
@@ -184,8 +184,10 @@ have produced:
 - shape-checked: an issue id with a `--issue-prefix` (`ABC-123`), a GitHub
   pull request or issue URL, or `PR #123`.
 
-`ALLOW-AUTHORITY-PHRASE: <reason>` in the window marks words used without
-asserting authority; the reason is required. TypeScript, JavaScript, SQL,
+A chat answer is not a citation: the refusal asks for the authority's comment
+on the pull request or issue, and its URL. `ALLOW-AUTHORITY-PHRASE: <reason>`
+in the window marks words used without asserting authority, never a claim
+reworded to pass; the reason is required. TypeScript, JavaScript, SQL,
 Prisma, shell and Markdown files are read, outside `node_modules`, `dist`,
 `build`, `coverage`, `generated`, `.tmp` and `.local`.
 
@@ -830,10 +832,14 @@ declares it:
 
 ```text
 Removes-Export: <symbol> — <why it is safe to remove>
+Removes-Export: <a>, <b>, <c> — <why they are safe to remove>
 Removes-File: <path> — <why the file is gone>
 ```
 
-`Removes-File` covers every export of a file that no longer exists at HEAD.
+A comma list of identifiers before the reason declares each of them, so one
+line covers a module's exports and the commit body stays short; anything else
+declares its first word only, so a word in the reason never declares a
+symbol. `Removes-File` covers every export of a file that no longer exists at HEAD.
 A symbol still used anywhere (a move, a rename with its callers, a re-export)
 is never reported; a mention in a comment does not count as a use. Bare
 `export { a, b }` lists and files under `node_modules`, `dist`, `build`,
@@ -1116,6 +1122,55 @@ floor file that is not in the index, not a regular file there, or not one
 `MAJOR.MINOR` (one line on stderr), and a `--root` outside a git repository
 (a Python traceback).
 
+## `repo-rules`
+
+```sh
+pariksha repo-rules [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]
+```
+
+Small rules, each a mistake a coding agent made and a lesson recorded, refused
+where the mistake is written. The selection (every tracked file by default)
+names the files judged; a rule that depends on another file (turbo.json, a
+hook a script is reached from) also judges its dependants when that file is
+selected. A refusal prints each finding as `file:line: rule: detail`, then
+each fired rule's lesson once: what goes wrong and the fix.
+
+| Rule | Refuses |
+| ---- | ------- |
+| `actions-path-leading-slash` | a workflow `paths` or `paths-ignore` pattern starting with `/`, which matches nothing |
+| `falsy-ternary-expression` | `a && 0 \|\| b` (or `''`, `false`, `null`) in a workflow or action: it always gives `b` |
+| `job-level-if-not-step` | a job whose every step has an `if:` and the job none: it still starts and bills |
+| `job-timeout-minutes` | a job a merge queue waits on (`merge_group`, `pull_request`, `pull_request_target`; setting `triggers`) with no `timeout-minutes`; reusable-workflow jobs are skipped |
+| `pg-isready-over-socket` | a compose healthcheck or workflow service `--health-cmd` running `pg_isready` without `-h`/`--host` |
+| `long-line-not-rgignored` | a line over 1 MB (setting `maxLineBytes`) in a file no `.gitignore`, root `.rgignore` or `.ignore` covers |
+| `raw-nul-in-source` | a raw NUL byte in a source or text file (setting `extensions`) |
+| `codeql-suppression-comment-form` | a `codeql[a, b]` comma list, or code before a `codeql[...]` comment on its line |
+| `vitest4-inert-pool-config` | `poolOptions` in a Vitest config; `VITEST_MAX_WORKERS` handed to a turbo run while turbo.json lists it in no env list |
+| `eslint-ignores-worktrees` | a root ESLint flat config that does not ignore `.claude/worktrees/**` |
+| `lockfile-single-doc-parse` | a single-document YAML parse (`load`, `parse`, `safe_load`) whose argument reads `pnpm-lock.yaml`, directly or through a variable |
+| `pre-merge-commit-merge-head` | a `pre-merge-commit` hook, a lefthook `pre-merge-commit` command, or a script either names, reading `MERGE_HEAD` |
+| `mcp-matcher-server-id` | a Claude Code hook matcher naming `mcp__<generated id>__<tool>` |
+| `rollup-state-gate` | code reading `statusCheckRollup.state` (gh, JS, jq, GraphQL) |
+| `deleted-path-still-pinned` | a test file quoting a path the selection deletes or renames (`--staged` or `--base` only) |
+| `turbo-inputs-cover-reads` | a source a test task with `inputs` hashes naming a tracked file those inputs miss (setting `tasks`, regular expressions over task names, default `test`) |
+
+Settings, in `.pariksha.json` `checks.repo-rules` or the `--config` file:
+
+```json
+{
+  "rules": {
+    "job-timeout-minutes": { "triggers": ["merge_group"] },
+    "raw-nul-in-source": { "allow": { "test/fixtures/nul.ts": "the fixture of the mistake" } },
+    "pg-isready-over-socket": { "off": "no Postgres here" }
+  }
+}
+```
+
+`off` (with its reason) stops a rule; `allow` maps a file to the reason it is
+not judged. An unknown rule or key, an empty reason, or `off` beside another
+setting exits 2; an allowance for a file git does not track exits 1, naming
+it, since it hides nothing and should go.
+
 ## `required-settings`
 
 ```sh
@@ -1330,6 +1385,7 @@ whole lines, code spans included.
 | `pariksha-emphasis-mangle` | `store*id`: a single `*` between letters, where `_` was re-read as emphasis |
 | `pariksha-dunder-mangle` | `**DEV**`: a formatter rewrote `__DEV__` as bold |
 | `pariksha-lettered-step-indent` | `b.` indented unlike the `a.` above it, so it renders under another parent |
+| `pariksha-paired-dollars` | two unescaped `$` in one paragraph (outside code spans): Prettier pairs them as inline math and reprints the paragraph |
 
 Options are lists, each replacing its default:
 
@@ -1364,6 +1420,6 @@ such), a list option that is not a non-empty array of strings (to turn a rule
 off, set it to `false`), or an entry that could never match (an extension with
 its dot, a dunder word with its underscores, a language with a space). Each
 rule that reads the bad configuration throws, naming itself and the option, so
-markdownlint-cli2 reports up to twelve errors on line 1 of each file and the
+markdownlint-cli2 reports up to thirteen errors on line 1 of each file and the
 run fails; with `"severity": "warning"` in the configuration they are reported
 as warnings instead.

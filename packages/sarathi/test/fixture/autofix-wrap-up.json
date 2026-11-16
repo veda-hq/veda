@@ -1,0 +1,1 @@
+{"hook_event_name":"PostToolUse","session_id":"smoke","transcript_path":"test/fixture/autofix-transcript.jsonl","tool_name":"mcp__ccd_turn__wrap_up","tool_input":{"recap":"Opened veda-hq/veda#90."},"tool_response":[{"type":"text","text":"Recap shown."}]}

@@ -6,6 +6,7 @@ import { RuleTester } from '@typescript-eslint/rule-tester';
 import { Linter } from 'eslint';
 import tseslint from 'typescript-eslint';
 
+import { googleAuthErrorMessage } from './google-auth-error-message.js';
 import { errorHandlingRules, rules } from './index.js';
 
 /** The project root ERR-08's `allow` paths are relative to, in these tests. */
@@ -911,13 +912,15 @@ describe('message wording', () => {
 describe('family entry', () => {
   it('exports every rule under its name', () => {
     assert.deepEqual(Object.keys(rules).sort(), [
+      'google-auth-error-message',
       'no-direct-child-process',
       'no-raw-error-string',
       'no-swallowed-catch',
       'safe-log',
     ]);
-    for (const [name, rule] of Object.entries(rules))
-      assert.equal(rule, errorHandlingRules[name as keyof typeof rules]);
+    for (const [name, rule] of Object.entries(errorHandlingRules))
+      assert.equal(rule, rules[name as keyof typeof rules]);
+    assert.equal(rules['google-auth-error-message'], googleAuthErrorMessage);
   });
 });
 

@@ -189,7 +189,7 @@ export function c05CandidateRules({
       schema: [],
       messages: {
         fixedSleep:
-          'A fixed {{ms}} ms wait stands in for the event the test needs. On a loaded runner it is too short and the test flakes; on an idle one it is time wasted, and a timer left by an earlier test can still land in this one. Poll the state with a deadline (`vi.waitFor`, `waitFor`), or use fake timers and advance them.',
+          'A fixed {{ms}} ms wait stands in for the event the test needs. On a loaded runner it is too short and the test flakes; on an idle one it is time wasted, and a timer left by an earlier test can still land in this one. Poll the state with a deadline (`vi.waitFor`, `waitFor`; not under fake timers, which a poll advances on every retry), or use fake timers and advance them yourself.',
       },
     },
     create(context) {

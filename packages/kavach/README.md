@@ -43,7 +43,10 @@ every part of it writes nothing: pipes, `sort`, `uniq`, `awk` and `sed`
 without writing options or programs, input redirection, `2>/dev/null`,
 `tee /dev/null`, `$(...)` and `<(...)` whose bodies are themselves read-only,
 `for` loops over literal words, `xargs` running a read-only command, `[`,
-`test`, read subcommands of `git` and `gh` (`gh api` with GET only). When it
+`test`, read subcommands of `git` and `gh` (`gh api` with GET only), `git
+grep`, `ls-tree` and `cat-file` with their listing options (never `grep -O`,
+`--textconv` or `--filters`, which run programs), `shasum`, `base64` to
+stdout, and `openssl x509` printing a certificate. When it
 cannot prove a command, it treats it as writing, and from outside an owned
 worktree that refuses. An expansion that could become an option (`git log
 $X`, where `X=--output=/elsewhere`) leaves the command unproven.
@@ -225,10 +228,44 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
   folder they are installed in. A target that holds one of them (`rm -rf
   .claude`, `mv .claude elsewhere`) is refused as well. Paths compare by
   file identity as well as by name, so another case spelling or a symlink
-  reaches nothing. The limit: like every target, these are judged from the
-  command line, so a command whose writes the guard counts as the whole
-  checkout (`git checkout <ref> -- <path>`, `git apply`, a package install)
-  can still change them. A kavach older than this setting refuses every
+  reaches nothing.
+
+  git and package managers write paths their command lines do not name, so
+  inside an owned clone they are judged by what they can write:
+  - git runs only subcommands that never write the work tree (`add`,
+    `commit`, `push`, `fetch`, `branch`, `tag`, the reads and the plumbing
+    that writes only the git folder), without an option that runs a program
+    (`--upload-pack`, `--receive-pack`, `--exec`, `grep -O`).
+  - `checkout -- <path>`, `restore`, `rm` and `mv` run when each path they
+    name misses every fence; `.` names the whole checkout, which holds them.
+    `git apply` runs when the paths its own `--numstat` lists miss every
+    fence. A branch switch (`checkout <commit>`, `switch`, and `-f` back to
+    `HEAD`) runs when `git diff` finds the fenced paths alike in the target
+    and the work tree. These three are judged by the checkout as it is now,
+    so each runs only as a command of its own. `reset` runs without
+    `--hard`, `--merge` or `--keep`; `read-tree` without `-u`; `config` only
+    to read.
+  - Everything else refuses: `merge`, `pull`, `rebase`, `cherry-pick`,
+    `revert`, `am`, `stash`, `clean`, `sparse-checkout`, `switch --orphan`,
+    `clone`, an alias, and any option or subcommand not in this guard's own
+    tables (git's abbreviations included). `git` with anything before it
+    (`env git`, `GIT_DIR=… git`) refuses too.
+  - Of package installs, only `pnpm install --frozen-lockfile
+    --ignore-scripts --ignore-pnpmfile` runs, alone on its line: it
+    reinstalls what the lockfile pins, and runs no lifecycle script and no
+    pnpmfile. Fence the manifest, the lockfile and what steers an install
+    (`pnpm-workspace.yaml`, `.npmrc`, `.pnpmfile.cjs`) in `protectedPaths`.
+    Every other install, update or removal by pnpm, npm, yarn or bun, and
+    `npx`, `bunx` and `corepack`, refuses.
+  - Another program that would run git or a package manager (`xargs git`,
+    `pnpm exec git`, `timeout 60 pnpm install`) refuses.
+
+  The limit: a package script, a test or any other repository code a
+  command runs writes what it likes, and the guard sees only the command
+  line. A session that edits `scripts/check.mjs` and runs `pnpm check`, or
+  writes `.tmp/x.ts` and runs `pnpm exec tsx .tmp/x.ts`, can reach every
+  fence through it. So can a `trustedCommands` script, which runs before
+  these checks. A kavach older than this setting refuses every
   call on the unknown key, so add it only once the pinned kavach knows it.
 - `protectedVariables`: environment variables a command may not assign, declare or
   export.

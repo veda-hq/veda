@@ -240,6 +240,37 @@ none. Exit 2: bad arguments, or a config or file it cannot read.
 exec node node_modules/@veda-hq/dvara/dist/cli.js trailers --key Slice "$1"
 ```
 
+## Executable bits: `dvara exec-bits`
+
+A tool that rewrites files and puts them back (Stryker's in-place restore, a
+copy through a filesystem that keeps no modes) can drop the executable bit on
+a file whose content it left alone, and `git add -A` then stages a
+100755 → 100644 change that breaks the script for everyone. For a
+pre-commit hook, `dvara exec-bits --staged` names each staged file that went
+from 100755 to 100644 with the same blob, with the fix
+(`git update-index --chmod=+x <path>`). It warns (exit 0, a `⚠` line a quiet
+hook still shows) until `--refuse` makes it refuse (exit 1): a new hook
+refusal warns first. A mode change that came with a content change is an
+edit, and is not read. Exit 2: bad arguments, or git failing.
+
+## Review size: `dvara review-size`
+
+An AI reviewer skips a pull request over its line cap with a "skipped" check
+(Cubic's cap is 50,000 reviewable lines), and a merge rule that needs its
+pass can then never be met. For a pre-push hook,
+`dvara review-size --cap N [--ignore GLOB]… [--base REF]` counts the lines
+`<base>...HEAD` adds and deletes outside the reviewer's ignore globs
+(`path.matchesGlob`; binaries count none, a rename counts under its new
+path) and, over the cap, warns with the five largest files and how to split
+the branch. The base is `--base`, or the first `baseRefs` entry that
+resolves. It never refuses: exit 0 whatever it finds, or when it cannot tell
+(no base, git failing), saying so; exit 2 only on bad arguments.
+
+```bash
+# .husky/pre-push, inside a stage
+node node_modules/@veda-hq/dvara/dist/cli.js review-size --cap 50000 --ignore 'pnpm-lock.yaml' --ignore 'docs/**'
+```
+
 ## Commands
 
 ```sh
@@ -249,5 +280,7 @@ dvara shell <stages|keep-going>      # the path of a shell helper
 dvara records <--staged | --all [--base REF] [--write-baseline | --survey] | --base REF>
 dvara frozen <--staged | --base REF [--head REF]>
 dvara trailers [--key KEY]… <commit-msg-file>  # refuse trailer lines git would not read
+dvara exec-bits --staged [--refuse]  # warn on (or refuse) a dropped executable bit
+dvara review-size --cap N [--ignore GLOB]… [--base REF]  # warn over a reviewer's line cap
 dvara --version
 ```

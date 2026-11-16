@@ -91,6 +91,8 @@ folder, which holds handlers any TypeScript repository can list:
 | `session-dedupe-guard.sh` | PreToolUse, session starts | Refuses starting a session unless the conversation called `list_sessions` successfully in the last 15 minutes. |
 | `lessons.sh` | PreToolUse `Bash\|Edit\|Write\|Agent\|Task\|mcp__ccd_session__start_session`; PostToolUseFailure | Shows a lesson whose `when` line matches the call ("Lessons at their moment"). Never blocks. |
 | `autofix-watch.sh` | PostToolUse `Bash\|mcp__ccd_pr__set_monitor\|mcp__ccd_pr__get_status\|mcp__ccd_turn__wrap_up`; PostToolUseFailure `mcp__ccd_pr__set_monitor` | Lists every pull request the session opens and tells the model, in its context, about each open one that Auto-fix is not on for ("Auto-fix for every pull request"). Never blocks. |
+| `worktree-archive.sh` | PreToolUse `ExitWorktree` (and Codex's `set_thread_archived`) | Denies removing or archiving the session's worktree while `sarathi worktree archive-check` finds work that would be lost ("Worktrees"). List it with `"failClosed": true`. |
+| `services-reap.sh` | SessionStart | Starts `sarathi services reap` detached, output discarded, when `docker` is on PATH: deleted worktrees' services go ("Services"). Never blocks; always exits 0. |
 
 They act on the session's checkout, the git toplevel of the event's `cwd`:
 the desktop app runs a worktree session's hooks with `$CLAUDE_PROJECT_DIR`
@@ -116,7 +118,7 @@ answer.
 | Record | PostToolUse, `Bash` | Every pull request URL a `gh … pr create` printed, in any repository or folder. A background run prints nothing to read. |
 | Confirm | PostToolUse, `mcp__ccd_pr__set_monitor` | The app's "Auto-fix is on for owner/repo#N" (and "is off"). |
 | Confirm | PostToolUse, `mcp__ccd_pr__get_status` | This session's primary `pr` and its `monitor.auto_fix`; a primary or `otherBoundPrs` entry merged or closed leaves the list. |
-| Refused | PostToolUse or PostToolUseFailure, `mcp__ccd_pr__set_monitor` | The app's "Auto-fix can't be enabled for owner/repo#N: <reason>" (or its pre-call "owner/repo#N is on the session's PR bar, but …"), kept with the reason. Transcripts show it as a tool error; both events' `tool_response` and `error` are read. |
+| Refused | PostToolUse or PostToolUseFailure, `mcp__ccd_pr__set_monitor` | The app's "Auto-fix can't be enabled for owner/repo#N: <reason>" (or its pre-call "owner/repo#N is on the session's PR bar, but …", or "owner/repo#N is not bound to this session."), kept with the reason. Transcripts show it as a tool error; both events' `tool_response` and `error` are read. |
 | Warn | PostToolUse, `mcp__ccd_turn__wrap_up` | Every PR still waiting (`opened` or `off`), with the exact call, as `hookSpecificOutput.additionalContext`, which reaches the model, and a `warned` row each. A PR another hook added is warned here. |
 | Warn | PostToolUse, `Bash` | The PR a `gh … pr create` just recorded, at once, the same way. A `gh pr create` run with `run_in_background: true` is told that its PR is not on the list, and the way out in the foreground: a foreground `gh pr create`, or a `<pr-created>URL</pr-created>` tag, then `mcp__ccd_pr__set_monitor`. |
 
@@ -279,6 +281,136 @@ and names the last saved copy, if any.
 The session runs under `CLAUDE_CODE_ENTRYPOINT=claude-desktop` (or `remote`,
 from a cloud session), the entrypoint that offers the Artifact tools, and
 stops if it started without them.
+
+## Worktrees
+
+`sarathi worktree` carries one agent worktree through its life, from the
+worktree root. It never creates or removes a worktree, and it reads only
+in `status` and `archive-check`. It acts only in a linked worktree under
+Claude Code's `.claude/worktrees/` or Codex's worktree root.
+
+```sh
+sarathi worktree begin --branch claude/next   # a new branch from fresh origin/main
+sarathi worktree retire --pr 123              # after the PR merged: branch gone, worktree kept
+sarathi worktree archive-check                # may this worktree be removed? exit 2 if not
+sarathi worktree status                       # the same report, exit 0
+```
+
+Each prints JSON and exits 2 when blocked, naming why. `begin` refuses
+uncommitted work and commits not in origin/main. `retire` needs GitHub's
+word that the PR merged from this branch into main of the same repository
+(`gh`, or in a cloud session a REST read through the proxy), keeps a
+recovery ref first, and moves commits made after the merge to a successor
+branch. `archive-check` lists every blocker: changes, a git operation,
+ignored files other than rebuildable caches, work not in origin/main.
+
+Settings are the `worktree` object of `.claude/sarathi.json`:
+
+```json
+{ "worktree": { "name": "acme", "owner": "Ana", "cloudCheck": "scripts/cloud-check.sh" } }
+```
+
+`name` names the receipt (`<name>-lifecycle.json` in the git dir) and the
+recovery refs (`refs/<name>/lifecycle/…`); `owner` is who may discard
+scratch files; `cloudCheck` confirms a cloud session (exit 0), else
+`CLAUDE_CODE_REMOTE=true` alone does; `services` names the services file
+("Services"). All four are optional.
+
+## Services
+
+`sarathi services` gives each worktree its own local development services:
+one Compose project per worktree, named after the worktree root, so two
+worktrees never share a database. Docker picks the published ports; the
+server port is drawn once from a band below Docker's and kept, with a random
+password, in the worktree's `.tmp/services/config.json`.
+
+```sh
+sarathi services up                 # start, read the published ports, write .tmp/services/environment.json
+sarathi services server [args]      # up, the server's steps, then the server with its environment
+sarathi services web [args]         # the web command on the web port; no containers
+sarathi services run -- <command>   # the command with the services' environment
+sarathi services <action> [args]    # a configured action, with the services running
+sarathi services status|down
+sarathi services reap               # remove the services of worktrees that are gone
+```
+
+A command it starts gets `SARATHI_SERVICES_CONTEXT`, so a nested
+`sarathi services` call reuses the running parent's environment instead of
+starting again. A launched command's exit code is sarathi's; any other
+failure is one line on stderr and exit 1. Starts are serialised per worktree
+by a lock in `.tmp/services/`, which a dead holder's successor takes over.
+
+Everything project-specific is in the services file that
+`worktree.services` names: a path from the project root, or a package path
+such as `@acme/rules/sarathi/services.json`, found under `$SARATHI_PACKAGES`
+when that is set, else under the project's `node_modules/`. Unknown keys are
+refused.
+
+```json
+{
+  "compose": "compose.yaml",
+  "project": "acme-wt",
+  "rootLabel": "acme.worktree-services.root",
+  "apiPorts": [20000, 29999],
+  "webPort": 5173,
+  "published": { "postgres": ["postgres", 5432] },
+  "environment": {
+    "DATABASE_URL": "postgresql://acme:{password}@127.0.0.1:{postgres}/acme_dev",
+    "PORT": "{serverPort}",
+    "API_URL": "http://localhost:{serverPort}"
+  },
+  "web": { "command": ["pnpm", "--filter", "web", "exec", "vite", "--port", "{webPort}", "--strictPort"], "environment": ["API_URL"] },
+  "server": {
+    "before": [["pnpm", "--filter", "server", "exec", "prisma", "migrate", "deploy"]],
+    "command": ["pnpm", "--filter", "server", "exec", "nest", "start", "--watch"]
+  },
+  "actions": {
+    "database-snapshot": { "mainCheckoutOnly": true, "run": [["node", "scripts/snapshot.ts", "{container:postgres}"]] }
+  }
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `compose` | The Compose file, from the worktree root |
+| `project` | The project prefix: each worktree's project is `<project>-` and 16 hex of the SHA-256 of its root |
+| `rootLabel` | The label the Compose file puts on the project's volumes (and networks), holding `SARATHI_WORKTREE_ROOT`, so the reaper finds a project whose containers are gone |
+| `apiPorts` | `[first, last]`: the band the server port is drawn from |
+| `webPort` | The web command's port, outside the band; one web server at a time |
+| `published` | `{ name: [service, container port] }`: the ports read back after `up`, as `{name}` |
+| `environment` | The variables every command gets, filled from the placeholders |
+| `web` | `command`, and the `environment` keys it gets (none may need a published port) |
+| `server` | `before`, commands run in order first (the first failure stops the start), and `command` |
+| `actions` | `{ name: [commands] }` or `{ name: { "mainCheckoutOnly": true, "run": [commands] } }` |
+
+Placeholders, in `environment` and in commands: `{password}` (URL-encoded in
+`environment`), `{serverPort}`, `{webPort}`, `{project}` (the full project
+name) and `{container:<service>}` (`<project name>-<service>-1`); and, in
+`environment` only, `{<published name>}`: a command reads a published port
+from its variable. Arguments after `server`, `web` or an action are appended
+to its command, and to an action's last command.
+
+Compose gets `COMPOSE_PROJECT_NAME` and `SARATHI_SERVICES_PROJECT` (the
+project name), `SARATHI_SERVICES_PASSWORD` and `SARATHI_WORKTREE_ROOT`. Run
+it with stdin closed, so a volume whose labels changed is kept, not
+recreated.
+
+**The reaper.** Archiving a conversation deletes its worktree but not the
+services started there, and no hook sees a desktop-app archive. So
+`sarathi services reap` (run detached at every session start by
+`services-reap.sh`, and before every `up`) lists the projects with the
+file's prefix whose containers' working directory, or whose volume's or
+network's root label, names a root that hashes to the project, and removes
+those whose root provably no longer exists: a missing directory, never a
+permission or I/O error. Each root is inspected again just before its
+removal. A live-service test's temporary root, `<worktree.name>-service-test-XXXXXX`,
+counts as gone once the process named in its `fixture-owner.json` has died
+or it is an hour old. It skips a stopped OrbStack rather than waking it, and
+records each sweep that did something in
+`<git common dir>/<worktree.name>-services-reaper.log`.
+
+The live-service tests start real containers, so they run only with
+`SARATHI_LIVE_SERVICES=required` and a Docker daemon.
 
 ## The working rules
 

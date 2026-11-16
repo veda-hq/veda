@@ -30,6 +30,7 @@ every round, why a green PR sits unqueued, and when it is safe to resolve review
   that needs Cubic's pass can never be met. Check the check-run title as soon as a big PR opens,
   and split by workspace: rebuild each branch from the final tree by path and prove
   `git diff --stat <local source> HEAD -- <workspace>` is empty.
+  <!-- held by: dvara review-size (a pre-push check that warns when the branch changes more lines than the reviewer's cap outside its ignore globs); reading the check-run title is not checked -->
 - **The review allowance.** The PR-review allowance is per purchased seat, pooled across the
   team. Read the live limit from the subscription API, never from a pinned constant or memory.
   When the allowance runs out, the check goes neutral "AI review line limit reached", and a

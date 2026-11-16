@@ -31,6 +31,7 @@ const id = name => `${DEFAULT_NAMESPACE}/${name}`;
 export const PROCESS_HYGIENE_RULES = {
   [id('spawn-timeout')]: 'error',
   [id('no-raw-group-kill')]: 'error',
+  [id('spawn-timeout-sigkill')]: 'error',
 };
 
 /** Rules for every test file (TEST-WEAK-03, TEST-STRUCT-02/11, SHELL-09, TEST-WEAK-10). */
@@ -60,6 +61,11 @@ export const TEST_FILE_RULES = {
   [id('env-via-stub')]: 'error',
   [id('detached-teardown')]: 'error',
   [id('jsonnull-in-matcher')]: 'error',
+  [id('poll-under-fake-timers')]: 'error',
+  [id('no-stubenv-in-beforeall')]: 'error',
+  // Warnings: each has a right use the rule cannot see (its module says which).
+  [id('expect-on-wall-clock')]: 'warn',
+  [id('assert-imported-constant')]: 'warn',
 };
 
 /** Rules for Nest server tests only. */
@@ -76,6 +82,7 @@ export const SCRIPT_RULES = {
   [id('no-process-exit')]: 'error',
   [id('cli-entry-helper')]: 'error',
   [id('no-import-meta-dirname-cjs')]: 'error',
+  [id('signal-handler-before-spawn')]: 'warn',
 };
 
 /** Rules for Detox end-to-end suites (TEST-WEAK-01). */

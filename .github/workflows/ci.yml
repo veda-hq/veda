@@ -16,7 +16,7 @@ jobs:
   check:
     name: Typecheck, test, build
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,6 +30,15 @@ jobs:
       # Each package's own tests prove the copy being changed. (`pnpm check`
       # runs these and the steps below, for a run by hand.)
       - run: pnpm -r check
+      # sarathi services against the runner's Docker daemon: each worktree's
+      # stack stays its own across down and up, and the reaper removes only
+      # the stack of a worktree whose folder is gone. pnpm test skips these.
+      - name: Live services (Docker)
+        timeout-minutes: 10
+        working-directory: packages/sarathi
+        env:
+          SARATHI_LIVE_SERVICES: required
+        run: node --test src/services/live.test.ts
       # The scripts' own tests: the version rule, released-pins, the git hooks.
       - name: Script tests
         run: >-

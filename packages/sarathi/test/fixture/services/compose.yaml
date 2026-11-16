@@ -1,0 +1,36 @@
+# The live-service tests' project (src/services/live.test.ts): two small
+# Redis services, one with a volume that carries the worktree-root label, as
+# a real project's Compose file would. `sarathi services` supplies the
+# variables.
+name: ${SARATHI_SERVICES_PROJECT:?run through sarathi services}
+
+x-service-defaults: &defaults
+  # Docker's default bridge, not a network per project: leaked project
+  # networks fill the daemon's address pools.
+  network_mode: bridge
+  image: redis:7-alpine
+  environment:
+    REDISCLI_AUTH: ${SARATHI_SERVICES_PASSWORD:?}
+  mem_limit: 128m
+  healthcheck:
+    test: ['CMD', 'redis-cli', 'ping']
+    interval: 1s
+    timeout: 5s
+    retries: 60
+
+services:
+  cache:
+    <<: *defaults
+    command: ['redis-server', '--requirepass', '${SARATHI_SERVICES_PASSWORD:?}', '--appendonly', 'no']
+    # Docker picks the host port; loopback only.
+    ports: ['127.0.0.1::6379']
+  store:
+    <<: *defaults
+    command: ['redis-server', '--requirepass', '${SARATHI_SERVICES_PASSWORD:?}', '--appendonly', 'yes']
+    ports: ['127.0.0.1::6379']
+    volumes: ['store_data:/data']
+
+volumes:
+  store_data:
+    labels:
+      sarathi.live.worktree-services.root: ${SARATHI_WORKTREE_ROOT:?}

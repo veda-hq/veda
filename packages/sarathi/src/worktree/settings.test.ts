@@ -32,6 +32,8 @@ describe('worktree settings', () => {
       [{ services: '' }, /"services" must be a path/],
       [{ services: 3 }, /"services" must be a path/],
       [{ services: '@acme/rules' }, /"services" must be a path/],
+      [{ services: '@acme/rules/../other/services.json' }, /"services" must be a path/],
+      [{ services: '@acme/rules/sarathi/..' }, /"services" must be a path/],
       [[], /must be an object/],
       [{ extra: 1 }, /unknown key "extra"/],
       [{ name: 'Acme' }, /"name" must be/],

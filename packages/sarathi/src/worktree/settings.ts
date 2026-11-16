@@ -37,6 +37,8 @@ const NAME = /^[a-z][a-z0-9-]{0,39}$/;
 const KEYS = new Set(['name', 'owner', 'cloudCheck', 'services']);
 /** A scoped package and a file inside it. */
 const PACKAGE_PATH = /^@[^/\s]+\/[^/\s]+\/\S+$/;
+/** A package path with no `..` segment, so it cannot leave the package. */
+const packagePath = (value: string): boolean => PACKAGE_PATH.test(value) && !value.split('/').includes('..');
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -52,7 +54,7 @@ export function parseSettings(value: unknown, path: string, root: string): Workt
   }
   if (owner !== undefined && (typeof owner !== 'string' || owner.trim() === '')) throw new SettingsError(`${path} worktree: "owner" must be a name`);
   if (cloudCheck !== undefined && (typeof cloudCheck !== 'string' || cloudCheck === '')) throw new SettingsError(`${path} worktree: "cloudCheck" must be a path`);
-  if (services !== undefined && (typeof services !== 'string' || services === '' || (services.startsWith('@') && !PACKAGE_PATH.test(services)))) {
+  if (services !== undefined && (typeof services !== 'string' || services === '' || (services.startsWith('@') && !packagePath(services)))) {
     throw new SettingsError(`${path} worktree: "services" must be a path from the project root, or @scope/package/file`);
   }
   return {

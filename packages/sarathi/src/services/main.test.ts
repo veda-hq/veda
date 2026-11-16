@@ -93,6 +93,14 @@ describe('sarathi services', () => {
     expect(err).toContain('unknown action restart; the actions are up, down, status, run, web, server, reap, database-init, database-snapshot');
   });
 
+  test('takes no object built-in for an action', async () => {
+    for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      expect(await servicesMain([name], io(root))).toBe(1);
+      expect(err).toContain(`unknown action ${name};`);
+    }
+    expect(calls().filter(line => line.startsWith('docker'))).toEqual([]);
+  });
+
   test('resolves the worktree from the directory it runs in, with or without --', async () => {
     expect(await servicesMain(['run', '--', 'pnpm', 'one'], io(join(root, 'bin')))).toBe(0);
     expect(await servicesMain(['run', 'pnpm', 'two'], io(root))).toBe(0);

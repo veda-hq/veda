@@ -112,9 +112,19 @@ function commands(value: unknown, published: ReadonlySet<string>, where: string)
   return value.map((item, index) => command(item, published, `${where}[${index}]`));
 }
 
+/** A lookup table with no prototype, so a name such as "constructor" or "toString" is never found unless the file defines it. */
+function table<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
+
+/** A relative path that stays inside the folder it is resolved from. */
+function inside(path: string): boolean {
+  return !isAbsolute(path) && !path.split(/[\\/]/).includes('..');
+}
+
 function parsePublished(value: unknown, where: string): Record<string, Published> {
   if (!isRecord(value)) throw new ServicesError(`${where} "published" must be an object`);
-  const published: Record<string, Published> = {};
+  const published = table<Published>();
   for (const [name, entry] of Object.entries(value)) {
     if (!NAME.test(name) || BUILT_IN_PLACEHOLDERS.has(name)) {
       throw new ServicesError(`${where} "published": "${name}" must be letters, digits and _, and not ${[...BUILT_IN_PLACEHOLDERS].join(', ')}`);
@@ -128,9 +138,9 @@ function parsePublished(value: unknown, where: string): Record<string, Published
 }
 
 function parseEnvironment(value: unknown, published: ReadonlySet<string>, where: string): Record<string, string> {
-  if (value === undefined) return {};
+  const environment = table<string>();
+  if (value === undefined) return environment;
   if (!isRecord(value)) throw new ServicesError(`${where} "environment" must be an object`);
-  const environment: Record<string, string> = {};
   for (const [name, template] of Object.entries(value)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof template !== 'string') {
       throw new ServicesError(`${where} "environment.${name}" must be a variable name with a string value`);
@@ -171,9 +181,9 @@ function parseServer(value: unknown, published: ReadonlySet<string>, where: stri
 }
 
 function parseActions(value: unknown, published: ReadonlySet<string>, where: string): Record<string, Action> {
-  if (value === undefined) return {};
+  const actions = table<Action>();
+  if (value === undefined) return actions;
   if (!isRecord(value)) throw new ServicesError(`${where} "actions" must be an object`);
-  const actions: Record<string, Action> = {};
   for (const [name, spec] of Object.entries(value)) {
     if (!ACTION.test(name) || (BUILT_IN_ACTIONS as readonly string[]).includes(name)) {
       throw new ServicesError(`${where} "actions": "${name}" must be lowercase letters, digits and dashes, and not ${BUILT_IN_ACTIONS.join(', ')}`);
@@ -197,7 +207,7 @@ export function parseServicesFile(raw: unknown, path: string): ServicesFile {
   if (!isRecord(raw)) throw new ServicesError(`${path} must hold a JSON object`);
   only(raw, [...KEYS], path);
   const { compose, project, rootLabel, apiPorts, webPort } = raw;
-  if (typeof compose !== 'string' || compose === '' || isAbsolute(compose)) throw new ServicesError(`${path} "compose" must be a path from the worktree root`);
+  if (typeof compose !== 'string' || compose === '' || !inside(compose)) throw new ServicesError(`${path} "compose" must be a path from the worktree root`);
   if (typeof project !== 'string' || !PROJECT.test(project)) {
     throw new ServicesError(`${path} "project" must be lowercase letters, digits and dashes, starting with a letter`);
   }

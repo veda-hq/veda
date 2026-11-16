@@ -40,6 +40,8 @@ describe('the services file', () => {
       [raw => (raw.extra = 1), 'unknown key "extra"'],
       [raw => (raw.compose = '/abs/compose.yaml'), '"compose" must be a path'],
       [raw => (raw.compose = ''), '"compose" must be a path'],
+      [raw => (raw.compose = '../other/compose.yaml'), '"compose" must be a path'],
+      [raw => (raw.compose = 'infra/../../compose.yaml'), '"compose" must be a path'],
       [raw => (raw.project = 'Acme'), '"project" must be lowercase'],
       [raw => (raw.rootLabel = '-x'), '"rootLabel" must be a Docker label key'],
       [raw => (raw.apiPorts = [2, 1]), '"apiPorts" must be [first, last]'],
@@ -67,6 +69,9 @@ describe('the services file', () => {
       [raw => (raw.web = { command: ['vite', '{postgres}'] }), '"web.command"[1]: unknown placeholder {postgres}'],
       [raw => (raw.web = { command: ['vite'], environment: 'API_URL' }), '"web.environment" must be an array'],
       [raw => (raw.web = { command: ['vite'], environment: ['MISSING'] }), '"MISSING" is not in "environment"'],
+      // Object built-ins are not environment keys the file defined.
+      [raw => (raw.web = { command: ['vite'], environment: ['toString'] }), '"toString" is not in "environment"'],
+      [raw => { delete raw.environment; raw.web = { command: ['vite'], environment: ['constructor'] }; }, '"constructor" is not in "environment"'],
       [raw => (raw.web = { command: ['vite'], environment: ['DATABASE_URL'] }), '"DATABASE_URL" needs the published port postgres'],
       [raw => (raw.server = []), '"server" must be an object'],
       [raw => (raw.server = { command: ['x'], after: [] }), 'server: unknown key "after"'],

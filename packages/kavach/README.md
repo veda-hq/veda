@@ -259,9 +259,10 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
 
   The limit: a package script, a test or any other repository code a
   command runs writes what it likes, and the guard sees only the command
-  line. A session that edits `scripts/check.mjs` and runs `pnpm check` can
-  reach every fence through it. So can a `trustedCommands` script, which
-  runs before these checks. A kavach older than this setting refuses every
+  line. A session that edits `scripts/check.mjs` and runs `pnpm check`, or
+  writes `.tmp/x.ts` and runs `pnpm exec tsx .tmp/x.ts`, can reach every
+  fence through it. So can a `trustedCommands` script, which runs before
+  these checks. A kavach older than this setting refuses every
   call on the unknown key, so add it only once the pinned kavach knows it.
 - `protectedVariables`: environment variables a command may not assign, declare or
   export.

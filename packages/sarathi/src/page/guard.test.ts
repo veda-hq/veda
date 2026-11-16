@@ -6,7 +6,7 @@ import { PassThrough, Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { after as afterAll, afterEach, describe } from 'node:test';
 
-import { expect, it, vi } from './expect.test.ts';
+import { expect, it, vi } from '../test/expect.test.ts';
 import {
   confirmedVersion,
   readVersion,

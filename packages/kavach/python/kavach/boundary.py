@@ -58,6 +58,9 @@ READ_COMMANDS = {
     "realpath",
     "rev",
     "seq",
+    # macOS's Perl shasum: its GetOptions lists no option that writes, and it
+    # opens its operands and a --check list read-only (read 2026-11-16).
+    "shasum",
     "shellcheck",
     "sleep",
     "stat",
@@ -1223,6 +1226,10 @@ def git_is_read_only(words: list[str]) -> bool:
         return git_inspection_outputs([*words[:index], *words[index + 1 :]], index) == []
     if verb in READ_GIT:
         return git_inspection_outputs(words, index) == []
+    if verb in GIT_LISTING_OPTIONS:
+        return git_globals_are_inert(words, index) and git_options_are_listed(
+            args, *GIT_LISTING_OPTIONS[verb]
+        )
     return (
         verb == "worktree"
         and bool(args)
@@ -1230,12 +1237,9 @@ def git_is_read_only(words: list[str]) -> bool:
     )
 
 
-def git_inspection_outputs(words: list[str], command_index: int) -> list[str] | None:
-    """Classify reviewed inspection flags and collect every explicit output.
+def git_globals_are_inert(words: list[str], command_index: int) -> bool:
+    """Only `-C` and the reviewed display switches come before the subcommand."""
 
-    Unknown options fail closed, including Git's abbreviated long options.
-    A pathspec after -- is data, even when it looks like an unsafe option.
-    """
     index = 1
     while index < command_index:
         option = words[index]
@@ -1244,7 +1248,121 @@ def git_inspection_outputs(words: list[str], command_index: int) -> list[str] | 
         elif option in {"--no-pager", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects"}:
             index += 1
         else:
-            return None
+            return False
+    return True
+
+
+# Git subcommands that list or search what a repository holds, and write
+# nothing: (short flags, short options taking a value, long flags, long
+# options taking a value, long options whose value is optional). Exact names
+# only, since git takes an abbreviation of a long option (`--open` for
+# --open-files-in-pager). Left out on purpose: `grep -O` and
+# `--open-files-in-pager`, which run a program on the matches, and
+# `--textconv` and `--filters`, which run the repository's configured
+# drivers. `-c` alone is refused before these tables, as git's `-c <config>`.
+GIT_LISTING_OPTIONS: dict[str, tuple[str, str, frozenset[str], frozenset[str], frozenset[str]]] = {
+    "grep": (
+        "aiIvwrhHnlLzcopWFEGPq",
+        "efABCm",
+        frozenset({
+            "--cached", "--no-index", "--index", "--recursive", "--no-recursive",
+            "--untracked", "--exclude-standard",
+            "--no-exclude-standard", "--recurse-submodules", "--text",
+            "--no-textconv", "--ignore-case", "--word-regexp", "--invert-match",
+            "--full-name", "--extended-regexp", "--basic-regexp", "--fixed-strings",
+            "--perl-regexp", "--line-number", "--column", "--files-with-matches",
+            "--name-only", "--files-without-match", "--null", "--only-matching",
+            "--count", "--no-color", "--break", "--heading", "--show-function",
+            "--function-context", "--and", "--or", "--not", "--all-match", "--quiet",
+        }),
+        frozenset({
+            "--max-depth", "--threads", "--context", "--after-context",
+            "--before-context", "--max-count",
+        }),
+        frozenset({"--color"}),
+    ),
+    "ls-tree": (
+        "drtlz",
+        "",
+        frozenset({
+            "--long", "--name-only", "--name-status", "--object-only",
+            "--full-name", "--full-tree",
+        }),
+        frozenset({"--format"}),
+        frozenset({"--abbrev"}),
+    ),
+    "cat-file": (
+        "tsepZ",
+        "",
+        frozenset({
+            "--batch-all-objects", "--buffer", "--follow-symlinks", "--unordered",
+            "--allow-unknown-type", "--mailmap", "--no-mailmap", "--use-mailmap",
+            "--no-use-mailmap",
+        }),
+        frozenset(),
+        frozenset({"--batch", "--batch-check", "--batch-command"}),
+    ),
+}
+
+
+def git_options_are_listed(
+    args: list[str],
+    short: str,
+    short_values: str,
+    long: frozenset[str],
+    long_values: frozenset[str],
+    long_optional: frozenset[str],
+) -> bool:
+    """Every option before `--` is one of the subcommand's listed ones.
+
+    A short cluster (`-niE`) may end in one option that takes a value,
+    attached or as the next word; a bare number (`-3`) is grep's context.
+    Words that are not options (patterns, revisions, paths) read nothing but
+    the repository. Unknown options fail closed.
+    """
+
+    index = 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        if word == "--":
+            return True
+        if word.startswith("--"):
+            name, equals, _value = word.partition("=")
+            if name in long and not equals or name in long_optional:
+                continue
+            if name in long_values:
+                if not equals:
+                    if index >= len(args):
+                        return False
+                    index += 1
+                continue
+            return False
+        if not word.startswith("-") or word == "-":
+            continue
+        letters = word[1:]
+        if letters.isdigit() and "C" in short_values:
+            continue
+        for position, letter in enumerate(letters):
+            if letter in short_values:
+                if position == len(letters) - 1:
+                    if index >= len(args):
+                        return False
+                    index += 1
+                break
+            if letter not in short:
+                return False
+    return True
+
+
+def git_inspection_outputs(words: list[str], command_index: int) -> list[str] | None:
+    """Classify reviewed inspection flags and collect every explicit output.
+
+    Unknown options fail closed, including Git's abbreviated long options.
+    A pathspec after -- is data, even when it looks like an unsafe option.
+    """
+    if not git_globals_are_inert(words, command_index):
+        return None
     # Exact names only: never accept --out as an abbreviation of --output.
     flags = {
         "--all", "--binary", "--cached", "--check", "--count", "--compact-summary",
@@ -2089,6 +2207,10 @@ def segment_is_read_only(words: list[str]) -> bool:
         return gh_is_read_only(words[1:])
     if name == "file":
         return file_is_read_only(words[1:])
+    if name == "base64":
+        return base64_is_read_only(words[1:])
+    if name == "openssl":
+        return openssl_is_read_only(words[1:])
     if name == "printf":
         return printf_is_read_only(words[1:])
     if name == "cd":
@@ -2436,6 +2558,48 @@ def file_is_read_only(args: list[str]) -> bool:
             return False
         if item.startswith("-") and not item.startswith("--") and "C" in item[1:]:
             return False
+    return True
+
+
+def base64_is_read_only(args: list[str]) -> bool:
+    """`base64`, or `base64 -d`, from stdin or one input file to stdout.
+
+    macOS's base64 writes a file with `-o`/`--output` and takes no operand;
+    GNU's takes one input file. Any other option is refused.
+    """
+
+    operands = [word for word in args if word not in {"-d", "-D", "--decode"}]
+    return len(operands) <= 1 and not any(
+        word.startswith("-") and word != "-" for word in operands
+    )
+
+
+# `openssl x509` options that only print what a certificate holds. Left out:
+# `-out`, the signing and CA options, and `-engine`/`-provider*`, which load code.
+OPENSSL_X509_FLAGS = frozenset({
+    "-noout", "-text", "-subject", "-issuer", "-dates", "-startdate", "-enddate",
+    "-serial", "-fingerprint", "-sha1", "-sha256", "-sha512", "-purpose",
+    "-pubkey", "-modulus", "-hash", "-subject_hash", "-issuer_hash", "-email",
+    "-ocsp_uri", "-ocspid", "-alias",
+})
+OPENSSL_X509_VALUES = frozenset({"-in", "-inform", "-nameopt", "-certopt", "-ext", "-checkend"})
+
+
+def openssl_is_read_only(args: list[str]) -> bool:
+    """`openssl x509` printing a certificate from stdin or `-in`."""
+
+    if args[:1] != ["x509"]:
+        return False
+    index = 1
+    while index < len(args):
+        word = args[index]
+        index += 1
+        if word in OPENSSL_X509_FLAGS:
+            continue
+        if word in OPENSSL_X509_VALUES and index < len(args):
+            index += 1
+            continue
+        return False
     return True
 
 

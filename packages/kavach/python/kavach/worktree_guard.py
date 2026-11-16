@@ -126,6 +126,7 @@ def load_config(path: Path) -> ModuleType:
 boundary = load_boundary(HERE / "boundary.py")
 config = load_config(HERE / "config.py")
 refusal_log = load_module("kavach_worktree_refusal_log", HERE / "refusal_log.py")
+clone_writers = load_module("kavach_worktree_clone_writers", HERE / "clone_writers.py", register=True)
 
 
 def settings() -> Any:
@@ -539,8 +540,12 @@ def mutation_targets(
     values: dict[str, object],
     cwd: Path,
     read_namespaces: tuple[Path, ...] = (),
+    collected: list[Any] | None = None,
 ) -> list[Path] | None:
-    """Paths a mutation event would write, or ``None`` when unprovable."""
+    """Paths a mutation event would write, or ``None`` when unprovable.
+
+    ``collected`` receives a Bash call's mutating segments
+    (`boundary.mutation_directories`)."""
 
     if tool in {"Edit", "Write", "NotebookEdit"}:
         raw = values.get("file_path") or values.get("notebook_path")
@@ -554,7 +559,7 @@ def mutation_targets(
         command = boundary.tool_command(values)
         return (
             boundary.mutation_directories(
-                command, cwd, read_namespaces=read_namespaces
+                command, cwd, read_namespaces=read_namespaces, collected=collected
             )
             if command
             else None
@@ -1230,7 +1235,8 @@ def main() -> None:
     # Only the shell parser reads these (a file tool is never given them), and
     # finding them costs git starts, so an Edit or Write does not pay for them.
     read_namespaces = harness_state_roots(root, primary) if tool == "Bash" else ()
-    targets = mutation_targets(tool, values, cwd, read_namespaces)
+    segments: list[Any] = []
+    targets = mutation_targets(tool, values, cwd, read_namespaces, segments)
     memory = claude_memory_root(primary)
 
     def in_memory(target: Path) -> bool:
@@ -1281,6 +1287,12 @@ def main() -> None:
             or folders.holds(target)
         ):
             refuse_target(target, root, primary, fences, folders)
+    if fences and tool == "Bash":
+        # In an owned clone, git and package managers write paths their
+        # command lines do not name (`clone_writers`).
+        reason = clone_writers.judge(segments, root, fences, in_fence, boundary)
+        if reason is not None:
+            boundary.deny(reason)
     refuse_during_push(tool, targets, root)
 
 

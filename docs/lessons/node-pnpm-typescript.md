@@ -9,7 +9,9 @@ library behaviour that surprised a working change.
 - **Fresh clones have no `node_modules`.** A fresh clone or harness checkout of a pnpm workspace
   has no `node_modules`, so the first `node --import tsx` fails with
   `ERR_MODULE_NOT_FOUND: Cannot find package 'tsx'`. Run `pnpm install --frozen-lockfile` from
-  the clone root before any self-test, typecheck, lint or test command.
+  the clone root before any self-test, typecheck, lint or test command. In a cloud session's own
+  clone, kavach runs only `pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile`,
+  alone on its line.
   <!-- when: error "Cannot find package 'tsx'" -->
 - **The global pnpm must match `packageManager`.** A global pnpm that differs from the
   repository's `packageManager` pin hands off to the pinned version on every call, costing

@@ -4467,12 +4467,20 @@ def mutation_directories(
     nested_depth: int = 0,
     read_namespaces: tuple[Path, ...] = (),
     relinked: list[Path] | None = None,
+    collected: list[tuple[tuple[str, ...], Path, tuple[str, ...], bool]] | None = None,
+    alone: bool = True,
 ) -> list[Path] | None:
     """Resolve the directory in which each mutating segment would run.
 
     ``relinked`` holds the entries earlier segments may have made into links
     (`relinked_locations`), shared with a nested shell's program: a later
     write at or through one is unprovable.
+
+    ``collected``, when given, receives each mutating segment as (its words
+    after wrappers, the folder it runs in, the words before it, whether it is
+    the only command on its line and on every line holding it), for the
+    owned-clone check (`clone_writers`). ``alone`` says the line holding this
+    one is a single command.
     """
 
     if nested_depth > 8:
@@ -4493,6 +4501,7 @@ def mutation_directories(
     segments = split_commands(command)
     if segments is None:
         return None
+    alone = alone and len(segments) == 1
     # A loop body runs once per iteration while this model applies each `cd`
     # once, so `for n in a b; do cd ..; done` would be read one level short:
     # loops navigate under the same fail-closed rule.
@@ -4595,6 +4604,8 @@ def mutation_directories(
                 nested_depth=nested_depth + 1,
                 read_namespaces=read_namespaces,
                 relinked=relinked,
+                collected=collected,
+                alone=alone,
             )
             if nested is None:
                 return None
@@ -4633,6 +4644,8 @@ def mutation_directories(
                     return None
                 mutations.extend(state)
             mutations.append(target)
+            if collected is not None:
+                collected.append((tuple(words), current, tuple(prefix), alone))
             operand_targets = mutation_path_operands(
                 words, current if name == "git" else target,
                 lookup_modified=lookup_modified,

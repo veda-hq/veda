@@ -83,7 +83,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|mcp__ccd_pr__set_monitor|mcp__ccd_pr__get_status",
+        "matcher": "Bash|mcp__ccd_pr__set_monitor|mcp__ccd_pr__get_status|mcp__ccd_turn__wrap_up",
         "hooks": [
           {
             "type": "command",
@@ -100,17 +100,6 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/sarathi.sh PostToolUseFailure",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/sarathi.sh Stop",
             "timeout": 15
           }
         ]

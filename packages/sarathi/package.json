@@ -1,6 +1,6 @@
 {
   "name": "@veda-hq/sarathi",
-  "version": "0.6.14",
+  "version": "0.6.17",
   "description": "Runs a project's Claude Code hooks from one entry per event, with kavach's guards built in, publishes claude.ai pages through a one-off session, and carries the sarathi plugin's agents and working-rules skill.",
   "keywords": ["coding agents", "claude code", "hooks", "plugin", "guard"],
   "license": "MIT",
@@ -32,7 +32,7 @@
     "build": "tsc -p tsconfig.build.json && rm -rf lessons && cp -R ../../docs/lessons lessons",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude='src/**/*.test.ts' --test-coverage-exclude=src/bin.ts 'src/**/*.test.ts'",
-    "smoke": "node dist/bin.js --version && node dist/bin.js check --config test/fixture/sarathi.json --settings test/fixture/settings.json && echo {} | bash hooks/format-before-write.sh && SARATHI_LESSONS_DIR=$(mktemp -d) bash hooks/lessons.sh < test/fixture/pools-failure.json | grep -q 'Address pools exhausted' && PUBLISH_GUARD_MODE=read node dist/page/guard.js < test/fixture/artifact-read.json && (PUBLISH_GUARD_MODE=read node dist/page/guard.js < test/fixture/artifact-publish.json 2>/dev/null; test $? -eq 2) && node --input-type=module -e \"(await import('./dist/page/page.js')).requireGuard()\" && node dist/bin.js page --comments 2>&1 | grep -q 'needs a value' && d=$(mktemp -d) && SARATHI_AUTOFIX_DIR=$d node dist/bin.js hook PostToolUse --config test/fixture/autofix-sarathi.json < test/fixture/autofix-create.json && SARATHI_AUTOFIX_DIR=$d node dist/bin.js autofix list --session smoke | grep -q 'veda-hq/veda#90' && SARATHI_AUTOFIX_DIR=$d node dist/bin.js hook Stop --config test/fixture/autofix-sarathi.json < test/fixture/autofix-stop.json | grep -q 'systemMessage.*veda-hq/veda#90'",
+    "smoke": "node dist/bin.js --version && node dist/bin.js check --config test/fixture/sarathi.json --settings test/fixture/settings.json && echo {} | bash hooks/format-before-write.sh && SARATHI_LESSONS_DIR=$(mktemp -d) bash hooks/lessons.sh < test/fixture/pools-failure.json | grep -q 'Address pools exhausted' && PUBLISH_GUARD_MODE=read node dist/page/guard.js < test/fixture/artifact-read.json && (PUBLISH_GUARD_MODE=read node dist/page/guard.js < test/fixture/artifact-publish.json 2>/dev/null; test $? -eq 2) && node --input-type=module -e \"(await import('./dist/page/page.js')).requireGuard()\" && node dist/bin.js page --comments 2>&1 | grep -q 'needs a value' && d=$(mktemp -d) && SARATHI_AUTOFIX_DIR=$d node dist/bin.js hook PostToolUse --config test/fixture/autofix-sarathi.json < test/fixture/autofix-create.json && SARATHI_AUTOFIX_DIR=$d node dist/bin.js autofix list --session smoke | grep -q 'veda-hq/veda#90' && SARATHI_AUTOFIX_DIR=$d node dist/bin.js hook PostToolUse --config test/fixture/autofix-sarathi.json < test/fixture/autofix-wrap-up.json | grep -q '\\\"hookEventName\\\":\\\"PostToolUse\\\",\\\"additionalContext\\\":\\\"sarathi: Auto-fix is not on.*veda-hq/veda#90'",
     "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
   },
   "dependencies": {

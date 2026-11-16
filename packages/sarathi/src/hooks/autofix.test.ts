@@ -7,7 +7,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -31,6 +31,8 @@ import {
   SET_MONITOR,
   textOf,
   warning,
+  BACKGROUND_NOTE,
+  WRAP_UP,
   type Deps,
   type Row,
 } from './autofix.ts';
@@ -56,10 +58,11 @@ function setup(): { deps: Deps; dir: string; session: string; file: string; tran
 const VEDA = 'https://github.com/veda-hq/veda/pull/90';
 const RULES = 'https://github.com/acme/rules/pull/50';
 
-function bash(session: string, command: string, stdout: string, extra: Record<string, unknown> = {}): string {
+function bash(session: string, command: string, stdout: string, extra: Record<string, unknown> = {}, transcript?: string): string {
   return JSON.stringify({
     hook_event_name: 'PostToolUse',
     session_id: session,
+    ...(transcript === undefined ? {} : { transcript_path: transcript }),
     tool_name: 'Bash',
     tool_input: { command, ...extra },
     tool_response: { stdout, stderr: '', interrupted: false, isImage: false },
@@ -114,8 +117,39 @@ function primary(url: string, state: string, autoFix: boolean): Record<string, u
   };
 }
 
-function stop(session: string, transcript: string, extra: Record<string, unknown> = {}): string {
-  return JSON.stringify({ hook_event_name: 'Stop', session_id: session, transcript_path: transcript, stop_hook_active: false, ...extra });
+/** PostToolUse on the app's wrap_up, as a transcript shows its input. */
+function wrapUp(session: string, transcript: string): string {
+  return JSON.stringify({
+    hook_event_name: 'PostToolUse',
+    session_id: session,
+    transcript_path: transcript,
+    tool_name: WRAP_UP,
+    tool_input: { recap: 'Done.' },
+    tool_response: [{ type: 'text', text: 'Recap shown.' }],
+  });
+}
+
+function stop(session: string, transcript: string): string {
+  return JSON.stringify({ hook_event_name: 'Stop', session_id: session, transcript_path: transcript, stop_hook_active: false });
+}
+
+interface ToModel {
+  hookSpecificOutput: { hookEventName: string; additionalContext: string };
+}
+
+/** The context an answer gives the model, checking its shape. */
+function context(answer: string): string {
+  const parsed = JSON.parse(answer) as ToModel;
+  assert.deepEqual(Object.keys(parsed), ['hookSpecificOutput']);
+  assert.deepEqual(Object.keys(parsed.hookSpecificOutput), ['hookEventName', 'additionalContext']);
+  assert.equal(parsed.hookSpecificOutput.hookEventName, 'PostToolUse');
+  return parsed.hookSpecificOutput.additionalContext;
+}
+
+function warned(file: string): Array<[string, string]> {
+  return readRows(file)
+    .filter(row => row.event === 'warned')
+    .map(row => [row.pr, row.source]);
 }
 
 function states(file: string): Array<[string, string]> {
@@ -368,22 +402,68 @@ describe('confirming', () => {
   });
 });
 
-describe('warning at turn end', () => {
-  it('names each waiting PR with the exact call, and logs that it warned', () => {
+describe('warning the model', () => {
+  it('names each waiting PR at wrap_up with the exact call, in additionalContext, and logs that it warned', () => {
     const { deps, session, file, transcript } = setup();
     respond(bash(session, 'gh pr create', `${VEDA}\n${RULES}\n`), deps);
     respond(monitor(session, VEDA, onReply('veda-hq/veda#90')), deps);
-    const answer = JSON.parse(respond(stop(session, transcript), deps)) as { systemMessage: string };
-    assert.match(answer.systemMessage, /Auto-fix is not on for a pull request this session opened/);
-    assert.ok(answer.systemMessage.includes(`- acme/rules#50: ${SET_MONITOR} {"url":"${RULES}","auto_fix":true,"address_comments":true}`));
-    assert.doesNotMatch(answer.systemMessage, /veda#90/);
-    assert.deepEqual(
-      readRows(file)
-        .filter(row => row.event === 'warned')
-        .map(row => row.pr),
-      ['acme/rules#50'],
+    const text = context(respond(wrapUp(session, transcript), deps));
+    assert.match(text, /^sarathi: Auto-fix is not on for a pull request this session opened, so nothing wakes this session/);
+    assert.match(text, /before you end the turn/);
+    assert.ok(text.includes(`- acme/rules#50: ${SET_MONITOR} {"url":"${RULES}","auto_fix":true,"address_comments":true}`));
+    assert.doesNotMatch(text, /veda#90/);
+    assert.match(text, /Warn-only: nothing is blocked/);
+    assert.deepEqual(warned(file), [['acme/rules#50', WRAP_UP]]);
+    // Every wrap_up warns again while the PR waits; set_monitor's on reply stops it.
+    context(respond(wrapUp(session, transcript), deps));
+    assert.equal(warned(file).length, 2);
+    respond(monitor(session, RULES, onReply('acme/rules#50')), deps);
+    assert.equal(respond(wrapUp(session, transcript), deps), '');
+    assert.equal(warned(file).length, 2);
+  });
+
+  it('warns at once about the PR a gh pr create recorded, and only that one', () => {
+    const { deps, session, file, transcript } = setup();
+    assert.equal(addOpened(RULES, session, 'pr-autocreate', deps), true);
+    const text = context(respond(bash(session, 'gh pr create --fill', `${VEDA}\n`, {}, transcript), deps));
+    assert.match(text, /^sarathi: you just opened a pull request, and Auto-fix is not on for it, so nothing will wake this session/);
+    assert.match(text, /Make this call now for each:/);
+    assert.ok(text.includes(`- veda-hq/veda#90: ${SET_MONITOR} {"url":"${VEDA}","auto_fix":true,"address_comments":true}`));
+    assert.doesNotMatch(text, /acme\/rules/);
+    assert.deepEqual(warned(file), [['veda-hq/veda#90', 'gh pr create']]);
+    // A PR already on comes back from a second create with no warning; one still waiting is warned again.
+    respond(monitor(session, VEDA, onReply('veda-hq/veda#90')), deps);
+    assert.equal(respond(bash(session, 'gh pr create --fill', `${VEDA}\n`, {}, transcript), deps), '');
+    const two = context(respond(bash(session, 'gh pr create', `${RULES}\nhttps://github.com/a/b/pull/3\n`, {}, transcript), deps));
+    assert.match(two, /you just opened 2 pull requests, and Auto-fix is not on for them/);
+  });
+
+  it('warns about a PR another hook added at the next wrap_up', () => {
+    const { deps, session, file, transcript } = setup();
+    assert.equal(
+      autofixCommand(['add', RULES, '--session', session, '--source', 'pr-autocreate'], {
+        ...deps,
+        out: () => undefined,
+        err: () => undefined,
+      }),
+      0,
     );
-    assert.deepEqual(Object.keys(answer), ['systemMessage']);
+    assert.match(context(respond(wrapUp(session, transcript), deps)), /acme\/rules#50/);
+    assert.deepEqual(warned(file), [['acme/rules#50', WRAP_UP]]);
+  });
+
+  it('gives a background gh pr create the way out in the foreground, and records nothing', () => {
+    const { deps, session, file, transcript } = setup();
+    const text = context(respond(bash(session, 'gh pr create --fill', '', { run_in_background: true }, transcript), deps));
+    assert.equal(text, BACKGROUND_NOTE);
+    assert.match(text, /not on this session’s Auto-fix list, and the app will not trust it/);
+    assert.match(text, /Next time, run `gh pr create` in the foreground/);
+    assert.match(text, /write `<pr-created>URL<\/pr-created>` with it in your reply, and do not run `gh pr create` again/);
+    assert.ok(text.includes(`Then call ${SET_MONITOR} {"url":"<the PR URL>","auto_fix":true,"address_comments":true}`));
+    assert.deepEqual(readRows(file), []);
+    // Background runs of other commands, and a run_in_background that is not true, say nothing.
+    assert.equal(respond(bash(session, 'pnpm check', '', { run_in_background: true }, transcript), deps), '');
+    assert.equal(respond(bash(session, 'gh pr create --fill', '', { run_in_background: 'yes' }, transcript), deps), '');
   });
 
   it('counts several, and says which were switched off', () => {
@@ -405,35 +485,49 @@ describe('warning at turn end', () => {
     respond(refusal(session, RULES, "Auto-fix can't be enabled for acme/rules#50: not this session's"), deps);
     respond(bash(session, 'true', ''), deps);
     respond(status(session, { ...primary(VEDA, 'open', true), otherBoundPrs: [{ number: 3, repo: 'a/b', state: 'closed' }] }), deps);
-    assert.equal(respond(stop(session, transcript), deps), '');
+    assert.equal(respond(wrapUp(session, transcript), deps), '');
   });
 
-  it('is silent while a stop hook is already active, with nothing listed, and with no session', () => {
-    const { deps, session, transcript } = setup();
-    assert.equal(respond(stop(session, transcript), deps), '');
+  it('is silent with nothing listed, with no session, and at Stop, which no longer warns', () => {
+    const { deps, session, file, transcript } = setup();
+    assert.equal(respond(wrapUp(session, transcript), deps), '');
     respond(bash(session, 'gh pr create', `${VEDA}\n`), deps);
-    assert.equal(respond(stop(session, transcript, { stop_hook_active: true }), deps), '');
-    assert.equal(respond(stop('../x', transcript), deps), '');
+    assert.equal(respond(stop(session, transcript), deps), '');
+    assert.equal(respond(wrapUp('../x', transcript), deps), '');
+    assert.deepEqual(warned(file), []);
   });
 
   it('is silent where the app’s set_monitor tool is not there: a cloud session, a terminal', () => {
-    const { deps, session, transcript } = setup();
-    respond(bash(session, 'gh pr create', `${VEDA}\n`), deps);
-    assert.equal(respond(stop(session, transcript), { ...deps, env: { ...deps.env, CLAUDE_CODE_REMOTE: 'true' } }), '');
+    const { deps, session, file, transcript } = setup();
+    const cloud = { ...deps, env: { ...deps.env, CLAUDE_CODE_REMOTE: 'true' } };
+    assert.equal(respond(bash(session, 'gh pr create', `${VEDA}\n`, {}, transcript), cloud), '');
+    assert.deepEqual(states(file), [['veda-hq/veda#90', 'opened']]);
+    assert.equal(respond(wrapUp(session, transcript), cloud), '');
+    assert.equal(respond(bash(session, 'gh pr create', '', { run_in_background: true }, transcript), cloud), '');
     const bare = join(TMP, `bare-${session}.jsonl`);
     writeFileSync(bare, `${JSON.stringify({ message: { content: [{ type: 'text', text: `call ${SET_MONITOR}` }] } })}\n`);
-    assert.equal(respond(stop(session, bare), deps), '');
-    assert.equal(respond(stop(session, join(TMP, 'none.jsonl')), deps), '');
-    assert.equal(respond(stop(session, ''), deps), '');
-    assert.notEqual(respond(stop(session, transcript), deps), '');
+    assert.equal(respond(wrapUp(session, bare), deps), '');
+    assert.equal(respond(bash(session, 'gh pr create', '', { run_in_background: true }, bare), deps), '');
+    assert.equal(respond(wrapUp(session, join(TMP, 'none.jsonl')), deps), '');
+    assert.equal(respond(wrapUp(session, ''), deps), '');
+    assert.deepEqual(warned(file), []);
+    assert.notEqual(respond(wrapUp(session, transcript), deps), '');
   });
 
   it('still warns when its log row cannot be written', () => {
-    const { deps, session, file, transcript } = setup();
+    const { deps, dir, session, transcript } = setup();
     respond(bash(session, 'gh pr create', `${VEDA}\n`), deps);
-    chmodSync(file, 0o444);
-    assert.match(respond(stop(session, transcript), deps), /veda-hq\/veda#90/);
-    assert.equal(readFileSync(file, 'utf8').includes('"warned"'), false);
+    // Between reading the list and writing its row, the list's folder becomes
+    // a regular file: a write under it fails for any user, root included,
+    // where a read-only list file would not stop root.
+    const kept = `${dir}-kept`;
+    const now = (): Date => {
+      renameSync(dir, kept);
+      writeFileSync(dir, 'a file, not a folder');
+      return deps.now();
+    };
+    assert.match(context(respond(wrapUp(session, transcript), { ...deps, now })), /veda-hq\/veda#90/);
+    assert.equal(readFileSync(join(kept, `${session}.jsonl`), 'utf8').includes('"warned"'), false);
   });
 
   it('records nothing, and says nothing, when the list cannot be written', () => {
@@ -532,14 +626,16 @@ describe('sarathi autofix', () => {
 describe('the script', () => {
   it('runs as Claude Code runs a hook: the event on stdin, the answer on stdout', () => {
     const { deps, session, file, transcript } = setup();
-    const env = { ...process.env, SARATHI_AUTOFIX_DIR: deps.env.SARATHI_AUTOFIX_DIR };
+    const env: NodeJS.ProcessEnv = { ...process.env, SARATHI_AUTOFIX_DIR: deps.env.SARATHI_AUTOFIX_DIR };
+    // A cloud session sets this, and the hook stays silent there.
+    delete env.CLAUDE_CODE_REMOTE;
     const record = spawnSync(process.execPath, [HOOK], { input: bash(session, 'gh pr create', `${VEDA}\n`), encoding: 'utf8', env });
     assert.equal(record.status, 0);
     assert.equal(record.stdout, '');
     assert.deepEqual(states(file), [['veda-hq/veda#90', 'opened']]);
-    const warn = spawnSync(process.execPath, [HOOK], { input: stop(session, transcript), encoding: 'utf8', env });
+    const warn = spawnSync(process.execPath, [HOOK], { input: wrapUp(session, transcript), encoding: 'utf8', env });
     assert.equal(warn.status, 0);
-    assert.match(String((JSON.parse(warn.stdout) as { systemMessage: string }).systemMessage), /veda-hq\/veda#90/);
+    assert.match(context(warn.stdout), /veda-hq\/veda#90/);
     assert.equal(readFileSync(file, 'utf8').includes('"warned"'), true);
   });
 });

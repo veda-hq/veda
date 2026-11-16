@@ -1423,6 +1423,39 @@ def git_inspection_outputs(words: list[str], command_index: int) -> list[str] | 
     return outputs
 
 
+def git_output_options(words: list[str], command_index: int) -> list[str] | None:
+    """Collect every ``--output`` a git subcommand outside READ_GIT names.
+
+    diff-files, diff-index, range-diff, shortlog, whatchanged, format-patch,
+    stash show and others take Git's diff option ``--output=<file>``. Their
+    other options are not reviewed here, so this reads only that one: a
+    missing or option-like value and any abbreviation (``--outp``) fail
+    closed. A pathspec after -- is data.
+    """
+    outputs: list[str] = []
+    index = command_index + 1
+    while index < len(words):
+        option = words[index]
+        if option == "--":
+            break
+        name, has_value, value = option.partition("=")
+        if name == "--output":
+            if not has_value:
+                index += 1
+                if index >= len(words):
+                    return None
+                value = words[index]
+            else:
+                value = shell_option_value(option)
+            if not value or value.startswith("-"):
+                return None
+            outputs.append(value)
+        elif len(name) > 2 and "--output".startswith(name):
+            return None
+        index += 1
+    return outputs
+
+
 def git_command(words: list[str], cwd: Path | None) -> tuple[int | None, Path | None]:
     """Return the subcommand index and cumulative ``git -C`` directory."""
 
@@ -4530,7 +4563,11 @@ def mutation_path_operands(
                 resolve_mutation_paths(outputs, git_cwd)
                 if outputs is not None else None
             )
-        return []
+        outputs = git_output_options(words, command_index)
+        return (
+            resolve_mutation_paths(outputs, git_cwd)
+            if outputs is not None else None
+        )
     if name == "sed":
         return sed_mutation_paths(words[1:], cwd)
     if name == "adb":

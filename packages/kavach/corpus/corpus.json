@@ -1097,6 +1097,15 @@
     "text": "git -C {P} log -1 --output={P}/pwned"
   },
   {
+    "id": "ow-git-diff-files-output",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "--output",
+    "note": "diff-files is not a listed read verb; kavach once counted only its folder (#161).",
+    "text": "git diff-files --output={P}/pwned"
+  },
+  {
     "id": "ow-corrected-inside",
     "intent": "outside-write",
     "role": "corrected",

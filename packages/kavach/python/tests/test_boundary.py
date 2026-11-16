@@ -665,6 +665,10 @@ class WorktreeBoundaryTest(BoundaryFixture):
             f"git format-patch -1 --output-directory={outside}",
             f"git format-patch -o {outside} -1",
             f"git format-patch -1 -o .tmp -o {outside}",
+            # `--subject-prefix` takes the `--` as its value; git writes.
+            f"git format-patch -1 --subject-prefix -- -o {outside}",
+            f"git format-patch -1 --to -- --output-directory {outside}",
+            f"git format-patch -1 --subject-prefix -- --output={outside}",
             f"git archive -o {outside} HEAD",
             f"git archive -o{outside} HEAD",
             f"git archive HEAD -o {outside}",

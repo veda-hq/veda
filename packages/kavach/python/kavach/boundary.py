@@ -1467,9 +1467,9 @@ def git_destination_operands(words: list[str], command_index: int) -> list[str] 
     verb = words[command_index]
     args = words[command_index + 1 :]
     if verb == "format-patch":
-        return git_dash_o_outputs(args, "--output-directory")
+        return git_dash_o_outputs(args, ("--output-directory", "--output"))
     if verb == "archive":
-        return git_dash_o_outputs(args, None)
+        return git_dash_o_outputs(args, ())
     if verb == "bundle":
         return git_bundle_outputs(args)
     if verb == "clone":
@@ -1479,22 +1479,23 @@ def git_destination_operands(words: list[str], command_index: int) -> list[str] 
     return []
 
 
-def git_dash_o_outputs(args: list[str], long_option: str | None) -> list[str] | None:
-    """``-o <v>``, ``-o<v>`` and ``long_option[=]<v>`` before ``--``.
+def git_dash_o_outputs(args: list[str], long_options: tuple[str, ...]) -> list[str] | None:
+    """``-o <v>``, ``-o<v>`` and each of ``long_options`` with ``=<v>`` or ``<v>``.
 
     Git permutes options, so every word is read, not only those before the
-    first operand. A short cluster that hides ``o`` (format-patch takes
-    ``-ko <dir>``), a strict prefix of ``long_option`` longer than
+    first operand. A ``--`` does not end the read: an option that takes the
+    next word takes ``--`` too, and git 2.54 then still writes
+    ``format-patch -1 --subject-prefix -- -o <dir>``. Reading past it
+    only refuses more. A short cluster that hides ``o`` (format-patch takes
+    ``-ko <dir>``), a strict prefix of ``--output-directory`` longer than
     ``--output``, and a missing or option-like value fail closed.
     """
     outputs: list[str] = []
     index = 0
     while index < len(args):
         word = args[index]
-        if word == "--":
-            break
         name, has_value, _ = word.partition("=")
-        if word == "-o" or (long_option is not None and name == long_option):
+        if word == "-o" or name in long_options:
             if has_value and word != "-o":
                 value = shell_option_value(word)
             else:
@@ -1507,9 +1508,9 @@ def git_dash_o_outputs(args: list[str], long_option: str | None) -> list[str] | 
         elif word.startswith("-") and not word.startswith("--") and "o" in word:
             return None
         elif (
-            long_option is not None
+            "--output-directory" in long_options
             and len(name) > len("--output")
-            and long_option.startswith(name)
+            and "--output-directory".startswith(name)
         ):
             return None
         else:

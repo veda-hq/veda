@@ -34,6 +34,7 @@ const rules = {
   'no-partial-git-mask': hygiene.noPartialGitMask,
   'env-via-stub': hygiene.envViaStub,
   'spawn-timeout': hygiene.spawnTimeout,
+  'spawn-timeout-sigkill': hygiene.spawnTimeoutSigkill,
   'no-raw-group-kill': hygiene.noRawGroupKill,
   'detached-teardown': hygiene.detachedTeardown,
 } as unknown as Record<string, AnyRule>;
@@ -285,6 +286,7 @@ describe('guard removal flips each corrected case', () => {
 interface Meta {
   type: string;
   docs: { description: string };
+  fixable?: string;
   schema: unknown;
   messages: Record<string, string>;
 }
@@ -390,8 +392,20 @@ describe('SHELL-09 rule metadata', () => {
         'A hand-rolled entry check on `process.argv[1]` fails when the script is reached through a symlink (a linked worktree, /tmp on macOS): the script exits 0 without running. Use `isCliEntry(process.argv[1], import.meta.url)`.',
       ],
     );
-    const [inherits] = texts('git-spawn-env', `spawnSync('git', ['status']);`);
-    assert.match(inherits ?? '', /Pass `env: hermeticGitEnv\(\)`\.$/);
+    assert.deepEqual(
+      texts('git-spawn-env', `spawnSync('git', ['status']);`, [
+        { envHelperModule: '' },
+      ]),
+      [
+        "This git child inherits the caller's environment, and under a git hook that includes GIT_DIR and GIT_INDEX_FILE, so it reads and writes the hook's repository instead of the fixture. Pass `env: hermeticGitEnv()`.",
+      ],
+    );
+  });
+
+  it('names the shipped hermetic-git module by default', () => {
+    assert.deepEqual(texts('git-spawn-env', `spawnSync('git', ['status']);`), [
+      "This git child inherits the caller's environment, and under a git hook that includes GIT_DIR and GIT_INDEX_FILE, so it reads and writes the hook's repository instead of the fixture. Pass `env: hermeticGitEnv()` (@veda-hq/eslint-plugin-shuddhi/hermetic-git).",
+    ]);
   });
 });
 
@@ -1173,6 +1187,134 @@ ruleTester.run('spawn-timeout', rules['spawn-timeout']!, {
 });
 
 // ---------------------------------------------------------------------------
+// Blocking children whose timeout sends a signal they can trap
+// ---------------------------------------------------------------------------
+
+const sigkill = (name: string) => ({ messageId: 'killSignal', data: { name } });
+
+ruleTester.run('spawn-timeout-sigkill', rules['spawn-timeout-sigkill']!, {
+  valid: [
+    // Corrected: the child bounded and killed with SIGKILL at the timeout.
+    {
+      filename: TEST_FILE,
+      code: `${CP}spawnSync('git', ['apply', patch], { cwd: repo, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' });`,
+    },
+    // SIGKILL by number, behind a cast, or a signal built elsewhere.
+    {
+      filename: TEST_FILE,
+      code: `${CP}execSync('ls', { timeout: 1, killSignal: 9 });
+execFileSync('x', [], { timeout: 1, killSignal: 'SIGKILL' as const });
+execFileSync('x', [], { timeout: 1, killSignal: signal });`,
+    },
+    // No timeout: spawn-timeout's case, not this rule's. A large input is not
+    // judged on its own.
+    {
+      filename: TEST_FILE,
+      code: `${CP}spawnSync('x', [], { cwd });
+execSync('cat', { input: data });`,
+    },
+    // No options, an args array alone, options built elsewhere.
+    {
+      filename: TEST_FILE,
+      code: `${CP}execSync('ls');
+spawnSync('x', ['a']);
+spawnSync('x', [], options);
+spawnSync('x', [], build());`,
+    },
+    // The options in a const, and in a readable spread, that set the signal.
+    {
+      filename: TEST_FILE,
+      code: `${CP}const OPTS = { timeout: 1, killSignal: 'SIGKILL' };
+execSync('ls', OPTS);
+const BASE = { killSignal: 'SIGKILL' };
+execFileSync('x', [], { ...BASE, timeout: 1, cwd });`,
+    },
+    // A spread this file cannot read may set the timeout or the signal.
+    {
+      filename: TEST_FILE,
+      code: `${CP}spawnSync('x', [], { ...options, timeout: 1 });
+spawnSync('x', [], { timeout: 1, ...build() });`,
+    },
+    // Spread chains are read three deep, then assumed to carry it.
+    {
+      filename: TEST_FILE,
+      code: `${CP}const a = { timeout: 1 };\nconst b = { ...a };\nconst c = { ...b };\nconst d = { ...c };\nspawnSync('x', [], { ...d });`,
+    },
+    // A computed key is not \`timeout\`; an async spawn; a fake that shares
+    // the name is not child_process.
+    {
+      filename: TEST_FILE,
+      code: `${CP}spawnSync('x', [], { [timeout]: 1 });
+spawn('x', [], { timeout: 1 });`,
+    },
+    {
+      filename: TEST_FILE,
+      code: `const spawnSync = vi.fn(); spawnSync('x', [], { timeout: 1 });`,
+    },
+  ],
+  invalid: [
+    // The lesson: a bounded child that SIGTERM leaves running; the fix adds
+    // SIGKILL right after the timeout.
+    {
+      filename: TEST_FILE,
+      code: `${CP}spawnSync('git', ['apply'], { cwd: repo, input: diff, encoding: 'utf8', timeout: 60_000 });`,
+      output: `${CP}spawnSync('git', ['apply'], { cwd: repo, input: diff, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' });`,
+      errors: [sigkill('spawnSync')],
+    },
+    // Fixed in place: execFileSync's options as its second argument, a
+    // string key, a timeout after a readable spread, a cast object, a
+    // renamed import and a namespace member.
+    {
+      filename: TEST_FILE,
+      code: `import { execFileSync as run } from 'child_process';
+import * as cp from 'node:child_process';
+${CP}const BASE = { cwd };
+execFileSync('x', { 'timeout': 1 });
+spawnSync('x', [], { ...BASE, timeout: 1 });
+execSync('ls', { timeout: 1 } as Options);
+run('x', [], { timeout: 1, cwd });
+cp.spawnSync('x', [], { timeout: 1 });`,
+      output: `import { execFileSync as run } from 'child_process';
+import * as cp from 'node:child_process';
+${CP}const BASE = { cwd };
+execFileSync('x', { 'timeout': 1, killSignal: 'SIGKILL' });
+spawnSync('x', [], { ...BASE, timeout: 1, killSignal: 'SIGKILL' });
+execSync('ls', { timeout: 1, killSignal: 'SIGKILL' } as Options);
+run('x', [], { timeout: 1, killSignal: 'SIGKILL', cwd });
+cp.spawnSync('x', [], { timeout: 1, killSignal: 'SIGKILL' });`,
+      errors: [
+        sigkill('execFileSync'),
+        sigkill('spawnSync'),
+        sigkill('execSync'),
+        sigkill('execFileSync'),
+        sigkill('spawnSync'),
+      ],
+    },
+    // A trappable signal, named or by number: reported, not rewritten.
+    {
+      filename: TEST_FILE,
+      code: `${CP}execFileSync('x', [], { timeout: 1, killSignal: 'SIGTERM' });
+execFileSync('x', [], { timeout: 1, killSignal: 15 });`,
+      output: null,
+      errors: [sigkill('execFileSync'), sigkill('execFileSync')],
+    },
+    // Options not written in the call (a const), a timeout from a readable
+    // spread three deep, a later property that overrides the spread's
+    // SIGKILL: reported, no fix.
+    {
+      filename: TEST_FILE,
+      code: `${CP}const OPTS = { timeout: 1 };
+execSync('ls', OPTS);
+const a = { timeout: 1 };\nconst b = { ...a };\nconst c = { ...b };\nspawnSync('x', [], { ...c });
+const KILL = { killSignal: 'SIGKILL' };
+spawnSync('x', [], { timeout: 1, ...KILL, killSignal: 'SIGINT' });`,
+      output: null,
+      errors: [sigkill('execSync'), sigkill('spawnSync'), sigkill('spawnSync')],
+    },
+  ],
+});
+
+// ---------------------------------------------------------------------------
 // R-5 — raw group kills
 // ---------------------------------------------------------------------------
 
@@ -1377,6 +1519,19 @@ const PROCESS_FLIPS: Flip[] = [
     messageId: 'noTimeout',
     corrected: `${CP}spawnSync(process.execPath, [entry], { cwd: repo, timeout: 60_000 });`,
     guard: ', timeout: 60_000',
+  },
+  {
+    rule: 'spawn-timeout-sigkill',
+    messageId: 'killSignal',
+    corrected: `${CP}spawnSync(process.execPath, [entry], { cwd: repo, timeout: 60_000, killSignal: 'SIGKILL' });`,
+    guard: ", killSignal: 'SIGKILL'",
+  },
+  {
+    rule: 'spawn-timeout-sigkill',
+    messageId: 'killSignal',
+    corrected: `${CP}const OPTS = { cwd: repo, timeout: 60_000, killSignal: 'SIGKILL' };\nexecFileSync('git', ['status'], OPTS);`,
+    guard: "killSignal: 'SIGKILL'",
+    replacement: "killSignal: 'SIGTERM'",
   },
   {
     rule: 'detached-teardown',
@@ -1650,6 +1805,8 @@ describe('process hygiene rule metadata', () => {
       'env-via-stub':
         'Tests change env vars through vi.stubEnv and restore process.exitCode',
       'spawn-timeout': 'A blocking child process in a test has a timeout',
+      'spawn-timeout-sigkill':
+        'A blocking child process in a test is killed with SIGKILL at its timeout',
       'no-raw-group-kill':
         'Tests signal a process group only through the guarded helper',
       'detached-teardown':
@@ -1683,6 +1840,25 @@ describe('process hygiene rule metadata', () => {
     assert.deepEqual(texts('spawn-timeout', `${CP}execSync('ls');`), [
       '`execSync` with no `timeout` blocks the worker until the test budget, or with no budget at all at module load, when the child hangs. Pass `timeout` in ms: the killed child then fails the test.',
     ]);
+    assert.deepEqual(ruleMeta('spawn-timeout-sigkill'), {
+      type: 'problem',
+      docs: {
+        description:
+          'A blocking child process in a test is killed with SIGKILL at its timeout',
+      },
+      fixable: 'code',
+      schema: [],
+      messages: {
+        killSignal:
+          "`{{name}}` sends SIGTERM at its `timeout`, which the child can trap or ignore, and the worker stays blocked until the child exits: no test timeout can interrupt a sync spawn. Add `killSignal: 'SIGKILL'`.",
+      },
+    });
+    assert.deepEqual(
+      texts('spawn-timeout-sigkill', `${CP}spawnSync('git', ['apply'], { timeout: 1 });`),
+      [
+        "`spawnSync` sends SIGTERM at its `timeout`, which the child can trap or ignore, and the worker stays blocked until the child exits: no test timeout can interrupt a sync spawn. Add `killSignal: 'SIGKILL'`.",
+      ],
+    );
     assert.deepEqual(
       texts('no-raw-group-kill', `process.kill(-1);`, [
         REPO_OPTIONS['no-raw-group-kill'],

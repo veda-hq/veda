@@ -69,6 +69,8 @@ export function errorHandling({
       runner: runChildPath,
       root,
     }),
+    // A google-auth-library verification error carries the token in its text.
+    [`${namespace}/google-auth-error-message`]: 'error',
   };
 }
 

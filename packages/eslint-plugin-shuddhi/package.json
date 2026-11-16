@@ -1,6 +1,6 @@
 {
   "name": "@veda-hq/eslint-plugin-shuddhi",
-  "version": "0.6.4",
+  "version": "0.6.18",
   "description": "ESLint rules for code coding agents write: error handling, input parsing, NestJS and Prisma boundaries, and test quality. Each rule closes a defect class reviewers kept finding after push.",
   "keywords": ["eslint", "eslintplugin", "eslint-plugin", "nestjs", "prisma", "vitest", "testing", "coding agents"],
   "license": "MIT",

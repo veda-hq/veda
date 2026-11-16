@@ -91,7 +91,7 @@ describe('turbo-inputs-cover-reads', () => {
     const check = turboInputsCoverReads.settings?.['tasks'];
     assert.equal(check?.(['^test']), undefined);
     assert.match(check?.([]) ?? '', /non-empty list/);
-    assert.match(check?.(['(']) ?? '', /holds "\(", which is not a regular expression/);
+    assert.throws(() => check?.(['(']), /holds "\(", which is not a regular expression/);
   });
 
   it('passes a repository with no turbo.json, and inputs that hash what the sources name', () => {

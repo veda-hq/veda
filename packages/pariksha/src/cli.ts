@@ -1049,8 +1049,7 @@ const removedPaths = (top: string, f: Map<string, string>): string[] => {
 const repoRules = (f: Map<string, string>, io: Io): number => {
   const P = 'pariksha repo-rules:';
   const root = resolve(f.get('--root') ?? '.');
-  let outcome: ReturnType<typeof runRules>;
-  try {
+  const outcome = unchecked(P, io, (): ReturnType<typeof runRules> | 'stale' => {
     const top = topOf(root);
     if (top === undefined) throw new Error(`${root} is not in a git repository`);
     const git = gitAt(top);
@@ -1062,15 +1061,14 @@ const repoRules = (f: Map<string, string>, io: Io): number => {
     const stale = staleAllowances(config, tracked());
     if (stale.length > 0) {
       for (const s of stale) io.err(`${P} ${s} names a file git does not track; drop the stale allowance`);
-      return 1;
+      return 'stale';
     }
     const selection = selectionOf(f);
     const side: Side = selection !== undefined && !('error' in selection) && selection.kind === 'staged' ? { kind: 'index' } : selection !== undefined && !('error' in selection) && selection.kind === 'range' ? { kind: 'commit', commit: selection.head } : { kind: 'tree' };
-    outcome = runRules(diskRepo(top, files, tracked, () => removedPaths(top, f), git, side), REPO_RULES, config);
-  } catch (e) {
-    io.err(`${P} ${(e as Error).message}; nothing was checked, so this is not a pass`);
-    return 2;
-  }
+    return runRules(diskRepo(top, files, tracked, () => removedPaths(top, f), git, side), REPO_RULES, config);
+  });
+  if (outcome === undefined) return 2;
+  if (outcome === 'stale') return 1;
   outcome.out.forEach(io.out);
   outcome.err.forEach(io.err);
   return outcome.ok ? 0 : 1;

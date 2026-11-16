@@ -80,7 +80,7 @@ export interface Rule {
   readonly id: string;
   /** What goes wrong and the fix, printed once under the rule's findings. */
   readonly lesson: string;
-  /** The rule's own settings keys beside `allow`, with how each is checked. */
+  /** The rule's own settings keys beside `allow`, with how each is checked: the problem, returned or thrown, or undefined. */
   readonly settings?: Readonly<Record<string, (value: unknown) => string | undefined>>;
   /** The findings in `repo`; `settings` holds the rule's own keys as given. */
   readonly run: (repo: Repo, settings: Readonly<Record<string, unknown>>) => Finding[];
@@ -131,7 +131,12 @@ export const parseConfig = (text: string, rules: readonly Rule[]): Config => {
           allow.set(path, why);
         }
       } else if (rule.settings !== undefined && Object.hasOwn(rule.settings, key)) {
-        const wrong = (rule.settings[key] as (value: unknown) => string | undefined)(v);
+        let wrong: string | undefined;
+        try {
+          wrong = (rule.settings[key] as (value: unknown) => string | undefined)(v);
+        } catch (e) {
+          throw new Error(`rules.${id}.${key} ${(e as Error).message}`);
+        }
         if (wrong !== undefined) throw new Error(`rules.${id}.${key} ${wrong}`);
         own[key] = v;
       } else {

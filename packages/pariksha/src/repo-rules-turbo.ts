@@ -108,14 +108,14 @@ const SOURCE = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
 /** The tasks judged by default: those that run their sources (tests), not the ones that only read them (typecheck, lint, build). */
 export const DEFAULT_TASKS = ['test'] as const;
 
-/** A settings check: a non-empty list of regular expressions. */
+/** A settings check: a non-empty list of regular expressions; throws on one that does not compile. */
 const regexList = (value: unknown): string | undefined => {
   if (!Array.isArray(value) || value.length === 0 || !value.every((v) => typeof v === 'string' && v !== '')) return 'must be a non-empty list of regular expressions';
   for (const source of value as string[]) {
     try {
       new RegExp(source);
     } catch (e) {
-      return `holds "${source}", which is not a regular expression: ${(e as Error).message}`;
+      throw new Error(`holds "${source}", which is not a regular expression: ${(e as Error).message}`);
     }
   }
   return undefined;

@@ -12,11 +12,13 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   `vi.useFakeTimers({ shouldAdvanceTime: false })` so the assertion stays exact. For a shared
   budget, burn a known slice with `vi.setSystemTime(Date.now() + N)` in a mocked collaborator and
   assert `CONSTANT - N`, and prove sensitivity with a temporary production mutation.
+  <!-- held by: shuddhi expect-on-wall-clock (warns on an expected value read off Date.now() in a test file that never fakes the clock); the shared-budget technique is not checked -->
 - **`expect.poll` advances fake timers.** Under fake timers, Vitest's `expect.poll` and
   `vi.waitFor` call `vi.advanceTimersByTime(interval)` on every retry, so polling fires the fake
   deadline you meant to hold back. Wait with a recursive helper on `node:timers/promises`
   `setTimeout` instead, and anchor the fake deadline on an observed event before advancing
   timers yourself.
+  <!-- held by: shuddhi poll-under-fake-timers (refuses expect.poll or vi.waitFor while the test's fake timers are on) -->
 - **Pin Fastify's `elapsedTime`.** A timer can read a hair under its delay against Fastify's
   clock, and fake timers do not reach `reply.elapsedTime`, so a sleep-based latency assertion
   flakes under load. Pin it in a test-only `onRequest` hook with
@@ -101,10 +103,12 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   use async spawn with a per-case budget and a process-group kill. Read such a timeout as a slow
   finish and re-run alone. Telemetry written only when a hook exits hides such hangs, so count
   in-progress runs too.
+  <!-- held by: shuddhi spawn-timeout and spawn-sync-input (refuse a test's sync spawn with no timeout, with input, or with a timeout but no killSignal SIGKILL); the async-spawn and telemetry advice is not checked -->
 - **`unstubEnvs` drops `beforeAll` stubs.** With `unstubEnvs: true` in the Vitest config,
   stubbed env is restored before every test, so a `vi.stubEnv` made in `beforeAll` is gone by the
   first test. Stub env in `beforeEach` or in the test; direct `process.env` writes in `beforeAll`
   are unaffected.
+  <!-- held by: shuddhi no-stubenv-in-beforeall (refuses vi.stubEnv inside a beforeAll) -->
 - **A mock's call index is not its identity.** Never assert on `mockFn.mock.calls[0]` for a
   module-level mock: runners that execute many files in one process (a Stryker dry run, a
   flaky-test detector) can put a foreign call at that index. Filter calls by what they are and
@@ -161,13 +165,16 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   fixture git with a hermetic env: point `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` at
   `/dev/null`, set `GIT_TRACE2*` to 0, delete the `GIT_DIR` family plus `GIT_CONFIG`,
   `GIT_CONFIG_COUNT` and `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*` (the count family overrides
-  the masks), and pass `-c maintenance.auto=false -c gc.auto=0`.
+  the masks), and pass `-c maintenance.auto=false -c gc.auto=0`. shuddhi ships this env as
+  `hermeticGitEnv` and `maskProcessGitEnv` (`@veda-hq/eslint-plugin-shuddhi/hermetic-git`).
+  <!-- held by: shuddhi git-spawn-env, git-fixture-env and no-partial-git-mask (refuse a test's git, or a shell in a git-fixture file, run without hermeticGitEnv, and a process left unmasked), with that helper shipped beside them -->
 - **Fixture commits need an identity on CI.** With global git config masked, macOS
   auto-detects a committer identity but Linux CI does not, so a fixture commit, merge or rebase
   dies with "Committer identity unknown" only in CI (a merge exits before writing MERGE_HEAD).
   Give every fixture git write `-c user.email=... -c user.name=...`, assert the fixture's shape
   (`git rev-parse --verify -q HEAD^2` after a merge), and reproduce locally with
   `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.useConfigOnly GIT_CONFIG_VALUE_0=true`.
+  <!-- held by: shuddhi's hermetic-git helper (gives every fixture git a fixture identity) and no-partial-git-mask (refuses a git env built from the masks alone, which names no author); asserting the fixture's shape is not checked -->
 - **`.DS_Store` sweep.** Code that treats every `readdirSync` entry as a folder fails with
   ENOTDIR on a Mac checkout holding Finder `.DS_Store` files, and grep review misses callers.
   Prove a fix by planting `.DS_Store` in the root and every

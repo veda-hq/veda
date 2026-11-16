@@ -5,6 +5,19 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { configName, loadConfig } from "./config.ts";
 import {
+  parseArgs as parseExecBitsArgs,
+  report as execBitsReport,
+  stagedDroppedBits,
+  USAGE as EXEC_BITS_USAGE,
+} from "./exec-bits.ts";
+import {
+  branchSize,
+  firstBase,
+  parseArgs as parseReviewSizeArgs,
+  USAGE as REVIEW_SIZE_USAGE,
+  warning as reviewSizeWarning,
+} from "./review-size.ts";
+import {
   frozen,
   parseArgs as parseFrozenArgs,
   USAGE as FROZEN_USAGE,
@@ -34,6 +47,10 @@ export const USAGE = [
   "                                            refuse changes to the frozen paths",
   "       dvara trailers [--key KEY]… <commit-msg-file>",
   "                                            refuse trailer lines git would not read (commit-msg)",
+  "       dvara exec-bits --staged [--refuse]",
+  "                                            warn on (or refuse) a dropped executable bit (pre-commit)",
+  "       dvara review-size --cap N [--ignore GLOB]… [--base REF]",
+  "                                            warn when the branch is over a reviewer's line cap (pre-push)",
   "       dvara --version",
 ].join("\n");
 
@@ -163,6 +180,60 @@ const checkCommand = (
   }
 };
 
+/**
+ * `dvara exec-bits --staged [--refuse]`: a warning (exit 0), or with
+ * `--refuse` a refusal (exit 1), for each staged file whose executable bit
+ * was dropped with no change to its content; 2 on bad arguments or git
+ * failing.
+ */
+const execBits = (args: readonly string[], { io, cwd, env }: Context): number => {
+  const parsed = parseExecBitsArgs(args);
+  if ("error" in parsed) {
+    io.err(`dvara exec-bits: ${parsed.error}`);
+    io.err(EXEC_BITS_USAGE);
+    return 2;
+  }
+  let dropped;
+  try {
+    dropped = stagedDroppedBits({ cwd, env });
+  } catch (error) {
+    io.err(`dvara exec-bits: ${(error as Error).message}`);
+    return 2;
+  }
+  if (dropped.length === 0) return 0;
+  for (const line of execBitsReport(dropped, parsed.refuse)) io.err(line);
+  return parsed.refuse ? 1 : 0;
+};
+
+/**
+ * `dvara review-size --cap N …`: a warning when the branch is over the cap,
+ * always exit 0 once its arguments parse (2 when they do not). It judges
+ * against `--base`, or the first `baseRefs` entry that resolves; with
+ * neither, or when git cannot answer, it says so and passes: a size check
+ * must never stop a push.
+ */
+const reviewSize = (args: readonly string[], { io, cwd, env }: Context): number => {
+  const parsed = parseReviewSizeArgs(args);
+  if ("error" in parsed) {
+    io.err(`dvara review-size: ${parsed.error}`);
+    io.err(REVIEW_SIZE_USAGE);
+    return 2;
+  }
+  const repo = { cwd, env };
+  try {
+    const base = parsed.base ?? firstBase(repo, loadConfig(cwd, env).baseRefs);
+    if (base === null) {
+      io.err("⚠ review-size: no base ref resolves, so the branch's size was not checked.");
+      return 0;
+    }
+    const lines = reviewSizeWarning(branchSize(repo, base, parsed.ignore), parsed.cap, base);
+    for (const line of lines) io.err(line);
+  } catch (error) {
+    io.err(`⚠ review-size: not checked: ${(error as Error).message.split("\n")[0] ?? ""}`);
+  }
+  return 0;
+};
+
 /** Runs one command; resolves with the process's exit code. */
 export const run = async (
   argv: readonly string[],
@@ -184,6 +255,8 @@ export const run = async (
   }
   if (command === "records" || command === "frozen" || command === "trailers")
     return checkCommand(command, rest, context);
+  if (command === "exec-bits") return execBits(rest, context);
+  if (command === "review-size") return reviewSize(rest, context);
   if (
     (command === "run" && rest.length > 0) ||
     (command === "stages" && rest.length === 1)

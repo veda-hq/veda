@@ -14,6 +14,7 @@ without suppressing them, and the traps of a gate scoped to a diff.
 - **In-place hand runs.** If you do run in place, its restore can drop the executable bit on
   files it never mutated (mode 100755 to 100644, content identical); check `git status` after
   every in-place run and `chmod +x` them back rather than committing the change.
+  <!-- held by: dvara exec-bits (a pre-commit check that warns on, and with --refuse refuses, a staged 100755 to 100644 change with unchanged content) -->
 - **Mutants can delete real paths.** Stryker runs every mutant against your refusal tests, so a
   test that passes a real dangerous path (such as `tmpdir()`) to a guarded delete is one mutant
   away from deleting it for real. Point `TMPDIR` or the target at a stand-in directory in such
@@ -96,6 +97,7 @@ without suppressing them, and the traps of a gate scoped to a diff.
 - **Assert the literal, not the imported constant.** In a test meant to kill mutants, assert the
   verbatim literal typed in the test; an assertion against the same imported constant moves
   with the mutant and kills nothing.
+  <!-- held by: shuddhi assert-imported-constant (warns on a matcher's expected value imported from the module under test) -->
 - **Strict command fakes kill argument mutants.** StringLiteral survivors in a CLI's exec
   argument arrays die only when the test fake matches the exact command plus arguments and
   throws on anything else; a prefix-matching fake lets every mutated argument through. Assert

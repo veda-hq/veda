@@ -169,6 +169,8 @@ test('ask-gate: a wrap_up is gated only when its ask offers a choice', () => {
     ['which', { recap: 'r', ask: 'Which one should go first?' }],
     ['how should', { recap: 'r', ask: 'How should the flag be named?' }],
     ['A/B', { recap: 'r', ask: 'Keep the cache/drop it?' }],
+    ['a bare A/B', { recap: 'r', ask: 'A/B?' }],
+    ['"go with" buttons', { recap: 'r', ask: 'Pick one?', actions: [{ label: 'Go with the parser' }, { label: 'Go with the lexer' }] }],
   ] as const) {
     assert.equal(exit(t, WRAP_UP, input), 2, why);
   }
@@ -179,6 +181,9 @@ test('ask-gate: a wrap_up is gated only when its ask offers a choice', () => {
     ['one button', { recap: 'r', ask: 'Fix the parser here?', actions: [{ label: 'Fix it here' }] }],
     ['an app action first', { recap: 'r', ask: 'Which way to land it?', actions: [{ action: 'commit' }, { label: 'Hold it' }] }],
     ['odd actions', { recap: 'r', ask: 'Fix it?', actions: 'commit' }],
+    ['a pull request reference', { recap: 'r', ask: 'Merge acme/widgets#12 now?', actions: [{ label: 'Yes' }, { label: 'Not now' }] }],
+    ['a path', { recap: 'r', ask: 'Delete src/old/parser.ts?', actions: [{ label: 'Yes' }, { label: 'No' }] }],
+    ['a URL', { recap: 'r', ask: 'Publish to https://example.com/docs/page now?', actions: [{ label: 'Yes' }, { label: 'Not now' }] }],
   ] as const) {
     assert.equal(exit(t, WRAP_UP, input), 0, why);
   }

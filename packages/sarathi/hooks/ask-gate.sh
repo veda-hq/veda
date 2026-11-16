@@ -49,11 +49,17 @@ NOT_PERSON = re.compile(
     re.S,
 )
 YES_NO = re.compile(
-    r"^\s*(yes|yep|yeah|no|nope|ok|okay|sure|go|go ahead|do it|proceed|"
+    r"^\s*(yes|yep|yeah|no|nope|ok|okay|sure|go ahead|do it|proceed|"
     r"not now|not yet|later|skip|cancel|stop|hold|wait|leave it|done)\b",
     re.I,
 )
-ALTERNATIVES = re.compile(r"\b(which|or|how should|either)\b|\b\w+/\w+\b", re.I)
+# Words that name alternatives, or a bare "A/B" pair: not a path, a URL or
+# owner/repo#N, whose slash sits next to another slash, a dot, a colon or #.
+ALTERNATIVES = re.compile(
+    r"\b(which|or|how should|either)\b"
+    r"|(?<![\w/.:#@~-])[A-Za-z]+/[A-Za-z]+(?![\w/.:#@-])",
+    re.I,
+)
 
 def passes():
     sys.exit(0)

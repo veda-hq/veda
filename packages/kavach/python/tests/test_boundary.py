@@ -624,6 +624,8 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "git diff-files --output",
             "git diff-files --output=",
             "git diff-files --output --stat",
+            'git diff-files --output="$HOME/x"',
+            "git diff-files --output=$X",
         ):
             with self.subTest(command=command):
                 result = self.claude_bash(self.claude, command)

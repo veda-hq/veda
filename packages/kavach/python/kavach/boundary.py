@@ -1456,6 +1456,194 @@ def git_output_options(words: list[str], command_index: int) -> list[str] | None
     return outputs
 
 
+def git_destination_operands(words: list[str], command_index: int) -> list[str] | None:
+    """Collect what format-patch, archive, bundle, clone and init write.
+
+    Each names its destination its own way, so each is read exactly: ``-o``
+    means other things on other verbs (``git grep -o``, ``git push -o``).
+    Anything the reader cannot place fails closed. ``--output`` itself is
+    read by ``git_output_options``.
+    """
+    verb = words[command_index]
+    args = words[command_index + 1 :]
+    if verb == "format-patch":
+        return git_dash_o_outputs(args, ("--output-directory", "--output"))
+    if verb == "archive":
+        return git_dash_o_outputs(args, ())
+    if verb == "bundle":
+        return git_bundle_outputs(args)
+    if verb == "clone":
+        return git_repository_destinations(args, GIT_CLONE_OPTIONS, max_operands=2)
+    if verb == "init":
+        return git_repository_destinations(args, GIT_INIT_OPTIONS, max_operands=1)
+    return []
+
+
+def git_dash_o_outputs(args: list[str], long_options: tuple[str, ...]) -> list[str] | None:
+    """``-o <v>``, ``-o<v>`` and each of ``long_options`` with ``=<v>`` or ``<v>``.
+
+    Git permutes options, so every word is read, not only those before the
+    first operand. A ``--`` does not end the read: an option that takes the
+    next word takes ``--`` too, and git 2.54 then still writes
+    ``format-patch -1 --subject-prefix -- -o <dir>``. Reading past it
+    only refuses more. A short cluster that hides ``o`` (format-patch takes
+    ``-ko <dir>``), a strict prefix of ``--output-directory`` longer than
+    ``--output``, and a missing or option-like value fail closed.
+    """
+    outputs: list[str] = []
+    index = 0
+    while index < len(args):
+        word = args[index]
+        name, has_value, _ = word.partition("=")
+        if word == "-o" or name in long_options:
+            if has_value and word != "-o":
+                value = shell_option_value(word)
+            else:
+                index += 1
+                if index >= len(args):
+                    return None
+                value = args[index]
+        elif word.startswith("-o"):
+            value = shell_slice(word, 2)
+        elif word.startswith("-") and not word.startswith("--") and "o" in word:
+            return None
+        elif (
+            "--output-directory" in long_options
+            and len(name) > len("--output")
+            and "--output-directory".startswith(name)
+        ):
+            return None
+        else:
+            index += 1
+            continue
+        if not value or value.startswith("-"):
+            return None
+        outputs.append(value)
+        index += 1
+    return outputs
+
+
+def git_bundle_outputs(args: list[str]) -> list[str] | None:
+    """``git bundle create [options] <file> <rev-list args>``: the first word
+    after create's own options is the file. Other bundle verbs read a bundle
+    or write into the repository."""
+    if not args or args[0] != "create":
+        return []
+    flags = {
+        "-q", "--quiet", "--progress", "--no-progress", "--all-progress",
+        "--all-progress-implied",
+    }
+    index = 1
+    while index < len(args):
+        word = args[index]
+        if word in flags or word.startswith("--version="):
+            index += 1
+        elif word == "--version":
+            index += 2
+        elif word.startswith("-"):
+            return None
+        else:
+            return [word]
+    return None
+
+
+# Options of `git clone` and `git init` the destination reader knows. Git
+# takes abbreviations of long options here and lets options follow operands,
+# so a word outside these tables fails closed: it could take the next word
+# and shift which operand is the destination. `-c`/`--config`,
+# `-u`/`--upload-pack` and `--template` are left out: they run or install
+# programs. Optional values (`--shared`, `--recurse-submodules`) are taken
+# only with `=`, as git does.
+GitOptionTable = tuple[frozenset[str], frozenset[str], frozenset[str], frozenset[str]]
+GIT_CLONE_OPTIONS: GitOptionTable = (
+    frozenset("qvnls"),
+    frozenset("obj"),
+    frozenset({
+        "--quiet", "--verbose", "--progress", "--no-progress", "--no-checkout",
+        "--bare", "--mirror", "--local", "--no-local", "--no-hardlinks",
+        "--shared", "--dissociate", "--single-branch", "--no-single-branch",
+        "--no-tags", "--tags", "--shallow-submodules", "--no-shallow-submodules",
+        "--remote-submodules", "--no-remote-submodules", "--sparse",
+        "--also-filter-submodules", "--reject-shallow", "--no-reject-shallow",
+        "--recurse-submodules", "--recursive", "--no-recurse-submodules",
+    }),
+    frozenset({
+        "--origin", "--branch", "--revision", "--reference", "--reference-if-able",
+        "--depth", "--shallow-since", "--shallow-exclude", "--jobs", "--filter",
+        "--bundle-uri", "--server-option", "--ref-format", "--separate-git-dir",
+    }),
+)
+GIT_INIT_OPTIONS: GitOptionTable = (
+    frozenset("q"),
+    frozenset("b"),
+    frozenset({"--quiet", "--bare", "--shared"}),
+    frozenset({
+        "--initial-branch", "--object-format", "--ref-format", "--separate-git-dir",
+    }),
+)
+GIT_OPTIONAL_VALUES = {"--shared", "--recurse-submodules", "--recursive"}
+
+
+def git_repository_destinations(
+    args: list[str], table: GitOptionTable, *, max_operands: int
+) -> list[str] | None:
+    """The directory `git clone <repo> [<dir>]` or `git init [<dir>]` makes,
+    and its ``--separate-git-dir``.
+
+    The directory is the last of ``max_operands`` operands. Without it git
+    writes under the folder it runs in, which the guard already counts.
+    clone's repository is read, never resolved: it may be a URL.
+    """
+    short_flags, short_values, long_flags, long_values = table
+    outputs: list[str] = []
+    operands: list[str] = []
+    index = 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        if word == "--":
+            operands.extend(args[index:])
+            break
+        if not word.startswith("-") or word == "-":
+            operands.append(word)
+            continue
+        if word.startswith("--"):
+            name, has_value, _ = word.partition("=")
+            if name in long_flags:
+                if has_value and name not in GIT_OPTIONAL_VALUES:
+                    return None
+                continue
+            if name not in long_values:
+                return None
+            if has_value:
+                value = shell_option_value(word)
+            elif index < len(args):
+                value = args[index]
+                index += 1
+            else:
+                return None
+            if not value or value.startswith("-"):
+                return None
+            if name == "--separate-git-dir":
+                outputs.append(value)
+            continue
+        for position, letter in enumerate(word[1:], start=1):
+            if letter in short_flags:
+                continue
+            if letter not in short_values:
+                return None
+            if position + 1 == len(word):
+                if index >= len(args) or args[index].startswith("-"):
+                    return None
+                index += 1
+            break
+    if len(operands) > max_operands:
+        return None
+    if len(operands) == max_operands:
+        outputs.append(operands[-1])
+    return outputs
+
+
 def git_command(words: list[str], cwd: Path | None) -> tuple[int | None, Path | None]:
     """Return the subcommand index and cumulative ``git -C`` directory."""
 
@@ -4564,10 +4752,10 @@ def mutation_path_operands(
                 if outputs is not None else None
             )
         outputs = git_output_options(words, command_index)
-        return (
-            resolve_mutation_paths(outputs, git_cwd)
-            if outputs is not None else None
-        )
+        destinations = git_destination_operands(words, command_index)
+        if outputs is None or destinations is None:
+            return None
+        return resolve_mutation_paths(outputs + destinations, git_cwd)
     if name == "sed":
         return sed_mutation_paths(words[1:], cwd)
     if name == "adb":

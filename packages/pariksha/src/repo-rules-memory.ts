@@ -2,6 +2,7 @@
 // or disk under them. A product testing its own rule settings, and pariksha's
 // own tests, hand a rule this instead of a checkout.
 import type { GrepHit, Repo } from './repo-rules.ts';
+import { globToRegExp } from './repo-rules-turbo.ts';
 
 export interface MemoryRepoOptions {
   /** The files the selection names; every file by default. */
@@ -20,7 +21,7 @@ export const memoryRepo = (files: Readonly<Record<string, string | Buffer>>, opt
     return body === undefined ? undefined : typeof body === 'string' ? Buffer.from(body, 'utf8') : body;
   };
   const grep = (fixed: readonly string[], pathspecs: readonly string[]): GrepHit[] => {
-    const globs = pathspecs.map((spec) => spec.replace(/^:\(glob\)/, '')).map((g) => (g === '.' ? /^/ : new RegExp(`^${g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*\//g, '(?:.*/)?').replace(/\*/g, '[^/]*')}$`)));
+    const globs = pathspecs.map((spec) => spec.replace(/^:\(glob\)/, '')).map((g) => (g === '.' ? /^/ : globToRegExp(g)));
     return paths
       .filter((p) => globs.some((g) => g.test(p)))
       .flatMap((file) =>

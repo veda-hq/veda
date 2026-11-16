@@ -341,7 +341,7 @@ export const rollupStateGate: Rule = {
       for (const match of text.matchAll(ROLLUP_STATE)) {
         const line = lineAt(text, match.index);
         const source = text.split('\n')[line - 1] ?? '';
-        if (/^\s*(\/\/|#|\*)/.test(source)) continue;
+        if (/^\s*(\/\/|\/\*|#|\*)/.test(source)) continue;
         findings.push({ file, line, detail: 'gates on statusCheckRollup.state' });
       }
     }

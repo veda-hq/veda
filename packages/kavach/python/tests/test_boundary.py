@@ -648,6 +648,116 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(outside.exists())
 
+    def test_git_destination_operands_elsewhere_are_refused(self) -> None:
+        """format-patch, archive, bundle, clone and init name what they
+        write with `-o`, `--output-directory`, `--output` or a positional
+        operand, not only git's diff option `--output`. Git 2.54 writes each
+        of these; each once counted only its folder."""
+        outside = self.external / "out"
+        nested = self.claude / "nested"
+        nested.mkdir()
+        relative = os.path.relpath(outside, nested)
+        for command in (
+            f"git format-patch -1 -o {outside}",
+            f"git format-patch -1 -o{outside}",
+            f"git format-patch -1 -o '{outside}'",
+            f"git format-patch -1 --output-directory {outside}",
+            f"git format-patch -1 --output-directory={outside}",
+            f"git format-patch -o {outside} -1",
+            f"git format-patch -1 -o .tmp -o {outside}",
+            f"git archive -o {outside} HEAD",
+            f"git archive -o{outside} HEAD",
+            f"git archive HEAD -o {outside}",
+            f"git archive --format=tar --prefix x/ -o {outside} HEAD",
+            f"git archive --output={outside} HEAD",
+            f"git archive --output {outside} HEAD",
+            f"git bundle create {outside} HEAD",
+            f"git bundle create -q --version 2 {outside} HEAD",
+            f"git bundle create --version=2 {outside} HEAD",
+            f"git clone . {outside}",
+            f"git clone -q . {outside}",
+            f"git clone -qn --depth 1 -b main . {outside}",
+            f"git clone -o upstream . {outside}",
+            f"git clone . {outside} --bare",
+            f"git clone -- . {outside}",
+            f"git clone --separate-git-dir={outside} . .tmp/copy",
+            f"git clone --separate-git-dir {outside} . .tmp/copy",
+            f"git init {outside}",
+            f"git init -q {outside}",
+            f"git init --bare -b main {outside}",
+            f"git init --shared {outside}",
+            f"git init -- {outside}",
+            f"git init --separate-git-dir {outside} .tmp/repo",
+            f"git -C nested init {relative}",
+            f"git -C nested archive -o {relative} HEAD",
+            f"git -C {self.external} init",
+            f"git -C {self.external} clone {self.claude}",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("outside this session's Claude worktree", result.stderr)
+        # What the readers cannot place stays unproven.
+        for command in (
+            "git format-patch -1 -o",
+            "git format-patch -1 -o --stdout",
+            "git format-patch -1 --output-directory",
+            "git format-patch -1 --output-dir=x",
+            "git format-patch -1 --output-d x",
+            "git format-patch -1 -ko x",
+            'git format-patch -1 -o "$HOME/x"',
+            "git archive -o",
+            "git archive -lo x HEAD",
+            "git bundle create",
+            "git bundle create --unknown x HEAD",
+            "git bundle create -- x HEAD",
+            "git clone --sep=x . .tmp/copy",
+            "git clone --template=.tmp/t . .tmp/copy",
+            "git clone -c core.x=y . .tmp/copy",
+            "git clone -u .tmp/x.sh . .tmp/copy",
+            "git clone -qx . .tmp/copy",
+            "git clone --bare=x . .tmp/copy",
+            "git clone --branch",
+            "git clone -b",
+            "git clone . .tmp/copy extra",
+            "git init .tmp/a .tmp/b",
+            "git init --sep=x .tmp/repo",
+            "git init --template .tmp/t .tmp/repo",
+            "git init --initial-branch",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("mutation targets could not be resolved", result.stderr)
+        for command in (
+            "git format-patch -1 -o .tmp",
+            "git format-patch -1 -o.tmp",
+            "git format-patch -1 --output-directory=.tmp",
+            "git format-patch -1 --output-indicator-new=+ -o .tmp",
+            f"git format-patch -1 -o .tmp -- {outside}",
+            "git -C nested format-patch -1 -o ../.tmp",
+            "git archive -o .tmp/x.tar HEAD",
+            "git archive --format=tar -o .tmp/x.tar HEAD",
+            "git bundle create .tmp/x.bundle HEAD",
+            "git bundle create -q .tmp/x.bundle --all",
+            "git bundle verify .tmp/x.bundle",
+            "git clone . .tmp/copy",
+            f"git clone {self.external} .tmp/copy",
+            "git clone --bare --depth=1 . .tmp/copy",
+            "git clone --recurse-submodules=docs . .tmp/copy",
+            "git -C .tmp clone ..",
+            "git init .tmp/repo",
+            "git init -q --bare --initial-branch=main .tmp/repo",
+            "git init --shared=group .tmp/repo",
+            "git init",
+            "git grep -o guard",
+            "git push -o ci.skip origin HEAD",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(outside.exists())
+
     def test_git_inspection_flags_preserve_reads_and_deny_ambiguous_writes(self) -> None:
         reads = ("git diff --stat", "git show HEAD", "git log -1 --oneline", "git diff -- --output=filename", "git show -- --ext-diff")
         writes = ("git diff --output", "git diff --output=", "git diff --ext-diff", "git log --textconv", "git diff --out=result", "git rev-list --unknown-write-option", "git --paginate log", "git log --pretty --output=outside.patch")

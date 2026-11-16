@@ -589,6 +589,63 @@ class WorktreeBoundaryTest(BoundaryFixture):
             result = self.claude_bash(owned, command)
             self.assertEqual(result.returncode, 2, result.stderr)
 
+    def test_git_output_elsewhere_is_refused_on_every_subcommand(self) -> None:
+        """`--output` writes a file on more subcommands than READ_GIT lists:
+        diff-files, diff-index, range-diff, shortlog, whatchanged,
+        format-patch, reflog and stash show all take it. Each once counted
+        only its folder."""
+        outside = self.external / "outside.patch"
+        nested = self.claude / "nested"
+        nested.mkdir()
+        relative = os.path.relpath(outside, nested)
+        for command in (
+            f"git diff-files --output={outside}",
+            f"git diff-files --output {outside}",
+            f"git diff-files --output='{outside}'",
+            f"git diff-index --output={outside} HEAD",
+            f"git range-diff HEAD~2..HEAD~1 HEAD~1..HEAD --output={outside}",
+            f"git shortlog -1 HEAD --output={outside}",
+            f"git whatchanged --i-still-use-this -1 --output={outside}",
+            f"git format-patch -1 --output={outside}",
+            f"git reflog -1 --output={outside}",
+            f"git stash show --output={outside}",
+            f"git -C nested diff-files --output={relative}",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("outside this session's Claude worktree", result.stderr)
+        # Git 2.54 rejects these as ambiguous with --output-indicator-*; an
+        # older or newer Git might not, so they stay unproven.
+        for command in (
+            "git diff-files --outpu=x",
+            "git shortlog --out x",
+            "git format-patch -1 --o=x",
+            "git diff-files --output",
+            "git diff-files --output=",
+            "git diff-files --output --stat",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("mutation targets could not be resolved", result.stderr)
+        for command in (
+            "git diff-files --output=inside.patch",
+            "git -C nested format-patch -1 --output=../inside.patch",
+            "git shortlog -sn",
+            "git format-patch -1 -o .tmp",
+            "git format-patch -1 --output-directory .tmp",
+            "git range-diff --output-indicator-new=+ HEAD~2..HEAD~1 HEAD~1..HEAD",
+            "git rebase --onto main HEAD~1",
+            "git commit -m x",
+            "git diff-files -- --output=x",
+            f"git diff-files -- --output={outside}",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(outside.exists())
+
     def test_git_inspection_flags_preserve_reads_and_deny_ambiguous_writes(self) -> None:
         reads = ("git diff --stat", "git show HEAD", "git log -1 --oneline", "git diff -- --output=filename", "git show -- --ext-diff")
         writes = ("git diff --output", "git diff --output=", "git diff --ext-diff", "git log --textconv", "git diff --out=result", "git rev-list --unknown-write-option", "git --paginate log", "git log --pretty --output=outside.patch")

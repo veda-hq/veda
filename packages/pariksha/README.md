@@ -38,7 +38,8 @@ or a CI step runs `pariksha <check> --staged` and names no settings file.
 - **Entries.** `checks` maps a check's name to its settings: a path, relative
   to the config file's folder, to a file holding what the check's `--config`
   file would hold, or the same settings inline. A path may lead into
-  `node_modules`, so a shared package can hold them.
+  `node_modules`, so a shared package can hold them; a `package.json` change
+  then widens a selection as a change to the file would (see Choosing files).
 - **Flag-only checks.** `authority-citations` reads `authority` and
   `issuePrefix` (a string, or a list of strings) and `adrDir`; `doc-budgets`
   reads `table` and `section`. Each is the flag of the same name. `table`
@@ -75,7 +76,10 @@ the file the check's settings are read from, the check judges every tracked
 file instead: a tightened check meets the code it did not change. That file
 is the one `--config` or the entry names; for an inline entry it is
 `.pariksha.json` itself. So an edit to one file entry, or to another check's
-entry, widens no other check's run. `duplicate-tests` and `flaky-tests`
+entry, widens no other check's run. For a settings file git does not track
+(outside the checkout, or ignored, as under `node_modules/`), a change to the
+top-level `package.json`, which the pin bump that changes it edits, stands in
+for one to the file. `duplicate-tests` and `flaky-tests`
 never widen: comparing every pair of tests, or rerunning every test, outlasts
 a CI step, so they judge the selection as listed.
 

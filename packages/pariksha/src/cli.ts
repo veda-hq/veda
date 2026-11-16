@@ -35,7 +35,7 @@ import { DEFAULT_RUNS, npxVitest, parseConfig as parseFlakyConfig, parseRuns, ru
 import { inheritRunner, runPythonFloor, type Options as PythonFloorOptions, type PythonRunner } from './python-floor.ts';
 import { checkSchemaRoots, jsonFiles, readDocuments } from './schema-roots.ts';
 import { CONFIG_FILE, entryObject, entryText, loadProjectConfig, type Entry } from './project-config.ts';
-import { selectedList, selectionOf } from './selection.ts';
+import { selectedList, selectionOf, settingsInputs } from './selection.ts';
 import { DEFAULT_CONFIG as DEFAULT_ESLINT_TARGETS, parseConfig as parseEslintTargetsConfig, rangeTargets } from './eslint-targets.ts';
 import { DEFAULT_CONFIG as DEFAULT_ESLINT_BY_WORKSPACE, inheritEslint, lintByWorkspace, parseConfig as parseEslintByWorkspaceConfig, type EslintRunner } from './eslint-by-workspace.ts';
 
@@ -122,10 +122,14 @@ const listOf = (f: Map<string, string>, io: Io, root: string, widen = true): str
   // in `.pariksha.json` widens no other check's run.
   const configPath = f.get('--config');
   const settings = !widen ? undefined : f.has(INLINE) ? f.get(PROJECT_FILE) : configPath === undefined ? undefined : resolve(root, configPath);
+  // An untracked settings file has package.json stand in for it; `--all`
+  // lists every file anyway.
+  const git = gitAt(top);
+  const inputs = settings === undefined || selection.kind === 'all' ? [] : settingsInputs(git, top, real(settings));
   // Relative to the root, as a caller's list names them: a check's `include`
   // is matched against the path as listed, so `^docs/` must see `docs/a.md`.
   const base = real(root);
-  return entries(selectedList(gitAt(top), top, selection, settings === undefined ? [] : [real(settings)]))
+  return entries(selectedList(git, top, selection, inputs))
     .map((path) => relative(base, path))
     .join('\0');
 };

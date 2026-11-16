@@ -96,6 +96,8 @@ export interface Options {
   readonly stderr?: (text: string | Uint8Array) => void;
   /** The `ps -axo pid=,ppid=,rss=` table the run samples its memory from. */
   readonly processTable?: () => string;
+  /** The `ps -axo pid=,ppid=,comm=` table the run's invocation is read from. */
+  readonly parentTable?: () => string;
 }
 
 // A hung `ps` must not hang the supervisor that exists to report hangs.
@@ -203,6 +205,7 @@ export const supervise = async (
     stdout = (text) => process.stdout.write(text),
     stderr = (text) => process.stderr.write(text),
     processTable = psTable,
+    parentTable,
   } = options;
   const dir = resolve(root, config.historyDir);
   try {
@@ -222,7 +225,7 @@ export const supervise = async (
   const started = Date.now() - bootstrapMs;
   const hookName = hook.split("/").at(-1) ?? hook;
   const kind = hookKind(hookName, args, env);
-  const invocation = invocationContext(kind, env, ppid);
+  const invocation = invocationContext(kind, env, ppid, parentTable);
 
   // The handlers go in BEFORE the hook is spawned and before the first await.
   // The child is detached, in its own process group, so it does not receive

@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, it } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { DEFAULTS, type Config } from "./config.ts";
 import {
   judgedAgainst,
@@ -118,7 +119,14 @@ describe("supervise", () => {
     const { root, hook } = repo(
       "dvara_stage lint\nsleep 0.05\ndvara_stage test\necho done",
     );
-    const { opts, signals } = options(root);
+    // A fixed parent chain ending at init: a real `ps` that outlasts its
+    // timeout under load would make the invocation "unknown". No real process
+    // has these pids, so the real table would also give "unknown".
+    const { opts, signals } = options(root, {
+      ppid: 99_999_999,
+      parentTable: () =>
+        "99999999 99999998 bash\n99999998 1 -zsh\n1 0 /sbin/launchd\n",
+    });
     assert.equal(await supervise([hook], opts), 0);
     const [row] = rows(root);
     assert.equal(row?.kind, "pre-push");
@@ -548,18 +556,34 @@ describe("quiet output", () => {
   });
 
   it("stops waiting on output a leftover process holds open", async () => {
+    // The leftover job holds the hook's output open until the test releases
+    // it, so no clock decides the outcome. Its 30 s fallback turns a
+    // supervisor that waits for the job into a failure, not a hang.
+    const marks = mkdtempSync(join(tmpdir(), "dvara-leftover-"));
+    const release = join(marks, "release");
+    const late = join(marks, "late");
     const { root, hook } = repo(
-      "echo before\n(sleep 3; echo late) &\nexit 0",
+      [
+        "echo before",
+        `(for _ in $(seq 600); do [ -e '${release}' ] && break; sleep 0.05; done; : > '${late}'; echo late) &`,
+        "exit 0",
+      ].join("\n"),
       "pre-commit",
     );
-    const { opts } = options(root, { drainLimitMs: 100 });
-    const started = Date.now();
+    const { opts } = options(root, {
+      drainLimitMs: 100,
+      // The memory sampler's `ps` is no part of this test.
+      processTable: () => "",
+    });
     assert.equal(await supervise([hook], opts), 0);
-    assert.ok(Date.now() - started < 2500);
+    // `supervise` returned while the job still held the output open.
+    assert.equal(existsSync(late), false);
     assert.match(
       readFileSync(join(root, ".dvara", "pre-commit.log"), "utf8"),
       /before\n\[output truncated/,
     );
+    writeFileSync(release, "");
+    while (!existsSync(late)) await delay(20);
   });
 
   it("prints the verdict when the log cannot be written", async () => {

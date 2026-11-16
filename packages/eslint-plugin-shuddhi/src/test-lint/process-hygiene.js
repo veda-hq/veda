@@ -980,7 +980,7 @@ function optionValue(object, key, context, depth = 0) {
  * traps or ignores SIGTERM, or is stuck writing a large `input` back and
  * forth under load, keeps the worker past every test budget, since no test
  * timeout can interrupt a sync spawn. SIGKILL cannot be trapped. A large
- * `input` is not checked: an athya_mono dry run found `input` mostly carrying
+ * `input` is not checked: a product monorepo's dry run found `input` mostly carrying
  * a hook's short stdin, so a rule on it would flag sound code.
  *
  * FIX. When the options are an object literal written in the call with its

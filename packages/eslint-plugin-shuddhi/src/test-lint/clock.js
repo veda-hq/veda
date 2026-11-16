@@ -171,7 +171,7 @@ const expectOnWallClock = {
     /**
      * Collect every wall-clock read written in `node`. A binding is not
      * followed: a `const now = new Date()` handed to a mock and asserted back
-     * compares one value with itself (measured on athya_mono, where following
+     * compares one value with itself (measured on a product monorepo, where following
      * bindings gave 96 hits, nearly all of that shape).
      */
     function visit(node, seen) {

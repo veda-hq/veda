@@ -17,7 +17,7 @@
  * (`expect.stringContaining(PREFIX)`). Matchers that take a class or an error
  * (`toBeInstanceOf`, `toThrow`) are not read.
  *
- * NOT READ, measured on athya_mono (726 hits before, most of them these): a
+ * NOT READ, measured on a product monorepo (726 hits before, most of them these): a
  * function or object passed as a value (`run: spawnRunner`, an injected
  * fake, compared by identity), a member of an import (`Status.PAID`, an enum
  * the mutator leaves alone), and a constant inside a template literal (a

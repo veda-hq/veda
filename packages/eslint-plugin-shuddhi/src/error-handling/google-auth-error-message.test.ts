@@ -47,7 +47,7 @@ const leaks = (text: string, sink: string) => ({
   data: { text, sink },
 });
 
-/** athya's real catch: a classifier on the error, a fixed code logged. */
+/** A product's real catch: a classifier on the error, a fixed code logged. */
 const CLASSIFIED = verifying(`this.logger.warn('Auth failed: Google token rejected', {
         reason: classifyGoogleTokenFailure(error),
         audience: this.googleClientId,

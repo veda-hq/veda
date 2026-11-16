@@ -13,8 +13,8 @@ describe('worktree settings', () => {
   });
 
   it('resolve the cloud check from the project root', () => {
-    assert.deepEqual(parseSettings({ name: 'athya', owner: 'Alok', cloudCheck: 'scripts/check.sh' }, 'f', '/r'), {
-      name: 'athya',
+    assert.deepEqual(parseSettings({ name: 'acme', owner: 'Alok', cloudCheck: 'scripts/check.sh' }, 'f', '/r'), {
+      name: 'acme',
       owner: 'Alok',
       cloudCheck: '/r/scripts/check.sh',
     });
@@ -25,7 +25,7 @@ describe('worktree settings', () => {
     for (const [value, message] of [
       [[], /must be an object/],
       [{ extra: 1 }, /unknown key "extra"/],
-      [{ name: 'Athya' }, /"name" must be/],
+      [{ name: 'Acme' }, /"name" must be/],
       [{ name: 'a/b' }, /"name" must be/],
       [{ owner: ' ' }, /"owner" must be a name/],
       [{ cloudCheck: '' }, /"cloudCheck" must be a path/],
@@ -39,8 +39,8 @@ describe('worktree settings', () => {
     try {
       assert.deepEqual(readSettings(root), DEFAULT_SETTINGS);
       mkdirSync(join(root, '.claude'));
-      writeFileSync(join(root, '.claude', 'sarathi.json'), JSON.stringify({ hooks: {}, worktree: { name: 'athya' } }));
-      assert.equal(readSettings(root).name, 'athya');
+      writeFileSync(join(root, '.claude', 'sarathi.json'), JSON.stringify({ hooks: {}, worktree: { name: 'acme' } }));
+      assert.equal(readSettings(root).name, 'acme');
       writeFileSync(join(root, '.claude', 'sarathi.json'), '[]');
       assert.deepEqual(readSettings(root), DEFAULT_SETTINGS);
       writeFileSync(join(root, '.claude', 'sarathi.json'), '{');

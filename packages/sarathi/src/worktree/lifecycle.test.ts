@@ -33,7 +33,7 @@ import { main } from '../cli.ts';
 import { hookMain } from './hook.ts';
 import type { WorktreeSettings } from './settings.ts';
 
-const SETTINGS: WorktreeSettings = { name: 'athya', owner: 'Alok' };
+const SETTINGS: WorktreeSettings = { name: 'acme', owner: 'Alok' };
 
 interface Pr {
   merged: boolean;
@@ -80,7 +80,7 @@ class Fixture {
     writeFileSync(join(this.main, '.gitignore'), '.tmp/\n.env\nnode_modules/\n.claude/worktrees/\n__pycache__/\n');
     // The settings the CLI reads, tracked as a project's are: the receipt is named after the project.
     mkdirSync(join(this.main, '.claude'));
-    writeFileSync(join(this.main, '.claude', 'sarathi.json'), JSON.stringify({ hooks: {}, worktree: { name: 'athya', owner: 'Alok' } }));
+    writeFileSync(join(this.main, '.claude', 'sarathi.json'), JSON.stringify({ hooks: {}, worktree: { name: 'acme', owner: 'Alok' } }));
     writeFileSync(join(this.main, 'tracked'), 'base\n');
     this.git(this.main, 'add', '.');
     this.git(this.main, 'commit', '-qm', 'base');
@@ -125,8 +125,8 @@ class Fixture {
     this.pr = {
       merged: true,
       merge_commit_sha: this.merged,
-      head: { ref: 'codex/task', sha: this.head, repo: { full_name: 'athya/test' } },
-      base: { ref: 'main', repo: { full_name: 'athya/test' } },
+      head: { ref: 'codex/task', sha: this.head, repo: { full_name: 'acme/test' } },
+      base: { ref: 'main', repo: { full_name: 'acme/test' } },
     };
   }
 
@@ -137,7 +137,7 @@ class Fixture {
       env: this.env,
       cloudSession: () => options.cloud === true,
       run: (cwd, file, args) => {
-        if (file === 'git' && args.join(' ') === 'remote get-url origin') return 'https://github.com/athya/test.git\n';
+        if (file === 'git' && args.join(' ') === 'remote get-url origin') return 'https://github.com/acme/test.git\n';
         if (file === 'gh') {
           assert.notEqual(options.cloud, true, 'a cloud session must not run gh');
           this.ghCalls.push([...args]);
@@ -204,7 +204,7 @@ describe('the worktree lifecycle against real git repositories', () => {
       [
         '--silent', '--show-error', '--fail', '--proto', '=https', '--max-time', '60',
         '--header', 'Accept: application/vnd.github+json', '--header', 'X-GitHub-Api-Version: 2022-11-28',
-        'https://api.github.com/repos/athya/test/pulls/7',
+        'https://api.github.com/repos/acme/test/pulls/7',
       ],
     ]);
     assert.equal(result.phase, 'retired');
@@ -246,7 +246,7 @@ describe('the worktree lifecycle against real git repositories', () => {
   });
 
   it('reads cloud merge evidence from github.com only', () => {
-    assert.throws(() => restRead(f.context(), 'ghe.example.com', 'repos/athya/test/pulls/7'), /github\.com only/);
+    assert.throws(() => restRead(f.context(), 'ghe.example.com', 'repos/acme/test/pulls/7'), /github\.com only/);
   });
 
   it('needs the remote flag, and the project cloud check when it names one', () => {
@@ -263,8 +263,8 @@ describe('the worktree lifecycle against real git repositories', () => {
 
   it('takes the gh route on a laptop', () => {
     f.merge();
-    assert.equal(pullRequest(f.context(), 'github.com', 'athya/test', 7), JSON.stringify(f.pr));
-    assert.deepEqual(f.ghCalls, [['api', '--hostname', 'github.com', 'repos/athya/test/pulls/7']]);
+    assert.equal(pullRequest(f.context(), 'github.com', 'acme/test', 7), JSON.stringify(f.pr));
+    assert.deepEqual(f.ghCalls, [['api', '--hostname', 'github.com', 'repos/acme/test/pulls/7']]);
   });
 
   it('refuses the primary checkout and a foreign worktree', () => {
@@ -299,7 +299,7 @@ describe('the worktree lifecycle against real git repositories', () => {
     assert.equal(report.archiveReady, false);
     assert.equal(f.git(f.worktree, 'status', '--porcelain'), before);
     assert.equal(f.git(f.worktree, 'show-ref'), refs);
-    assert.equal(existsSync(join(f.gitdir, 'athya-lifecycle.mutex')), false);
+    assert.equal(existsSync(join(f.gitdir, 'acme-lifecycle.mutex')), false);
   });
 
   it('blocks on unknown ignored files even when the code is merged', () => {
@@ -382,7 +382,7 @@ describe('the worktree lifecycle against real git repositories', () => {
     assert.equal(result.deletedLocalBranch, 'codex/task');
     assert.equal(f.branch(), 'HEAD');
     assert.equal(f.git(f.worktree, 'rev-parse', String(result.recoveryRef)), f.head);
-    assert.match(String(result.recoveryRef), /^refs\/athya\/lifecycle\/[0-9a-f]{32}$/);
+    assert.match(String(result.recoveryRef), /^refs\/acme\/lifecycle\/[0-9a-f]{32}$/);
     assert.ok(existsSync(join(f.worktree, 'feature')));
     assert.ok(!f.git(f.worktree, 'show-ref').includes('refs/heads/codex/task'));
     assert.equal(f.status().archiveReady, true);
@@ -392,7 +392,7 @@ describe('the worktree lifecycle against real git repositories', () => {
   const snapshot = () => [
     f.git(f.worktree, 'rev-parse', 'HEAD'),
     f.git(f.worktree, 'show-ref'),
-    readFileSync(join(f.gitdir, 'athya-lifecycle.json'), 'utf8'),
+    readFileSync(join(f.gitdir, 'acme-lifecycle.json'), 'utf8'),
     f.git(f.worktree, 'status', '--porcelain'),
     readdirSync(f.worktree)
       .filter(name => statSync(join(f.worktree, name)).isFile())
@@ -569,7 +569,7 @@ describe('the worktree lifecycle against real git repositories', () => {
     assert.throws(() => f.retire(), Blocked);
     assert.equal(f.status().archiveReady, false);
     unlinkSync(join(f.gitdir, 'MERGE_HEAD'));
-    exclusive(f.gitdir, 'athya', () => {
+    exclusive(f.gitdir, 'acme', () => {
       const result = f.cli(f.worktree, 'begin', '--branch', 'codex/next');
       assert.equal(result.code, 2);
       assert.match(result.stdout, /another lifecycle/);
@@ -577,17 +577,17 @@ describe('the worktree lifecycle against real git repositories', () => {
   });
 
   it("takes over the lock a dead process left, and not a live one's", () => {
-    const lock = join(f.gitdir, 'athya-lifecycle.mutex');
+    const lock = join(f.gitdir, 'acme-lifecycle.mutex');
     mkdirSync(lock);
     writeFileSync(join(lock, 'pid'), '2147483646');
-    assert.equal(exclusive(f.gitdir, 'athya', () => 'ran', () => false), 'ran');
+    assert.equal(exclusive(f.gitdir, 'acme', () => 'ran', () => false), 'ran');
     assert.equal(existsSync(lock), false);
     mkdirSync(lock);
     writeFileSync(join(lock, 'pid'), String(process.pid));
-    assert.throws(() => exclusive(f.gitdir, 'athya', () => 'ran'), /another lifecycle operation/);
+    assert.throws(() => exclusive(f.gitdir, 'acme', () => 'ran'), /another lifecycle operation/);
     rmSync(lock, { recursive: true });
     mkdirSync(lock);
-    assert.throws(() => exclusive(f.gitdir, 'athya', () => 'ran'), /another lifecycle operation/);
+    assert.throws(() => exclusive(f.gitdir, 'acme', () => 'ran'), /another lifecycle operation/);
   });
 
   it('refuses archive against a stale or unreachable origin/main', () => {
@@ -619,7 +619,7 @@ describe('the worktree lifecycle against real git repositories', () => {
     const advanced: string[] = [];
     const host = f.host({
       after: args => {
-        if (args[0] === 'update-ref' && String(args[1]).startsWith('refs/athya/lifecycle/')) {
+        if (args[0] === 'update-ref' && String(args[1]).startsWith('refs/acme/lifecycle/')) {
           f.write(join(f.worktree, 'concurrent'), 'keep this commit');
           f.git(f.worktree, 'add', 'concurrent');
           f.git(f.worktree, 'commit', '-qm', 'concurrent edit');
@@ -630,13 +630,13 @@ describe('the worktree lifecycle against real git repositories', () => {
     assert.throws(() => retire(f.context(host), 7), Blocked);
     assert.equal(f.git(f.worktree, 'rev-parse', 'codex/task'), advanced[0]);
     assert.equal(f.git(f.worktree, 'show', 'codex/task:concurrent'), 'keep this commit');
-    assert.notEqual(f.git(f.worktree, 'for-each-ref', 'refs/athya/lifecycle/'), '');
+    assert.notEqual(f.git(f.worktree, 'for-each-ref', 'refs/acme/lifecycle/'), '');
   });
 
   it('blocks on a corrupt receipt and on a merge commit missing here', () => {
-    writeFileSync(join(f.gitdir, 'athya-lifecycle.json'), '[]');
+    writeFileSync(join(f.gitdir, 'acme-lifecycle.json'), '[]');
     assert.equal(f.cli(f.worktree, 'archive-check').code, 2);
-    unlinkSync(join(f.gitdir, 'athya-lifecycle.json'));
+    unlinkSync(join(f.gitdir, 'acme-lifecycle.json'));
     f.merge();
     if (f.pr === undefined) throw new Error('no pr');
     f.pr.merge_commit_sha = 'a'.repeat(40);

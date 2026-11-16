@@ -44,6 +44,11 @@ describe('parseConfig', () => {
     for (const [value, message] of refused) assert.throws(() => parseConfig(typeof value === 'string' ? value : JSON.stringify(value), RULES), message, JSON.stringify(value));
   });
 
+  it('names the setting when its check throws the problem', () => {
+    const throwing: Rule = { id: 'rule-t', lesson: 'T.', settings: { pattern: () => { throw new Error('holds "(", which is not a regular expression'); } }, run: () => [] };
+    assert.throws(() => parseConfig(JSON.stringify({ rules: { 'rule-t': { pattern: '(' } } }), [throwing]), /^Error: rules\.rule-t\.pattern holds "\(", which is not a regular expression$/);
+  });
+
   it('names allowances for files git does not track', () => {
     const config = parseConfig(JSON.stringify({ rules: { 'rule-a': { allow: { 'gone.bad': 'x', 'kept.bad': 'y' } } } }), RULES);
     assert.deepEqual(staleAllowances(config, ['kept.bad']), ['rules.rule-a.allow["gone.bad"]']);

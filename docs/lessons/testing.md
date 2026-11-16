@@ -103,7 +103,7 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   use async spawn with a per-case budget and a process-group kill. Read such a timeout as a slow
   finish and re-run alone. Telemetry written only when a hook exits hides such hangs, so count
   in-progress runs too.
-  <!-- held by: shuddhi spawn-timeout and spawn-timeout-sigkill (refuse a test's sync spawn with no timeout, or with a timeout but no killSignal SIGKILL, which also ends a large input's hang); the temp-file, async-spawn and telemetry advice is not checked -->
+  <!-- held by: shuddhi spawn-timeout and spawn-timeout-sigkill (refuse a test's sync spawn with no timeout, or with a timeout but no killSignal SIGKILL); the large-input, temp-file, async-spawn and telemetry advice is not checked -->
 - **`unstubEnvs` drops `beforeAll` stubs.** With `unstubEnvs: true` in the Vitest config,
   stubbed env is restored before every test, so a `vi.stubEnv` made in `beforeAll` is gone by the
   first test. Stub env in `beforeEach` or in the test; direct `process.env` writes in `beforeAll`

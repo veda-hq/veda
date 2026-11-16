@@ -7,7 +7,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -515,11 +515,19 @@ describe('warning the model', () => {
   });
 
   it('still warns when its log row cannot be written', () => {
-    const { deps, session, file, transcript } = setup();
+    const { deps, dir, session, transcript } = setup();
     respond(bash(session, 'gh pr create', `${VEDA}\n`), deps);
-    chmodSync(file, 0o444);
-    assert.match(context(respond(wrapUp(session, transcript), deps)), /veda-hq\/veda#90/);
-    assert.equal(readFileSync(file, 'utf8').includes('"warned"'), false);
+    // Between reading the list and writing its row, the list's folder becomes
+    // a regular file: a write under it fails for any user, root included,
+    // where a read-only list file would not stop root.
+    const kept = `${dir}-kept`;
+    const now = (): Date => {
+      renameSync(dir, kept);
+      writeFileSync(dir, 'a file, not a folder');
+      return deps.now();
+    };
+    assert.match(context(respond(wrapUp(session, transcript), { ...deps, now })), /veda-hq\/veda#90/);
+    assert.equal(readFileSync(join(kept, `${session}.jsonl`), 'utf8').includes('"warned"'), false);
   });
 
   it('records nothing, and says nothing, when the list cannot be written', () => {
@@ -618,7 +626,9 @@ describe('sarathi autofix', () => {
 describe('the script', () => {
   it('runs as Claude Code runs a hook: the event on stdin, the answer on stdout', () => {
     const { deps, session, file, transcript } = setup();
-    const env = { ...process.env, SARATHI_AUTOFIX_DIR: deps.env.SARATHI_AUTOFIX_DIR };
+    const env: NodeJS.ProcessEnv = { ...process.env, SARATHI_AUTOFIX_DIR: deps.env.SARATHI_AUTOFIX_DIR };
+    // A cloud session sets this, and the hook stays silent there.
+    delete env.CLAUDE_CODE_REMOTE;
     const record = spawnSync(process.execPath, [HOOK], { input: bash(session, 'gh pr create', `${VEDA}\n`), encoding: 'utf8', env });
     assert.equal(record.status, 0);
     assert.equal(record.stdout, '');

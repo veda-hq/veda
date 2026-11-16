@@ -237,6 +237,56 @@ export function huskyShim(root: string, parts: readonly string[]): boolean {
 
 const DISPOSABLE = new Set(['node_modules', '.turbo', '.cache', '__pycache__']);
 
+/**
+ * Every hook's Node run recreates this cache (sarathi's launcher sets
+ * NODE_COMPILE_CACHE there), so it is as reproducible as node_modules. Holding
+ * archive on it meant a discard of .tmp had to be the very last call, before
+ * the next hook wrote it again. The rest of .tmp is listed child by child and
+ * still needs the owner's discard. Only Node's own layout counts (a
+ * `v<version>-…` folder of 8-hex-digit files, no symlinks); anything else in
+ * the folder holds it like any other .tmp entry.
+ */
+const COMPILE_CACHE = ['.tmp', 'node-compile-cache'] as const;
+const CACHE_FOLDER = /^v\d+\.\d+\.\d+-[\w.-]+$/;
+const CACHE_FILE = /^[0-9a-f]{8}$/;
+
+/** True for the hooks' compile cache when it holds only Node's files. */
+export function compileCache(root: string, parts: readonly string[]): boolean {
+  if (parts.length !== 2 || parts[0] !== COMPILE_CACHE[0] || parts[1] !== COMPILE_CACHE[1]) return false;
+  const cache = join(root, ...COMPILE_CACHE);
+  try {
+    if (!lstatSync(cache).isDirectory()) return false;
+    for (const folder of readdirSync(cache)) {
+      if (!CACHE_FOLDER.test(folder) || !lstatSync(join(cache, folder)).isDirectory()) return false;
+      for (const entry of readdirSync(join(cache, folder))) {
+        if (!CACHE_FILE.test(entry) || !lstatSync(join(cache, folder, entry)).isFile()) return false;
+      }
+    }
+  } catch {
+    // fail-open: a cache that cannot be read is not disposable, so it is held like any .tmp entry and archive stays blocked.
+    return false;
+  }
+  return true;
+}
+
+/**
+ * git reports an ignored .tmp whole; list what it holds, one entry per child,
+ * so the hooks' cache can be told apart from a session's files.
+ */
+export function tmpChildren(root: string, item: string): string[] {
+  if (item.replace(/\/+$/, '') !== '.tmp') return [item];
+  const tmp = join(root, '.tmp');
+  try {
+    if (!lstatSync(tmp).isDirectory()) return [item];
+    return readdirSync(tmp, { withFileTypes: true })
+      .map(child => `.tmp/${child.name}${child.isDirectory() ? '/' : ''}`)
+      .sort();
+  } catch {
+    // fail-open: a .tmp that cannot be listed is held whole, so archive stays blocked.
+    return [item];
+  }
+}
+
 /** A link to something outside the worktree: removing the worktree removes the link, not the target. */
 function sharedLink(root: string, path: string): boolean {
   try {
@@ -255,11 +305,11 @@ function sharedLink(root: string, path: string): boolean {
 export function ignoredArtifacts(context: Context): string[] {
   const listing = git(context, context.root, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z');
   const retained: string[] = [];
-  for (const item of listing.split('\0').filter(Boolean)) {
+  for (const item of listing.split('\0').filter(Boolean).flatMap(entry => tmpChildren(context.root, entry))) {
     const path = join(context.root, item.replace(/\/+$/, ''));
     if (sharedLink(context.root, path)) continue;
     const parts = item.replace(/\/+$/, '').split('/');
-    if (parts.some(part => DISPOSABLE.has(part)) || huskyShim(context.root, parts)) continue;
+    if (parts.some(part => DISPOSABLE.has(part)) || huskyShim(context.root, parts) || compileCache(context.root, parts)) continue;
     retained.push(item);
   }
   return retained;
@@ -279,6 +329,14 @@ export interface Report {
 }
 
 const IGNORED_BLOCKER = 'ignored artifacts need preservation or explicit discard';
+export const UNMERGED = 'HEAD contains work not proven merged into origin/main';
+/** Commits made before `begin` are the usual cause; the way out is to set them aside, begin, and bring them back. */
+export const BEGIN_RECOVERY =
+  "if this branch's PR merged, run retire --pr <N> first, then begin; " +
+  'to keep commits made before begin, first commit any uncommitted work ' +
+  '(git reset --hard discards it), then: git branch <save-branch> HEAD, ' +
+  'git reset --hard origin/main, begin again, then ' +
+  'git cherry-pick origin/main..<save-branch> and re-point any citation to the new shas';
 const CLOUD_ARCHIVE = 'this session in the app; its container takes this worktree.';
 
 /**
@@ -314,7 +372,7 @@ export function inspect(context: Context): Report {
     const merged = state.mergeCommit;
     if (typeof merged === 'string' && SHA.test(merged)) included = ancestor(root, merged, 'refs/remotes/origin/main', context.host.env);
   }
-  if (!included) blockers.push('HEAD contains work not proven merged into origin/main');
+  if (!included) blockers.push(UNMERGED);
   if (PROTECTED.has(current)) blockers.push('protected branch checked out');
   const step = cloudArchiveStep(context.settings.owner, blockers, artifacts);
   const next = step !== undefined && context.host.cloudSession(root) ? step : undefined;
@@ -397,6 +455,7 @@ export function begin(context: Context, name: string): Record<string, unknown> {
   const status = inspect(context);
   // Existing ignored files can stay: --no-overwrite-ignore protects collisions.
   const blockers = status.blockers.filter(blocker => !blocker.startsWith('ignored artifacts'));
+  if (blockers.includes(UNMERGED)) blockers.push(BEGIN_RECOVERY);
   if (blockers.length > 0) throw new Blocked(blockers.join('; '));
   const launch = launchBranch(readReceipt(context), status.branch);
   git(context, context.root, 'switch', '--no-overwrite-ignore', '--no-track', '-c', name, 'refs/remotes/origin/main');
@@ -429,6 +488,17 @@ export function pullRequest(context: Context, host: string, identity: string, nu
 
 const REMOTE = /^(?:https:\/\/|ssh:\/\/git@|git@)([^/:]+)[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/;
 
+/**
+ * The PR's head ref names this branch, or its merged head is exactly this
+ * clean HEAD: a Claude branch pushed to a Codex-owned PR carries another ref
+ * name, and its merge is still this tip's.
+ */
+export function sameHead(context: Context, head: { ref: unknown; sha: unknown }, current: string): boolean {
+  if (head.ref === current) return true;
+  return head.sha === git(context, context.root, 'rev-parse', 'HEAD')
+    && git(context, context.root, 'status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none') === '';
+}
+
 /** The merged pull request's head and merge commit, both proven; Blocked otherwise. */
 export function mergeProof(context: Context, number: number, current: string): [string, string] {
   const remote = git(context, context.root, 'remote', 'get-url', 'origin');
@@ -446,7 +516,7 @@ export function mergeProof(context: Context, number: number, current: string): [
       head: { ref: unknown; sha: unknown; repo: { full_name: unknown } };
       base: { ref: unknown; repo: { full_name: unknown } };
     };
-    if (pr.merged !== true || pr.head.ref !== current || pr.base.ref !== 'main' || pr.head.repo.full_name !== identity || pr.base.repo.full_name !== identity) {
+    if (pr.merged !== true || !sameHead(context, pr.head, current) || pr.base.ref !== 'main' || pr.head.repo.full_name !== identity || pr.base.repo.full_name !== identity) {
       throw new Error('not merged here');
     }
     if (typeof pr.head.sha !== 'string' || typeof pr.merge_commit_sha !== 'string' || !SHA.test(pr.head.sha) || !SHA.test(pr.merge_commit_sha)) {
@@ -455,7 +525,7 @@ export function mergeProof(context: Context, number: number, current: string): [
     head = pr.head.sha;
     merged = pr.merge_commit_sha;
   } catch {
-    throw new Blocked('PR is not a merged same-repository PR for this branch into main');
+    throw new Blocked('PR is not a merged same-repository PR for this branch into main (a PR under another head ref counts only when its head sha is this clean HEAD)');
   }
   if (!ancestor(context.root, merged, 'refs/remotes/origin/main', context.host.env)) throw new Blocked('merged PR is not contained in fetched main');
   return [head, merged];

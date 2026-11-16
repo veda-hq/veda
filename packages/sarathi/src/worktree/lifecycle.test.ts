@@ -10,9 +10,11 @@ import {
   ancestor,
   archiveCheck,
   begin,
+  BEGIN_RECOVERY,
   Blocked,
   cloudArchiveStep,
   cloudSessionWith,
+  compileCache,
   context,
   exclusive,
   inspect,
@@ -24,6 +26,9 @@ import {
   restRead,
   retire,
   runProgram,
+  sameHead,
+  tmpChildren,
+  UNMERGED,
   within,
   writeReceipt,
   type Context,
@@ -218,7 +223,11 @@ describe('the worktree lifecycle against real git repositories', () => {
       if (f.pr === undefined) throw new Error('no pr');
       if (change === 'open') f.pr.merged = false;
       else if (change === 'foreign') f.pr.head.repo.full_name = 'someone/test';
-      else f.pr.head.ref = 'other';
+      else {
+        // Another head ref over a head that is not this one.
+        f.pr.head.ref = 'other';
+        f.pr.head.sha = f.git(f.worktree, 'rev-parse', 'HEAD~1');
+      }
       assert.throws(() => f.retire({ cloud: true }), /not a merged same-repository PR/);
       assert.equal(f.branch(), 'codex/task');
       f.pr = saved;
@@ -305,7 +314,53 @@ describe('the worktree lifecycle against real git repositories', () => {
   it('blocks on unknown ignored files even when the code is merged', () => {
     f.write(join(f.worktree, '.tmp', 'plan.json'), '{}');
     assert.equal(f.status().archiveReady, false);
-    assert.ok(f.status().ignoredArtifacts.includes('.tmp/'));
+    assert.ok(f.status().ignoredArtifacts.includes('.tmp/plan.json'));
+  });
+
+  const CACHE = (): string => join(f.worktree, '.tmp', 'node-compile-cache');
+  const CACHE_FOLDER = (): string => join(CACHE(), 'v24.21.0-arm64-964aae3f-501');
+
+  it("lets the hooks' compile cache go, listing the rest of .tmp entry by entry", () => {
+    f.write(join(CACHE_FOLDER(), '5b0b2ce0'), 'rebuilt by every hook');
+    assert.equal(f.status().archiveReady, true);
+    f.write(join(f.worktree, '.tmp', 'plan.json'), '{}');
+    mkdirSync(join(f.worktree, '.tmp', 'rule-checks'));
+    assert.deepEqual(f.status().ignoredArtifacts, ['.tmp/plan.json', '.tmp/rule-checks/']);
+  });
+
+  it("holds the compile cache when it holds anything but Node's files", () => {
+    f.write(join(CACHE_FOLDER(), '5b0b2ce0'), 'cache');
+    writeFileSync(join(f.home, 'kept'), 'shared');
+    const cases: [() => void, () => void][] = [
+      [() => writeFileSync(join(CACHE_FOLDER(), 'notes.md'), 'mine'), () => unlinkSync(join(CACHE_FOLDER(), 'notes.md'))],
+      [() => symlinkSync(join(f.home, 'kept'), join(CACHE_FOLDER(), 'abcdef01')), () => unlinkSync(join(CACHE_FOLDER(), 'abcdef01'))],
+      [() => mkdirSync(join(CACHE_FOLDER(), 'abcdef01')), () => rmSync(join(CACHE_FOLDER(), 'abcdef01'), { recursive: true })],
+      [() => writeFileSync(join(CACHE(), 'mine.txt'), 'mine'), () => unlinkSync(join(CACHE(), 'mine.txt'))],
+      [() => mkdirSync(join(CACHE(), 'plans')), () => rmSync(join(CACHE(), 'plans'), { recursive: true })],
+      [() => symlinkSync(f.home, join(CACHE(), 'v1.2.3-x')), () => unlinkSync(join(CACHE(), 'v1.2.3-x'))],
+    ];
+    for (const [make, undo] of cases) {
+      make();
+      assert.deepEqual(f.status().ignoredArtifacts, ['.tmp/node-compile-cache/']);
+      undo();
+    }
+    assert.equal(f.status().archiveReady, true);
+  });
+
+  it('holds a missing or symlinked cache and lists a symlinked .tmp whole', () => {
+    assert.equal(compileCache(f.worktree, ['.tmp', 'node-compile-cache']), false);
+    assert.deepEqual(tmpChildren(f.worktree, '.tmp/'), ['.tmp/']);
+    mkdirSync(join(f.worktree, '.tmp'));
+    mkdirSync(join(f.worktree, 'elsewhere'));
+    symlinkSync(join(f.worktree, 'elsewhere'), CACHE());
+    assert.equal(compileCache(f.worktree, ['.tmp', 'node-compile-cache']), false);
+    assert.equal(compileCache(f.worktree, ['.tmp', 'other']), false);
+    assert.equal(compileCache(f.worktree, ['.tmp']), false);
+    rmSync(join(f.worktree, '.tmp'), { recursive: true });
+    mkdirSync(join(f.worktree, 'inside'));
+    symlinkSync(join(f.worktree, 'inside'), join(f.worktree, '.tmp'));
+    assert.deepEqual(tmpChildren(f.worktree, '.tmp/'), ['.tmp/']);
+    assert.deepEqual(tmpChildren(f.worktree, 'dist/'), ['dist/']);
   });
 
   it('lets shared links and reproducible dependencies go, keeping their targets', () => {
@@ -350,7 +405,7 @@ describe('the worktree lifecycle against real git repositories', () => {
     f.write(join(f.worktree, '.tmp', 'plan.json'), '{}');
     const report = f.status(true);
     assert.equal(report.archiveReady, false);
-    assert.equal(report.next, `First get Alok's explicit OK to discard: .tmp/. Then a${ARCHIVE.slice(1)}`);
+    assert.equal(report.next, `First get Alok's explicit OK to discard: .tmp/plan.json. Then a${ARCHIVE.slice(1)}`);
   });
 
   it('names no cloud step while work is outstanding', () => {
@@ -486,14 +541,53 @@ describe('the worktree lifecycle against real git repositories', () => {
       if (f.pr === undefined) throw new Error('no pr');
       if (change === 'open') f.pr.merged = false;
       else if (change === 'foreign') f.pr.head.repo.full_name = 'someone/test';
-      else if (change === 'branch') f.pr.head.ref = 'other';
-      else if (change === 'base') f.pr.base.ref = 'prod';
+      else if (change === 'branch') {
+        // Another head ref with a dirty tree; a clean one retires (below).
+        f.pr.head.ref = 'other';
+        f.write(join(f.worktree, 'tracked'), 'dirty');
+      } else if (change === 'base') f.pr.base.ref = 'prod';
       else if (change === 'sha') f.pr.head.sha = 'not-a-sha';
       else f.pr.merge_commit_sha = 'not-a-sha';
       assert.throws(() => f.retire(), Blocked);
       assert.equal(f.branch(), 'codex/task');
+      f.git(f.worktree, 'checkout', '--', 'tracked');
       f.pr = saved;
     }
+  });
+
+  it('retires a PR under another head ref when its head is this clean HEAD', () => {
+    f.merge();
+    if (f.pr === undefined) throw new Error('no pr');
+    f.pr.head.ref = 'claude/pushed-to-a-codex-pr';
+    const result = f.retire();
+    assert.equal(result.phase, 'retired');
+    assert.equal(result.deletedLocalBranch, 'codex/task');
+  });
+
+  it('never retires another head ref over an untracked file or another sha', () => {
+    f.merge();
+    if (f.pr === undefined) throw new Error('no pr');
+    f.pr.head.ref = 'other';
+    f.write(join(f.worktree, 'draft'), 'unsaved');
+    assert.throws(() => f.retire(), /head sha is this clean HEAD/);
+    unlinkSync(join(f.worktree, 'draft'));
+    f.pr.head.sha = f.git(f.worktree, 'rev-parse', 'HEAD~1');
+    assert.throws(() => f.retire(), Blocked);
+    assert.equal(f.branch(), 'codex/task');
+  });
+
+  it('reads submodules whatever their ignore setting for another head ref', () => {
+    const calls: string[][] = [];
+    const host: Host = {
+      env: f.env,
+      cloudSession: () => false,
+      run: (_cwd, _file, args) => {
+        calls.push([...args]);
+        return args[0] === 'rev-parse' ? 'abc' : '';
+      },
+    };
+    assert.equal(sameHead({ ...f.context(), host }, { ref: 'x', sha: 'abc' }, 'y'), true);
+    assert.ok(calls.some(args => args.join(' ') === 'status --porcelain=v1 --untracked-files=all --ignore-submodules=none'));
   });
 
   it('refuses an origin that names no GitHub repository', () => {
@@ -551,6 +645,24 @@ describe('the worktree lifecycle against real git repositories', () => {
     assert.equal(state.phase, 'continued');
     assert.equal(state.branch, result.successor);
     assert.equal(state.launchBranch, 'codex/task');
+  });
+
+  it('names the way out of commits made before begin', () => {
+    f.commitWork();
+    const result = f.cli(f.worktree, 'begin', '--branch', 'codex/next');
+    assert.equal(result.code, 2);
+    const blocked = String((JSON.parse(result.stdout) as { blocked: string }).blocked);
+    assert.ok(blocked.includes(UNMERGED));
+    assert.ok(blocked.includes(BEGIN_RECOVERY));
+    assert.ok(blocked.includes('git cherry-pick origin/main..<save-branch>'));
+    assert.ok(blocked.includes('first commit any uncommitted work (git reset --hard discards it)'));
+  });
+
+  it('names no recovery for other refusals of begin', () => {
+    f.write(join(f.worktree, 'tracked'), 'dirty');
+    const result = f.cli(f.worktree, 'begin', '--branch', 'codex/next');
+    assert.equal(result.code, 2);
+    assert.equal(result.stdout.includes('cherry-pick'), false);
   });
 
   it('refuses to begin over an existing branch, dirty work or an unproven merge', () => {

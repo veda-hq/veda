@@ -521,7 +521,9 @@ const shellDepths = (lines: readonly (string | null)[]): number[] => {
     // Indented or after `then`/`do`/`else` too, as OPENS reads, and as a
     // function's body (`gate() (`), as a `{` group can be.
     const subshellOpens = (code.match(/(?:^\s*|[;&|)]\s*|\b(?:then|do|else)\s+)\((?!\()/g) ?? []).length;
-    const subshellCloses = (code.match(/(?:^|[;\s])\)(?=\s*(?:$|[;&|)#]))/g) ?? []).length;
+    // A `)` closes one after `;`, whitespace, or the `&` that backgrounds the
+    // last command (`(cmd &) || true`), with no space needed before it.
+    const subshellCloses = (code.match(/(?:^|[;&\s])\)(?=\s*(?:$|[;&|)#]))/g) ?? []).length;
     depth = Math.max(0, depth + opens + braceOpens + subshellOpens - closes - braceCloses - subshellCloses);
     return start;
   });

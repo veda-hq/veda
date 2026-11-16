@@ -722,6 +722,9 @@ describe('findSwitchReads on shell, where bash reads', () => {
   const closed: Array<[string, string]> = [
     ['a brace group', '{\n:\n}'],
     ['a subshell', '(\n:\n)'],
+    // `&)` backgrounds the last command and closes the subshell, with no space between.
+    ['a backgrounded subshell', '(sleep 1 &) || true'],
+    ['a backgrounded subshell across lines', '(\nsleep 1 &)'],
     ['a branch closed before a comment', 'if x; then\n:\nfi # done'],
   ];
   for (const [label, before] of closed) {

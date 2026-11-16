@@ -439,7 +439,8 @@ def checkout_discards_uncommitted(call: Call) -> str | None:
             f"{how} overwrites the whole of each file it names, and {shown} holds uncommitted changes "
             "that would be lost (with --ours or --theirs, the other side's changes to the file). Resolve "
             "a conflict hunk by hunk in the file itself; to throw local work away, first keep it: commit "
-            "it, or `git stash push -m <tag> -- <path>`, after which the path is clean and this passes."
+            "it (a WIP commit), or `git stash push -m <tag> -- <path>` where stash runs (kavach refuses "
+            "it in a cloud session's own clone), after which the path is clean and this passes."
         )
     return None
 

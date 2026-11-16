@@ -9,7 +9,9 @@ library behaviour that surprised a working change.
 - **Fresh clones have no `node_modules`.** A fresh clone or harness checkout of a pnpm workspace
   has no `node_modules`, so the first `node --import tsx` fails with
   `ERR_MODULE_NOT_FOUND: Cannot find package 'tsx'`. Run `pnpm install --frozen-lockfile` from
-  the clone root before any self-test, typecheck, lint or test command.
+  the clone root before any self-test, typecheck, lint or test command. In a cloud session's own
+  clone, kavach runs only `pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile`,
+  alone on its line.
   <!-- when: error "Cannot find package 'tsx'" -->
 - **The global pnpm must match `packageManager`.** A global pnpm that differs from the
   repository's `packageManager` pin hands off to the pinned version on every call, costing
@@ -94,10 +96,12 @@ library behaviour that surprised a working change.
   returns with the child already running, and the OS can deschedule the parent in that gap so a
   signal hits the default action. When a child reports exit code `null`, capture `signal` before
   theorising.
+  <!-- held by: shuddhi signal-handler-before-spawn (warns on a process.on SIGTERM, SIGINT or SIGHUP handler installed after spawn() in the same function of a script); reading the exit signal is not checked -->
 - **google-auth-library errors embed the token.** Its ID-token verification errors concatenate
   the raw token or its decoded claims (`email`, `sub`) into `error.message`, so logging the
   message leaks a bearer credential. Classify the message by its constant prefixes and log only
   a fixed code, with a test that drives the real client so the prefix table cannot drift.
+  <!-- held by: shuddhi google-auth-error-message (refuses a verification error's message reaching a log, a response or a new error); the real-client test is not checked -->
 - **A multiline PEM in a `.env` file.** A line-based `.env` parser keeps only the
   `-----BEGIN ... KEY-----` line of a pasted multiline PEM, so signing fails with
   `error:1E08010C:DECODER routines::unsupported` and code may silently fall back to another

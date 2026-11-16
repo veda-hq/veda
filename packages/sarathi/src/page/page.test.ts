@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe } from 'node:test';
 
-import { expect, it, vi } from './expect.test.ts';
+import { expect, it, vi } from '../test/expect.test.ts';
 import {
   actionBoxGaps,
   buildPrompt,

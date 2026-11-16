@@ -12,6 +12,9 @@
  *
  * `sarathi worktree`: the worktree lifecycle (`worktree/lifecycle.ts`), and
  * `sarathi worktree hook`, its archive guard (`worktree/hook.ts`).
+ *
+ * `sarathi services`: the worktree's local services (`services/main.ts`), and
+ * `sarathi services reap`, the sweep of deleted worktrees' services.
  */
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -21,6 +24,7 @@ import { merge } from './merge.ts';
 import { autofixCommand } from './hooks/autofix.ts';
 import { main as page } from './page/page.ts';
 import { runAll, type Outcome } from './run.ts';
+import { servicesMain } from './services/main.ts';
 import { hookMain } from './worktree/hook.ts';
 import { lifecycleMain } from './worktree/lifecycle.ts';
 import { parseSettings, SettingsError } from './worktree/settings.ts';
@@ -48,6 +52,9 @@ const USAGE = `usage: sarathi hook <Event> [--config <file>]
        sarathi autofix list [--session <id>]
        sarathi worktree status|archive-check|begin --branch <name>|retire --pr <n> [--branch <successor>]
        sarathi worktree hook
+       sarathi services up|down|status|web|server|<action> [args]
+       sarathi services run -- <command>
+       sarathi services reap
        sarathi --version
 `;
 
@@ -290,6 +297,7 @@ export async function main(io: Io): Promise<number> {
     if (io.argv[1] === 'hook' && io.argv.length === 2) return hookMain(await io.readStdin(), io.out);
     return lifecycleMain(io.argv.slice(1), io);
   }
+  if (io.argv[0] === 'services') return servicesMain(io.argv.slice(1), io);
   const options = parseOptions(io.argv);
   if (typeof options === 'string') {
     io.err(`sarathi: ${options}\n${USAGE}`);

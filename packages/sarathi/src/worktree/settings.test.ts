@@ -21,8 +21,19 @@ describe('worktree settings', () => {
     assert.equal(parseSettings({ cloudCheck: '/abs.sh' }, 'f', '/r').cloudCheck, '/abs.sh');
   });
 
+  it('keep the services file as written: a path or a package path', () => {
+    assert.equal(parseSettings({ services: 'tools/services.json' }, 'f', '/r').services, 'tools/services.json');
+    assert.equal(parseSettings({ services: '@acme/rules/sarathi/services.json' }, 'f', '/r').services, '@acme/rules/sarathi/services.json');
+    assert.equal(parseSettings({}, 'f', '/r').services, undefined);
+  });
+
   it('refuse what they cannot use', () => {
     for (const [value, message] of [
+      [{ services: '' }, /"services" must be a path/],
+      [{ services: 3 }, /"services" must be a path/],
+      [{ services: '@acme/rules' }, /"services" must be a path/],
+      [{ services: '@acme/rules/../other/services.json' }, /"services" must be a path/],
+      [{ services: '@acme/rules/sarathi/..' }, /"services" must be a path/],
       [[], /must be an object/],
       [{ extra: 1 }, /unknown key "extra"/],
       [{ name: 'Acme' }, /"name" must be/],

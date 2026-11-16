@@ -366,3 +366,33 @@ test('session-dedupe-guard: runs the launcher interpreter when it names one', ()
   put(python, '#!/bin/bash\necho "stub python" >&2\nexit 7\n', 0o755);
   assert.equal(runHook(dedupe, '{}', { HOOK_PYTHON: python }).status, 7);
 });
+
+// --- services-reap.sh -------------------------------------------------------
+// Only stand-ins on PATH: a `node` that records its arguments, and `docker`
+// where a case wants one, so no real sweep ever starts.
+const REAP_LOG = join(TMP, 'reap.log');
+const NO_DOCKER = join(TMP, 'reap-bin');
+const WITH_DOCKER = join(TMP, 'reap-docker-bin');
+put(join(NO_DOCKER, 'node'), `#!/bin/bash\nprintf '%s\\n' "$*" >>"${REAP_LOG}"\n`, 0o755);
+symlinkSync(execFileSync('/bin/sh', ['-c', 'command -v nohup'], { encoding: 'utf8' }).trim(), join(NO_DOCKER, 'nohup'));
+put(join(WITH_DOCKER, 'docker'), '#!/bin/bash\nexit 0\n', 0o755);
+
+function reap(path: string): Run {
+  const result = spawnSync('/bin/bash', [hook('services-reap.sh')], { cwd: MAIN, input: '{}', encoding: 'utf8', env: { PATH: path, HOME: TMP } });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+test('services-reap starts the sweep detached when docker is on PATH, and says nothing', async () => {
+  assert.deepEqual(reap(`${WITH_DOCKER}:${NO_DOCKER}`), { status: 0, stdout: '', stderr: '' });
+  const deadline = Date.now() + 10_000;
+  while (!existsSync(REAP_LOG) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+  const ran = readFileSync(REAP_LOG, 'utf8').trim();
+  assert.match(ran, /\/hooks\/\.\.\/dist\/bin\.js services reap$/);
+  rmSync(REAP_LOG);
+});
+
+test('services-reap does nothing without docker, and exits 0', async () => {
+  assert.deepEqual(reap(NO_DOCKER), { status: 0, stdout: '', stderr: '' });
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(existsSync(REAP_LOG), false);
+});

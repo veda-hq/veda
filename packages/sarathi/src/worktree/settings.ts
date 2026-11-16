@@ -11,6 +11,10 @@
  * - `cloudCheck`: a script, from the project root, run as
  *   `bash <script> <root>`; exit 0 confirms a cloud session. Without one a
  *   cloud session is `CLAUDE_CODE_REMOTE=true` alone.
+ * - `services`: the project's services file (`services/file.ts`), a path
+ *   from the project root or a package path (`@scope/package/file.json`).
+ *   Kept as written: a package path resolves only with the environment.
+ *   Without one, `sarathi services` has nothing to run.
  */
 import { readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -19,6 +23,7 @@ export interface WorktreeSettings {
   readonly name: string;
   readonly owner: string;
   readonly cloudCheck?: string;
+  readonly services?: string;
 }
 
 export class SettingsError extends Error {
@@ -29,7 +34,11 @@ export class SettingsError extends Error {
 export const DEFAULT_SETTINGS: WorktreeSettings = { name: 'sarathi', owner: 'the owner' };
 
 const NAME = /^[a-z][a-z0-9-]{0,39}$/;
-const KEYS = new Set(['name', 'owner', 'cloudCheck']);
+const KEYS = new Set(['name', 'owner', 'cloudCheck', 'services']);
+/** A scoped package and a file inside it. */
+const PACKAGE_PATH = /^@[^/\s]+\/[^/\s]+\/\S+$/;
+/** A package path with no `..` segment, so it cannot leave the package. */
+const packagePath = (value: string): boolean => PACKAGE_PATH.test(value) && !value.split('/').includes('..');
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -39,16 +48,20 @@ export function parseSettings(value: unknown, path: string, root: string): Workt
   if (!isRecord(value)) throw new SettingsError(`${path}: "worktree" must be an object`);
   const extra = Object.keys(value).filter(key => !KEYS.has(key));
   if (extra.length > 0) throw new SettingsError(`${path} worktree: unknown key ${extra.map(key => `"${key}"`).join(', ')}`);
-  const { name, owner, cloudCheck } = value;
+  const { name, owner, cloudCheck, services } = value;
   if (name !== undefined && (typeof name !== 'string' || !NAME.test(name))) {
     throw new SettingsError(`${path} worktree: "name" must be lowercase letters, digits and dashes, starting with a letter`);
   }
   if (owner !== undefined && (typeof owner !== 'string' || owner.trim() === '')) throw new SettingsError(`${path} worktree: "owner" must be a name`);
   if (cloudCheck !== undefined && (typeof cloudCheck !== 'string' || cloudCheck === '')) throw new SettingsError(`${path} worktree: "cloudCheck" must be a path`);
+  if (services !== undefined && (typeof services !== 'string' || services === '' || (services.startsWith('@') && !packagePath(services)))) {
+    throw new SettingsError(`${path} worktree: "services" must be a path from the project root, or @scope/package/file`);
+  }
   return {
     name: typeof name === 'string' ? name : DEFAULT_SETTINGS.name,
     owner: typeof owner === 'string' ? owner : DEFAULT_SETTINGS.owner,
     ...(typeof cloudCheck === 'string' ? { cloudCheck: isAbsolute(cloudCheck) ? cloudCheck : resolve(root, cloudCheck) } : {}),
+    ...(typeof services === 'string' ? { services } : {}),
   };
 }
 

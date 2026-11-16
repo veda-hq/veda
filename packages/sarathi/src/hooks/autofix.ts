@@ -16,8 +16,9 @@
  *   list, since the handler makes no GitHub call.
  * - Refused (`mcp__ccd_pr__set_monitor`): the transcripts show the app's
  *   refusal as a tool error ("Auto-fix can't be enabled for owner/repo#N:
- *   <reason>", or "owner/repo#N is on the session's PR bar, but … so Auto-fix
- *   can't be enabled for it"). That PR is marked refused with the app's
+ *   <reason>", "owner/repo#N is on the session's PR bar, but … so Auto-fix
+ *   can't be enabled for it", or "owner/repo#N is not bound to this
+ *   session."). That PR is marked refused with the app's
  *   words. Which hook event carries an error is read, not assumed: the
  *   answer is looked for in both `tool_response` and `error`, on PostToolUse
  *   and PostToolUseFailure alike. An error that names no PR (a missing url)
@@ -78,6 +79,8 @@ const OFF = /Auto-fix is off for ([\w.-]+\/[\w.-]+)#(\d+)/;
 const REFUSED = /Auto-fix can't be enabled for ([\w.-]+\/[\w.-]+)#(\d+):\s*([^\n]*)/;
 /** The app's own pre-call refusal: "owner/repo#N is on the session's PR bar, but … so Auto-fix can't be enabled for it; …". */
 const REFUSED_BEFORE = /([\w.-]+\/[\w.-]+)#(\d+) (is on the session's PR bar, but [^\n]*Auto-fix can't be enabled for it[^\n]*)/;
+/** The app's answer for a PR not bound to the session: "owner/repo#N is not bound to this session." (veda#153). */
+const NOT_BOUND = /([\w.-]+\/[\w.-]+)#(\d+) (is not bound to this session[^\n]*)/;
 
 export type State = 'opened' | 'on' | 'off' | 'refused' | 'closed';
 export type RowEvent = State | 'warned';
@@ -251,6 +254,7 @@ function setMonitorFacts(text: string, input: unknown): Fact[] {
     [OFF, 'off'],
     [REFUSED, 'refused'],
     [REFUSED_BEFORE, 'refused'],
+    [NOT_BOUND, 'refused'],
   ] as const) {
     const match = pattern.exec(text);
     if (match === null) continue;

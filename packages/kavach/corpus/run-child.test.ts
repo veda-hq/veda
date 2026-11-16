@@ -5,6 +5,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -111,7 +112,6 @@ describe('runChild', () => {
         if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
       }
     });
-    const started = Date.now();
     const outcome = await runChild(
       '/bin/sh',
       [
@@ -122,13 +122,15 @@ describe('runChild', () => {
       // the test as a timeout instead of hanging the suite.
       { timeoutMs: 20_000 },
     );
-    const record = readFileSync(left, 'utf8');
-    assert.match(record, /^[1-9]\d*\n$/);
-    holder = Number(record);
+    const returned = Date.now();
+    const record = existsSync(left) ? readFileSync(left, 'utf8') : '';
+    if (/^[1-9]\d*\n$/.test(record)) holder = Number(record);
     assert.equal(outcome.kind, 'ok');
+    assert.match(record, /^[1-9]\d*\n$/);
     assert.equal(outcome.stdout, 'left\nstarted\n');
-    const took = Date.now() - started;
-    assert.ok(took >= EXIT_DRAIN_MS - 50, `took ${String(took)} ms`);
+    // Timed from the record, so python's start-up cannot count as the drain.
+    const drained = returned - statSync(left).mtimeMs;
+    assert.ok(drained >= EXIT_DRAIN_MS - 50, `drained ${String(drained)} ms`);
     // The holder still has the pipes open, so the outcome came back because
     // they were cut.
     assert.doesNotThrow(() => process.kill(holder, 0));

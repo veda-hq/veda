@@ -1310,6 +1310,36 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 result = self.claude_bash(self.claude, command)
                 self.assertEqual(result.returncode, 2, result.stderr)
 
+    def test_curl_and_trusted_root_from_each_checkout(self) -> None:
+        """veda#195. kavach 0.7.1 refused a curl loop everywhere. From the
+        session's own worktree, it passed four curl forms that write where a
+        config or a `-w` format says. `gh attestation trusted-root` writes
+        gh's TUF cache, so it passes only where every gh call does."""
+
+        loop = "for r in a b; do curl -sS https://api.github.com/repos/o/$r; done"
+        for cwd in (self.claude, self.main):
+            with self.subTest(cwd=cwd):
+                result = self.claude_bash(cwd, loop)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.claude_bash(self.claude, "gh attestation trusted-root")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.claude_bash(self.main, "gh attestation trusted-root")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        result = self.claude_bash(self.claude, "curl -sS -o out.json https://x.example")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for command in (
+            f"curl -s -w '%output{{{self.external}/x}}x' file://{self.main}/tracked.txt",
+            f"printf 'output = \"{self.external}/x\"' | curl -s -K - https://x.example",
+            "curl -s -K cfg https://x.example",
+            "HOME=. curl -s https://x.example",
+            "CURL_HOME=. curl -s https://x.example",
+            "XDG_CONFIG_HOME=. curl -s https://x.example",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("`curl` with a config", result.stderr)
+
     def test_git_c_own_worktree_keeps_every_other_refusal(self) -> None:
         commands = (
             # cd under control flow or a wrapper still fails closed, so a
@@ -3125,6 +3155,17 @@ class ReadOnlyFormsTest(unittest.TestCase):
         "base64 -D < tracked.txt",
         "base64 --decode -",
         "openssl x509 -in cert.pem -noout -subject -enddate -nameopt RFC2253",
+        # veda#195: curl printing what it fetched.
+        "curl -sS https://api.github.com/repos/o/r",
+        "for r in a b; do curl -sS https://api.github.com/repos/o/$r; done",
+        "curl -fsSL -H 'Accept: application/json' https://x.example | jq .",
+        "curl -sS -o /dev/null -w '%{http_code}\\n' https://x.example",
+        "curl -sSo/dev/null --output /dev/null https://x.example",
+        "curl -sSI -X HEAD --request GET https://x.example",
+        "curl -HAccept:x -m5 --max-time 5 --retry 2 -A ua -e ref https://x.example",
+        "curl -u user:pass -r 0-99 --url https://x.example FILE:///etc/hosts",
+        'curl -s "https://x.example/$r"',
+        "curl -q -s file:///etc/hosts",
     )
 
     WRITES = (
@@ -3251,6 +3292,47 @@ class ReadOnlyFormsTest(unittest.TestCase):
         "openssl req -new -out b",
         "openssl",
         "OPENSSL_CONF=x.cnf openssl x509 -noout -text",
+        # veda#195: curl writing a file, sending a body, or reading a config
+        # that may set `output`.
+        "curl -o out https://x.example",
+        "curl -sSo out https://x.example",
+        "curl -oout https://x.example",
+        "curl --output out https://x.example",
+        "curl --outp out https://x.example",
+        "curl --OUTPUT out https://x.example",
+        "curl --output=/dev/null https://x.example",
+        "curl -O https://x.example/f",
+        "curl -D h.txt https://x.example",
+        "curl -c jar https://x.example",
+        "curl --trace t https://x.example",
+        "curl --stderr e https://x.example",
+        "curl --libcurl c.c https://x.example",
+        "curl -d a=b https://x.example",
+        "curl -F a=@f https://x.example",
+        "curl -T f https://x.example",
+        "curl -X POST https://x.example",
+        "curl -X get https://x.example",
+        "curl -K cfg https://x.example",
+        "curl -sK- https://x.example",
+        "printf 'output = \"/x\"' | curl -K - https://x.example",
+        "curl --config cfg https://x.example",
+        "curl -w '%output{/x}x' https://x.example",
+        "curl -w '%OUTPUT{/x}x' https://x.example",
+        "curl -sw@fmt https://x.example",
+        "curl --write-out @fmt https://x.example",
+        "curl -w \"$fmt\" https://x.example",
+        "curl -w",
+        "curl https://x.example -- -o",
+        "curl x.example",
+        "curl $URL",
+        "curl https://x.example/$r",
+        "HOME=. curl -s https://x.example",
+        "CURL_HOME=. curl -s https://x.example",
+        "XDG_CONFIG_HOME=. curl -s https://x.example",
+        "export HOME=.; curl -s https://x.example",
+        "for r in a b; do curl -s -o $r.json https://x.example/$r; done",
+        # veda#195: gh writes sigstore's TUF metadata to its cache on every run.
+        "gh attestation trusted-root",
     )
 
     def test_read_only_forms_are_read_only(self) -> None:
@@ -3262,6 +3344,35 @@ class ReadOnlyFormsTest(unittest.TestCase):
         for command in self.WRITES:
             with self.subTest(command=command):
                 self.assertFalse(MODULE.shell_is_read_only(command))
+
+    def test_curl_configs_leave_writes_unknown(self) -> None:
+        """veda#195: a config may set curl's `output`, and `-w %output{}`
+        names a file, so neither write shows on the command line. Where
+        curl writes a file it names, the target is still read."""
+
+        cwd = Path.cwd()
+        for command in (
+            "curl -K cfg https://x.example",
+            "curl -sK.tmp/cfg https://x.example",
+            "curl --conf cfg https://x.example",
+            "curl --CONFIG cfg https://x.example",
+            "printf 'output = \"/x\"' | curl -K - https://x.example",
+            "HOME=.tmp curl https://x.example",
+            "HOME=.tmp; curl https://x.example",
+            "export CURL_HOME=.tmp; curl https://x.example",
+            "XDG_CONFIG_HOME=.tmp curl https://x.example",
+            "curl -w '%output{/x}x' https://x.example",
+            "curl -o .tmp/a -w '%output{/x}x' https://x.example",
+            "curl -s -w @fmt https://x.example",
+            "curl -sw@fmt https://x.example",
+            "curl --write-out @fmt https://x.example",
+            "curl --writ @fmt https://x.example",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(MODULE.mutation_directories(command, cwd))
+        targets = MODULE.mutation_directories("curl -sS -o .tmp/a https://x.example", cwd)
+        self.assertIsNotNone(targets)
+        self.assertIn(cwd.resolve() / ".tmp" / "a", targets)
 
     def test_expansions_that_may_be_options_leave_operands_unknown(self) -> None:
         """Once, `X=--output=<elsewhere>; git log -1 $X` passed: the

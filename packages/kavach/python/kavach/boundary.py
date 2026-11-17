@@ -2915,6 +2915,8 @@ def segment_is_read_only(words: list[str]) -> bool:
         return base64_is_read_only(words[1:])
     if name == "openssl":
         return openssl_is_read_only(words[1:])
+    if name == "curl":
+        return curl_is_read_only(words[1:])
     if name == "printf":
         return printf_is_read_only(words[1:])
     if name == "cd":
@@ -3307,6 +3309,153 @@ def openssl_is_read_only(args: list[str]) -> bool:
     return True
 
 
+# curl options that only shape a request or what it prints, read 2026-11-17
+# against curl 8.7.1. Every other option is refused, and so is any spelling
+# but these exact ones (an abbreviation, a `--name=value`, `--`). Left out:
+# every option that writes a file (`-o` but for /dev/null, `-O`, `-D`, `-c`,
+# `--trace*`, `--stderr`, `--libcurl`, `--etag-save`, `--hsts`, `--alt-svc`),
+# that sends a body (`-d`, `-F`, `-T`, `--json`), and `-K`/`--config`, whose
+# file may set any of them.
+CURL_SHORT_FLAGS = frozenset("sSfLIivkGgq46")
+CURL_SHORT_VALUES = frozenset("HAemuXrwo")
+CURL_LONG_FLAGS = frozenset({
+    "--silent", "--show-error", "--fail", "--fail-with-body", "--location",
+    "--head", "--include", "--verbose", "--insecure", "--get", "--globoff",
+    "--disable", "--ipv4", "--ipv6", "--compressed", "--no-progress-meter",
+    "--http1.1", "--http2",
+})
+CURL_LONG_VALUES = {
+    "--header": "-H", "--user-agent": "-A", "--referer": "-e",
+    "--max-time": "-m", "--user": "-u", "--request": "-X", "--range": "-r",
+    "--write-out": "-w", "--output": "-o", "--connect-timeout": "",
+    "--retry": "", "--retry-delay": "", "--retry-max-time": "",
+    "--max-redirs": "", "--url": "",
+}
+CURL_URL = re.compile(r"(?:https?|file)://", re.IGNORECASE)
+
+
+def curl_value_is_read_only(option: str, value: str) -> bool:
+    """Whether ``value`` for curl's ``option`` (its short letter) writes nothing."""
+
+    if option == "-X":
+        return value in {"GET", "HEAD"}
+    if option == "-o":
+        return value == "/dev/null"
+    if option == "-w":
+        return not curl_write_out_writes(value) and not has_dynamic_markers(value)
+    return True
+
+
+def curl_write_out_writes(value: str) -> bool:
+    """A `-w` format that reads its format from a file or names one to write.
+
+    `@file` reads the format from a file, which may hold `%output{}`.
+    `%output{file}` (curl 8.3) sends the rest of the format to that file.
+    """
+
+    return value.startswith("@") or "%output" in value.lower()
+
+
+def curl_is_read_only(args: list[str]) -> bool:
+    """`curl` fetching URLs to stdout, with display options only.
+
+    A short cluster may end in one letter that takes a value, attached or as
+    the next word (`-sSo /dev/null`, `-HAccept:x`). Each URL operand starts
+    with its scheme, so no operand can be an option. The default config
+    curl reads (`$CURL_HOME/.curlrc`, `$XDG_CONFIG_HOME/curlrc`,
+    `$HOME/.curlrc`) may set `output`; `curl_config_is_unproven` refuses
+    a line that moves it.
+    """
+
+    index = 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        if word.startswith("--"):
+            if word in CURL_LONG_FLAGS:
+                continue
+            if word in CURL_LONG_VALUES and index < len(args):
+                if not curl_value_is_read_only(CURL_LONG_VALUES[word], args[index]):
+                    return False
+                index += 1
+                continue
+            return False
+        if word.startswith("-") and len(word) > 1:
+            for position, letter in enumerate(word[1:], start=1):
+                if letter in CURL_SHORT_FLAGS:
+                    continue
+                if letter not in CURL_SHORT_VALUES:
+                    return False
+                value = word[position + 1 :]
+                if not value:
+                    if index >= len(args):
+                        return False
+                    value = args[index]
+                    index += 1
+                if not curl_value_is_read_only(f"-{letter}", value):
+                    return False
+                break
+            continue
+        if CURL_URL.match(word) is None:
+            return False
+    return True
+
+
+# The variables that move the config curl reads by default.
+CURL_CONFIG_VARIABLES = ("CURL_HOME", "XDG_CONFIG_HOME", "HOME")
+
+
+def curl_config_is_unproven(segments: list[list[str]]) -> bool:
+    """Whether a line running curl lets a config decide what it writes.
+
+    A config may set `output`, so curl writes there with nothing on its
+    command line to show it: `-K`/`--config` names one (`-K -` reads it from
+    stdin), and an assignment of a `CURL_CONFIG_VARIABLES` name anywhere on
+    the line (`HOME=.tmp curl`, `export CURL_HOME=.tmp; curl`) moves the
+    default one to a folder the session may have written. A `-w` that
+    `curl_write_out_writes` writes too. Clusters and abbreviations are read
+    loosely here, refusing too much rather than too little: any short
+    cluster holding `K`, and any long option a prefix of `--config`.
+    """
+
+    words = [word for segment in segments for word in segment]
+    if not any(os.path.basename(word) == "curl" for word in words):
+        return False
+    for word in words:
+        if re.match(rf"(?:{'|'.join(CURL_CONFIG_VARIABLES)})=", word):
+            return True
+    for segment in segments:
+        curl_at = next(
+            (i for i, word in enumerate(segment) if os.path.basename(word) == "curl"),
+            None,
+        )
+        if curl_at is None:
+            continue
+        args = segment[curl_at + 1 :]
+        for index, word in enumerate(args):
+            following = args[index + 1] if index + 1 < len(args) else ""
+            if word.startswith("--"):
+                name = word[2:].split("=", 1)[0].lower()
+                if name and "config".startswith(name):
+                    return True
+                if name and len(name) > 1 and "write-out".startswith(name) and (
+                    curl_write_out_writes(following)
+                ):
+                    return True
+                continue
+            if word.startswith("-") and len(word) > 1:
+                cluster = word[1:]
+                if "K" in cluster:
+                    return True
+                if "w" in cluster:
+                    value = cluster[cluster.index("w") + 1 :] or following
+                    if curl_write_out_writes(value):
+                        return True
+            if "%output" in word.lower():
+                return True
+    return False
+
+
 def printf_is_read_only(args: list[str]) -> bool:
     """`printf` prints, unless `-v name` assigns the result to a variable.
 
@@ -3584,7 +3733,7 @@ def shell_is_read_only(command: str, depth: int = 0) -> bool:
     """
 
     segments = split_commands(command, depth)
-    if segments is None:
+    if segments is None or curl_config_is_unproven(segments):
         return False
     bindings: dict[str, tuple[str, ...]] = {}
     for raw in segments:
@@ -5424,6 +5573,9 @@ def mutation_directories(
     )
     segments = split_commands(command)
     if segments is None:
+        return None
+    if curl_config_is_unproven(segments):
+        # A config decides what curl writes, out of the command line's sight.
         return None
     alone = alone and len(segments) == 1
     # A loop body runs once per iteration while this model applies each `cd`

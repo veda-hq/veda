@@ -784,6 +784,14 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
         for word in (*each.words, *each.redirect_targets, *each.input_targets, *each.herestrings)
     ) or any(each.expanded_bodies for each in commands):
         add("a command substitution (`$(...)`, backticks or `<(...)`)")
+    curl_config = boundary.curl_config_is_unproven(
+        [[word.text for word in each.words] for each in commands]
+    )
+    if curl_config:
+        add(
+            "`curl` with a config that may set its output (`-K`, or `HOME`, "
+            "`CURL_HOME` or `XDG_CONFIG_HOME` assigned) or a `-w` that writes a file"
+        )
     for each in commands:
         words = list(each.words)
         while words and words[0].is_assignment() is not None:
@@ -791,6 +799,8 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
         if not words or words[0].dynamic:
             continue
         head = os.path.basename(words[0].text)
+        if head == "curl" and curl_config:
+            continue
         if head in INTERPRETERS or re.fullmatch(r"python[0-9]+(\.[0-9]+)*", head):
             inline = next((word.text for word in words[1:] if word.text in inline_flags(head)), None)
             if inline is not None:

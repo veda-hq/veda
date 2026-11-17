@@ -1476,11 +1476,207 @@ def git_destination_operands(words: list[str], command_index: int) -> list[str] 
         return git_repository_destinations(args, GIT_CLONE_OPTIONS, max_operands=2)
     if verb == "init":
         return git_repository_destinations(args, GIT_INIT_OPTIONS, max_operands=1)
+    if verb in {"bugreport", "diagnose"}:
+        # `-o`/`--output-directory`; git 2.54 writes `--suffix -- -o <dir>`
+        # and `--suffix -- --outp <dir>`.
+        return git_dash_o_outputs(
+            args, ("--output-directory",), abbreviated="--output-directory"
+        )
+    if verb == "index-pack":
+        return git_index_pack_outputs(args)
+    if verb == "config":
+        return git_config_file_outputs(args)
     return []
 
 
-def git_dash_o_outputs(args: list[str], long_options: tuple[str, ...]) -> list[str] | None:
+# `git index-pack` reads its own arguments, not through parse-options: exact
+# names, options anywhere, and only `-o` and `--progress-title` take the next
+# word. Optional values come with `=`.
+GIT_INDEX_PACK_FLAGS = frozenset({
+    "-v", "--stdin", "--fix-thin", "--verify", "--verify-stat", "--verify-stat-only",
+    "--rev-index", "--no-rev-index", "--check-self-contained-and-connected",
+    "--report-end-of-input", "--keep", "--strict", "--fsck-objects", "--promisor",
+})
+GIT_INDEX_PACK_ATTACHED = frozenset({
+    "--keep", "--strict", "--fsck-objects", "--promisor", "--threads", "--pack_header",
+    "--index-version", "--max-input-size", "--object-format",
+})
+
+
+def git_index_pack_outputs(args: list[str]) -> list[str] | None:
+    """The index ``-o`` names, and the pack file: git writes its ``.idx``,
+    ``.rev`` and ``.keep`` beside it, and with ``--stdin`` the pack itself."""
+    outputs: list[str] = []
+    pack: list[str] = []
+    index = 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        if word in {"-o", "--progress-title"}:
+            if index >= len(args) or args[index].startswith("-"):
+                return None
+            if word == "-o":
+                outputs.append(args[index])
+            index += 1
+        elif word in GIT_INDEX_PACK_FLAGS:
+            continue
+        elif word.startswith("-"):
+            name, has_value, _ = word.partition("=")
+            if not has_value or name not in GIT_INDEX_PACK_ATTACHED:
+                return None
+        elif pack:
+            return None
+        else:
+            pack.append(word)
+    return outputs + pack
+
+
+# `git config` options, from git 2.54's `git config -h` (both the legacy
+# form and the subcommands). Long options may be abbreviated, and one that
+# takes a value can swallow the next word (`--comm --list` sets a comment),
+# so where a file option is given, a word outside these sets fails closed.
+GIT_CONFIG_VALUES = frozenset({
+    "--file", "--blob", "--type", "--default", "--comment", "--value", "--url",
+})
+GIT_CONFIG_FLAGS = frozenset({
+    "--local", "--worktree", "--replace-all", "--add", "--unset", "--unset-all",
+    "--rename-section", "--remove-section", "--edit", "--no-type", "--bool", "--int",
+    "--bool-or-int", "--bool-or-str", "--path", "--expiry-date", "--fixed-value",
+    "--null", "--includes", "--no-includes", "--all", "--regexp", "--show-names",
+    "--no-show-names", "--append", "--show-origin", "--show-scope", "--name-only",
+})
+GIT_CONFIG_READERS = frozenset({
+    "--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l",
+    "--get-color", "--get-colorbool",
+})
+GIT_CONFIG_WRITERS = frozenset({
+    "--add", "--replace-all", "--unset", "--unset-all", "--rename-section",
+    "--remove-section", "--edit", "-e",
+})
+GIT_CONFIG_SUBCOMMANDS = frozenset({
+    "get", "list", "set", "unset", "rename-section", "remove-section", "edit",
+})
+
+
+def git_config_file_outputs(args: list[str]) -> list[str] | None:
+    """The file ``git config -f <file>`` writes; ``--global`` and
+    ``--system`` write outside any worktree and fail closed.
+
+    Without them git config writes the repository's own config, which the
+    guard does not read here. A read writes nothing: ``get``, ``list``,
+    ``--get``, ``--list``, or a lone key with no action
+    (``git config --global user.name``). Anything else with a file option
+    is a write, and an option the reader does not know fails closed.
+    """
+    files: list[str] = []
+    elsewhere = False
+    unplaced = False
+    writes = False
+    subcommand = bool(args) and args[0] in GIT_CONFIG_SUBCOMMANDS
+    reads = subcommand and args[0] in {"get", "list"}
+    positionals = 0
+    index = 1 if subcommand else 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        if word == "--":
+            positionals += len(args) - index
+            break
+        if not word.startswith("-") or word == "-":
+            positionals += 1
+        elif word in GIT_CONFIG_READERS:
+            reads = True
+        elif word in GIT_CONFIG_WRITERS:
+            writes = True
+        elif word.startswith("--"):
+            name, has_value, _ = word.partition("=")
+            if len(name) > len("--fi") and "--file".startswith(name):
+                if has_value:
+                    value = shell_option_value(word)
+                elif index < len(args):
+                    value = args[index]
+                    index += 1
+                else:
+                    return None
+                files.append(value)
+            elif len(name) > len("--g") and "--global".startswith(name):
+                elsewhere = True
+            elif len(name) > len("--s") and "--system".startswith(name):
+                elsewhere = True
+            elif name in GIT_CONFIG_VALUES:
+                if not has_value:
+                    index += 1
+            elif name not in GIT_CONFIG_FLAGS or has_value:
+                unplaced = True
+        else:
+            letters = word[1:]
+            for position, letter in enumerate(letters):
+                if letter in "ft":
+                    if position + 1 < len(letters):
+                        value = shell_slice(word, position + 2)
+                    elif index < len(args):
+                        value = args[index]
+                        index += 1
+                    else:
+                        return None
+                    if letter == "f":
+                        files.append(value)
+                    break
+                if letter == "l":
+                    reads = True
+                elif letter == "e":
+                    writes = True
+                elif letter != "z":
+                    unplaced = True
+    if unplaced:
+        # An abbreviated value option swallows the next word: git 2.54
+        # writes `git config --comm -- -f <file> core.x y`, where this read
+        # stopped at the `--`. git_safety refuses these options too.
+        return None
+    if not files and not elsewhere:
+        return []
+    if not subcommand and positionals == 1 and not writes:
+        reads = True
+    if reads and not writes:
+        return []
+    if elsewhere or any(not value or value.startswith("-") for value in files):
+        return None
+    return files
+
+
+def git_checkout_index_prefixes(args: list[str]) -> list[str] | None:
+    """Every ``--prefix`` of ``git checkout-index``, or any abbreviation
+    (``--pre=``) git takes; a missing value fails closed. Read past ``--``,
+    as `git_dash_o_outputs` is: that only refuses more. A word after
+    ``--stage`` is read too, for the same reason."""
+    prefixes: list[str] = []
+    index = 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        name, has_value, _ = word.partition("=")
+        if len(name) > len("--") and "--prefix".startswith(name):
+            if has_value:
+                value = shell_option_value(word)
+            elif index < len(args):
+                value = args[index]
+                index += 1
+            else:
+                return None
+            prefixes.append(value)
+    return prefixes
+
+
+def git_dash_o_outputs(
+    args: list[str], long_options: tuple[str, ...], *, abbreviated: str = ""
+) -> list[str] | None:
     """``-o <v>``, ``-o<v>`` and each of ``long_options`` with ``=<v>`` or ``<v>``.
+
+    Where ``abbreviated`` names the verb's only long option that starts
+    with ``--o``, every prefix of it from ``--o`` on is read as that option:
+    after a swallowed ``--``, git 2.54 writes
+    ``bugreport --suffix -- --o=<dir>``, where `git_output_options` has
+    stopped reading.
 
     Git permutes options, so every word is read, not only those before the
     first operand. A ``--`` does not end the read: an option that takes the
@@ -1495,7 +1691,11 @@ def git_dash_o_outputs(args: list[str], long_options: tuple[str, ...]) -> list[s
     while index < len(args):
         word = args[index]
         name, has_value, _ = word.partition("=")
-        if word == "-o" or name in long_options:
+        if (
+            word == "-o"
+            or name in long_options
+            or (abbreviated and len(name) > len("--") and abbreviated.startswith(name))
+        ):
             if has_value and word != "-o":
                 value = shell_option_value(word)
             else:
@@ -1644,8 +1844,30 @@ def git_repository_destinations(
     return outputs
 
 
+# Git's global options, before the subcommand, as git 2.54 reads them: exact
+# names, no abbreviations (`--git-d=x` is refused). Those in
+# GIT_GLOBAL_VALUES take the next word or `=<value>`; `--exec-path` and
+# `--list-cmds` take a value only with `=`. Any other word fails closed: a
+# global that takes the next word moves which word is the subcommand, and
+# `git --namespace x init <dir>` once read `x` as the verb.
+GIT_GLOBAL_FLAGS = frozenset({
+    "-p", "--paginate", "-P", "--no-pager", "--no-replace-objects",
+    "--no-lazy-fetch", "--no-optional-locks", "--no-advice", "--bare",
+    "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs",
+    "--icase-pathspecs", "--exec-path", "--html-path", "--man-path",
+    "--info-path", "-v", "--version", "-h", "--help",
+})
+GIT_GLOBAL_VALUES = frozenset({
+    "-c", "--config-env", "--git-dir", "--work-tree", "--namespace", "--attr-source",
+})
+GIT_GLOBAL_ATTACHED = GIT_GLOBAL_VALUES - {"-c"} | {"--exec-path", "--list-cmds"}
+
+
 def git_command(words: list[str], cwd: Path | None) -> tuple[int | None, Path | None]:
-    """Return the subcommand index and cumulative ``git -C`` directory."""
+    """Return the subcommand index and cumulative ``git -C`` directory.
+
+    A global option outside the tables above fails closed, as ``(None, None)``.
+    """
 
     index = 1
     target = cwd
@@ -1660,18 +1882,15 @@ def git_command(words: list[str], cwd: Path | None) -> tuple[int | None, Path | 
                     return None, None
             index += 2
             continue
-        if option in {"-c", "--config-env", "--git-dir", "--work-tree"}:
+        if option in GIT_GLOBAL_VALUES:
             if index + 1 >= len(words):
                 return None, None
             index += 2
             continue
-        if any(
-            option.startswith(f"{prefix}=")
-            for prefix in ("--config-env", "--git-dir", "--work-tree")
-        ):
+        if option in GIT_GLOBAL_FLAGS or option.partition("=")[0] in GIT_GLOBAL_ATTACHED:
             index += 1
             continue
-        index += 1
+        return None, None
     return index, target
 
 
@@ -4623,6 +4842,36 @@ def git_worktree_mutation_paths(
     return resolve_mutation_paths(path_values, cwd)
 
 
+def git_checkout_index_paths(args: list[str], cwd: Path) -> list[Path] | None:
+    """The folders ``git checkout-index --prefix=<p>`` writes into.
+
+    Git prepends the prefix to each path as text and resolves the result
+    from the top of the work tree, not from the folder it runs in:
+    ``git -C sub checkout-index --prefix=../x/ ../a`` writes ``<top>/../x/a``
+    (git 2.54). ``--prefix=../x`` writes ``<top>/../xa``, so the folder is
+    the parent of the prefix with a name appended.
+    """
+    prefixes = git_checkout_index_prefixes(args)
+    if prefixes is None:
+        return None
+    if not prefixes:
+        return []
+    state = checkout_state(cwd)
+    if state is None:
+        return None
+    targets: list[Path] = []
+    for prefix in prefixes:
+        named = (
+            ShellWord(prefix + "x", (*prefix.protected, True))
+            if isinstance(prefix, ShellWord) else prefix + "x"
+        )
+        target = resolve_shell_path(named, state[0])
+        if target is None:
+            return None
+        targets.append(target.parent)
+    return targets
+
+
 def metadata_mutation_paths(
     name: str, args: list[str], cwd: Path
 ) -> list[Path] | None:
@@ -4745,6 +4994,8 @@ def mutation_path_operands(
             return None
         if words[command_index] == "worktree":
             return git_worktree_mutation_paths(words, command_index, git_cwd)
+        if words[command_index] == "checkout-index":
+            return git_checkout_index_paths(words[command_index + 1 :], git_cwd)
         if words[command_index] in READ_GIT:
             outputs = git_inspection_outputs(words, command_index)
             return (

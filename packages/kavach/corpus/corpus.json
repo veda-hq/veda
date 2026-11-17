@@ -1151,6 +1151,60 @@
     "text": "git init -q {P}/pwned"
   },
   {
+    "id": "ow-git-bugreport-o",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "bugreport names its folder with -o (#179).",
+    "text": "git bugreport -o {P}/pwned"
+  },
+  {
+    "id": "ow-git-diagnose-o",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "diagnose names its folder with -o (#179).",
+    "text": "git diagnose -o {P}/pwned"
+  },
+  {
+    "id": "ow-git-index-pack-o",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "index-pack writes the index -o names (#179).",
+    "text": "git pack-objects -q --revs --all --stdout < /dev/null | git index-pack --stdin -o {P}/pwned.idx"
+  },
+  {
+    "id": "ow-git-config-f",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "config -f writes the file it names (#179).",
+    "text": "git config -f {P}/pwned core.x y"
+  },
+  {
+    "id": "ow-git-checkout-index-prefix",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "checkout-index writes each file under --prefix, from the top of the work tree (#179).",
+    "text": "git checkout-index -a --prefix={P}/pwned/"
+  },
+  {
+    "id": "ow-git-namespace-shifts-verb",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "--namespace takes the next word, so kavach once read x as the subcommand (#179).",
+    "text": "git --namespace x init -q {P}/pwned"
+  },
+  {
     "id": "ow-corrected-inside",
     "intent": "outside-write",
     "role": "corrected",

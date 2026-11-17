@@ -762,6 +762,160 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(outside.exists())
 
+    def test_git_more_destinations_elsewhere_are_refused(self) -> None:
+        """bugreport, diagnose, index-pack, config and checkout-index name
+        what they write their own way; a global option that takes the next
+        word once moved which word was read as the subcommand. Git 2.54
+        writes each of these (#179); each once counted only its folder."""
+        outside = self.external / "out"
+        nested = self.claude / "nested"
+        nested.mkdir()
+        relative = os.path.relpath(outside, nested)
+        # checkout-index resolves --prefix from the top of the work tree.
+        top_relative = os.path.relpath(outside, self.claude)
+        for command in (
+            f"git bugreport -o {outside}",
+            f"git bugreport -o{outside}",
+            f"git bugreport --output-directory {outside}",
+            f"git bugreport --output-directory={outside}",
+            f"git bugreport --output {outside}",
+            f"git bugreport -s x -o {outside}",
+            f"git bugreport -sx -o{outside}",
+            f"git bugreport --suffix -- -o {outside}",
+            # After a swallowed `--`, git still takes abbreviations.
+            f"git bugreport --suffix -- --output {outside}",
+            f"git bugreport --suffix -- --o={outside}",
+            f"git bugreport --suffix -- --outp {outside}",
+            f"git bugreport --output-d={outside}",
+            f"git diagnose --suffix -- --output {outside}",
+            f"git diagnose --suffix -- --o={outside}",
+            f"git bugreport --no-diagnose -o {outside}",
+            f"git -C nested bugreport -o {relative}",
+            f"git diagnose -o {outside}",
+            f"git diagnose -o{outside}",
+            f"git diagnose --output-directory={outside}",
+            f"git diagnose --mode=stats -s x -o {outside}",
+            f"git diagnose --suffix -- -o {outside}",
+            f"git index-pack -o {outside}/x.idx x.pack",
+            f"git index-pack x.pack -o {outside}/x.idx",
+            f"git index-pack {outside}/x.pack",
+            f"git index-pack --stdin {outside}/x.pack",
+            f"git index-pack --progress-title x -o {outside}/x.idx x.pack",
+            f"git index-pack --keep -o {outside}/x.idx x.pack",
+            f"git -C nested index-pack -o {relative}/x.idx x.pack",
+            f"git config -f {outside}/x core.x y",
+            f"git config -f{outside}/x core.x y",
+            f"git config --file {outside}/x core.x y",
+            f"git config --file={outside}/x core.x y",
+            f"git config --fil={outside}/x core.x y",
+            f"git config -zf {outside}/x core.x y",
+            f"git config --type=bool -f {outside}/x core.x true",
+            f"git config -f {outside}/x --add core.x y",
+            f"git config -f {outside}/x --replace-all core.x y",
+            f"git config -f {outside}/x --unset core.x",
+            f"git config --file {outside}/x -- core.x y",
+            f"git config --comment -- -f {outside}/x core.x y",
+            f"git config set -f {outside}/x core.x y",
+            f"git -C nested config -f {relative}/x core.x y",
+            f"git checkout-index -a --prefix={outside}/",
+            f"git checkout-index -a --prefix {outside}/",
+            f"git checkout-index -a --pre={outside}/",
+            f"git checkout-index --prefix={outside}/ tracked.txt",
+            f"git checkout-index -af --prefix={outside}/",
+            f"git checkout-index --prefix={outside}/ -- tracked.txt",
+            f"git checkout-index -a --prefix={top_relative}/",
+            # Resolved from nested, ../x/ would be inside the worktree.
+            "git -C nested checkout-index --prefix=../x/ ../tracked.txt",
+            f"git -C nested checkout-index -a --prefix={top_relative}/",
+            f"git --namespace x init {outside}",
+            f"git --attr-source HEAD bugreport -o {outside}",
+            f"git --no-advice bugreport -o {outside}",
+            f"git --bare bugreport -o {outside}",
+            f"git -p bugreport -o {outside}",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("outside this session's Claude worktree", result.stderr)
+        # What the readers cannot place stays unproven. Git 2.54 writes the
+        # first eight; the guard refuses each without reading its target.
+        for command in (
+            f"git -c format.outputDirectory={outside} format-patch -1",
+            "git --config-env=format.outputDirectory=OUTDIR format-patch -1",
+            "git --config-env format.outputDirectory=OUTDIR format-patch -1",
+            f"git -c core.worktree={outside} checkout -- .",
+            f"git --git-dir={outside} init",
+            f"git --git-dir {outside} init",
+            f"git --work-tree={outside} checkout -- .",
+            f"git --work-tree {outside} checkout -- .",
+            f"git -cformat.outputDirectory={outside} format-patch -1",
+            "git --git-d=x init",
+            "git --unknown x init .tmp/repo",
+            "git config --global core.x y",
+            "git config --system core.x y",
+            "git config --gl core.x y",
+            "git config --global --unset core.x",
+            "git config -f x --comm --list core.x y",
+            "git config -f x --typ bool core.x y",
+            "git config -f x -k core.x y",
+            # Git 2.54 writes the first; it calls --fi and --f ambiguous.
+            f"git config --comm -- -f {outside}/x core.x y",
+            f"git config --fi={outside}/x core.x y",
+            f"git config --f={outside}/x core.x y",
+            "git config --typ bool core.x",
+            "git config -f",
+            "git config -f --list core.x y",
+            "git index-pack -o",
+            f"git index-pack -o{outside}/x.idx x.pack",
+            "git index-pack --threads 2 x.pack",
+            "git index-pack --unknown x.pack",
+            "git index-pack a.pack b.pack",
+            "git index-pack -o --stdin",
+            "git checkout-index -a --prefix",
+            "git bugreport -o",
+            "git bugreport -so x",
+            "git bugreport --outp x",
+            "git diagnose -o --suffix",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("mutation targets could not be resolved", result.stderr)
+        for command in (
+            "git bugreport -o .tmp",
+            "git bugreport --output-directory=.tmp -s x",
+            "git -C nested bugreport -o ../.tmp",
+            "git bugreport --output-d .tmp",
+            "git diagnose -o .tmp --mode=all",
+            "git bugreport",
+            "git index-pack -o .tmp/x.idx .tmp/x.pack",
+            "git index-pack --stdin --fix-thin",
+            "git index-pack --threads=2 --strict .tmp/x.pack",
+            "git config -f .tmp/x core.x y",
+            "git config core.x y",
+            "git config --unset core.x",
+            "git config --global --get user.name",
+            "git config --global user.name",
+            "git config --system --list",
+            "git config get --global user.name",
+            "git config list --global",
+            f"git config -f {outside} --list",
+            f"git config -f {outside} core.x",
+            f"git config -lf {outside}",
+            "git checkout-index -a --prefix=.tmp/co/",
+            "git -C nested checkout-index -a --prefix=.tmp/co/",
+            "git checkout-index -a",
+            "git checkout-index --stage=all -- tracked.txt",
+            "git --no-pager log -1",
+            "git --no-optional-locks status",
+            "git --literal-pathspecs add tracked.txt",
+            "git --version",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(outside.exists())
+
     def test_git_inspection_flags_preserve_reads_and_deny_ambiguous_writes(self) -> None:
         reads = ("git diff --stat", "git show HEAD", "git log -1 --oneline", "git diff -- --output=filename", "git show -- --ext-diff")
         writes = ("git diff --output", "git diff --output=", "git diff --ext-diff", "git log --textconv", "git diff --out=result", "git rev-list --unknown-write-option", "git --paginate log", "git log --pretty --output=outside.patch")

@@ -59,6 +59,9 @@ ALTERNATIVES = re.compile(r"\b(which|or|how should|either)\b", re.I)
 # to another slash, a dot, a colon or #. A shallow path ("src/file") looks the
 # same, so the pair counts only when the buttons are not a plain yes or no.
 PAIR = re.compile(r"(?<![\w/.:#@~-])[A-Za-z]+/[A-Za-z]+(?![\w/.:#@-])")
+# A URL names no alternatives, its query and fragment included: it is read
+# out of the ask before either check.
+URL = re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.I)
 # Content a person attaches in place of words.
 ATTACHMENTS = {"image", "document"}
 
@@ -70,7 +73,7 @@ try:
     tool = data.get("tool_name")
     tool_input = data.get("tool_input")
     path = data.get("transcript_path")
-    if tool not in (ASK, WRAP_UP) or not path or not isinstance(tool_input, dict):
+    if tool not in (ASK, WRAP_UP) or not path or not tool_input or not isinstance(tool_input, dict):
         passes()
     with open(path) as handle:
         lines = handle.readlines()
@@ -88,10 +91,11 @@ def choice_shaped(wrap):
     replies = [a.get("label") for a in actions if not a.get("action") and isinstance(a.get("label"), str)]
     if len([r for r in replies if not YES_NO.match(r)]) >= 2:
         return True
-    if ALTERNATIVES.search(ask):
+    words = URL.sub(" ", ask)
+    if ALTERNATIVES.search(words):
         return True
     go_ahead = bool(replies) and all(YES_NO.match(r) for r in replies)
-    return not go_ahead and bool(PAIR.search(ask))
+    return not go_ahead and bool(PAIR.search(words))
 
 try:
     if tool == WRAP_UP and not choice_shaped(tool_input):

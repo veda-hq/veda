@@ -112,8 +112,9 @@ settled a question, so it checks that a look happened, not what it found.
   choice: two or more reply buttons that are not a plain yes or no, or an ask
   that names alternatives ("which", "or", "how should", "either"), whatever
   its buttons. A bare "A/B" pair counts too, unless every button is a plain
-  yes or no (a shallow path such as `src/file` looks the same); a path, a URL
-  or `owner/repo#N` never does.
+  yes or no (a shallow path such as `src/file` looks the same); a deeper path
+  (`src/old/parser.ts`), a URL (its query included) or `owner/repo#N` never
+  does.
 - **Passed:** a `wrap_up` whose first action is an app action (`commit`,
   `create_pr` …), or with no `ask`; and a go-ahead (yes/no buttons, or one
   button) whose `ask` names no alternatives: approvals are the owner's.

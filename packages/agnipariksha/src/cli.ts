@@ -186,7 +186,7 @@ async function judgeAll(args: Args, deps: CliDeps): Promise<number> {
     }
     deps.log(`agnipariksha: ${lane.name}: stryker run --mutate ${plan.targets.join(',')}`);
     const result = await judgeLane(plan, laneDeps);
-    if (result.fellBack !== null) deps.log(`  fallback: ${lane.name} reran in its own-suite mode: ${result.fellBack}`);
+    if (result.fellBack !== null) deps.log(`  fallback: ${lane.name} reran with its fallbackEnv: ${result.fellBack}`);
     if (result.flaky !== undefined) deps.log(`  flaky: ${lane.name}: ${result.flaky}`);
     for (const file of result.noMutants) deps.log(`  no mutants (absent from Stryker's report): ${file}`);
     for (const m of result.judgement.blocking) deps.log(`  ${formatBlocking(m)}`);

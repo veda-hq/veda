@@ -51,7 +51,8 @@ runs the repository's own `node_modules/.bin/stryker`.
   a retry), `RuntimeError`, `CompileError`. `Ignored` is not counted, and any
   other status refuses.
 - **A sibling suite that did not run is named.** In a run narrowed to the
-  owning suites (a lane whose `env` names `{suites}`, or a fallback rerun),
+  owning suites (a lane whose `env` names `{suites}`, or a fallback rerun
+  whose `fallbackEnv` does),
   only those suites run. When a file judged there has blocking mutants and a
   suite beside it does not own it (`a-cases.test.ts`, or a qualified
   `a.integration.test.ts`, with no source of its own), the gate says so once

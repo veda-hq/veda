@@ -218,7 +218,7 @@ test('a lane that falls back says so, and its fallback result is the verdict', a
     env.MODE === 'related' ? { code: 1, seen: ['Vitest failed to find test files related to mutated files'] } : run(cwd, args, env);
   assert.equal(await main(['--files', 'scripts/a.ts'], { ...f.deps, lanes: [related] }), 0);
   assert.ok(
-    f.logs.includes('  fallback: scripts reran in its own-suite mode: its dry run failed: "Vitest failed to find test files related to mutated files"'),
+    f.logs.includes('  fallback: scripts reran with its fallbackEnv: its dry run failed: "Vitest failed to find test files related to mutated files"'),
   );
   assert.match(f.logs.at(-1) ?? '', /1 killed of 1 in 1 lane\(s\), 0 blocking, 0 refused - exit 0/);
 });

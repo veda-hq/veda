@@ -89,6 +89,7 @@ folder, which holds handlers any TypeScript repository can list:
 | `code-quality-guard.sh` | PostToolUse, `Edit\|Write` | Refuses `@ts-ignore`, `@ts-nocheck`, `eslint-disable`, `any` and skipped tests in a `.ts`/`.tsx` edit. `.claude/`, `.agent/` and `docs/` are exempt. |
 | `arch-guard.sh` | PostToolUse, `Edit\|Write` | Runs the repository's `.dependency-cruiser.js` on a `.ts`/`.tsx` edit that touches imports; refuses what it refuses, and refuses when it cannot run. `scripts/` is exempt too. |
 | `session-dedupe-guard.sh` | PreToolUse, session starts | Refuses starting a session unless the conversation called `list_sessions` successfully in the last 15 minutes. |
+| `ask-gate.sh` | PreToolUse `AskUserQuestion\|mcp__ccd_turn__wrap_up` | Refuses, once per turn, a question to the owner when the session has done no research since the owner's last message ("Research before you ask"). |
 | `lessons.sh` | PreToolUse `Bash\|Edit\|Write\|Agent\|Task\|mcp__ccd_session__start_session`; PostToolUseFailure | Shows a lesson whose `when` line matches the call ("Lessons at their moment"). Never blocks. |
 | `autofix-watch.sh` | PostToolUse `Bash\|mcp__ccd_pr__set_monitor\|mcp__ccd_pr__get_status\|mcp__ccd_turn__wrap_up`; PostToolUseFailure `mcp__ccd_pr__set_monitor` | Lists every pull request the session opens and tells the model, in its context, about each open one that Auto-fix is not on for ("Auto-fix for every pull request"). Never blocks. |
 | `worktree-archive.sh` | PreToolUse `ExitWorktree` (and Codex's `set_thread_archived`) | Denies removing or archiving the session's worktree while `sarathi worktree archive-check` finds work that would be lost ("Worktrees"). List it with `"failClosed": true`. |
@@ -99,7 +100,56 @@ the desktop app runs a worktree session's hooks with `$CLAUDE_PROJECT_DIR`
 set to the main checkout. They use that checkout's prettier and
 dependency-cruiser, and the project checkout's prettier when a fresh worktree
 has none installed. They need `bash`, `jq` and `git`;
-`session-dedupe-guard.sh` runs `HOOK_PYTHON`, or `python3`.
+`session-dedupe-guard.sh` and `ask-gate.sh` run `HOOK_PYTHON`, or `python3`.
+
+### Research before you ask
+
+`ask-gate.sh` holds the `sarathi:research-first` rule: settle what a source
+can settle before asking the owner. A hook cannot judge whether research
+settled a question, so it checks that a look happened, not what it found.
+
+- **Gated:** every `AskUserQuestion`; a `wrap_up` whose `ask` offers a
+  choice: two or more reply buttons that are not a plain yes or no, or an ask
+  that names alternatives ("which", "or", "how should", "either"), whatever
+  its buttons. A bare "A/B" pair counts too, unless every button is a plain
+  yes or no (a shallow path such as `src/file` looks the same); a deeper path
+  (`src/old/parser.ts`), a URL (its query included) or `owner/repo#N` never
+  does.
+- **Passed:** a `wrap_up` whose first action is an app action (`commit`,
+  `create_pr` …), or with no `ask`; and a go-ahead (yes/no buttons, or one
+  button) whose `ask` names no alternatives: approvals are the owner's.
+- **Research:** since the owner's last message, a `WebSearch`, a `WebFetch`,
+  a browser page read (`…Claude_Browser__get_page_text`, `read_page`,
+  `navigate`), or an `Agent`/`Task` launch of `researcher`,
+  `sarathi:researcher`, `Explore`, `general-purpose` (also the default with
+  no type) or `claude-code-guide`. The owner's last message is a user-role
+  entry holding the person's text: not a tool result, a system reminder, a
+  background task's report, another session's message or an app event.
+- **Refused:** exit 2, with the rule and the owner-only kinds on stderr,
+  which reaches the model. A second gated ask in the same turn goes through,
+  keyed on the turn (the owner's last message), not the question's text, so
+  an owner-only question is asked again unchanged. The key is kept in
+  `<dir>/<session id>`, where `<dir>` is `SARATHI_ASK_GATE_DIR`, else
+  `$XDG_STATE_HOME/sarathi/ask-gate`, else `~/.local/state/sarathi/ask-gate`.
+- **Passing** is a silent exit 0, never an allow answer. Anything it cannot
+  read passes.
+
+A project lists it in `.claude/sarathi.json`, beside its other `PreToolUse`
+handlers:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "AskUserQuestion|mcp__ccd_turn__wrap_up", "command": "bash \"$SARATHI_HOOKS\"/ask-gate.sh", "timeout": 10 }
+    ]
+  }
+}
+```
+
+and widens its settings' `PreToolUse` matcher to include
+`AskUserQuestion|mcp__ccd_turn__wrap_up` (`sarathi check` says when it does
+not), for example `Bash|Edit|Write|NotebookEdit|AskUserQuestion|mcp__ccd_turn__wrap_up`.
 
 ### Auto-fix for every pull request
 
@@ -417,8 +467,13 @@ The live-service tests start real containers, so they run only with
 `skills/working-rules/SKILL.md` holds the generic rules an agent follows to
 carry a change from first edit to merge: run started work to merge, show then
 push, commit and push without skipping or weakening checks, resolve review
-threads only once the fix is on the remote, and when to stop and ask. A
-project adds its own rules on top.
+threads only once the fix is on the remote, research before asking, and when
+to stop and ask. A project adds its own rules on top.
+
+`skills/research-first/SKILL.md` is the full research rule the working rules
+point to: what only the owner can answer, where to look and in what order,
+when to state an assumption and proceed, and how to ask, with its sources.
+`ask-gate.sh` enforces the look ("Research before you ask").
 
 It ships in the package, so a project whose dependencies are installed can
 load it every session with one import line in its `CLAUDE.md` (or in a file
@@ -429,14 +484,17 @@ checkout with no `node_modules` yet starts without it:
 @node_modules/@veda-hq/sarathi/skills/working-rules/SKILL.md
 ```
 
-The plugin carries the same file as the skill `sarathi:working-rules`.
+The plugin carries the same file as the skill `sarathi:working-rules`, and
+the research rule as `sarathi:research-first`.
 
 ## The plugin
 
 `sarathi@veda`, from this repository's marketplace, carries two agents,
 `sarathi:worker` (carries out one decided task end to end) and
-`sarathi:researcher` (answers an external question with sources, read-only),
-and the `sarathi:working-rules` skill.
+`sarathi:researcher` (answers a question a source can settle, with a verdict
+of Settled, Conflicting or Not settled and each claim's URL, version and date
+read; read-only), and the `sarathi:working-rules` and
+`sarathi:research-first` skills.
 
 ```sh
 claude plugin marketplace add veda-hq/veda

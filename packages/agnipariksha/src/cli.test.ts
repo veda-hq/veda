@@ -133,6 +133,7 @@ function fake(reports: Record<string, string>, over: Partial<CliDeps> = {}): Fak
       return outputs[args[0] as string] ?? '';
     },
     exists: (path) => path.endsWith('.test.ts') && !path.startsWith('scripts/c.'),
+    pathExists: (path) => files.has(path),
     runStryker: async (_cwd, args) => {
       strykerRuns.push(args);
       const name = /agnipariksha\/(.+)\.stryker\.config\.mjs$/.exec(args[1] ?? '')?.[1] ?? '';
@@ -287,16 +288,19 @@ test('an unfinished merge refuses before the lock, naming the merge and the way 
   assert.deepEqual(failing.logs, ['agnipariksha REFUSED: git: not a repository']);
 });
 
-test('unfinishedMerge reads git paths relative to the root or absolute, and names a merge with no message by its head', () => {
-  const read = (files: Record<string, string>) => (path: string) => files[path];
+test('unfinishedMerge reads git paths relative to the root or absolute, names a merge with no message by its head, and refuses an unreadable one', () => {
+  const on = (files: Record<string, string>) => [(path: string) => files[path], (path: string) => Object.hasOwn(files, path)] as const;
   const relative = (args: string[]) => `.git/${args[2]}\n`;
-  assert.equal(unfinishedMerge(relative, '/repo', read({})), null);
+  assert.equal(unfinishedMerge(relative, '/repo', ...on({})), null);
   const absolute = (args: string[]) => `/main/.git/worktrees/w/${args[2]}\n`;
   assert.match(
-    unfinishedMerge(absolute, '/elsewhere', read({ '/main/.git/worktrees/w/MERGE_HEAD': '1111111111112222\n3333333333334444\n' })) ?? '',
+    unfinishedMerge(absolute, '/elsewhere', ...on({ '/main/.git/worktrees/w/MERGE_HEAD': '1111111111112222\n3333333333334444\n' })) ?? '',
     /^a merge \(MERGE_HEAD 111111111111\) is not committed: /,
   );
-  assert.match(unfinishedMerge(relative, '/repo', read({ '/repo/.git/MERGE_HEAD': 'abc\n', '/repo/.git/MERGE_MSG': '\n' })) ?? '', /^a merge \(MERGE_HEAD abc\)/);
+  assert.match(unfinishedMerge(relative, '/repo', ...on({ '/repo/.git/MERGE_HEAD': 'abc\n', '/repo/.git/MERGE_MSG': '\n' })) ?? '', /^a merge \(MERGE_HEAD abc\)/);
+  // There but unreadable (a permission, a race): the tree may still be half-merged, so it refuses.
+  const unreadable = unfinishedMerge(relative, '/repo', () => undefined, (path) => path === '/repo/.git/MERGE_HEAD');
+  assert.match(unreadable ?? '', /^a merge \(\/repo\/\.git\/MERGE_HEAD, unreadable\) is not committed: .*then run again$/);
 });
 
 test('unfinishedMerge on real git: a stopped merge in a plain repository and in a linked worktree; a committed merge passes', () => {
@@ -322,21 +326,21 @@ test('unfinishedMerge on real git: a stopped merge in a plain repository and in 
     writeFileSync(join(wt, 'a.txt'), 'side\n');
     w(['commit', '-qam', 'side']);
 
-    assert.equal(unfinishedMerge(g, main_, readText), null);
+    assert.equal(unfinishedMerge(g, main_, readText, existsSync), null);
     // A conflict stops each merge before its commit; the fixture's shape is checked, not only the exit.
     assert.throws(() => g(['merge', 'side']));
     assert.match(g(['rev-parse', '--verify', '-q', 'MERGE_HEAD']), /^[0-9a-f]{40}\n$/);
-    assert.match(unfinishedMerge(g, main_, readText) ?? '', /^"Merge branch 'side'" \(MERGE_HEAD [0-9a-f]{12}\) is not committed/);
+    assert.match(unfinishedMerge(g, main_, readText, existsSync) ?? '', /^"Merge branch 'side'" \(MERGE_HEAD [0-9a-f]{12}\) is not committed/);
     assert.throws(() => w(['merge', 'main']));
     assert.match(w(['rev-parse', '--verify', '-q', 'MERGE_HEAD']), /^[0-9a-f]{40}\n$/);
     assert.ok(w(['rev-parse', '--git-path', 'MERGE_HEAD']).startsWith('/'), "a linked worktree's git path is absolute");
-    assert.match(unfinishedMerge(w, wt, readText) ?? '', /^"Merge branch 'main' into side" \(MERGE_HEAD [0-9a-f]{12}\) is not committed/);
+    assert.match(unfinishedMerge(w, wt, readText, existsSync) ?? '', /^"Merge branch 'main' into side" \(MERGE_HEAD [0-9a-f]{12}\) is not committed/);
 
     writeFileSync(join(main_, 'a.txt'), 'merged\n');
     g(['commit', '-qam', 'merged']);
-    assert.equal(unfinishedMerge(g, main_, readText), null, 'committed: the way out works');
+    assert.equal(unfinishedMerge(g, main_, readText, existsSync), null, 'committed: the way out works');
     w(['merge', '--abort']);
-    assert.equal(unfinishedMerge(w, wt, readText), null, 'aborted: the way out works');
+    assert.equal(unfinishedMerge(w, wt, readText, existsSync), null, 'aborted: the way out works');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -386,6 +390,24 @@ test("spawnStryker names the failing tests from Stryker's real output, split any
   const long = `process.stdout.write(${JSON.stringify(FAILED_TESTS_HEADER)} + '\\n\\t' + 'x'.repeat(${MAX_LINE * 3}))`;
   const cutShort = await spawnStryker([node, '-e', long], children)('.', [], {});
   assert.equal(cutShort.failedTests?.[0]?.length, MAX_LINE - 1, 'a line past the cap is cut, never held whole');
+});
+
+test('spawnStryker keeps a test name whole across chunks: a split character is joined, and an over-long line is its prefix only', async () => {
+  const children = new Set<ChildProcess>();
+  // "é" is two bytes in UTF-8: the first chunk ends between them.
+  const split = `const b = Buffer.from(${JSON.stringify(`${FAILED_TESTS_HEADER}\n\tcafé works\n`)}); const at = b.indexOf(0xc3) + 1; process.stdout.write(b.subarray(0, at)); setTimeout(() => process.stdout.write(b.subarray(at)), 50);`;
+  assert.deepEqual((await spawnStryker([node, '-e', split], children)('.', [], {})).failedTests, ['café works']);
+
+  // The over-long line spans three chunks and ends in "TAIL"; the next line is whole.
+  const write = (text: string) => `process.stdout.write(${JSON.stringify(text)})`;
+  const spliced = [
+    write(`${FAILED_TESTS_HEADER}\n\t${'a'.repeat(MAX_LINE)}`),
+    write('b'.repeat(MAX_LINE)),
+    write('TAIL\n\tnext test\n'),
+  ];
+  const script = `${spliced[0]}; setTimeout(() => { ${spliced[1]}; setTimeout(() => ${spliced[2]}, 50); }, 50);`;
+  const names = (await spawnStryker([node, '-e', script], children)('.', [], {})).failedTests ?? [];
+  assert.deepEqual(names, [`${'a'.repeat(MAX_LINE - 1)}`, 'next test'], 'the prefix only, never the prefix spliced to the tail');
 });
 
 test('spawnStryker returns the exit code and the markers it saw, across chunks and streams', async () => {

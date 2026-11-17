@@ -42,6 +42,8 @@ test('each name once, in order; failure messages, blank names and lines outside 
 });
 
 test('a header seen again reads on; at most MAX_KEPT names are kept', () => {
+  const again = [FAILED_TESTS_HEADER, '\tfirst', `09:00:00 (1) ERROR DryRunExecutor ${FAILED_TESTS_HEADER}`, '\tsecond', '\tfirst'].join('\n');
+  assert.deepEqual(read(again), ['first', 'second'], 'a second record adds its names; a name seen in both is kept once');
   const many = [FAILED_TESTS_HEADER, ...Array.from({ length: MAX_KEPT + 5 }, (_, i) => `\tt${i}`)].join('\n');
   const names = read(many);
   assert.equal(names.length, MAX_KEPT);

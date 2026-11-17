@@ -330,7 +330,7 @@ test('a dry run failing on a test twice refuses, naming the tests; a rerun faili
   const result = await judgeLane(webPlan, twice.deps);
   assert.equal(twice.runs.length, 2);
   assert.deepEqual(result.refusals, [
-    'the initial test run failed twice, the second time: Stryker exited 1 (There were failed tests in the initial test run: "a" and "b"); those tests fail every run, not now and then: fix them, then run again',
+    'the initial test run failed on both runs, the second time: Stryker exited 1 (There were failed tests in the initial test run: "a" and "b"); fix those tests, then run again',
   ]);
   assert.equal(result.flaky, undefined);
 

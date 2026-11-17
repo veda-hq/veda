@@ -11,6 +11,7 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { StringDecoder } from 'node:string_decoder';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -71,6 +72,8 @@ export function selectLanes(lanes: readonly Lane[], names: readonly string[] | u
 export interface CliDeps extends Omit<LaneDeps, 'reuseKey'> {
   git: Git;
   exists: Exists;
+  /** Whether an absolute path exists, readable or not. */
+  pathExists: (absolutePath: string) => boolean;
   lock: LockDeps;
   pid: number;
   lanes: readonly Lane[];
@@ -87,15 +90,21 @@ export interface CliDeps extends Omit<LaneDeps, 'reuseKey'> {
  * (`MERGE_HEAD` exists). Its working tree is half-merged and is judged
  * against the merge-base, so the verdict would say nothing about the branch.
  * `--git-path` is relative to the root in a plain repository and absolute in
- * a linked worktree.
+ * a linked worktree. A `MERGE_HEAD` that exists but cannot be read refuses
+ * too: the tree may still be half-merged.
  */
-export function unfinishedMerge(git: Git, root: string, readFile: (path: string) => string | undefined): string | null {
+export function unfinishedMerge(
+  git: Git,
+  root: string,
+  readFile: (path: string) => string | undefined,
+  pathExists: (absolutePath: string) => boolean,
+): string | null {
   const gitPath = (name: string): string => resolve(root, git(['rev-parse', '--git-path', name]).trim());
-  const head = readFile(gitPath('MERGE_HEAD'));
-  if (head === undefined) return null;
-  const sha = head.trim().split(/\s+/)[0] ?? '';
+  const headPath = gitPath('MERGE_HEAD');
+  if (!pathExists(headPath)) return null;
+  const sha = readFile(headPath)?.trim().split(/\s+/)[0] ?? '';
   const subject = readFile(gitPath('MERGE_MSG'))?.split('\n')[0]?.trim() ?? '';
-  const merge = `${subject === '' ? 'a merge' : `"${subject}"`} (MERGE_HEAD ${sha.slice(0, 12)})`;
+  const merge = `${subject === '' ? 'a merge' : `"${subject}"`} (${sha === '' ? `${headPath}, unreadable` : `MERGE_HEAD ${sha.slice(0, 12)}`})`;
   return `${merge} is not committed: the working tree is half-merged, so a verdict now would say nothing about the branch. Commit the merge (git commit) or abort it (git merge --abort), then run again`;
 }
 
@@ -119,7 +128,7 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
   }
   let merging: string | null;
   try {
-    merging = unfinishedMerge(deps.git, deps.root, deps.readFile);
+    merging = unfinishedMerge(deps.git, deps.root, deps.readFile, deps.pathExists);
   } catch (error: unknown) {
     // fail-open: a git that cannot say whether a merge is in progress refuses (exit 2).
     deps.log(`agnipariksha REFUSED: ${(error as Error).message}`);
@@ -280,18 +289,45 @@ export function spawnStryker(
       const failed = failedTestReader();
       const flushes: (() => void)[] = [];
       const tee = (out: NodeJS.WritableStream) => {
+        // One decoder a stream: a character split across two chunks is joined, never two U+FFFD.
+        const decoder = new StringDecoder('utf8');
         let tail = '';
+        // Whole lines go to the reader. A line past the cap keeps its first MAX_LINE characters and
+        // drops the rest up to its newline, however the chunks split it.
         let line = '';
-        flushes.push(() => failed.read(line));
+        let over = false;
+        const add = (text: string): void => {
+          if (over) return;
+          line += text;
+          if (line.length > MAX_LINE) {
+            line = line.slice(0, MAX_LINE);
+            over = true;
+          }
+        };
+        const end = (): void => {
+          failed.read(line);
+          line = '';
+          over = false;
+        };
+        const take = (text: string): void => {
+          const [first = '', ...rest] = text.split('\n');
+          add(first);
+          for (const part of rest) {
+            end();
+            add(part);
+          }
+        };
+        flushes.push(() => {
+          take(decoder.end());
+          end();
+        });
         return (chunk: Buffer) => {
           out.write(chunk);
-          const text = tail + chunk.toString();
+          const decoded = decoder.write(chunk);
+          const text = tail + decoded;
           for (const marker of markers) if (text.includes(marker)) seen.add(marker);
           tail = text.slice(-keep);
-          // Whole lines go to the reader; a line longer than the cap is cut, never held whole.
-          const lines = (line + chunk.toString()).split('\n');
-          line = (lines.pop() ?? '').slice(0, MAX_LINE);
-          lines.forEach(failed.read);
+          take(decoded);
         };
       };
       child.stdout?.on('data', tee(process.stdout));
@@ -333,6 +369,7 @@ export function realDeps(root: string, children: Set<ChildProcess>, config: Conf
     reportsDir: join(root, REPORTS_DIR),
     git: (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 1 << 28 }),
     exists: (path) => existsSync(join(root, path)),
+    pathExists: existsSync,
     runStryker: spawnStryker([join(root, STRYKER_BIN)], children, MARKERS, config.unsetEnv),
     readFile,
     writeFile,

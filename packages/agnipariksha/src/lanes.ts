@@ -179,7 +179,7 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
     const failedFirst = first.failedTests;
     first = await run(plan.targets.map(local), reuseArgs, firstEnv);
     if ('refusal' in first && first.trigger === FAILED_INITIAL_RUN) {
-      return refused(`the initial test run failed twice, the second time: ${first.refusal}; those tests fail every run, not now and then: fix them, then run again`, null);
+      return refused(`the initial test run failed on both runs, the second time: ${first.refusal}; fix those tests, then run again`, null);
     }
     if (!('refusal' in first)) flaky = `its initial test run failed${on(failedFirst)}, then passed when run again: the test is flaky; ${FIX_THE_FLAKE}`;
   }

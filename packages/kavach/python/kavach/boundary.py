@@ -622,6 +622,13 @@ def shell_option_value(word: str) -> str:
     return shell_slice(word, word.index("=") + 1)
 
 
+def shell_suffixed(word: str, suffix: str) -> str:
+    """``word`` with literal ``suffix`` text after it, its quoting kept."""
+    if isinstance(word, ShellWord):
+        return ShellWord(word + suffix, (*word.protected, *(True,) * len(suffix)))
+    return word + suffix
+
+
 def has_dynamic_markers(word: str) -> bool:
     return any(
         character in "$`*?[{}"
@@ -1486,7 +1493,174 @@ def git_destination_operands(words: list[str], command_index: int) -> list[str] 
         return git_index_pack_outputs(args)
     if verb == "config":
         return git_config_file_outputs(args)
+    if verb == "merge-file":
+        return git_merge_file_outputs(args)
+    if verb == "fast-import":
+        return git_fast_import_outputs(args)
+    if verb == "credential-store":
+        return git_credential_store_outputs(args)
     return []
+
+
+def git_long_option(name: str, options: frozenset[str]) -> str | None:
+    """The one option of ``options`` that ``name`` spells or abbreviates,
+    as parse-options takes it; an unknown or ambiguous name is None."""
+    if name in options:
+        return name
+    matches = [option for option in options if option.startswith(name)]
+    return matches[0] if len(name) > len("--") and len(matches) == 1 else None
+
+
+# `git merge-file` options, from git 2.54's `git merge-file -h`.
+GIT_MERGE_FILE_FLAGS = frozenset({
+    "--stdout", "--object-id", "--diff3", "--zdiff3", "--ours", "--theirs",
+    "--union", "--quiet",
+})
+GIT_MERGE_FILE_VALUES = frozenset({"--diff-algorithm", "--marker-size"})
+
+
+def git_merge_file_outputs(args: list[str]) -> list[str] | None:
+    """``git merge-file <current> <base> <other>`` writes ``<current>``,
+    resolved from the folder git runs in, unless ``-p``/``--stdout``
+    prints it or ``--object-id`` names objects. Git permutes options, and
+    ``-L`` takes the next word, ``--`` too (git 2.54 writes
+    ``merge-file -L -- <current> base other``). An option the reader does
+    not know, or other than three operands, fails closed."""
+    operands: list[str] = []
+    prints = False
+    index = 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        if word == "--":
+            operands.extend(args[index:])
+            break
+        if word.startswith("--"):
+            name, has_value, _ = word.partition("=")
+            option = git_long_option(name, GIT_MERGE_FILE_FLAGS | GIT_MERGE_FILE_VALUES)
+            if option is None:
+                return None
+            if option in GIT_MERGE_FILE_VALUES:
+                if not has_value:
+                    if index >= len(args):
+                        return None
+                    index += 1
+            elif has_value:
+                return None
+            prints = prints or option in {"--stdout", "--object-id"}
+        elif word.startswith("-") and word != "-":
+            letters = word[1:]
+            for position, letter in enumerate(letters):
+                if letter == "L":
+                    if position + 1 == len(letters):
+                        if index >= len(args):
+                            return None
+                        index += 1
+                    break
+                if letter == "p":
+                    prints = True
+                elif letter != "q":
+                    return None
+        else:
+            operands.append(word)
+    if len(operands) != 3:
+        return None
+    return [] if prints else operands[:1]
+
+
+def git_fast_import_outputs(args: list[str]) -> list[str] | None:
+    """The marks and pack-edges files ``git fast-import`` writes.
+
+    fast-import reads its own arguments: exact names, values only with
+    ``=``, resolved from the folder git runs in. ``--allow-unsafe-features``
+    lets the stream itself name files to write (``feature export-marks=``),
+    and ``--relative-marks`` moves them into the repository's own folder,
+    so both fail closed, as does ``--export-marks`` without ``=``."""
+    outputs: list[str] = []
+    for word in args:
+        name, has_value, _ = word.partition("=")
+        if name in {"--export-marks", "--export-pack-edges"}:
+            if not has_value:
+                return None
+            value = shell_option_value(word)
+            if not value or value.startswith("-"):
+                return None
+            outputs.append(value)
+        elif name in {"--allow-unsafe-features", "--relative-marks"}:
+            return None
+    return outputs
+
+
+def git_credential_store_outputs(args: list[str]) -> list[str] | None:
+    """The file ``git credential-store --file <f> store`` writes, with any
+    abbreviation of ``--file``. Without one, ``store`` and ``erase`` write
+    ``~/.git-credentials``, outside any worktree: unproven."""
+    files: list[str] = []
+    index = 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        name, has_value, _ = word.partition("=")
+        if len(name) > len("--") and "--file".startswith(name):
+            if has_value:
+                value = shell_option_value(word)
+            elif index < len(args):
+                value = args[index]
+                index += 1
+            else:
+                return None
+            if not value or value.startswith("-"):
+                return None
+            files.append(value)
+    if not files and any(word in {"store", "erase"} for word in args):
+        return None
+    return files
+
+
+def git_top_relative_outputs(verb: str, args: list[str]) -> list[str] | None:
+    """What fast-export, pack-objects and read-tree write. Git resolves
+    these from the top of the work tree, not from the folder it runs in:
+    from `git -C sub`, `--export-marks=m` writes `<top>/m` (git 2.54).
+
+    - ``fast-export --export-marks`` exactly, anywhere. Git 2.54 calls
+      ``--export-m=`` ambiguous, so an abbreviation is unproven.
+    - ``pack-objects <base>`` writes ``<base>-<hash>.pack`` and its
+      ``.idx`` and ``.rev``. Every word that is not an option counts as a
+      base, so a value an option takes counts too: that only refuses more.
+    - ``read-tree --index-output`` and each abbreviation from ``--i`` on
+      (git 2.54 takes ``--i=``), anywhere, past ``--`` too.
+    """
+    outputs: list[str] = []
+    if verb == "pack-objects":
+        dashes = False
+        for word in args:
+            if word == "--" and not dashes:
+                dashes = True
+            elif dashes or not word.startswith("-") or word == "-":
+                outputs.append(shell_suffixed(word, "-pack"))
+        return outputs
+    option = "--export-marks" if verb == "fast-export" else "--index-output"
+    shortest = len(option) if verb == "fast-export" else len("--i")
+    index = 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        name, has_value, _ = word.partition("=")
+        if not (name.startswith("--") and len(name) > len("--") and option.startswith(name)):
+            continue
+        if len(name) < shortest:
+            return None
+        if has_value:
+            value = shell_option_value(word)
+        elif index < len(args):
+            value = args[index]
+            index += 1
+        else:
+            return None
+        if not value or value.startswith("-"):
+            return None
+        outputs.append(value)
+    return outputs
 
 
 # `git index-pack` reads its own arguments, not through parse-options: exact
@@ -1861,6 +2035,90 @@ GIT_GLOBAL_VALUES = frozenset({
     "-c", "--config-env", "--git-dir", "--work-tree", "--namespace", "--attr-source",
 })
 GIT_GLOBAL_ATTACHED = GIT_GLOBAL_VALUES - {"-c"} | {"--exec-path", "--list-cmds"}
+
+# Verbs that run a command from a place the guard cannot read: filter-branch
+# evals its filters in a temporary tree, difftool and mergetool run a tool
+# (`-x <cmd>`, or the configured one) on temporary files. `submodule foreach`
+# runs in each submodule and fails closed beside these.
+GIT_UNPLACED_RUNNERS = frozenset({"filter-branch", "difftool", "mergetool"})
+
+# Assignments before `git` that change where it writes or what it runs:
+# every `GIT_*` name (GIT_DIR, GIT_INDEX_FILE, GIT_TRACE=<file>,
+# GIT_CONFIG_COUNT, GIT_EXTERNAL_DIFF, ...), and the editors, pager and
+# config homes git reads. All fail closed as unproven, as `--git-dir` does,
+# except the names below, which name no file and run nothing, and the
+# editors as the literal `true` or `:`.
+GIT_STEERING_NAMES = frozenset({"EDITOR", "VISUAL", "PAGER", "HOME", "XDG_CONFIG_HOME"})
+GIT_INERT_ASSIGNMENTS = frozenset({
+    "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
+    "GIT_TERMINAL_PROMPT",
+})
+GIT_EDITOR_NAMES = frozenset({"GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR", "VISUAL"})
+
+
+def git_prefix_is_inert(prefix: list[str]) -> bool:
+    """Whether every assignment before a `git` command, bare or through
+    `env`, leaves where git writes and what it runs as they are."""
+    for word in prefix:
+        assignment = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)=.*", word, re.DOTALL)
+        if not assignment:
+            continue
+        name = assignment.group(1)
+        if not name.startswith("GIT_") and name not in GIT_STEERING_NAMES:
+            continue
+        if name in GIT_INERT_ASSIGNMENTS:
+            continue
+        if name in GIT_EDITOR_NAMES and shell_option_value(word) in {"true", ":"}:
+            continue
+        return False
+    return True
+
+
+def git_runner_programs(words: list[str], command_index: int) -> list[str] | None:
+    """The commands ``git rebase -x`` and ``git bisect run`` run, as shell
+    programs; None where one cannot be placed.
+
+    rebase runs each ``-x``/``--exec`` value through the shell. Every word is
+    read, so a value option that swallows ``--`` (``-X -- -x <cmd>``, which
+    git 2.54 runs) does not hide one: ``-x <cmd>``, ``-x<cmd>``, an ``x``
+    in a short cluster (``-qx``), and ``--exec`` with any abbreviation from
+    ``--e`` on, ``=`` or the next word. Reading a value as ``-x`` only
+    judges more. bisect runs the words after ``run`` as they are, with no
+    shell, so they are quoted back into one program.
+    """
+    verb = words[command_index]
+    args = words[command_index + 1 :]
+    if verb == "bisect":
+        if not args or args[0] != "run":
+            return []
+        if len(args) < 2:
+            return None
+        return [shlex.join(args[1:])]
+    if verb != "rebase":
+        return []
+    programs: list[str] = []
+    index = 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        name, has_value, _ = word.partition("=")
+        if name.startswith("--") and len(name) > len("--") and "--exec".startswith(name):
+            if has_value:
+                programs.append(shell_option_value(word))
+                continue
+        elif word.startswith("-") and not word.startswith("--") and "x" in word:
+            position = word.index("x")
+            if position + 1 < len(word):
+                programs.append(shell_slice(word, position + 1))
+                continue
+        else:
+            continue
+        if index >= len(args):
+            return None
+        programs.append(args[index])
+        index += 1
+    return programs
 
 
 def git_command(words: list[str], cwd: Path | None) -> tuple[int | None, Path | None]:
@@ -4996,6 +5254,26 @@ def mutation_path_operands(
             return git_worktree_mutation_paths(words, command_index, git_cwd)
         if words[command_index] == "checkout-index":
             return git_checkout_index_paths(words[command_index + 1 :], git_cwd)
+        if words[command_index] in GIT_UNPLACED_RUNNERS or (
+            words[command_index] == "submodule"
+            and "foreach" in words[command_index + 1 :]
+        ):
+            return None
+        if words[command_index] in {"fast-export", "pack-objects", "read-tree"}:
+            top_relative = git_top_relative_outputs(
+                words[command_index], words[command_index + 1 :]
+            )
+            state = checkout_state(git_cwd) if top_relative else None
+            if top_relative is None or (top_relative and state is None):
+                return None
+            others = git_output_options(words, command_index)
+            if others is None:
+                return None
+            written = resolve_mutation_paths(others, git_cwd)
+            above = resolve_mutation_paths(top_relative, state[0]) if state else []
+            if written is None or above is None:
+                return None
+            return written + above
         if words[command_index] in READ_GIT:
             outputs = git_inspection_outputs(words, command_index)
             return (
@@ -5265,6 +5543,36 @@ def mutation_directories(
                 for option in words[1:_index]
             ):
                 return None
+            # Above the read-only gate: `GIT_EXTERNAL_DIFF=<cmd> git diff`
+            # runs the command, and `GIT_TRACE=<file> git status` writes.
+            if not git_prefix_is_inert(prefix):
+                return None
+            programs = (
+                git_runner_programs(words, _index) if _index < len(words) else []
+            )
+            if programs is None:
+                return None
+            if programs:
+                # git runs these from the top of the work tree, after
+                # `git -C sub` too (git 2.54), once per commit.
+                state = checkout_state(git_target)
+                if state is None:
+                    return None
+                for program in programs:
+                    if has_dynamic_markers(program):
+                        return None
+                    nested = mutation_directories(
+                        program,
+                        state[0],
+                        nested_depth=nested_depth + 1,
+                        read_namespaces=read_namespaces,
+                        relinked=relinked,
+                        collected=collected,
+                        alone=False,
+                    )
+                    if nested is None:
+                        return None
+                    mutations.extend(nested)
         # A read-only adb stays read-only only bare: an assignment can move
         # the server it may start (ANDROID_USER_HOME, TMPDIR) into a checkout,
         # so the command needs an owned worktree and the moved state directory

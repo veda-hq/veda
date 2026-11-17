@@ -66,6 +66,8 @@ class PipeMasksExit(unittest.TestCase):
             "pnpm test | tail -5 && git push",
             "pnpm -r check 2>&1 | head -n 3 && git push origin HEAD",
             "make | tail && echo ok && git -C . push",
+            "pnpm test | tail -5 && git --attr-source HEAD push",
+            "pnpm test | tail -5 && git --config-env x=Y push",
         ):
             with self.subTest(command=command):
                 self.assertIn("pushes even when the command before the pipe failed", self.find(command) or "")

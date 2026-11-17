@@ -916,6 +916,180 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(outside.exists())
 
+    def test_git_writers_and_runners_elsewhere_are_refused(self) -> None:
+        """merge-file, fast-export and fast-import marks, pack-objects and
+        read-tree name what they write their own way; rebase and bisect run
+        a command; an assignment before git moves where it writes or what it
+        runs. Git 2.54 writes each of the first group (#182); each once
+        counted only its folder."""
+        outside = self.external / "out"
+        nested = self.claude / "nested"
+        nested.mkdir()
+        relative = os.path.relpath(outside, nested)
+        # fast-export, pack-objects and read-tree, and the commands rebase
+        # and bisect run, resolve from the top of the work tree.
+        top_relative = os.path.relpath(outside, self.claude)
+        for command in (
+            f"git merge-file {outside}/cur base other",
+            f"git merge-file -L x -L y -L z {outside}/cur base other",
+            f"git merge-file -Lx {outside}/cur base other",
+            f"git merge-file -L -- {outside}/cur base other",
+            f"git merge-file -- {outside}/cur base other",
+            f"git merge-file --marker-size 9 {outside}/cur base other",
+            f"git merge-file --marker-size=9 -q {outside}/cur base other",
+            f"git merge-file --zd {outside}/cur base other",
+            f"git -C nested merge-file {relative}/cur ../base ../other",
+            f"git fast-export --export-marks={outside}/m HEAD",
+            f"git fast-export --export-marks {outside}/m HEAD",
+            f"git fast-export HEAD --export-marks={outside}/m",
+            f"git fast-export --import-marks=x --export-marks={outside}/m HEAD",
+            f"git fast-export HEAD -- --export-marks={outside}/m",
+            f"git -C nested fast-export --export-marks={top_relative}/m HEAD",
+            # Resolved from nested, ../x would be inside the worktree.
+            "git -C nested fast-export --export-marks=../x/m HEAD",
+            f"git fast-import --export-marks={outside}/m",
+            f"git fast-import --quiet --export-pack-edges={outside}/e",
+            f"git -C nested fast-import --export-marks={relative}/m",
+            f"echo HEAD | git pack-objects --revs {outside}/p",
+            f"git pack-objects {outside}/p --revs",
+            f"git pack-objects --revs -- {outside}/p",
+            f"git pack-objects --window 10 {outside}/p",
+            "git -C nested pack-objects ../x/p",
+            f"git read-tree --index-output={outside}/idx HEAD",
+            f"git read-tree --index-output {outside}/idx HEAD",
+            f"git read-tree --index-o={outside}/idx HEAD",
+            f"git read-tree --i={outside}/idx HEAD",
+            f"git read-tree HEAD --index-output={outside}/idx",
+            f"git read-tree --prefix -- --index-output={outside}/idx HEAD",
+            "git -C nested read-tree --index-output=../x/idx HEAD",
+            f"git credential-store --file {outside}/c store",
+            f"git credential-store --file={outside}/c erase",
+            f"git credential-store --fi {outside}/c store",
+            f"git rebase -x 'touch {outside}/x' HEAD~1",
+            f"git rebase --exec 'touch {outside}/x' HEAD~1",
+            f"git rebase --exec='touch {outside}/x' HEAD~1",
+            f"git rebase --exe 'touch {outside}/x' HEAD~1",
+            f"git rebase HEAD~1 -x 'touch {outside}/x'",
+            f"git rebase '-xtouch {outside}/x' HEAD~1",
+            f"git rebase -qx 'touch {outside}/x' HEAD~1",
+            f"git rebase -s ort -X -- -x 'touch {outside}/x' HEAD~1",
+            f"git rebase -x true -x 'touch {outside}/x' HEAD~1",
+            f"git rebase -x 'cd {outside} && touch x' HEAD~1",
+            f"git rebase -x \"bash -c 'touch {outside}/x'\" HEAD~1",
+            "git -C nested rebase -x 'touch ../x' HEAD~1",
+            f"git bisect run touch {outside}/x",
+            f"git bisect run sh -c 'touch {outside}/x'",
+            "git -C nested bisect run touch ../x",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("outside this session's Claude worktree", result.stderr)
+        # What the readers cannot place stays unproven. Git 2.54 writes the
+        # first fourteen for real (#182); the guard refuses each without
+        # reading its target.
+        for command in (
+            f"GIT_DIR={outside} git init",
+            f"GIT_WORK_TREE={outside} git checkout -- tracked.txt",
+            f"GIT_INDEX_FILE={outside}/idx git add tracked.txt",
+            f"GIT_OBJECT_DIRECTORY={outside} git hash-object -w tracked.txt",
+            f"env GIT_DIR={outside} git init",
+            f"GIT_TRACE={outside}/t git status",
+            f"GIT_TRACE2_EVENT={outside}/t git status",
+            f"GIT_CONFIG_GLOBAL={outside}/g git config x.y z",
+            f"GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0='touch {outside}/x' git diff",
+            f"GIT_EXTERNAL_DIFF='touch {outside}/x' git diff",
+            f"GIT_EDITOR='touch {outside}/x' git commit --amend",
+            f"git difftool -x 'touch {outside}/x' HEAD",
+            f"git difftool --extcmd='touch {outside}/x' HEAD",
+            f"git filter-branch --tree-filter 'touch {outside}/x' HEAD",
+            f"GIT_COMMON_DIR={outside} git status",
+            "GIT_DIR=.git git status",
+            "GIT_INDEX_FILE=.tmp/idx git add tracked.txt",
+            "GIT_PAGER=cat git log -1",
+            "GIT_TRACE=1 git status",
+            f"EDITOR='touch {outside}/x' git commit --amend",
+            f"HOME={outside} git status",
+            "GIT_EDITOR=vi git commit --amend",
+            "env -i GIT_DIR=x git status",
+            f"git submodule foreach 'touch {outside}/x'",
+            "git submodule --quiet foreach true",
+            "git difftool HEAD",
+            "git mergetool",
+            "git filter-branch --msg-filter cat HEAD",
+            "git rebase HEAD~1 -x",
+            "git rebase -x \"$CMD\" HEAD~1",
+            "git rebase --exec=\"$(echo touch x)\" HEAD~1",
+            "git bisect run",
+            "git bisect run \"$CMD\"",
+            "git fast-import --allow-unsafe-features",
+            "git fast-import --relative-marks --export-marks=m",
+            "git fast-import --export-marks m",
+            "git fast-import --export-marks=",
+            f"git fast-export --export-m={outside}/m HEAD",
+            "git fast-export --exp=m HEAD",
+            "git fast-export --export-marks",
+            "git fast-export --export-marks -x HEAD",
+            "git merge-file --unknown cur base other",
+            "git merge-file -k cur base other",
+            "git merge-file cur base",
+            "git merge-file --no-stdout cur base other",
+            "git merge-file -L",
+            "git read-tree --index-output",
+            "git read-tree --index-output= HEAD",
+            "git read-tree --index-output -x HEAD",
+            "git credential-store store",
+            "git credential-store erase",
+            "git credential-store --file",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("mutation targets could not be resolved", result.stderr)
+        for command in (
+            "git rebase -x 'pnpm test' HEAD~1",
+            "git rebase --exec='pnpm --dir packages/kavach test:python' HEAD~1",
+            "git rebase -x 'touch .tmp/x' HEAD~1",
+            "git rebase -i HEAD~1",
+            "git -C nested rebase -x 'touch .tmp/x' HEAD~1",
+            "git bisect run pnpm test",
+            "git bisect run touch .tmp/x",
+            "git bisect start HEAD HEAD~1",
+            "GIT_EDITOR=true git rebase --continue",
+            "GIT_EDITOR=: git commit --amend",
+            "GIT_SEQUENCE_EDITOR=true git rebase -i HEAD~1",
+            "GIT_AUTHOR_NAME=x GIT_AUTHOR_EMAIL=x@example.invalid git commit -m x",
+            "env GIT_COMMITTER_DATE=2026-01-01 git commit -m x",
+            "GIT_TERMINAL_PROMPT=0 git fetch",
+            "LC_ALL=C git status",
+            f"git merge-file -p {outside}/cur base other",
+            f"git merge-file --stdout {outside}/cur base other",
+            f"git merge-file --std {outside}/cur base other",
+            f"git merge-file -qp {outside}/cur base other",
+            f"git merge-file {outside}/cur base other -p",
+            "git merge-file --object-id HEAD:a HEAD:b HEAD:c",
+            "git merge-file .tmp/cur base other",
+            "git fast-export --export-marks=.tmp/m HEAD",
+            f"git fast-export --import-marks={outside}/m HEAD",
+            "git fast-export HEAD",
+            "git -C nested fast-export --export-marks=.tmp/m HEAD",
+            "git fast-import --export-marks=.tmp/m",
+            f"git fast-import --quiet --import-marks={outside}/m",
+            "git pack-objects --stdout --revs",
+            "git pack-objects --revs .tmp/p",
+            "git pack-objects --window 10 .tmp/p",
+            "git -C nested pack-objects .tmp/p",
+            "git read-tree --index-output=.tmp/idx HEAD",
+            "git read-tree -m HEAD",
+            "git -C nested read-tree --index-output=.tmp/idx HEAD",
+            "git credential-store --file .tmp/c store",
+            "git credential-store get",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(outside.exists())
+
     def test_git_inspection_flags_preserve_reads_and_deny_ambiguous_writes(self) -> None:
         reads = ("git diff --stat", "git show HEAD", "git log -1 --oneline", "git diff -- --output=filename", "git show -- --ext-diff")
         writes = ("git diff --output", "git diff --output=", "git diff --ext-diff", "git log --textconv", "git diff --out=result", "git rev-list --unknown-write-option", "git --paginate log", "git log --pretty --output=outside.patch")

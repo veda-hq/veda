@@ -187,7 +187,7 @@ OPERATOR = re.compile(r";;&|;;|;&|&&|\|\||\|&|&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|
 VALUE_OPTS = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
 # `git` global options that take a separate value before the subcommand.
 GIT_GLOBAL_VALUE_OPTS = {
-    "-C", "-c", "--config-env", "--git-dir", "--work-tree", "--namespace",
+    "-C", "-c", "--config-env", "--git-dir", "--work-tree", "--namespace", "--attr-source",
 }
 
 

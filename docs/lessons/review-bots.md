@@ -21,6 +21,7 @@ every round, why a green PR sits unqueued, and when it is safe to resolve review
   blows up the request nondeterministically. Read the newest `~/.local/share/cubic/log/*.log`
   for a large `outputLength=`, find the long-line file, and add it to a root `.rgignore` instead
   of splitting commits.
+  <!-- held by: pariksha repo-rules long-line-not-rgignored (a tracked line over 1 MB no ignore file covers) -->
 
 ## Limits and cost on pull requests
 
@@ -29,6 +30,7 @@ every round, why a green PR sits unqueued, and when it is safe to resolve review
   that needs Cubic's pass can never be met. Check the check-run title as soon as a big PR opens,
   and split by workspace: rebuild each branch from the final tree by path and prove
   `git diff --stat <local source> HEAD -- <workspace>` is empty.
+  <!-- held by: dvara review-size (a pre-push check that warns when the branch changes more lines than the reviewer's cap outside its ignore globs); reading the check-run title is not checked -->
 - **The review allowance.** The PR-review allowance is per purchased seat, pooled across the
   team. Read the live limit from the subscription API, never from a pinned constant or memory.
   When the allowance runs out, the check goes neutral "AI review line limit reached", and a
@@ -42,11 +44,13 @@ every round, why a green PR sits unqueued, and when it is safe to resolve review
   Cubic author first. Both `@cubic` and the bot's full handle `@cubic-dev-ai` have been used to
   trigger reviews.
   <!-- when: command "gh pr comment .*@cubic" -->
-- **NEUTRAL after a rebase; rollup state.** Cubic reports NEUTRAL when it skips a push with no
-  new content (a pure rebase), and Mergify's `check-success` matches success only, so such a PR
-  parks blocked; post `@cubic-dev-ai review` to force a fresh review. A non-required check still
-  drives `statusCheckRollup.state`, so one failing helper check makes every consumer that
-  requires rollup SUCCESS skip the PR; filter the rollup contexts by name instead.
+- **NEUTRAL after a rebase.** Cubic reports NEUTRAL when it skips a push with no new content (a
+  pure rebase), and Mergify's `check-success` matches success only, so such a PR parks blocked;
+  post `@cubic-dev-ai review` to force a fresh review.
+- **Rollup state counts every check.** A non-required check still drives
+  `statusCheckRollup.state`, so one failing helper check makes every consumer that requires
+  rollup SUCCESS skip the PR; filter the rollup contexts by name instead.
+  <!-- held by: pariksha repo-rules rollup-state-gate (code that reads statusCheckRollup.state) -->
 
 ## Findings that come back every round
 
@@ -105,6 +109,7 @@ every round, why a green PR sits unqueued, and when it is safe to resolve review
   (GitHub's default is 360), and check a "pending 0" job's steps through the jobs API before
   concluding no runner picked it up.
   <!-- when: error "checks timed out" -->
+  <!-- held by: pariksha repo-rules job-timeout-minutes (a job a queue waits on with no timeout-minutes) -->
 - **Speculative drafts run every workflow.** A Mergify speculative-check draft is an ordinary
   PR against the base branch, so every `pull_request` workflow runs on it: commit-range checks
   see its untyped "Merge of #N" commit, and review bots that skip drafts post no check there.

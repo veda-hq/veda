@@ -364,6 +364,29 @@ const letteredStepIndent = rule('lettered-step-indent', 'Lettered step indented 
   });
 });
 
+/** A `$` no backslash escapes. */
+const UNESCAPED_DOLLAR = /(?<!\\)\$/g;
+
+const pairedDollars = rule('paired-dollars', 'Two `$` in one paragraph read as math', (params, onError) => {
+  readConfig('pariksha-paired-dollars', params.config);
+  const prose = proseLines(params);
+  for (const paragraph of walk(params.parsers.micromark.tokens).filter((t) => t.type === 'paragraph')) {
+    let count = 0;
+    for (let line = paragraph.startLine; line <= paragraph.endLine; line += 1) {
+      const text = prose[line - 1] ?? '';
+      const from = line === paragraph.startLine ? paragraph.startColumn - 1 : 0;
+      const to = line === paragraph.endLine ? paragraph.endColumn - 1 : text.length;
+      count += (text.slice(from, to).match(UNESCAPED_DOLLAR) ?? []).length;
+    }
+    if (count >= 2) {
+      onError({
+        lineNumber: paragraph.startLine,
+        detail: `${count} unescaped \`$\` in one paragraph: Prettier pairs them as inline math and reprints the paragraph (code-span spaces stripped, list continuations de-indented) while --check stays clean; escape them as \`\\$\` or put them in code spans`,
+      });
+    }
+  }
+});
+
 export const RULES: readonly MarkdownRule[] = [
   alertMarkerInline,
   linkSpaceBeforeParen,
@@ -377,6 +400,7 @@ export const RULES: readonly MarkdownRule[] = [
   emphasisMangle,
   dunderMangle,
   letteredStepIndent,
+  pairedDollars,
 ];
 
 export default RULES;

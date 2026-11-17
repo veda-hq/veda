@@ -9,6 +9,12 @@
  *
  * `sarathi page`: publishes, reads and answers claude.ai pages through a
  * one-off `claude -p` session (`page/page.ts`).
+ *
+ * `sarathi worktree`: the worktree lifecycle (`worktree/lifecycle.ts`), and
+ * `sarathi worktree hook`, its archive guard (`worktree/hook.ts`).
+ *
+ * `sarathi services`: the worktree's local services (`services/main.ts`), and
+ * `sarathi services reap`, the sweep of deleted worktrees' services.
  */
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -18,6 +24,10 @@ import { merge } from './merge.ts';
 import { autofixCommand } from './hooks/autofix.ts';
 import { main as page } from './page/page.ts';
 import { runAll, type Outcome } from './run.ts';
+import { servicesMain } from './services/main.ts';
+import { hookMain } from './worktree/hook.ts';
+import { lifecycleMain } from './worktree/lifecycle.ts';
+import { parseSettings, SettingsError } from './worktree/settings.ts';
 
 export interface Io {
   readonly argv: readonly string[];
@@ -30,7 +40,7 @@ export interface Io {
   readonly run?: (entries: Parameters<typeof runAll>[0], config: Config, input: string, cwd: string) => Promise<Outcome[]>;
 }
 
-export const VERSION = '0.6.15';
+export const VERSION = '0.7.0';
 
 const USAGE = `usage: sarathi hook <Event> [--config <file>]
        sarathi check [--config <file>] [--settings <file>]
@@ -40,6 +50,11 @@ const USAGE = `usage: sarathi hook <Event> [--config <file>]
        sarathi page --reply <artifact> --thread <id> --text-file <file> [--resolve]
        sarathi autofix add <pr-url> [--session <id>] [--source <name>]
        sarathi autofix list [--session <id>]
+       sarathi worktree status|archive-check|begin --branch <name>|retire --pr <n> [--branch <successor>]
+       sarathi worktree hook
+       sarathi services up|down|status|web|server|<action> [args]
+       sarathi services run -- <command>
+       sarathi services reap
        sarathi --version
 `;
 
@@ -239,8 +254,10 @@ function check(io: Io, options: Options): number {
   let config: Config;
   try {
     config = loadConfig(configPath(io, options), projectRoot(io));
+    // The worktree settings share the file; a malformed one would only show at the next lifecycle call.
+    parseSettings((JSON.parse(readFileSync(config.path, 'utf8')) as { worktree?: unknown }).worktree, config.path, config.root);
   } catch (error) {
-    io.err(`sarathi: ${error instanceof ConfigError ? error.message : String(error)}\n`);
+    io.err(`sarathi: ${error instanceof ConfigError || error instanceof SettingsError ? error.message : String(error)}\n`);
     return 1;
   }
   const counts = Object.entries(config.hooks).map(([event, list]) => `${event} ${list.length}`);
@@ -276,6 +293,11 @@ export async function main(io: Io): Promise<number> {
   // Before parseOptions: the page command has flags of its own.
   if (io.argv[0] === 'page') return page(io.argv.slice(1), io);
   if (io.argv[0] === 'autofix') return autofixCommand(io.argv.slice(1), { ...io, now: () => new Date() });
+  if (io.argv[0] === 'worktree') {
+    if (io.argv[1] === 'hook' && io.argv.length === 2) return hookMain(await io.readStdin(), io.out);
+    return lifecycleMain(io.argv.slice(1), io);
+  }
+  if (io.argv[0] === 'services') return servicesMain(io.argv.slice(1), io);
   const options = parseOptions(io.argv);
   if (typeof options === 'string') {
     io.err(`sarathi: ${options}\n${USAGE}`);

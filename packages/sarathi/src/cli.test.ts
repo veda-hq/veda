@@ -215,6 +215,13 @@ describe('sarathi check', () => {
     assert.match(result.out, /is valid \(PreToolUse 2, Stop 1, Empty 0\)/);
   });
 
+  it('validates the worktree settings beside the hook list', async () => {
+    assert.equal((await run(['check'], { dir: project(hooks, { worktree: { name: 'acme', owner: 'Ana' } }) })).code, 0);
+    const result = await run(['check'], { dir: project(hooks, { worktree: { name: 'Acme' } }) });
+    assert.equal(result.code, 1);
+    assert.match(result.err, /worktree: "name" must be/);
+  });
+
   it('accepts settings that let every handler fire in time', async () => {
     const dir = project(hooks);
     const file = settingsFile(dir, { hooks: { PreToolUse: [entry('Bash|Edit|Read', 'PreToolUse', 130)], Stop: [entry(undefined, 'Stop', 60)] } });

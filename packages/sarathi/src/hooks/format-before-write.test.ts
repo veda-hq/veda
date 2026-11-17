@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { Module } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { loadPrettier, minimalEdit, respond, sessionRoot, type Edit } from './format-before-write.ts';
+
+/** Re-reads NODE_PATH into the folders require searches last; Node's own, untyped. */
+function initPaths(): void {
+  (Module as unknown as { _initPaths: () => void })._initPaths();
+}
 
 const HOOK = fileURLToPath(new URL('./format-before-write.ts', import.meta.url));
 
@@ -220,9 +226,20 @@ test('the session checkout is the input cwd, not the project directory', async (
 });
 
 test('without prettier anywhere, nothing is printed', async () => {
-  assert.equal(loadPrettier(OUTSIDE, {}), null);
-  assert.equal(await hook({ tool_name: 'Write', tool_input: { file_path: join(OUTSIDE, 'x.ts'), content: 'a\n' } }, { CLAUDE_PROJECT_DIR: OUTSIDE }), null);
-  assert.ok(loadPrettier(OUTSIDE, ENV), 'falls back to the project checkout');
+  // Node reads NODE_PATH once, at start-up, into the folders every require
+  // searches last. A host that puts a global prettier there (the Claude cloud
+  // image does) would be found, so the test searches without it.
+  const nodePath = process.env.NODE_PATH;
+  delete process.env.NODE_PATH;
+  initPaths();
+  try {
+    assert.equal(loadPrettier(OUTSIDE, {}), null);
+    assert.equal(await hook({ tool_name: 'Write', tool_input: { file_path: join(OUTSIDE, 'x.ts'), content: 'a\n' } }, { CLAUDE_PROJECT_DIR: OUTSIDE }), null);
+    assert.ok(loadPrettier(OUTSIDE, ENV), 'falls back to the project checkout');
+  } finally {
+    if (nodePath !== undefined) process.env.NODE_PATH = nodePath;
+    initPaths();
+  }
 });
 
 test('the handler over stdin: formats, and never blocks on malformed input', () => {

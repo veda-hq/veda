@@ -9,7 +9,9 @@ library behaviour that surprised a working change.
 - **Fresh clones have no `node_modules`.** A fresh clone or harness checkout of a pnpm workspace
   has no `node_modules`, so the first `node --import tsx` fails with
   `ERR_MODULE_NOT_FOUND: Cannot find package 'tsx'`. Run `pnpm install --frozen-lockfile` from
-  the clone root before any self-test, typecheck, lint or test command.
+  the clone root before any self-test, typecheck, lint or test command. In a cloud session's own
+  clone, kavach runs only `pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile`,
+  alone on its line.
   <!-- when: error "Cannot find package 'tsx'" -->
 - **The global pnpm must match `packageManager`.** A global pnpm that differs from the
   repository's `packageManager` pin hands off to the pinned version on every call, costing
@@ -19,7 +21,9 @@ library behaviour that surprised a working change.
   (a Rust binary, no `.cjs`), so install pnpm standalone.
 - **pnpm 12 lockfiles hold two documents.** pnpm 12 writes `pnpm-lock.yaml` as two YAML
   documents (the package-manager record first, the project lockfile last), so any script that
-  parses the lockfile must read the last non-empty document. A `packageManager` pin bump fails
+  parses the lockfile must read the last non-empty document.
+  <!-- held by: pariksha repo-rules lockfile-single-doc-parse (a single-document parse whose argument reads pnpm-lock.yaml) -->
+- **A `packageManager` bump needs its lockfile.** A `packageManager` pin bump fails
   `--frozen-lockfile` until the regenerated lockfile, with its `packageManagerDependencies`, is
   committed.
 - **An install that prints "Done" and never exits.** pnpm 11.22.0 with `nodeLinker: hoisted`
@@ -60,6 +64,7 @@ library behaviour that surprised a working change.
 - **Narrow task inputs hide docs checks.** If a task's `inputs` are `src/**/*.ts` only, a
   repository-wide docs check run inside it cache-hits on markdown-only diffs and dead links ship
   green; widen the inputs or run such checks outside turbo.
+  <!-- held by: pariksha repo-rules turbo-inputs-cover-reads (a test task's source naming a file its inputs miss) -->
 
 ## tsx and module format
 
@@ -86,6 +91,7 @@ library behaviour that surprised a working change.
   continuations de-indented, while `--check` stays clean. Keep at most one `$` per paragraph or
   escape it as `\$`, and review the diff after `prettier --write` on markdown that mentions
   prices.
+  <!-- held by: pariksha markdownlint pariksha-paired-dollars (two unescaped `$` in one paragraph) -->
 
 ## Libraries and runtime
 
@@ -94,10 +100,12 @@ library behaviour that surprised a working change.
   returns with the child already running, and the OS can deschedule the parent in that gap so a
   signal hits the default action. When a child reports exit code `null`, capture `signal` before
   theorising.
+  <!-- held by: shuddhi signal-handler-before-spawn (warns on a process.on SIGTERM, SIGINT or SIGHUP handler installed after spawn() in the same function of a script); reading the exit signal is not checked -->
 - **google-auth-library errors embed the token.** Its ID-token verification errors concatenate
   the raw token or its decoded claims (`email`, `sub`) into `error.message`, so logging the
   message leaks a bearer credential. Classify the message by its constant prefixes and log only
   a fixed code, with a test that drives the real client so the prefix table cannot drift.
+  <!-- held by: shuddhi google-auth-error-message (refuses a verification error's message reaching a log, a response or a new error); the real-client test is not checked -->
 - **A multiline PEM in a `.env` file.** A line-based `.env` parser keeps only the
   `-----BEGIN ... KEY-----` line of a pasted multiline PEM, so signing fails with
   `error:1E08010C:DECODER routines::unsupported` and code may silently fall back to another

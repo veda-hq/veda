@@ -44,8 +44,11 @@ undoing another.
 - **Deny MCP write tools by suffix.** To deny an MCP server's write tools with a PreToolUse hook,
   match a suffix regex such as `^mcp__.*__(save_issue|save_comment)$` rather than exact
   `mcp__<server-id>__<tool>` names, which go stale when the connector is reconnected under a new
-  id. Route machine-authored writes through an app identity, not a connector that authenticates
-  as a person, or every machine comment notifies that person.
+  id.
+  <!-- held by: pariksha repo-rules mcp-matcher-server-id (a hook matcher naming a connector's generated id) -->
+- **Machine writes need an app identity.** Route machine-authored writes through an app
+  identity, not a connector that authenticates as a person, or every machine comment notifies
+  that person.
 - **`skillOverrides` cannot touch plugin skills.** `skillOverrides` in project settings cannot
   hide or shorten plugin skills (the plugin locks them), while bundled and synced skills obey
   it; re-check after a Claude Code upgrade. When measuring the skill listing headlessly, pass

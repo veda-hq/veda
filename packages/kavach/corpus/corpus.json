@@ -1097,6 +1097,60 @@
     "text": "git -C {P} log -1 --output={P}/pwned"
   },
   {
+    "id": "ow-git-diff-files-output",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "--output",
+    "note": "diff-files is not a listed read verb; kavach once counted only its folder (#161).",
+    "text": "git diff-files --output={P}/pwned"
+  },
+  {
+    "id": "ow-git-format-patch-o",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "format-patch names its folder with -o; kavach once read only --output (#163).",
+    "text": "git format-patch -1 -o {P}/pwned"
+  },
+  {
+    "id": "ow-git-archive-o",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "archive takes -o for --output (#163).",
+    "text": "git archive -o {P}/pwned HEAD"
+  },
+  {
+    "id": "ow-git-bundle-create",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "bundle create's first operand is the file it writes (#163).",
+    "text": "git bundle create {P}/pwned HEAD"
+  },
+  {
+    "id": "ow-git-clone-dir",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "clone's second operand is the directory it makes (#163).",
+    "text": "git clone -q . {P}/pwned"
+  },
+  {
+    "id": "ow-git-init-dir",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "init's operand is the directory it makes (#163).",
+    "text": "git init -q {P}/pwned"
+  },
+  {
     "id": "ow-corrected-inside",
     "intent": "outside-write",
     "role": "corrected",
@@ -1135,6 +1189,40 @@
     "happens": false,
     "family": "git -C",
     "text": "git -C {P} status --short"
+  },
+  {
+    "id": "ow-git-C-ls-tree",
+    "note": "veda#66: kavach 0.6.0 read ls-tree and grep under -C as writes to the other checkout.",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git -C",
+    "text": "git -C {P} ls-tree -r --name-only HEAD | grep -i readme"
+  },
+  {
+    "id": "ow-git-C-grep",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git -C",
+    "text": "git -C {P} grep -n -i -E 'alpha|beta' HEAD -- README.md"
+  },
+  {
+    "id": "ow-git-C-cat-file",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git -C",
+    "text": "git -C {P} cat-file -p HEAD:README.md"
+  },
+  {
+    "id": "ow-git-C-grep-pager",
+    "note": "git grep -O runs its pager with the matching files: here, touch.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git -C",
+    "text": "git -C {P} grep -O'touch {P}/pwned' alpha"
   },
   {
     "id": "pw-touch",

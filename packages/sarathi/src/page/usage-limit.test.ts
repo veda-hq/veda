@@ -1,6 +1,6 @@
 import { describe } from 'node:test';
 
-import { expect, it } from './expect.test.ts';
+import { expect, it } from '../test/expect.test.ts';
 import { usageLimit } from './usage-limit.ts';
 
 const line = (event: unknown) => JSON.stringify(event);

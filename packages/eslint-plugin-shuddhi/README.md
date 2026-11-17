@@ -46,11 +46,25 @@ of globs, with a `namespace` parameter:
 
 | Family | Rules | Helper |
 | --- | --- | --- |
-| error handling | `no-swallowed-catch`, `safe-log`, `no-raw-error-string`, `no-direct-child-process` | `errorHandlingBlocks` |
+| error handling | `no-swallowed-catch`, `safe-log`, `no-raw-error-string`, `no-direct-child-process`, `google-auth-error-message` (a google-auth-library verification error, which embeds the token, reaching a log, a response or a new error) | `errorHandlingBlocks` |
 | input parsing | `no-hand-rolled-argv`, `env-through-schema`, `strict-scalar-parse`, `schema-parse-untrusted`, `schema-satisfies-contract`, `prisma-json-through-schema`, `no-regex-structured-parse` | `inputParsingConfigs` |
 | server boundary | `nest-body-dto`, `dto-field-constraints`, `no-local-api-contract`, `dto-implements-contract`, `no-capability-literal`, `compare-and-set` | `boundaryBlocks` |
 | NestJS and Prisma | `no-raw-sql-interpolation`, `nest-http-exception`, `prisma-transaction-multiwrite`, `nest-param-pipe`, `no-unbound-test-app`, `require-orderby-findfirst`, `no-self-mock-sut` | none |
-| test lint | 43 rules on test structure, vacuous assertions (among them `jsonnull-in-matcher`: a Prisma null sentinel inside `toMatchObject` or `objectContaining`), process hygiene, fixtures and fakes; and for scripts, `no-import-meta-dirname-cjs` (`import.meta.dirname` in a file tsx runs as CommonJS) | `testLintBlocks` |
+| test lint | 49 rules on test structure, vacuous assertions (among them `jsonnull-in-matcher`: a Prisma null sentinel inside `toMatchObject` or `objectContaining`), the clock (`poll-under-fake-timers`; `expect-on-wall-clock`, a warning), env stubs (`no-stubenv-in-beforeall`), process hygiene (`spawn-timeout-sigkill`, fixable), fixtures and fakes, and a warning on an expected value imported from the module under test (`assert-imported-constant`); and for scripts, `no-import-meta-dirname-cjs` (`import.meta.dirname` in a file tsx runs as CommonJS) and a warning on signal handlers installed after `spawn()` (`signal-handler-before-spawn`) | `testLintBlocks` |
+
+The git rules (`git-spawn-env`, `git-fixture-env`, `no-partial-git-mask`) ask
+a test to run fixture git under a hermetic env. The package ships one:
+
+```ts
+import { hermeticGitEnv, maskProcessGitEnv } from '@veda-hq/eslint-plugin-shuddhi/hermetic-git';
+
+spawnSync('git', ['commit', '-m', 'x'], { cwd: dir, env: hermeticGitEnv(), timeout: 10_000, killSignal: 'SIGKILL' });
+beforeAll(() => maskProcessGitEnv()); // for code under test that spawns its own git
+```
+
+It masks the global and system config, turns trace2, automatic maintenance
+and gc off, drops every inherited `GIT_*` but the identity and transport
+ones, and commits as a fixture identity when the caller names none.
 
 Every name of a repository's own helper (the safe-logging module, the child
 process runner, the argument parser, the contracts package) is a rule option,

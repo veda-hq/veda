@@ -870,8 +870,8 @@ class OwnCheckoutTest(BoundaryFixture):
                 result = self.claude_bash(self.main, command, environment)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("an owned plain clone does not open it", result.stderr)
-        # The known gap (README, `ownCheckout`): a command whose writes count
-        # as the whole checkout still reaches them. Fixing it flips these.
+        # The gap #136 closed: a command whose writes count as the whole
+        # checkout is judged by what it can write (`clone_writers`).
         for command in (
             "git checkout HEAD -- .claude/hooks/guard.sh",
             "git restore .claude/hooks/guard.sh",
@@ -880,12 +880,340 @@ class OwnCheckoutTest(BoundaryFixture):
         ):
             with self.subTest(gap=command):
                 result = self.claude_bash(self.main, command, environment)
-                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("an owned plain clone does not open it", result.stderr)
         # Next to them, the rest of `.claude` stays writable.
         result = self.write(self.main, self.main / ".claude" / "guards.json.bak", environment)
         self.assertEqual(result.returncode, 0, result.stderr)
         result = self.write(self.main, self.main / ".claude" / "notes.md", environment)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def writers_fixture(self) -> dict[str, str]:
+        """A committed hook script; branch `evil`, where it differs, and
+        `safe`, where only `tracked.txt` does; patches touching each under
+        `.tmp/`. Returns the hosted environment."""
+
+        hooks = self.main / ".claude" / "hooks"
+        hooks.mkdir(parents=True)
+        (hooks / "guard.sh").write_text("guard\n", encoding="utf-8")
+        git(self.main, "add", ".claude/hooks/guard.sh")
+        git(self.main, "commit", "-qm", "hooks")
+        git(self.main, "checkout", "-qb", "evil")
+        (hooks / "guard.sh").write_text("exit 0\n", encoding="utf-8")
+        git(self.main, "commit", "-qam", "evil")
+        git(self.main, "checkout", "-q", "main")
+        git(self.main, "checkout", "-qb", "safe")
+        (self.main / "tracked.txt").write_text("safe\n", encoding="utf-8")
+        git(self.main, "commit", "-qam", "safe")
+        git(self.main, "checkout", "-q", "main")
+        (self.main / "sub").mkdir()
+        scratch = self.main / ".tmp"
+        scratch.mkdir()
+        (scratch / "hooks.patch").write_text(
+            "--- a/.claude/hooks/guard.sh\n+++ b/.claude/hooks/guard.sh\n"
+            "@@ -1 +1 @@\n-guard\n+exit 0\n",
+            encoding="utf-8",
+        )
+        (scratch / "plain.patch").write_text(
+            "--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +1 @@\n-base\n+patched\n",
+            encoding="utf-8",
+        )
+        (scratch / "new.patch").write_text(
+            "--- /dev/null\n+++ b/guard.sh\n@@ -0,0 +1 @@\n+exit 0\n",
+            encoding="utf-8",
+        )
+        return self.hosted_env()
+
+    def test_git_writers_stop_at_the_fences(self) -> None:
+        environment = self.writers_fixture()
+        refused = (
+            "git checkout HEAD -- .claude/hooks/guard.sh",
+            "git checkout evil -- .claude",
+            "git checkout -- .",
+            "git checkout -p",
+            "git restore .claude/hooks/guard.sh",
+            "git restore --source=evil -- .claude",
+            "git restore -SW .claude/hooks/guard.sh",
+            "git restore -p",
+            "git restore --pathspec-from-file=.tmp/list",
+            "git restore ':(glob).claude/**'",
+            "git rm -r .claude",
+            "git rm -rf .claude/hooks",
+            "git mv .claude/hooks hooks-off",
+            "git mv tracked.txt .claude/hooks/guard.sh",
+            "git checkout evil",
+            "git switch evil",
+            "git checkout -b fresh evil",
+            "git switch -c fresh evil",
+            "git switch --orphan fresh",
+            "git switch nowhere",
+            "git apply .tmp/hooks.patch",
+            "git apply -p1 .tmp/hooks.patch",
+            "git apply --directory=.claude/hooks .tmp/new.patch",
+            "git apply --index .tmp/plain.patch .tmp/hooks.patch",
+            "git apply --apply --stat .tmp/hooks.patch",
+            "git apply --unsafe-paths .tmp/plain.patch",
+            "git apply",
+            "git merge evil",
+            "git pull",
+            "git rebase evil",
+            "git cherry-pick evil",
+            "git revert HEAD",
+            "git am .tmp/x.mbox",
+            "git stash",
+            "git stash pop",
+            "git reset --hard evil",
+            "git reset --har evil",
+            "git reset --keep evil",
+            "git clean -fdx",
+            "git sparse-checkout set docs",
+            "git read-tree -u -m evil",
+            "git read-tree -mu evil",
+            "git checkout-index -a -f",
+            "git submodule update",
+            "git bisect start",
+            "git clone . .tmp/copy",
+            "git config core.fsmonitor .tmp/x.sh",
+            "git config --add core.hooksPath .tmp",
+            "git fetch --upload-pack=.tmp/x.sh .",
+            "git fetch --upload-p=.tmp/x.sh .",
+            "git push --receive-pack=.tmp/x.sh .",
+            "git grep -O.tmp/x.sh guard",
+            "git grep -iO.tmp/x.sh guard",
+            "git --exec-path=.tmp commit -qm x",
+            "git co evil",
+            "git diff-files --output=.claude/hooks/guard.sh",
+        )
+        for command in refused:
+            with self.subTest(command=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("an owned plain clone does not open it", result.stderr)
+        # An abbreviated --output is unproven in any checkout, before the
+        # owned clone's fences are read.
+        result = self.claude_bash(
+            self.main, "git whatchanged --outpu=.claude/hooks/guard.sh", environment,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("mutation targets could not be resolved", result.stderr)
+        # From a subfolder, and through `-C`: the paths, not the folder, count.
+        for cwd, command in (
+            (self.main / "sub", "git checkout HEAD -- ../.claude/hooks/guard.sh"),
+            (self.main / "sub", "git -C .. restore .claude"),
+            (self.main / "sub", "git restore .."),
+        ):
+            with self.subTest(cwd=cwd.name, command=command):
+                result = self.claude_bash(cwd, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("an owned plain clone does not open it", result.stderr)
+
+    def test_a_state_checked_writer_runs_alone(self) -> None:
+        """A switch or `apply` is judged by the checkout as it is now, so an
+        earlier command on its line could change what it reads."""
+
+        environment = self.writers_fixture()
+        for command in (
+            "git branch -f safe evil && git switch safe",
+            "cp .tmp/hooks.patch .tmp/plain.patch && git apply .tmp/plain.patch",
+            "git switch safe; git status",
+            "pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile && pnpm check",
+            "sh -c 'git branch -f safe evil; git switch safe'",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("command of its own", result.stderr)
+
+    def test_git_through_another_program_is_refused(self) -> None:
+        environment = self.writers_fixture()
+        for command in (
+            "xargs git checkout HEAD --",
+            "find . -name guard.sh -exec git checkout HEAD -- {} +",
+            "pnpm exec git checkout HEAD -- .claude",
+            "mise exec -- git restore .claude",
+            "timeout 5 git restore .claude/hooks/guard.sh",
+            "env git restore .claude/hooks/guard.sh",
+            "command git restore .claude/hooks/guard.sh",
+            "sh -c 'git restore .claude/hooks/guard.sh'",
+            "bash -c 'git checkout evil -- .claude'",
+            "pnpm exec npm install",
+            "timeout 60 pnpm install",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+        # Only this check refuses these: the runner itself is one kavach knows.
+        for command in ("pnpm exec git checkout HEAD -- .claude", "mise exec -- git restore .claude"):
+            with self.subTest(reason=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertIn("would run `git`", result.stderr)
+
+    def test_a_name_both_a_tag_and_a_branch_is_judged_both_ways(self) -> None:
+        """`git checkout twin` takes branch `twin` where `rev-parse twin`
+        names tag `twin`: both commits are compared."""
+
+        environment = self.writers_fixture()
+        git(self.main, "tag", "twin", "safe")
+        git(self.main, "branch", "twin", "evil")
+        for command in ("git checkout twin", "git switch twin", "git checkout -b fresh twin"):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(".claude/hooks/guard.sh", result.stderr)
+
+    def test_git_config_from_the_environment_is_refused(self) -> None:
+        """A line that exports git's config injectors before git runs."""
+
+        environment = self.writers_fixture()
+        command = (
+            "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor "
+            "GIT_CONFIG_VALUE_0=.tmp/x.sh; git add ."
+        )
+        result = self.claude_bash(self.main, command, environment)
+        self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_git_that_misses_the_fences_runs(self) -> None:
+        environment = self.writers_fixture()
+        (self.main / ".claude" / "hooks" / "guard.sh").write_text("guard\n", encoding="utf-8")
+        for command in (
+            "git add .",
+            "git commit -qm x",
+            "git push",
+            "git fetch",
+            "git branch fresh",
+            "git tag v1",
+            "git checkout HEAD -- tracked.txt",
+            "git checkout -- tracked.txt sub",
+            "git checkout evil -- tracked.txt",
+            "git checkout -b fresh",
+            "git checkout -b fresh safe",
+            "git checkout safe",
+            "git switch safe",
+            "git switch -c fresh",
+            "git switch -c fresh safe",
+            "git switch --detach safe",
+            "git restore tracked.txt",
+            "git restore --source=evil tracked.txt",
+            "git restore --staged .claude/hooks/guard.sh",
+            "git rm tracked.txt",
+            "git rm --cached .claude/hooks/guard.sh",
+            "git rm -rf sub",
+            "git mv tracked.txt moved.txt",
+            "git apply .tmp/plain.patch",
+            "git apply --check .tmp/hooks.patch",
+            "git apply --stat .tmp/hooks.patch",
+            "git apply --cached .tmp/hooks.patch",
+            "git apply --directory=sub .tmp/new.patch",
+            "git reset --soft HEAD~1",
+            "git reset HEAD tracked.txt",
+            "git reset -q",
+            "git read-tree -m HEAD",
+            "git config user.name",
+            "git config --get user.name",
+            "git config get user.name",
+            "git config --list",
+            "git update-index --refresh",
+            "git -C sub status",
+            "git --no-pager commit -qm x",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        with self.subTest("from a subfolder"):
+            result = self.claude_bash(self.main / "sub", "git checkout HEAD -- ../tracked.txt", environment)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_forced_checkout_is_judged_against_head(self) -> None:
+        environment = self.writers_fixture()
+        for command in ("git checkout -f", "git switch -f -c fresh", "git checkout safe"):
+            with self.subTest(clean=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        # A hook script that differs from HEAD: forcing HEAD back over it, or
+        # switching while it differs, would write it.
+        (self.main / ".claude" / "hooks" / "guard.sh").write_text("changed\n", encoding="utf-8")
+        for command in ("git checkout -f", "git switch -f -c fresh", "git checkout safe"):
+            with self.subTest(changed=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(".claude/hooks/guard.sh", result.stderr)
+
+    def test_only_a_frozen_install_runs(self) -> None:
+        environment = self.writers_fixture()
+        for command in (
+            "pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile",
+            "pnpm i --ignore-pnpmfile --frozen-lockfile --ignore-scripts --prefer-offline",
+            "pnpm check",
+            "pnpm -r check",
+            "pnpm --filter pkg test",
+            "pnpm run build",
+            "npm --version",
+        ):
+            with self.subTest(runs=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        for command in (
+            "pnpm install",
+            "pnpm i",
+            "pnpm install --frozen-lockfile",
+            "pnpm install --frozen-lockfile --ignore-scripts",
+            "pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile --no-frozen-lockfile",
+            "pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile --modules-dir=.claude/hooks",
+            "pnpm -C sub install --frozen-lockfile --ignore-scripts --ignore-pnpmfile",
+            "pnpm --config.x=y install --frozen-lockfile --ignore-scripts --ignore-pnpmfile",
+            "pnpm add left-pad",
+            "pnpm update",
+            "pnpm remove left-pad",
+            "pnpm rebuild",
+            "pnpm -r install",
+            "npm install",
+            "npm ci",
+            "npm i left-pad",
+            "yarn",
+            "yarn add left-pad",
+            "npx left-pad",
+        ):
+            with self.subTest(refused=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("an owned plain clone does not open it", result.stderr)
+
+    def test_a_worktree_session_is_judged_as_before(self) -> None:
+        """Outside an owned clone nothing here applies: a Claude-managed
+        worktree's own files are its own to rewrite."""
+
+        environment = hermetic_git_env()
+        for command in (
+            "git checkout HEAD -- .claude",
+            "git merge main",
+            "git stash",
+            "pnpm install",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command, environment)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_numstat_records_and_program_options(self) -> None:
+        writers = ADAPTER.clone_writers
+        self.assertEqual(
+            writers.numstat_paths("1\t1\ta.txt\0" "0\t0\t\0old.txt\0new dir/b.txt\0-\t-\tbin\0"),
+            ["a.txt", "old.txt", "new dir/b.txt", "bin"],
+        )
+        with self.assertRaises(writers.Refused):
+            writers.numstat_paths("garbage\0")
+        for sub, word, runs in (
+            ("fetch", "--upload-pack=x", True),
+            ("fetch", "--upload-p=x", True),
+            ("push", "--rec=x", True),
+            ("push", "--exec=x", True),
+            ("grep", "-O", True),
+            ("grep", "-nOx", True),
+            ("log", "-SOther", False),
+            ("fetch", "--all", False),
+            ("ls-files", "--exclude=x", False),
+        ):
+            with self.subTest(sub=sub, word=word):
+                self.assertEqual(writers.runs_program(sub, word), runs)
 
     def test_the_fences_name_the_guards_own_places(self) -> None:
         own = mock.Mock(protected_paths=(".claude/hooks/",))

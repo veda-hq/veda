@@ -203,7 +203,7 @@ const off = (rule: string): Record<string, unknown> => ({ ...BASE, [`pariksha-${
 
 describe('the rules', () => {
   it('carry the tag, the micromark parser and a pariksha- name, and each has a case', () => {
-    assert.equal(RULES.length, 12);
+    assert.equal(RULES.length, 13);
     assert.equal(rulesDefault, RULES);
     assert.equal(new Set(RULES.map((r) => r.names[0])).size, RULES.length);
     for (const rule of RULES) {

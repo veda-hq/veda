@@ -8,6 +8,7 @@
 // a symbol still named anywhere in the tree's source is not reported.
 //
 //   Removes-Export: <symbol> — <why>     covers one symbol
+//   Removes-Export: <a>, <b> — <why>     covers each symbol listed
 //   Removes-File: <path> — <why>         covers every export of a file that
 //                                        no longer exists at HEAD
 import { must, PLAIN_DIFF, type Git } from './git.ts';
@@ -34,13 +35,27 @@ const COMMENT_HIT = /:\d+:\s*(?:\/\/|\*|\/\*)/;
 
 const unique = (xs: readonly string[]): string[] => [...new Set(xs)].sort();
 
-/** Symbols named by `Removes-Export:` trailers: the first word, trailing punctuation dropped. */
+/** A comma list of identifiers, the whole of a trailer's value before its reason: `a, b, c`. */
+const SYMBOL_LIST = /^[A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*$/;
+
+/**
+ * Symbols named by `Removes-Export:` trailers. The value up to the " — " or
+ * " - " that starts the reason (all of it when there is none) may be a comma
+ * list of identifiers, `Removes-Export: a, b, c — why`, so one line declares a
+ * module's exports and the commit body stays short. Anything else names one
+ * symbol, the first word, trailing punctuation dropped, so a word in the
+ * reason never declares a symbol.
+ */
 export const declaredExports = (messages: string): string[] =>
   unique(
-    messages
-      .split('\n')
-      .map((line) => /^\s*removes-export:\s*(\S+)/i.exec(line)?.[1]?.replace(/[,;()]+$/, ''))
-      .filter((s): s is string => s !== undefined && s !== ''),
+    messages.split('\n').flatMap((line) => {
+      const value = /^\s*removes-export:\s*(.*)$/i.exec(line)?.[1];
+      if (value === undefined) return [];
+      const head = value.replace(/\s+(?:—|–|-)\s.*$/, '').trim();
+      if (SYMBOL_LIST.test(head)) return head.split(',').map((s) => s.trim());
+      const first = /^(\S+)/.exec(value)?.[1]?.replace(/[,;()]+$/, '');
+      return first === undefined || first === '' ? [] : [first];
+    }),
   );
 
 /**
@@ -149,6 +164,10 @@ export const formatReport = (report: Report): { ok: boolean; out: string[]; err:
     'say so in a commit body:',
     '',
     '  Removes-Export: <symbol> — <why it is safe to remove>',
+    '',
+    'One line can name several, so a module\'s exports fit a short commit body:',
+    '',
+    '  Removes-Export: <a>, <b>, <c> — <why they are safe to remove>',
     '',
     'A file deleted outright can be declared once, covering all its exports:',
     '',

@@ -107,6 +107,7 @@ and PR state, and the GitHub API.
   `GITHEAD_<sha>` env vars and `GIT_REFLOG_ACTION`. Do not trust those by name: accept a
   candidate only when `git merge-tree --write-tree HEAD <sha>` equals `git write-tree`, and test
   such checks through a real `.git/hooks/pre-merge-commit` in a fixture.
+  <!-- held by: pariksha repo-rules pre-merge-commit-merge-head (a pre-merge-commit hook, or a script it names, reading MERGE_HEAD) -->
 
 ## Merges and PR state
 
@@ -163,3 +164,4 @@ and PR state, and the GitHub API.
   tsc, lint and tests pass. Write NUL separators as the `\0` or `\x00` escape, detect with
   `file <path>` reporting "data", and guard with a test that fails on any raw NUL in tracked
   source.
+  <!-- held by: pariksha repo-rules raw-nul-in-source -->

@@ -1,10 +1,13 @@
-// The expect and vi subset the page tests use, on node:assert. No tests of
-// its own: a `.test.ts` name keeps it out of the build and the coverage
-// figures. The page tests came from vitest, so their cases
-// keep vitest's meaning: toEqual ignores undefined properties, toThrow(text)
-// matches part of the message, toHaveBeenCalledWith compares deeply.
+// The expect and vi subset the page and services tests use, on node:assert.
+// No tests of its own: a `.test.ts` name keeps it out of the build and the
+// coverage figures. Those tests came from vitest, so their cases keep
+// vitest's meaning: toEqual ignores undefined properties, toThrow(text)
+// matches part of the message, toHaveBeenCalledWith compares deeply, and the
+// asymmetric matchers (stringContaining, stringMatching, any,
+// objectContaining) match at any depth.
 import assert from 'node:assert/strict';
 import { it as nodeIt } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 /** A recorded function: vitest's `vi.fn` shape, as far as the tests read it. */
 export interface Mock<F extends (...args: never[]) => unknown> {
@@ -63,13 +66,30 @@ export const vi = {
     }
     stubbed.clear();
   },
+  /** Retries `check` until it stops throwing, or rethrows its last failure at `timeout` ms. */
+  async waitFor<T>(check: () => T | Promise<T>, { timeout = 1_000, interval = 50 }: { timeout?: number; interval?: number } = {}): Promise<T> {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      try {
+        return await check();
+      } catch (error) {
+        if (Date.now() >= deadline) throw error;
+      }
+      await sleep(interval);
+    }
+  },
 };
 
-/** `expect.stringContaining`: matches any string that holds `part`. */
-class StringContaining {
-  readonly part: string;
-  constructor(part: string) {
-    this.part = part;
+/** An asymmetric matcher: matches what its test accepts, wherever it stands in an expected value. */
+class Asymmetric {
+  readonly test: (actual: unknown) => boolean;
+  readonly label: string;
+  constructor(test: (actual: unknown) => boolean, label: string) {
+    this.test = test;
+    this.label = label;
+  }
+  toJSON(): string {
+    return this.label;
   }
 }
 
@@ -86,7 +106,7 @@ const definedKeys = (value: Record<string, unknown>): string[] =>
 
 /** vitest's toEqual: deep, undefined properties ignored, asymmetric matchers at any depth. */
 function equals(actual: unknown, expected: unknown): boolean {
-  if (expected instanceof StringContaining) return typeof actual === 'string' && actual.includes(expected.part);
+  if (expected instanceof Asymmetric) return expected.test(actual);
   if (Array.isArray(expected)) {
     return Array.isArray(actual) && actual.length === expected.length && expected.every((item, index) => equals(actual[index], item));
   }
@@ -104,6 +124,10 @@ function equals(actual: unknown, expected: unknown): boolean {
 }
 
 function subset(actual: unknown, expected: unknown): boolean {
+  if (expected instanceof Asymmetric) return expected.test(actual);
+  if (Array.isArray(expected)) {
+    return Array.isArray(actual) && actual.length === expected.length && expected.every((item, index) => subset(actual[index], item));
+  }
   if (typeof expected !== 'object' || expected === null) return equals(actual, expected);
   if (typeof actual !== 'object' || actual === null) return false;
   return Object.entries(expected).every(([key, item]) => subset((actual as Record<string, unknown>)[key], item));
@@ -126,11 +150,23 @@ const show = (value: unknown): string => {
   }
 };
 
+type Expected = string | RegExp | (new (...args: never[]) => unknown) | undefined;
+
+/** Whether `error` is what `expected` names: part of its message, a pattern, or its class. */
+function fitsError(error: unknown, expected: Expected): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  if (expected === undefined) return true;
+  if (typeof expected === 'string') return text.includes(expected);
+  if (expected instanceof RegExp) return expected.test(text);
+  return error instanceof expected;
+}
+
 function matchers(actual: unknown, negate: boolean, message: string | undefined) {
   const check = (pass: boolean, what: string): void => {
     if (pass === negate) assert.fail(message ?? `expected ${show(actual)} ${negate ? 'not ' : ''}${what}`);
   };
   const calls = (): unknown[][] => (actual as Mock<AnyFn>).mock.calls;
+  const number = (test: (value: number) => boolean, what: string): void => check(typeof actual === 'number' && test(actual), what);
   return {
     toBe: (expected: unknown) => check(Object.is(actual, expected), `to be ${show(expected)}`),
     toEqual: (expected: unknown) => check(equals(actual, expected), `to equal ${show(expected)}`),
@@ -141,18 +177,24 @@ function matchers(actual: unknown, negate: boolean, message: string | undefined)
           (Array.isArray(actual) && actual.includes(part)),
         `to contain ${show(part)}`,
       ),
+    toContainEqual: (item: unknown) => check(Array.isArray(actual) && actual.some(entry => equals(entry, item)), `to contain an item equal to ${show(item)}`),
     toMatch: (pattern: RegExp | string) =>
       check(typeof actual === 'string' && (typeof pattern === 'string' ? actual.includes(pattern) : pattern.test(actual)), `to match ${String(pattern)}`),
     toBeUndefined: () => check(actual === undefined, 'to be undefined'),
-    toBeGreaterThan: (bound: number) => check(typeof actual === 'number' && actual > bound, `to be greater than ${bound}`),
+    toBeDefined: () => check(actual !== undefined, 'to be defined'),
+    toBeGreaterThan: (bound: number) => number(value => value > bound, `to be greater than ${bound}`),
+    toBeGreaterThanOrEqual: (bound: number) => number(value => value >= bound, `to be at least ${bound}`),
+    toBeLessThan: (bound: number) => number(value => value < bound, `to be less than ${bound}`),
+    toBeLessThanOrEqual: (bound: number) => number(value => value <= bound, `to be at most ${bound}`),
+    toHaveLength: (length: number) => check((typeof actual === 'string' || Array.isArray(actual)) && actual.length === length, `to have length ${length}`),
     toHaveProperty: (key: string) => check(typeof actual === 'object' && actual !== null && key in actual, `to have property ${key}`),
-    toThrow: (expected?: string | RegExp) => {
+    toThrow: (expected?: Expected) => {
       const { threw, error } = thrown(actual as () => unknown);
       const text = error instanceof Error ? error.message : String(error);
-      const fits = expected === undefined || (typeof expected === 'string' ? text.includes(expected) : expected.test(text));
-      check(threw && fits, `to throw ${String(expected ?? '')} (threw ${threw ? text : 'nothing'})`);
+      check(threw && fitsError(error, expected), `to throw ${String(expected ?? '')} (threw ${threw ? text : 'nothing'})`);
     },
     toHaveBeenCalled: () => check(calls().length > 0, 'to have been called'),
+    toHaveBeenCalledTimes: (times: number) => check(calls().length === times, `to have been called ${times} times (was ${calls().length})`),
     toHaveBeenCalledWith: (...args: unknown[]) =>
       check(
         calls().some(call => equals(call, args)),
@@ -163,10 +205,39 @@ function matchers(actual: unknown, negate: boolean, message: string | undefined)
   };
 }
 
-export function expect(actual: unknown, message?: string) {
-  return { ...matchers(actual, false, message), not: matchers(actual, true, message) };
+/** `expect(promise).rejects`: the promise must reject, and its reason meet the matcher. */
+function rejects(actual: unknown, message: string | undefined) {
+  const reason = async (): Promise<unknown> => {
+    try {
+      await (actual as Promise<unknown>);
+    } catch (error) {
+      return error;
+    }
+    return assert.fail(message ?? 'expected the promise to reject, and it resolved');
+  };
+  return {
+    toThrow: async (expected?: Expected): Promise<void> => {
+      const error = await reason();
+      if (!fitsError(error, expected)) assert.fail(message ?? `expected a rejection with ${String(expected)}, got ${error instanceof Error ? error.message : String(error)}`);
+    },
+    toMatchObject: async (expected: object): Promise<void> => {
+      const error = await reason();
+      if (!subset(error, expected)) assert.fail(message ?? `expected the rejection to match ${show(expected)}`);
+    },
+  };
 }
-expect.stringContaining = (part: string): StringContaining => new StringContaining(part);
+
+export function expect(actual: unknown, message?: string) {
+  return { ...matchers(actual, false, message), not: matchers(actual, true, message), rejects: rejects(actual, message) };
+}
+expect.stringContaining = (part: string): Asymmetric => new Asymmetric(actual => typeof actual === 'string' && actual.includes(part), `stringContaining ${part}`);
+expect.stringMatching = (pattern: RegExp): Asymmetric => new Asymmetric(actual => typeof actual === 'string' && pattern.test(actual), `stringMatching ${String(pattern)}`);
+expect.any = (kind: StringConstructor | NumberConstructor | (new (...args: never[]) => unknown)): Asymmetric =>
+  new Asymmetric(
+    actual => (kind === String ? typeof actual === 'string' : kind === Number ? typeof actual === 'number' : actual instanceof (kind as new (...args: never[]) => unknown)),
+    `any ${kind.name}`,
+  );
+expect.objectContaining = (part: object): Asymmetric => new Asymmetric(actual => subset(actual, part), `objectContaining ${show(part)}`);
 
 /** `it`, plus vitest's `it.each` with `%s` names. */
 export const it = Object.assign(

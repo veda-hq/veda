@@ -7,7 +7,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -341,6 +341,22 @@ describe('confirming', () => {
     );
   });
 
+  it('takes "not bound to this session" as a refusal, so the wrap_up warning stops (#153)', () => {
+    const { deps, session, file, transcript } = setup();
+    const merged = 'https://github.com/veda-hq/veda/pull/140';
+    assert.equal(addOpened(merged, session, 'live-evidence-146', deps), true);
+    assert.match(context(respond(wrapUp(session, transcript), deps)), /veda-hq\/veda#140/);
+    // The PostToolUseFailure event as the hook received it in a live session, error field verbatim.
+    respond(refusal(session, merged, 'veda-hq/veda#140 is not bound to this session.'), deps);
+    assert.deepEqual(fold(readRows(file)), [
+      { pr: 'veda-hq/veda#140', url: merged, state: 'refused', reason: 'is not bound to this session.' },
+    ]);
+    assert.equal(respond(wrapUp(session, transcript), deps), '');
+    // The same words in a PostToolUse answer count too.
+    respond(monitor(session, VEDA, 'Error: veda-hq/veda#90 is not bound to this session.'), deps);
+    assert.deepEqual(states(file).at(-1), ['veda-hq/veda#90', 'refused']);
+  });
+
   it('takes the app’s off reply as off', () => {
     const { deps, session, file } = setup();
     respond(monitor(session, VEDA, onReply('veda-hq/veda#90')), deps);
@@ -351,7 +367,6 @@ describe('confirming', () => {
   it('takes an error that names no PR as no answer', () => {
     const { deps, session, file } = setup();
     respond(refusal(session, VEDA, "Error: Pass the pull request's url (get_status reports it)."), deps);
-    respond(refusal(session, VEDA, 'Error: veda-hq/veda#90 is not bound to this session.'), deps);
     respond(JSON.stringify({ hook_event_name: 'Notification', session_id: session, tool_name: SET_MONITOR }), deps);
     respond(JSON.stringify({ hook_event_name: 'PostToolUseFailure', session_id: session, tool_name: 'Bash', error: 'Exit code 1' }), deps);
     respond(monitor(session, VEDA, [{ type: 'text', text: 'Something else.' }]), deps);
@@ -515,11 +530,19 @@ describe('warning the model', () => {
   });
 
   it('still warns when its log row cannot be written', () => {
-    const { deps, session, file, transcript } = setup();
+    const { deps, dir, session, transcript } = setup();
     respond(bash(session, 'gh pr create', `${VEDA}\n`), deps);
-    chmodSync(file, 0o444);
-    assert.match(context(respond(wrapUp(session, transcript), deps)), /veda-hq\/veda#90/);
-    assert.equal(readFileSync(file, 'utf8').includes('"warned"'), false);
+    // Between reading the list and writing its row, the list's folder becomes
+    // a regular file: a write under it fails for any user, root included,
+    // where a read-only list file would not stop root.
+    const kept = `${dir}-kept`;
+    const now = (): Date => {
+      renameSync(dir, kept);
+      writeFileSync(dir, 'a file, not a folder');
+      return deps.now();
+    };
+    assert.match(context(respond(wrapUp(session, transcript), { ...deps, now })), /veda-hq\/veda#90/);
+    assert.equal(readFileSync(join(kept, `${session}.jsonl`), 'utf8').includes('"warned"'), false);
   });
 
   it('records nothing, and says nothing, when the list cannot be written', () => {
@@ -618,7 +641,9 @@ describe('sarathi autofix', () => {
 describe('the script', () => {
   it('runs as Claude Code runs a hook: the event on stdin, the answer on stdout', () => {
     const { deps, session, file, transcript } = setup();
-    const env = { ...process.env, SARATHI_AUTOFIX_DIR: deps.env.SARATHI_AUTOFIX_DIR };
+    const env: NodeJS.ProcessEnv = { ...process.env, SARATHI_AUTOFIX_DIR: deps.env.SARATHI_AUTOFIX_DIR };
+    // A cloud session sets this, and the hook stays silent there.
+    delete env.CLAUDE_CODE_REMOTE;
     const record = spawnSync(process.execPath, [HOOK], { input: bash(session, 'gh pr create', `${VEDA}\n`), encoding: 'utf8', env });
     assert.equal(record.status, 0);
     assert.equal(record.stdout, '');

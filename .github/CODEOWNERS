@@ -1,6 +1,9 @@
 # What enforces the release rules (README.md, "Releasing"): a change here needs
-# the owner's review once main's ruleset requires review from code owners.
-# This file is under .github/, so it guards itself.
-/.github/                  @AlokBansal8
-/scripts/version-rule.mjs  @AlokBansal8
-/README.md                 @AlokBansal8
+# the owner's review, since main's ruleset requires review from code owners.
+# Only these files get an owner, so every other pull request, including one
+# under .github/, merges on its checks alone. This file guards itself.
+/.github/CODEOWNERS                @AlokBansal8
+/.github/workflows/release.yml     @AlokBansal8
+/.github/workflows/version-rule.yml @AlokBansal8
+/scripts/version-rule.mjs          @AlokBansal8
+/README.md                         @AlokBansal8

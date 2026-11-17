@@ -61,10 +61,13 @@ review thread is resolved. Nobody clicks merge. No AI review runs: veda-hq's
 Cubic trial is used up, and Alok said on 2026-11-14 he is OK with
 unreviewed pull requests. Cubic's check still reports, as skipped.
 
-One exception waits for a person: once the ruleset requires code-owner
-review, a pull request touching a path `.github/CODEOWNERS` gives Alok
-(workflows, the version rule, the README) also waits for his approving
-review, then merges by itself. Until he approves, it is open, not done.
+One exception waits for a person: the ruleset requires code-owner review,
+so a pull request touching a path `.github/CODEOWNERS` gives Alok (the
+release rules: `release.yml`, `version-rule.yml`, `scripts/version-rule.mjs`,
+the README and CODEOWNERS itself) also waits for his approving review, then
+merges by itself. Until he approves, it is open, not done. Every other path,
+other workflows and niyam's files under `.github/` included, has no owner:
+his approval of the slice, state or work item is the review.
 
 Leave auto-merge off only to hold a pull request on purpose (say why in it),
 or for a change that needs Alok's yes first, such as a major release

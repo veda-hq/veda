@@ -19,7 +19,8 @@ import { changedFiles, commentOnly, type Changes, type Git } from './changed-fil
 import { judgeLane, MARKERS, planLane, type Lane, type LaneDeps, type LaneResult, type Plan } from './lanes.ts';
 import { acquireLock, pidAlive, type LockDeps } from './machine-lock.ts';
 import { incrementalKey, keyInputPaths, type KeyPolicy } from './reuse-key.ts';
-import type { Exists } from './suite-owner.ts';
+import { failedTestReader } from './failed-tests.ts';
+import { notTheOwner, ownerOf, siblingSuites, type Exists } from './suite-owner.ts';
 import { formatBlocking } from './verdict.ts';
 
 export const REPORTS_DIR = 'reports/agnipariksha';
@@ -81,6 +82,23 @@ export interface CliDeps extends Omit<LaneDeps, 'reuseKey'> {
   log: (line: string) => void;
 }
 
+/**
+ * Why no run may judge now, or null: a merge stopped before its commit
+ * (`MERGE_HEAD` exists). Its working tree is half-merged and is judged
+ * against the merge-base, so the verdict would say nothing about the branch.
+ * `--git-path` is relative to the root in a plain repository and absolute in
+ * a linked worktree.
+ */
+export function unfinishedMerge(git: Git, root: string, readFile: (path: string) => string | undefined): string | null {
+  const gitPath = (name: string): string => resolve(root, git(['rev-parse', '--git-path', name]).trim());
+  const head = readFile(gitPath('MERGE_HEAD'));
+  if (head === undefined) return null;
+  const sha = head.trim().split(/\s+/)[0] ?? '';
+  const subject = readFile(gitPath('MERGE_MSG'))?.split('\n')[0]?.trim() ?? '';
+  const merge = `${subject === '' ? 'a merge' : `"${subject}"`} (MERGE_HEAD ${sha.slice(0, 12)})`;
+  return `${merge} is not committed: the working tree is half-merged, so a verdict now would say nothing about the branch. Commit the merge (git commit) or abort it (git merge --abort), then run again`;
+}
+
 export function summaryLine(plan: Plan, result: LaneResult): string {
   const { judgement: j } = result;
   const statuses = Object.entries(j.byStatus).map(([status, count]) => `${count} ${status}`).join(', ');
@@ -97,6 +115,19 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
   const lanes = selectLanes(deps.lanes, args.lanes);
   if (typeof lanes === 'string') {
     deps.log(`agnipariksha REFUSED: ${lanes}`);
+    return 2;
+  }
+  let merging: string | null;
+  try {
+    merging = unfinishedMerge(deps.git, deps.root, deps.readFile);
+  } catch (error: unknown) {
+    // fail-open: a git that cannot say whether a merge is in progress refuses (exit 2).
+    deps.log(`agnipariksha REFUSED: ${(error as Error).message}`);
+    return 2;
+  }
+  if (merging !== null) {
+    // Before the lock: a run that only refuses never waits on another worktree's.
+    deps.log(`agnipariksha REFUSED: ${merging}`);
     return 2;
   }
   let release: () => void;
@@ -147,8 +178,14 @@ async function judgeAll(args: Args, deps: CliDeps): Promise<number> {
     deps.log(`agnipariksha: ${lane.name}: stryker run --mutate ${plan.targets.join(',')}`);
     const result = await judgeLane(plan, laneDeps);
     if (result.fellBack !== null) deps.log(`  fallback: ${lane.name} reran in its own-suite mode: ${result.fellBack}`);
+    if (result.flaky !== undefined) deps.log(`  flaky: ${lane.name}: ${result.flaky}`);
     for (const file of result.noMutants) deps.log(`  no mutants (absent from Stryker's report): ${file}`);
     for (const m of result.judgement.blocking) deps.log(`  ${formatBlocking(m)}`);
+    for (const file of new Set(result.judgement.blocking.map((m) => m.file))) {
+      const owner = ownerOf(file, deps.exists);
+      const siblings = owner === null ? [] : siblingSuites(file, listTracked());
+      if (owner !== null && siblings.length > 0) deps.log(`  ${notTheOwner(file, owner, siblings)}`);
+    }
     for (const reason of result.refusals) deps.log(`  REFUSED ${lane.name}: ${reason}`);
     deps.log(summaryLine(plan, result));
     totals.lanes += 1;
@@ -207,6 +244,9 @@ export function removeLiveScratch(): void {
 export const scratchVanished = (dir: string): string =>
   `the run's temp directory ${dir} vanished during the run: something in it removed files it should not have, so its results are not trusted`;
 
+/** The longest partial line a run's tee holds while it waits for the newline. */
+export const MAX_LINE = 4096;
+
 /** The gate's own environment, less the names `unset` removes. */
 export function inheritedEnv(env: NodeJS.ProcessEnv, unset: readonly string[]): NodeJS.ProcessEnv {
   const kept = { ...env };
@@ -237,13 +277,21 @@ export function spawnStryker(
       });
       children.add(child);
       const seen = new Set<string>();
+      const failed = failedTestReader();
+      const flushes: (() => void)[] = [];
       const tee = (out: NodeJS.WritableStream) => {
         let tail = '';
+        let line = '';
+        flushes.push(() => failed.read(line));
         return (chunk: Buffer) => {
           out.write(chunk);
           const text = tail + chunk.toString();
           for (const marker of markers) if (text.includes(marker)) seen.add(marker);
           tail = text.slice(-keep);
+          // Whole lines go to the reader; a line longer than the cap is cut, never held whole.
+          const lines = (line + chunk.toString()).split('\n');
+          line = (lines.pop() ?? '').slice(0, MAX_LINE);
+          lines.forEach(failed.read);
         };
       };
       child.stdout?.on('data', tee(process.stdout));
@@ -254,9 +302,11 @@ export function spawnStryker(
       });
       child.on('close', (code) => {
         children.delete(child);
+        flushes.forEach((flush) => flush());
         const vanished = !existsSync(scratch);
         removeScratchTmp(scratch);
-        const result = { code: code ?? 1, seen: [...seen] };
+        const failedTests = failed.names();
+        const result = { code: code ?? 1, seen: [...seen], ...(failedTests.length > 0 ? { failedTests } : {}) };
         done(vanished ? { ...result, refusal: scratchVanished(scratch) } : result);
       });
     });

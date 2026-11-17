@@ -2,6 +2,7 @@
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { nameTests } from './failed-tests.ts';
 import { forReuse, pruneToTargets } from './reuse-filter.ts';
 import { ownerOf, type Exists } from './suite-owner.ts';
 import { mutantRange, RETRY_TIMEOUT_MS, retryTimeouts, type RetryRun } from './timeout-retry.ts';
@@ -24,12 +25,22 @@ export interface Lane {
 
 /** Stryker's line when the initial test run outlives its cap: the machine is busy. */
 export const DRY_RUN_TIMEOUT = 'Initial test run timed out!';
+/** Stryker's line when a test failed in the initial test run; it names the tests just above it. */
+export const FAILED_INITIAL_RUN = 'There were failed tests in the initial test run';
 /** Dry-run failures a lane's fallback mode may cure: no related suite found, or one fails in the sandbox. */
 export const FALLBACK_TRIGGERS: readonly string[] = [
   'Vitest failed to find test files related to mutated files',
   'No tests were executed',
-  'There were failed tests in the initial test run',
+  FAILED_INITIAL_RUN,
 ];
+/** What to do about a flaky test, said wherever one shows. */
+const FIX_THE_FLAKE = 'fix the flake first (an injected, pinned clock is the usual cure), then run again';
+
+/** The refusal for a timeout retry whose initial test run failed: the lane's own run had passed it. */
+export function flakyRetry(failedTests: readonly string[]): string {
+  const on = failedTests.length > 0 ? ` on ${nameTests(failedTests)}` : '';
+  return `the initial test run was flaky: it passed in the lane's run and failed in this retry${on}; ${FIX_THE_FLAKE}, and apply each hung mutant by hand to see that it dies fast`;
+}
 /** Every console line `runStryker` reports seeing. */
 export const MARKERS: readonly string[] = [DRY_RUN_TIMEOUT, ...FALLBACK_TRIGGERS];
 
@@ -60,10 +71,15 @@ export interface LaneDeps {
   root: string;
   reportsDir: string;
   /**
-   * Run Stryker; `seen` lists the `MARKERS` its output carried, and `refusal`
-   * says why the run cannot be trusted whatever it exited with.
+   * Run Stryker; `seen` lists the `MARKERS` its output carried, `refusal`
+   * says why the run cannot be trusted whatever it exited with, and
+   * `failedTests` names the tests its initial test run failed on.
    */
-  runStryker: (cwd: string, args: string[], env: Record<string, string>) => Promise<{ code: number; seen: readonly string[]; refusal?: string }>;
+  runStryker: (
+    cwd: string,
+    args: string[],
+    env: Record<string, string>,
+  ) => Promise<{ code: number; seen: readonly string[]; refusal?: string; failedTests?: readonly string[] }>;
   readFile: (path: string) => string | undefined;
   writeFile: (path: string, text: string) => void;
   removeFile: (path: string) => void;
@@ -80,6 +96,12 @@ export interface LaneResult {
   noMutants: string[];
   /** Why the lane reran (all or some targets) in its fallback mode; that run's results count for them. */
   fellBack: string | null;
+  /**
+   * A lane with no fallback mode whose initial test run failed and then
+   * passed when run again with the same variables: which tests flaked. That
+   * second run's results count.
+   */
+  flaky?: string;
 }
 
 /** A config that is the lane's own, with the JSON report moved into our directory. */
@@ -104,7 +126,7 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
   const firstEnv = lane.env(plan.suites);
   const fallbackEnv = lane.fallback?.(plan.suites);
 
-  type Run = RetryRun & { trigger?: string | undefined };
+  type Run = RetryRun & { trigger?: string | undefined; failedTests?: readonly string[] };
   const run = async (mutate: string[], extra: string[], env: Record<string, string>): Promise<Run> => {
     deps.removeFile(report);
     const result = await deps.runStryker(cwd, ['run', wrapper, ...extra, '--mutate', mutate.join(',')], env);
@@ -112,7 +134,9 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
     if (result.code !== 0) {
       if (result.seen.includes(DRY_RUN_TIMEOUT)) return { refusal: BUSY, busy: true };
       const trigger = FALLBACK_TRIGGERS.find((line) => result.seen.includes(line));
-      return { refusal: `Stryker exited ${result.code}${trigger === undefined ? '' : ` (${trigger})`}`, busy: false, trigger };
+      const failedTests = trigger === FAILED_INITIAL_RUN ? (result.failedTests ?? []) : [];
+      const why = trigger === undefined ? '' : ` (${trigger}${failedTests.length > 0 ? `: ${nameTests(failedTests)}` : ''})`;
+      return { refusal: `Stryker exited ${result.code}${why}`, busy: false, trigger, failedTests };
     }
     const text = deps.readFile(report);
     if (text === undefined) return { refusal: `Stryker wrote no report at ${report}`, busy: false };
@@ -142,11 +166,22 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
   /** Files judged in the fallback mode; their timeouts retry in it too. */
   const ownSuite = new Set<string>();
   let fellBack: string | null = null;
+  let flaky: string | undefined;
+  const on = (failedTests: readonly string[] | undefined): string =>
+    failedTests !== undefined && failedTests.length > 0 ? ` on ${nameTests(failedTests)}` : '';
   let first = await run(plan.targets.map(local), reuseArgs, firstEnv);
   if ('refusal' in first && first.trigger !== undefined && fallbackEnv !== undefined) {
-    fellBack = `its dry run failed: "${first.trigger}"`;
+    fellBack = `its dry run failed: "${first.trigger}"${on(first.failedTests)}`;
     plan.targets.forEach((target) => ownSuite.add(target));
     first = await run(plan.targets.map(local), reuseArgs, fallbackEnv);
+  } else if ('refusal' in first && first.trigger === FAILED_INITIAL_RUN) {
+    // No fallback mode: run the same dry run once more, as a lane with one reruns in it.
+    const failedFirst = first.failedTests;
+    first = await run(plan.targets.map(local), reuseArgs, firstEnv);
+    if ('refusal' in first && first.trigger === FAILED_INITIAL_RUN) {
+      return refused(`the initial test run failed twice, the second time: ${first.refusal}; those tests fail every run, not now and then: fix them, then run again`, null);
+    }
+    if (!('refusal' in first)) flaky = `its initial test run failed${on(failedFirst)}, then passed when run again: the test is flaky; ${FIX_THE_FLAKE}`;
   }
   if ('refusal' in first) return refused(first.refusal, fellBack);
   let mutants = first.mutants;
@@ -170,11 +205,13 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
       const range = mutantRange(m, local(m.file));
       if (range === null) return { refusal: 'its report gives no full location to retry it by', busy: false };
       const env = (ownSuite.has(m.file) ? fallbackEnv : undefined) ?? firstEnv;
-      return run([range], ['--concurrency', '1', '--timeoutMS', String(RETRY_TIMEOUT_MS)], env);
+      const retry = await run([range], ['--concurrency', '1', '--timeoutMS', String(RETRY_TIMEOUT_MS)], env);
+      // The lane's own run passed its initial test run, so a test failing in the retry's is flaky.
+      return 'refusal' in retry && retry.trigger === FAILED_INITIAL_RUN ? { refusal: flakyRetry(retry.failedTests ?? []), busy: false } : retry;
     },
     deps.now,
   );
   const judgement = judge(pass.mutants);
   const refusals = [...pass.refusals, ...judgement.unknown.map((u) => `unknown status: ${u}`)];
-  return { judgement, retried: pass.retried, refusals, noMutants, fellBack };
+  return { judgement, retried: pass.retried, refusals, noMutants, fellBack, ...(flaky === undefined ? {} : { flaky }) };
 }

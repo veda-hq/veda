@@ -5,7 +5,19 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-import { DRY_RUN_TIMEOUT, FALLBACK_TRIGGERS, judgeLane, MARKERS, planLane, wrapperConfig, type Lane, type LaneDeps, type Plan } from './lanes.ts';
+import {
+  DRY_RUN_TIMEOUT,
+  FAILED_INITIAL_RUN,
+  FALLBACK_TRIGGERS,
+  flakyRetry,
+  judgeLane,
+  MARKERS,
+  planLane,
+  wrapperConfig,
+  type Lane,
+  type LaneDeps,
+  type Plan,
+} from './lanes.ts';
 
 const web: Lane = {
   name: 'apps/web',
@@ -59,7 +71,7 @@ interface Run {
   env: Record<string, string>;
 }
 
-function fakeDeps(reports: (string | undefined)[], codes: { code: number; seen: string[]; refusal?: string }[] = [], key: string | null = 'k1') {
+function fakeDeps(reports: (string | undefined)[], codes: { code: number; seen: string[]; refusal?: string; failedTests?: string[] }[] = [], key: string | null = 'k1') {
   const files = new Map<string, string>();
   const runs: Run[] = [];
   const deps: LaneDeps = {
@@ -287,4 +299,76 @@ test('no rerun for a partly covered file, an all-Ignored file, or a lane without
   const blocked = await judgeLane(webPlan, workspace.deps);
   assert.equal(workspace.runs.length, 1);
   assert.equal(blocked.judgement.blocking.length, 1);
+});
+
+const failedRun = (...failedTests: string[]) => ({ code: 1, seen: [FAILED_INITIAL_RUN], failedTests });
+
+test('a lane with no fallback reruns a dry run that failed on a test once, with the same variables; a pass there says the test flaked', async () => {
+  const { deps, runs, setPlan } = fakeDeps([undefined, report({ 'src/a.ts': [strykerMutant('Killed')] })], [failedRun('clock is pinned')], null);
+  setPlan(webPlan);
+  const result = await judgeLane(webPlan, deps);
+  assert.deepEqual(runs.map((r) => [r.args.at(-1), r.env]), [
+    ['src/a.ts', { X: '1' }],
+    ['src/a.ts', { X: '1' }],
+  ]);
+  assert.equal(
+    result.flaky,
+    'its initial test run failed on "clock is pinned", then passed when run again: the test is flaky; fix the flake first (an injected, pinned clock is the usual cure), then run again',
+  );
+  assert.equal(result.fellBack, null);
+  assert.deepEqual(result.judgement.byStatus, { Killed: 1 });
+  assert.deepEqual(result.refusals, []);
+
+  const unnamed = fakeDeps([undefined, report({ 'src/a.ts': [] })], [failedRun()], null);
+  unnamed.setPlan(webPlan);
+  assert.match((await judgeLane(webPlan, unnamed.deps)).flaky ?? '', /^its initial test run failed, then passed when run again/);
+});
+
+test('a dry run failing on a test twice refuses, naming the tests; a rerun failing otherwise refuses with its own reason', async () => {
+  const twice = fakeDeps([], [failedRun('a'), failedRun('a', 'b')], null);
+  twice.setPlan(webPlan);
+  const result = await judgeLane(webPlan, twice.deps);
+  assert.equal(twice.runs.length, 2);
+  assert.deepEqual(result.refusals, [
+    'the initial test run failed twice, the second time: Stryker exited 1 (There were failed tests in the initial test run: "a" and "b"); those tests fail every run, not now and then: fix them, then run again',
+  ]);
+  assert.equal(result.flaky, undefined);
+
+  const other = fakeDeps([], [failedRun('a'), { code: 2, seen: [] }], null);
+  other.setPlan(webPlan);
+  const otherResult = await judgeLane(webPlan, other.deps);
+  assert.deepEqual(otherResult.refusals, ['Stryker exited 2']);
+  assert.equal(otherResult.flaky, undefined);
+});
+
+test('only a failed test reruns a lane with no fallback: no related suite or no tests at all is not a flake', async () => {
+  for (const trigger of FALLBACK_TRIGGERS.filter((line) => line !== FAILED_INITIAL_RUN)) {
+    const { deps, runs, setPlan } = fakeDeps([], [{ code: 1, seen: [trigger] }], null);
+    setPlan(webPlan);
+    const result = await judgeLane(webPlan, deps);
+    assert.equal(runs.length, 1);
+    assert.deepEqual(result.refusals, [`Stryker exited 1 (${trigger})`]);
+  }
+});
+
+test('a fallback names the tests that failed its first dry run', async () => {
+  const { deps, setPlan } = fakeDeps([undefined, report({ 'scripts/a.ts': [strykerMutant('Killed')] })], [failedRun('x')]);
+  setPlan(toolingPlan);
+  const result = await judgeLane(toolingPlan, deps);
+  assert.equal(result.fellBack, 'its dry run failed: "There were failed tests in the initial test run" on "x"');
+  assert.equal(result.flaky, undefined);
+});
+
+test("a timeout retry whose dry run fails on a test says the run was flaky, names the test and says what to do", async () => {
+  const { deps, setPlan } = fakeDeps([report({ 'src/a.ts': [strykerMutant('Timeout')] })], [{ code: 0, seen: [] }, failedRun('clock is pinned')], null);
+  setPlan(webPlan);
+  const result = await judgeLane(webPlan, deps);
+  assert.deepEqual(result.refusals, [
+    'retry of apps/web/src/a.ts:3 (StringLiteral): the initial test run was flaky: it passed in the lane\'s run and failed in this retry on "clock is pinned"; fix the flake first (an injected, pinned clock is the usual cure), then run again, and apply each hung mutant by hand to see that it dies fast',
+  ]);
+  assert.match(flakyRetry([]), /failed in this retry; fix the flake first/, 'no names, no "on"');
+
+  const otherRetry = fakeDeps([report({ 'src/a.ts': [strykerMutant('Timeout')] })], [{ code: 0, seen: [] }, { code: 1, seen: ['No tests were executed'] }], null);
+  otherRetry.setPlan(webPlan);
+  assert.deepEqual((await judgeLane(webPlan, otherRetry.deps)).refusals, ['retry of apps/web/src/a.ts:3 (StringLiteral): Stryker exited 1 (No tests were executed)']);
 });

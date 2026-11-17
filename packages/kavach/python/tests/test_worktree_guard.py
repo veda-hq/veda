@@ -1109,11 +1109,12 @@ class OwnCheckoutTest(BoundaryFixture):
             with self.subTest(command=command):
                 result = self.claude_bash(self.main, command, environment)
                 self.assertEqual(result.returncode, 2, result.stderr)
-        # Only this check refuses these: the runner itself is one kavach knows.
+        # The runner itself is one kavach knows; git under it is unproven in
+        # any checkout (#198), before the owned clone's check reads it.
         for command in ("pnpm exec git checkout HEAD -- .claude", "mise exec -- git restore .claude"):
             with self.subTest(reason=command):
                 result = self.claude_bash(self.main, command, environment)
-                self.assertIn("would run `git`", result.stderr)
+                self.assertIn("running `git`, whose writes the guard reads only", result.stderr)
 
     def test_a_name_both_a_tag_and_a_branch_is_judged_both_ways(self) -> None:
         """`git checkout twin` takes branch `twin` where `rev-parse twin`

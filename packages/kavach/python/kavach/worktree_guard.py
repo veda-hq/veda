@@ -807,6 +807,11 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
                 # An alias, a verb git does not list, or a form of a known
                 # verb the guard does not place (`config core.fsmonitor`).
                 add(f"`git {shown(texts[verb])}`, a git command or option whose writes the guard does not read")
+            elif head in boundary.GIT_RUNNERS and any(os.path.basename(text) == "git" for text in texts[1:]):
+                add(
+                    f"`{head}` running `git`, whose writes the guard reads only "
+                    "when `git` is the command itself"
+                )
             else:
                 add(f"`{head}`, a program whose writes the guard does not know")
     if any(each.piped_from is not None for each in commands):

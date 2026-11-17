@@ -131,6 +131,8 @@ test('ask-gate: research before the owner last spoke does not count', () => {
   assert.equal(exit(transcript(owner(), toolUse('WebSearch'), toolResult(), owner('now do the other thing'))), 2);
   assert.equal(exit(transcript(owner(), toolUse('WebSearch'), owner(), toolUse('WebFetch'))), 0, 'research again after it');
   assert.equal(exit(transcript(owner(), toolUse('WebSearch'), ownerUnmarked())), 2, 'an owner message with no origin marker');
+  const image = line({ type: 'user', uuid: next(), message: { role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } }] } });
+  assert.equal(exit(transcript(owner(), toolUse('WebSearch'), image)), 2, 'an owner message that is only an attachment');
 });
 
 test("ask-gate: a hand-back, a peer's message or an app event does not reset the window", () => {
@@ -184,6 +186,7 @@ test('ask-gate: a wrap_up is gated only when its ask offers a choice', () => {
     ['a pull request reference', { recap: 'r', ask: 'Merge acme/widgets#12 now?', actions: [{ label: 'Yes' }, { label: 'Not now' }] }],
     ['a path', { recap: 'r', ask: 'Delete src/old/parser.ts?', actions: [{ label: 'Yes' }, { label: 'No' }] }],
     ['a URL', { recap: 'r', ask: 'Publish to https://example.com/docs/page now?', actions: [{ label: 'Yes' }, { label: 'Not now' }] }],
+    ['a shallow path with yes/no buttons', { recap: 'r', ask: 'Delete src/file?', actions: [{ label: 'Yes' }, { label: 'No' }] }],
   ] as const) {
     assert.equal(exit(t, WRAP_UP, input), 0, why);
   }
@@ -227,6 +230,8 @@ test('ask-gate: anything it cannot read passes', () => {
   assert.equal(gate({ tool_name: ASK, tool_input: QUESTION }).status, 0, 'no transcript path');
   assert.equal(gate({ tool_name: ASK, tool_input: QUESTION, transcript_path: join(TMP, 'missing.jsonl') }).status, 0, 'an unreadable transcript');
   assert.equal(gate({ tool_name: WRAP_UP, tool_input: 'ask', transcript_path: t }).status, 0, 'tool input not an object');
+  assert.equal(gate({ tool_name: ASK, transcript_path: t, session_id: 'noinput' }).status, 0, 'no tool input');
+  assert.equal(gate({ tool_name: ASK, tool_input: '', transcript_path: t, session_id: 'emptyinput' }).status, 0, 'an empty tool input');
   const blocker = join(TMP, 'a-file');
   writeFileSync(blocker, '');
   assert.equal(gate({ tool_name: ASK, tool_input: QUESTION, transcript_path: t, session_id: 'nostate' }, {}, join(blocker, 'state')).status, 0, 'state it cannot write');

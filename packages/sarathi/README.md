@@ -110,10 +110,13 @@ settled a question, so it checks that a look happened, not what it found.
 
 - **Gated:** every `AskUserQuestion`; a `wrap_up` whose `ask` offers a
   choice: two or more reply buttons that are not a plain yes or no, or an ask
-  that names alternatives ("which", "or", "how should", "A/B").
-- **Passed:** a `wrap_up` with no `ask`, a go-ahead (yes/no buttons, or one
-  button), or an app action first (`commit`, `create_pr` …): approvals are
-  the owner's.
+  that names alternatives ("which", "or", "how should", "either"), whatever
+  its buttons. A bare "A/B" pair counts too, unless every button is a plain
+  yes or no (a shallow path such as `src/file` looks the same); a path, a URL
+  or `owner/repo#N` never does.
+- **Passed:** a `wrap_up` whose first action is an app action (`commit`,
+  `create_pr` …), or with no `ask`; and a go-ahead (yes/no buttons, or one
+  button) whose `ask` names no alternatives: approvals are the owner's.
 - **Research:** since the owner's last message, a `WebSearch`, a `WebFetch`,
   a browser page read (`…Claude_Browser__get_page_text`, `read_page`,
   `navigate`), or an `Agent`/`Task` launch of `researcher`,
@@ -130,10 +133,17 @@ settled a question, so it checks that a look happened, not what it found.
 - **Passing** is a silent exit 0, never an allow answer. Anything it cannot
   read passes.
 
-A project lists it in `.claude/sarathi.json`:
+A project lists it in `.claude/sarathi.json`, beside its other `PreToolUse`
+handlers:
 
 ```json
-{ "matcher": "AskUserQuestion|mcp__ccd_turn__wrap_up", "command": "bash \"$SARATHI_HOOKS\"/ask-gate.sh", "timeout": 10 }
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "AskUserQuestion|mcp__ccd_turn__wrap_up", "command": "bash \"$SARATHI_HOOKS\"/ask-gate.sh", "timeout": 10 }
+    ]
+  }
+}
 ```
 
 and widens its settings' `PreToolUse` matcher to include

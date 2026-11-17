@@ -53,13 +53,14 @@ YES_NO = re.compile(
     r"not now|not yet|later|skip|cancel|stop|hold|wait|leave it|done)\b",
     re.I,
 )
-# Words that name alternatives, or a bare "A/B" pair: not a path, a URL or
-# owner/repo#N, whose slash sits next to another slash, a dot, a colon or #.
-ALTERNATIVES = re.compile(
-    r"\b(which|or|how should|either)\b"
-    r"|(?<![\w/.:#@~-])[A-Za-z]+/[A-Za-z]+(?![\w/.:#@-])",
-    re.I,
-)
+# Words that name alternatives.
+ALTERNATIVES = re.compile(r"\b(which|or|how should|either)\b", re.I)
+# A bare "A/B" pair: not a path, a URL or owner/repo#N, whose slash sits next
+# to another slash, a dot, a colon or #. A shallow path ("src/file") looks the
+# same, so the pair counts only when the buttons are not a plain yes or no.
+PAIR = re.compile(r"(?<![\w/.:#@~-])[A-Za-z]+/[A-Za-z]+(?![\w/.:#@-])")
+# Content a person attaches in place of words.
+ATTACHMENTS = {"image", "document"}
 
 def passes():
     sys.exit(0)
@@ -67,7 +68,7 @@ def passes():
 try:
     data = json.loads(sys.stdin.read() or "{}")
     tool = data.get("tool_name")
-    tool_input = data.get("tool_input") or {}
+    tool_input = data.get("tool_input")
     path = data.get("transcript_path")
     if tool not in (ASK, WRAP_UP) or not path or not isinstance(tool_input, dict):
         passes()
@@ -87,7 +88,10 @@ def choice_shaped(wrap):
     replies = [a.get("label") for a in actions if not a.get("action") and isinstance(a.get("label"), str)]
     if len([r for r in replies if not YES_NO.match(r)]) >= 2:
         return True
-    return bool(ALTERNATIVES.search(ask))
+    if ALTERNATIVES.search(ask):
+        return True
+    go_ahead = bool(replies) and all(YES_NO.match(r) for r in replies)
+    return not go_ahead and bool(PAIR.search(ask))
 
 try:
     if tool == WRAP_UP and not choice_shaped(tool_input):
@@ -108,6 +112,8 @@ def person_text(content):
                 return ""
             if item.get("type") == "text" and isinstance(item.get("text"), str):
                 texts.append(item["text"])
+            elif item.get("type") in ATTACHMENTS:
+                texts.append("[attachment]")
     else:
         return ""
     return NOT_PERSON.sub("", "\n".join(texts)).strip()

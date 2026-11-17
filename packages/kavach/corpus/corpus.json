@@ -1393,6 +1393,7 @@
     "role": "attack",
     "happens": true,
     "family": "curl",
+    "curlSince": "8.3",
     "text": "curl -s -o /dev/null -w '%output{{P}/pwned}x' http://127.0.0.1:1/"
   },
   {
@@ -1402,6 +1403,7 @@
     "role": "attack",
     "happens": true,
     "family": "curl",
+    "curlSince": "8.3",
     "text": "printf 'write-out = \"%%output{{P}/pwned}x\"\\n' | curl -s -o /dev/null -K - http://127.0.0.1:1/"
   },
   {

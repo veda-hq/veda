@@ -48,7 +48,9 @@ grep`, `ls-tree` and `cat-file` with their listing options (never `grep -O`,
 `--textconv` or `--filters`, which run programs), `shasum`, `base64` to
 stdout, `openssl x509` printing a certificate, and `curl` printing what it
 fetches (display options only, `-o` only to `/dev/null`, `-X` only `GET` or
-`HEAD`, a `-w` with no `%output`). Any `curl`, read-only or not, is
+`HEAD`, a `-w` with no `%output`), where no default `.curlrc` exists or `-q`
+comes first, and neither `SSLKEYLOGFILE` nor `QLOGDIR` is set in the
+environment. Any `curl`, read-only or not, is
 unproven with `-K`/`--config`, with a `-w` that writes or reads a file, or in
 a command that assigns `CURL_HOME`, `XDG_CONFIG_HOME` or `HOME` (a config may
 set its `output`), or `SSLKEYLOGFILE` or `QLOGDIR` (files curl writes). When it

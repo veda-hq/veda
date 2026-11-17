@@ -800,7 +800,9 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
         if not words or words[0].dynamic:
             continue
         head = os.path.basename(words[0].text)
-        if head == "curl" and curl_config:
+        if curl_config and any(os.path.basename(word.text) == "curl" for word in words):
+            # Named above; a wrapper (`env curl -K cfg`, `timeout 5 curl`)
+            # is not a second unknown program.
             continue
         if head in INTERPRETERS or re.fullmatch(r"python[0-9]+(\.[0-9]+)*", head):
             inline = next((word.text for word in words[1:] if word.text in inline_flags(head)), None)

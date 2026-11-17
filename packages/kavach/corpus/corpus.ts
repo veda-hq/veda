@@ -72,6 +72,11 @@ export interface CorpusRow {
    * consumers are still judged against `happens`, the newer git's answer.
    */
   readonly gitSince?: string;
+  /**
+   * The first curl release that runs `text` (e.g. `-w %output{}`, 8.3). An
+   * older curl, or none, writes nothing there, as an older git does.
+   */
+  readonly curlSince?: string;
 }
 
 const INTENTS: readonly Intent[] = [
@@ -103,6 +108,7 @@ const FIELDS: ReadonlySet<string> = new Set([
   'text',
   'inPrimary',
   'gitSince',
+  'curlSince',
 ]);
 
 /**
@@ -156,7 +162,7 @@ function readRow(entry: unknown, at: string, issues: Issue[]): CorpusRow | null 
       });
     }
   }
-  const { id, note, intent, role, happens, family, text, inPrimary, gitSince } =
+  const { id, note, intent, role, happens, family, text, inPrimary, gitSince, curlSince } =
     entry;
   if (typeof id !== 'string') invalid('id', 'expected a string');
   if (note !== undefined && typeof note !== 'string') {
@@ -188,6 +194,12 @@ function readRow(entry: unknown, at: string, issues: Issue[]): CorpusRow | null 
     invalid('gitSince', 'expected a release such as 2.46');
   }
   if (
+    curlSince !== undefined &&
+    (typeof curlSince !== 'string' || !/^\d+\.\d+$/.test(curlSince))
+  ) {
+    invalid('curlSince', 'expected a release such as 8.3');
+  }
+  if (
     issues.length > before ||
     typeof id !== 'string' ||
     !oneOf(INTENTS, intent) ||
@@ -207,6 +219,7 @@ function readRow(entry: unknown, at: string, issues: Issue[]): CorpusRow | null 
     text,
     ...(typeof inPrimary === 'boolean' ? { inPrimary } : {}),
     ...(typeof gitSince === 'string' ? { gitSince } : {}),
+    ...(typeof curlSince === 'string' ? { curlSince } : {}),
   };
 }
 
@@ -282,25 +295,42 @@ export const CORPUS: readonly CorpusRow[] = [
 
 /**
  * What bash really does with `row` under the git that printed `gitVersion`
- * (`git version 2.43.0`): the declared truth, unless the row needs a newer
- * git than that one.
+ * (`git version 2.43.0`) and the curl that printed `curlVersion`
+ * (`curl 8.5.0 …`, empty when there is no curl): the declared truth, unless
+ * the row needs a newer git or curl than these.
  */
-export function happensUnder(row: CorpusRow, gitVersion: string): boolean {
-  if (row.gitSince === undefined) return row.happens;
-  const host = release(gitVersion);
-  const since = release(row.gitSince);
-  const newer =
-    host.major > since.major ||
-    (host.major === since.major && host.minor >= since.minor);
-  return row.happens && newer;
+export function happensUnder(
+  row: CorpusRow,
+  gitVersion: string,
+  curlVersion = '',
+): boolean {
+  if (row.gitSince !== undefined && !atLeast(gitVersion, row.gitSince, 'git')) {
+    return false;
+  }
+  if (
+    row.curlSince !== undefined &&
+    (curlVersion === '' || !atLeast(curlVersion, row.curlSince, 'curl'))
+  ) {
+    return false;
+  }
+  return row.happens;
 }
 
-function release(text: string): { major: number; minor: number } {
+function atLeast(version: string, floor: string, tool: string): boolean {
+  const host = release(version, tool);
+  const since = release(floor, tool);
+  return (
+    host.major > since.major ||
+    (host.major === since.major && host.minor >= since.minor)
+  );
+}
+
+function release(text: string, tool: string): { major: number; minor: number } {
   const found = /(\d+)\.(\d+)/.exec(text);
   const major = Number(found?.[1]);
   const minor = Number(found?.[2]);
   if (!Number.isSafeInteger(major) || !Number.isSafeInteger(minor)) {
-    throw new Error(`not a git version: ${text}`);
+    throw new Error(`not a ${tool} version: ${text}`);
   }
   return { major, minor };
 }

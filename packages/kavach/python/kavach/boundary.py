@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import re
 import shlex
 import stat
@@ -3356,6 +3357,49 @@ def curl_write_out_writes(value: str) -> bool:
     return value.startswith("@") or "%output" in value.lower()
 
 
+def curl_default_configs() -> list[Path]:
+    """Every file curl may read as its default config, generously.
+
+    curl 8.7.1 looks in `$CURL_HOME/.curlrc`, `$XDG_CONFIG_HOME/curlrc` and
+    `$HOME/.curlrc`, then the passwd home. Both names are tried under each
+    folder, and `.config/curlrc` under each home, so a layout another release
+    reads is counted too.
+    """
+
+    folders: list[Path] = []
+    for name in ("CURL_HOME", "XDG_CONFIG_HOME", "HOME"):
+        value = os.environ.get(name)
+        if value:
+            folders.append(Path(value))
+    try:
+        folders.append(Path(pwd.getpwuid(os.getuid()).pw_dir))
+    except (KeyError, OSError):
+        pass  # no passwd entry: curl finds no home there either
+    files: list[Path] = []
+    for folder in folders:
+        files += [folder / ".curlrc", folder / "curlrc", folder / ".config" / "curlrc"]
+    return files
+
+
+def curl_inherits_writes(args: list[str]) -> bool:
+    """Whether curl may write here for reasons this command line does not show.
+
+    The hook's environment stands for the Bash tool's: `SSLKEYLOGFILE` or
+    `QLOGDIR` set there names a file or folder curl writes, and a default
+    config there may set `output`. `-q`/`--disable` first skips the config,
+    not the variables.
+    """
+
+    if any(
+        value and key.upper() in {"SSLKEYLOGFILE", "QLOGDIR"}
+        for key, value in os.environ.items()
+    ):
+        return True
+    if args[:1] in (["-q"], ["--disable"]):
+        return False
+    return any(os.path.lexists(path) for path in curl_default_configs())
+
+
 def curl_is_read_only(args: list[str]) -> bool:
     """`curl` fetching URLs to stdout, with display options only.
 
@@ -3363,10 +3407,13 @@ def curl_is_read_only(args: list[str]) -> bool:
     the next word (`-sSo /dev/null`, `-HAccept:x`). Each URL operand starts
     with its scheme, so no operand can be an option. The default config
     curl reads (`$CURL_HOME/.curlrc`, `$XDG_CONFIG_HOME/curlrc`,
-    `$HOME/.curlrc`) may set `output`; `curl_config_is_unproven` refuses
-    a line that moves it.
+    `$HOME/.curlrc`) may set `output`: `curl_config_is_unproven` refuses
+    a line that moves it, and `curl_inherits_writes` one where it exists
+    and `-q` does not skip it.
     """
 
+    if curl_inherits_writes(args):
+        return False
     index = 0
     while index < len(args):
         word = args[index]

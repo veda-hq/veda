@@ -1341,6 +1341,13 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 result = self.claude_bash(self.claude, command)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("`curl` with a config", result.stderr)
+        # A wrapper around such a curl is not named as a second unknown program.
+        for wrapper in ("env", "timeout 5", "nohup"):
+            with self.subTest(wrapper=wrapper):
+                result = self.claude_bash(self.claude, f"{wrapper} curl -K cfg https://x.example")
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("`curl` with a config", result.stderr)
+                self.assertNotIn("a program whose writes the guard does not know", result.stderr)
 
     def test_git_c_own_worktree_keeps_every_other_refusal(self) -> None:
         commands = (
@@ -3087,6 +3094,55 @@ class ReadOnlyFormsTest(unittest.TestCase):
     be `shell_is_read_only`; every one in WRITES names a file it writes, runs a
     command, or hides an option in an expansion, and must not be.
     """
+
+    def setUp(self) -> None:
+        # curl's verdict reads the machine: its default configs and the
+        # variables naming files it writes. These rows assume a machine with
+        # neither, whatever this one has.
+        self.real_configs = MODULE.curl_default_configs
+        configs = mock.patch.object(MODULE, "curl_default_configs", return_value=[])
+        configs.start()
+        self.addCleanup(configs.stop)
+        environment = mock.patch.dict(
+            os.environ,
+            {key: value for key, value in os.environ.items()
+             if key.upper() not in {"SSLKEYLOGFILE", "QLOGDIR"}},
+            clear=True,
+        )
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_curl_reads_only_without_a_config_or_a_write_variable(self) -> None:
+        """veda#199 review: curl reads its default config unless `-q` is
+        first, and a config may set `output`; SSLKEYLOGFILE and QLOGDIR in
+        the environment name files it writes whatever its options."""
+
+        plain = "curl -sS https://x.example"
+        disabled = "curl -q -sS https://x.example"
+        with tempfile.TemporaryDirectory() as home:
+            config = Path(home) / ".curlrc"
+            with mock.patch.object(MODULE, "curl_default_configs", return_value=[config]):
+                self.assertTrue(MODULE.shell_is_read_only(plain))
+                config.write_text('output = "/elsewhere/x"\n')
+                self.assertFalse(MODULE.shell_is_read_only(plain))
+                self.assertFalse(MODULE.shell_is_read_only("curl -s -q https://x.example"))
+                self.assertTrue(MODULE.shell_is_read_only(disabled))
+                self.assertTrue(MODULE.shell_is_read_only("curl --disable -sS https://x.example"))
+            with mock.patch.dict(os.environ, {"HOME": home, "CURL_HOME": "", "XDG_CONFIG_HOME": ""}):
+                self.assertIn(config, self.real_configs())
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": home}):
+                self.assertIn(Path(home) / "curlrc", self.real_configs())
+        for name in ("SSLKEYLOGFILE", "QLOGDIR", "sslkeylogfile"):
+            with self.subTest(name=name), mock.patch.dict(os.environ, {name: "/elsewhere/x"}):
+                self.assertFalse(MODULE.shell_is_read_only(disabled))
+        with mock.patch.dict(os.environ, {"SSLKEYLOGFILE": ""}):
+            self.assertTrue(MODULE.shell_is_read_only(disabled))
+        with mock.patch.object(MODULE.pwd, "getpwuid", side_effect=KeyError("uid")), \
+                mock.patch.dict(os.environ, {"HOME": "/h", "CURL_HOME": "", "XDG_CONFIG_HOME": ""}):
+            self.assertEqual(
+                self.real_configs(),
+                [Path("/h/.curlrc"), Path("/h/curlrc"), Path("/h/.config/curlrc")],
+            )
 
     READ = (
         # sort and uniq

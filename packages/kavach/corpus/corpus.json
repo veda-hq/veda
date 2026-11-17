@@ -1295,6 +1295,15 @@
     "text": "git rebase -q -x 'touch {P}/pwned' HEAD~1"
   },
   {
+    "id": "ow-git-bisect-run",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "bisect run runs its words, with no shell, at each step of the bisection (#182).",
+    "text": "git bisect start HEAD HEAD~1 && git bisect run touch {P}/pwned"
+  },
+  {
     "id": "ow-corrected-inside",
     "intent": "outside-write",
     "role": "corrected",

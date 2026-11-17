@@ -996,7 +996,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
             f"env GIT_DIR={outside} git init",
             f"GIT_TRACE={outside}/t git status",
             f"GIT_TRACE2_EVENT={outside}/t git status",
-            f"GIT_CONFIG_GLOBAL={outside}/g git config x.y z",
+            f"GIT_CONFIG_GLOBAL={outside}/g git config --global x.y z",
             f"GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0='touch {outside}/x' git diff",
             f"GIT_EXTERNAL_DIFF='touch {outside}/x' git diff",
             f"GIT_EDITOR='touch {outside}/x' git commit --amend",

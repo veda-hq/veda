@@ -784,13 +784,14 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
         for word in (*each.words, *each.redirect_targets, *each.input_targets, *each.herestrings)
     ) or any(each.expanded_bodies for each in commands):
         add("a command substitution (`$(...)`, backticks or `<(...)`)")
-    curl_config = boundary.curl_config_is_unproven(
+    curl_config = boundary.curl_environment_is_moved(command) or boundary.curl_config_is_unproven(
         [[word.text for word in each.words] for each in commands]
     )
     if curl_config:
         add(
             "`curl` with a config that may set its output (`-K`, or `HOME`, "
-            "`CURL_HOME` or `XDG_CONFIG_HOME` assigned) or a `-w` that writes a file"
+            "`CURL_HOME` or `XDG_CONFIG_HOME` assigned), a `-w` that writes a file, "
+            "or `SSLKEYLOGFILE` or `QLOGDIR` assigned"
         )
     for each in commands:
         words = list(each.words)

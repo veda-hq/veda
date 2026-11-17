@@ -1334,6 +1334,8 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "HOME=. curl -s https://x.example",
             "CURL_HOME=. curl -s https://x.example",
             "XDG_CONFIG_HOME=. curl -s https://x.example",
+            "HOME=.; echo $(curl -s https://x.example)",
+            f"SSLKEYLOGFILE={self.external}/x curl -s https://x.example",
         ):
             with self.subTest(command=command):
                 result = self.claude_bash(self.claude, command)
@@ -3330,6 +3332,9 @@ class ReadOnlyFormsTest(unittest.TestCase):
         "CURL_HOME=. curl -s https://x.example",
         "XDG_CONFIG_HOME=. curl -s https://x.example",
         "export HOME=.; curl -s https://x.example",
+        "HOME=.; echo $(curl -s https://x.example)",
+        "SSLKEYLOGFILE=/x curl -s https://x.example",
+        "QLOGDIR=/x curl -s https://x.example",
         "for r in a b; do curl -s -o $r.json https://x.example/$r; done",
         # veda#195: gh writes sigstore's TUF metadata to its cache on every run.
         "gh attestation trusted-root",
@@ -3367,6 +3372,16 @@ class ReadOnlyFormsTest(unittest.TestCase):
             "curl -sw@fmt https://x.example",
             "curl --write-out @fmt https://x.example",
             "curl --writ @fmt https://x.example",
+            # An assignment meets a curl nested below it, and the variables
+            # that name a file or folder curl writes count as the config's do.
+            "HOME=.tmp; echo $(curl -s https://x.example)",
+            "HOME=.tmp; cat <(curl -s https://x.example)",
+            "HOME=.tmp bash -c 'curl -s https://x.example'",
+            "HOME+=/x curl -s https://x.example",
+            "HOME=.tmp; command curl -s https://x.example",
+            "SSLKEYLOGFILE=/x curl -s https://x.example",
+            "QLOGDIR=/x curl -s https://x.example",
+            "export sslkeylogfile=/x; curl -s https://x.example",
         ):
             with self.subTest(command=command):
                 self.assertIsNone(MODULE.mutation_directories(command, cwd))

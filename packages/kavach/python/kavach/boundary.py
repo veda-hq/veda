@@ -3401,29 +3401,44 @@ def curl_is_read_only(args: list[str]) -> bool:
     return True
 
 
-# The variables that move the config curl reads by default.
-CURL_CONFIG_VARIABLES = ("CURL_HOME", "XDG_CONFIG_HOME", "HOME")
+# The variables curl 8.7.1 reads that decide where it writes (its ENVIRONMENT
+# docs, read 2026-11-17): CURL_HOME, XDG_CONFIG_HOME and HOME find the default
+# config, which may set `output`; SSLKEYLOGFILE names a file it writes TLS
+# secrets to, and QLOGDIR a folder it writes HTTP/3 logs in.
+CURL_WRITE_VARIABLES = ("CURL_HOME", "XDG_CONFIG_HOME", "HOME", "SSLKEYLOGFILE", "QLOGDIR")
+CURL_WORD = re.compile(r"(?<![\w-])curl(?![\w-])")
+CURL_WRITE_ASSIGNMENT = re.compile(
+    rf"(?<![\w-])(?:{'|'.join(CURL_WRITE_VARIABLES)})\+?=", re.IGNORECASE
+)
+
+
+def curl_environment_is_moved(command: str) -> bool:
+    """Whether ``command`` runs curl and assigns a `CURL_WRITE_VARIABLES` name.
+
+    Read off the whole text, so an assignment outside a `$(...)`, `<(...)` or
+    `bash -c` meets a curl inside it (`HOME=.tmp; echo $(curl ...)`), and a
+    `+=` or an `export` counts as any assignment does. A name in other text
+    refuses too much, never too little.
+    """
+
+    return bool(CURL_WORD.search(command) and CURL_WRITE_ASSIGNMENT.search(command))
 
 
 def curl_config_is_unproven(segments: list[list[str]]) -> bool:
-    """Whether a line running curl lets a config decide what it writes.
+    """Whether a line running curl lets a config or a format decide what it writes.
 
     A config may set `output`, so curl writes there with nothing on its
     command line to show it: `-K`/`--config` names one (`-K -` reads it from
-    stdin), and an assignment of a `CURL_CONFIG_VARIABLES` name anywhere on
-    the line (`HOME=.tmp curl`, `export CURL_HOME=.tmp; curl`) moves the
-    default one to a folder the session may have written. A `-w` that
-    `curl_write_out_writes` writes too. Clusters and abbreviations are read
-    loosely here, refusing too much rather than too little: any short
-    cluster holding `K`, and any long option a prefix of `--config`.
+    stdin). A `-w` that `curl_write_out_writes` writes too. Clusters and
+    abbreviations are read loosely here, refusing too much rather than too
+    little: any short cluster holding `K`, and any long option a prefix of
+    `--config`. The variables that move the default config are
+    `curl_environment_is_moved`'s.
     """
 
     words = [word for segment in segments for word in segment]
     if not any(os.path.basename(word) == "curl" for word in words):
         return False
-    for word in words:
-        if re.match(rf"(?:{'|'.join(CURL_CONFIG_VARIABLES)})=", word):
-            return True
     for segment in segments:
         curl_at = next(
             (i for i, word in enumerate(segment) if os.path.basename(word) == "curl"),
@@ -3732,6 +3747,8 @@ def shell_is_read_only(command: str, depth: int = 0) -> bool:
     each of their values (``bound_variants``).
     """
 
+    if curl_environment_is_moved(command):
+        return False
     segments = split_commands(command, depth)
     if segments is None or curl_config_is_unproven(segments):
         return False
@@ -5574,8 +5591,9 @@ def mutation_directories(
     segments = split_commands(command)
     if segments is None:
         return None
-    if curl_config_is_unproven(segments):
-        # A config decides what curl writes, out of the command line's sight.
+    if curl_environment_is_moved(command) or curl_config_is_unproven(segments):
+        # A config, a format or a variable decides what curl writes, out of
+        # the command line's sight.
         return None
     alone = alone and len(segments) == 1
     # A loop body runs once per iteration while this model applies each `cd`

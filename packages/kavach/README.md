@@ -49,9 +49,9 @@ grep`, `ls-tree` and `cat-file` with their listing options (never `grep -O`,
 stdout, `openssl x509` printing a certificate, and `curl` printing what it
 fetches (display options only, `-o` only to `/dev/null`, `-X` only `GET` or
 `HEAD`, a `-w` with no `%output`). Any `curl`, read-only or not, is
-unproven with `-K`/`--config`, with a `-w` that writes or reads a file, or on
-a line that assigns `CURL_HOME`, `XDG_CONFIG_HOME` or `HOME`: a config may set
-its `output`. When it
+unproven with `-K`/`--config`, with a `-w` that writes or reads a file, or in
+a command that assigns `CURL_HOME`, `XDG_CONFIG_HOME` or `HOME` (a config may
+set its `output`), or `SSLKEYLOGFILE` or `QLOGDIR` (files curl writes). When it
 cannot prove a command, it treats it as writing, and from outside an owned
 worktree that refuses. An expansion that could become an option (`git log
 $X`, where `X=--output=/elsewhere`) leaves the command unproven.

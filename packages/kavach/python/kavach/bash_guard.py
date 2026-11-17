@@ -187,7 +187,7 @@ OPERATOR = re.compile(r";;&|;;|;&|&&|\|\||\|&|&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|
 VALUE_OPTS = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
 # `git` global options that take a separate value before the subcommand.
 GIT_GLOBAL_VALUE_OPTS = {
-    "-C", "-c", "--config-env", "--git-dir", "--work-tree", "--namespace",
+    "-C", "-c", "--config-env", "--git-dir", "--work-tree", "--namespace", "--attr-source",
 }
 
 
@@ -851,7 +851,9 @@ def iter_git_calls(tokens, wanted, soft=frozenset()):
             if "=" in opt:
                 opt, val = opt.split("=", 1)
             if opt in GIT_GLOBAL_VALUE_OPTS:
-                if val is None and j + 1 < len(tokens):
+                # A separator ends the command, so it is never the value:
+                # `git --attr-source && git commit` must still see the commit.
+                if val is None and j + 1 < len(tokens) and tokens[j + 1] not in SEPARATORS:
                     val = tokens[j + 1]
                     j += 2
                 else:

@@ -112,7 +112,7 @@ def literal(word: Any) -> str | None:
     return None if word.dynamic else word.text
 
 
-GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--super-prefix"}
+GIT_VALUE_OPTIONS = {"-C", "-c", "--config-env", "--git-dir", "--work-tree", "--namespace", "--attr-source", "--exec-path", "--super-prefix"}
 
 
 def git_subcommand(words: Sequence[Any], cwd: str) -> tuple[str, list[Any], str] | None:

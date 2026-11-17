@@ -785,6 +785,30 @@ class OwnCheckoutTest(BoundaryFixture):
                 self.assertEqual(result.returncode, 2 if expected else 0, result.stderr)
                 self.assertIn(expected, result.stderr)
 
+    def test_git_writers_and_runners_in_the_owned_clone(self) -> None:
+        """In the hosted clone, a steering assignment before git and a
+        runner whose command cannot be placed are unproven, as in a desktop
+        worktree. The #182 writers stay refused there by clone_writers,
+        even into the clone's own folders, and so do the runners it can
+        place, and an inert assignment before git."""
+        environment = self.hosted_env()
+        for command, expected in (
+            ("GIT_DIR=.tmp/g git init", "mutation targets could not be resolved"),
+            ("GIT_TRACE=.tmp/t git status", "mutation targets could not be resolved"),
+            ("git filter-branch --msg-filter cat HEAD", "mutation targets could not be resolved"),
+            ("git submodule foreach true", "mutation targets could not be resolved"),
+            ("git merge-file .tmp/cur base other", "an owned plain clone does not open it"),
+            ("git read-tree --index-output=.tmp/idx HEAD", "an owned plain clone does not open it"),
+            ("git pack-objects --revs .tmp/p", "an owned plain clone does not open it"),
+            ("git rebase -x 'touch .tmp/x' HEAD~1", "an owned plain clone does not open it"),
+            ("GIT_EDITOR=true git commit --amend", "an owned plain clone does not open it"),
+            ("git fast-export HEAD", "an owned plain clone does not open it"),
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(expected, result.stderr)
+
     def test_the_clone_is_owned_in_the_named_environment(self) -> None:
         environment = self.hosted_env()
         (self.main / "sub").mkdir()

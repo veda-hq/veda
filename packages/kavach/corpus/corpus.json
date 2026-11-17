@@ -1205,6 +1205,105 @@
     "text": "git --namespace x init -q {P}/pwned"
   },
   {
+    "id": "ow-git-merge-file",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "merge-file writes the merge into its first operand (#182).",
+    "text": "git merge-file {P}/README.md README.md README.md"
+  },
+  {
+    "id": "ow-git-fast-export-marks",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "fast-export writes its marks file, resolved from the top of the work tree (#182).",
+    "text": "git fast-export --export-marks={P}/pwned HEAD"
+  },
+  {
+    "id": "ow-git-fast-import-marks",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "fast-import writes its marks file when the stream ends (#182).",
+    "text": "git fast-export HEAD | git fast-import --quiet --export-marks={P}/pwned"
+  },
+  {
+    "id": "ow-git-pack-objects-base",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "pack-objects writes <base>-<hash>.pack and its .idx (#182).",
+    "text": "echo HEAD | git pack-objects -q --revs {P}/pwned"
+  },
+  {
+    "id": "ow-git-read-tree-index-output",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "read-tree writes the index it builds to --index-output (#182).",
+    "text": "git read-tree --index-output={P}/pwned HEAD"
+  },
+  {
+    "id": "ow-git-dir-prefix",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "A GIT_DIR assignment before git moves the repository it writes (#182).",
+    "text": "GIT_DIR={P}/pwned git init -q"
+  },
+  {
+    "id": "ow-git-index-file-prefix",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "A GIT_INDEX_FILE assignment before git moves the index it writes (#182).",
+    "text": "GIT_INDEX_FILE={P}/pwned git add README.md"
+  },
+  {
+    "id": "ow-git-trace-prefix",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "GIT_TRACE with a path writes the trace there, even from a verb that only reads (#182).",
+    "text": "GIT_TRACE={P}/pwned git status"
+  },
+  {
+    "id": "ow-git-external-diff-prefix",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "GIT_EXTERNAL_DIFF runs a command for each changed file, from a diff that only reads; the hash is git's empty tree (#182).",
+    "text": "GIT_EXTERNAL_DIFF='touch {P}/pwned;:' git diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD"
+  },
+  {
+    "id": "ow-git-rebase-exec",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "rebase -x runs its command through the shell after each commit (#182).",
+    "text": "git rebase -q -x 'touch {P}/pwned' HEAD~1"
+  },
+  {
+    "id": "ow-git-bisect-run",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "bisect run runs its words, with no shell, at each step of the bisection (#182).",
+    "text": "git bisect start HEAD HEAD~1 && git bisect run touch {P}/pwned"
+  },
+  {
     "id": "ow-corrected-inside",
     "intent": "outside-write",
     "role": "corrected",

@@ -2046,15 +2046,21 @@ GIT_UNPLACED_RUNNERS = frozenset({"filter-branch", "difftool", "mergetool"})
 # every `GIT_*` name (GIT_DIR, GIT_INDEX_FILE, GIT_TRACE=<file>,
 # GIT_CONFIG_COUNT, GIT_EXTERNAL_DIFF, ...), and the editors, pager and
 # config homes git reads. All fail closed as unproven, as `--git-dir` does,
-# except the names below, which name no file and run nothing, and the
-# editors as the literal `true` or `:`.
+# except the names below, which name no file and run nothing, the editors
+# as the literal `true` or `:`, and the pagers as `cat`.
 GIT_STEERING_NAMES = frozenset({"EDITOR", "VISUAL", "PAGER", "HOME", "XDG_CONFIG_HOME"})
 GIT_INERT_ASSIGNMENTS = frozenset({
     "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
     "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
     "GIT_TERMINAL_PROMPT",
 })
-GIT_EDITOR_NAMES = frozenset({"GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR", "VISUAL"})
+GIT_INERT_VALUES: dict[str, frozenset[str]] = {
+    **dict.fromkeys(
+        ("GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR", "VISUAL"),
+        frozenset({"true", ":"}),
+    ),
+    **dict.fromkeys(("GIT_PAGER", "PAGER"), frozenset({"cat"})),
+}
 
 
 def git_prefix_is_inert(prefix: list[str]) -> bool:
@@ -2069,7 +2075,7 @@ def git_prefix_is_inert(prefix: list[str]) -> bool:
             continue
         if name in GIT_INERT_ASSIGNMENTS:
             continue
-        if name in GIT_EDITOR_NAMES and shell_option_value(word) in {"true", ":"}:
+        if shell_option_value(word) in GIT_INERT_VALUES.get(name, frozenset()):
             continue
         return False
     return True

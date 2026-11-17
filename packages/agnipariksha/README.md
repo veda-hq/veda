@@ -50,11 +50,14 @@ runs the repository's own `node_modules/.bin/stryker`.
 - **Blocking**: `Survived` and `NoCoverage`. Caught: `Killed`, `Timeout` (after
   a retry), `RuntimeError`, `CompileError`. `Ignored` is not counted, and any
   other status refuses.
-- **Only the owning suite kills.** When a file has blocking mutants and a
+- **A sibling suite that did not run is named.** In a run narrowed to the
+  owning suites (a lane whose `env` names `{suites}`, or a fallback rerun),
+  only those suites run. When a file judged there has blocking mutants and a
   suite beside it does not own it (`a-cases.test.ts`, or a qualified
   `a.integration.test.ts`, with no source of its own), the gate says so once
-  for the file: `a-cases.test.ts is not the owner; only a.test.ts kills
-  mutants of a.ts`.
+  for the file: `a-cases.test.ts is not the owner, so it did not run; only
+  a.test.ts kills mutants of a.ts here`. Under a related filter any suite
+  that imports the file runs, a sibling included, so there it says nothing.
 - **A timed-out mutant** is rerun once alone, with concurrency 1 and a
   three-minute timeout; one that times out again counts as caught. The retry
   pass refuses once it has run 15 minutes, or when a retry's dry run times

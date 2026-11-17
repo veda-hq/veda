@@ -351,6 +351,32 @@ test('only a failed test reruns a lane with no fallback: no related suite or no 
   }
 });
 
+test('ownSuites: every target of a narrowed lane, the targets a fallback reran, and none under a related filter or a refusal', async () => {
+  const narrowedPlan: Plan = { ...webPlan, lane: { ...web, ownSuites: true } };
+  const narrowed = fakeDeps([report({ 'src/a.ts': [strykerMutant('Survived')] })], [], null);
+  narrowed.setPlan(narrowedPlan);
+  assert.deepEqual((await judgeLane(narrowedPlan, narrowed.deps)).ownSuites, ['apps/web/src/a.ts']);
+
+  const related = fakeDeps([report({ 'src/a.ts': [strykerMutant('Survived')] })], [], null);
+  related.setPlan(webPlan);
+  assert.deepEqual((await judgeLane(webPlan, related.deps)).ownSuites, []);
+
+  const fellBack = fakeDeps([undefined, report({ 'scripts/a.ts': [strykerMutant('Survived')] })], [{ code: 1, seen: ['No tests were executed'] }]);
+  fellBack.setPlan(toolingPlan);
+  assert.deepEqual((await judgeLane(toolingPlan, fellBack.deps)).ownSuites, ['scripts/a.ts']);
+
+  const unreached = fakeDeps([
+    report({ 'scripts/a.ts': [strykerMutant('Survived', 1)], 'scripts/b.ts': [strykerMutant('NoCoverage', 1)] }),
+    report({ 'scripts/b.ts': [strykerMutant('Survived', 1)] }),
+  ]);
+  unreached.setPlan(twoFiles);
+  assert.deepEqual((await judgeLane(twoFiles, unreached.deps)).ownSuites, ['scripts/b.ts'], 'only the file rerun in own-suite mode');
+
+  const refusedRun = fakeDeps([], [{ code: 2, seen: [] }], null);
+  refusedRun.setPlan(narrowedPlan);
+  assert.deepEqual((await judgeLane(narrowedPlan, refusedRun.deps)).ownSuites, []);
+});
+
 test('a fallback names the tests that failed its first dry run', async () => {
   const { deps, setPlan } = fakeDeps([undefined, report({ 'scripts/a.ts': [strykerMutant('Killed')] })], [failedRun('x')]);
   setPlan(toolingPlan);

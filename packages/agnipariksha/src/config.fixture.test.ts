@@ -89,6 +89,7 @@ test('seven lanes: five workspaces with reuse; vitest tooling uses the related f
   assert.equal(nodeTest?.fallback, undefined);
   assert.equal(nodeTest?.selects('.claude/scripts/a.ts'), true);
   assert.deepEqual(nodeTest?.env(['c.test.ts']), { REPO_TOOLING_MUTATION_SUITES: 'c.test.ts' });
+  assert.deepEqual([server?.ownSuites, vitest?.ownSuites, nodeTest?.ownSuites], [undefined, undefined, true], 'only node:test runs narrowed to the owning suites');
 });
 
 test('every lane keeps the config file it ran before', () => {

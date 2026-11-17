@@ -98,9 +98,9 @@ test('summaryLine names counts, statuses, retries and the verdict', () => {
   const plan: Plan = { lane: lane('scripts', 'scripts/'), targets: ['a', 'b'], suites: [], notJudged: [] };
   const m = { file: 'a', mutator: 'M', replacement: 'r', line: 1, column: 1, endLine: 1, endColumn: 2 };
   const killed = judge([{ ...m, status: 'Killed' }, { ...m, status: 'RuntimeError' }]);
-  assert.equal(summaryLine(plan, { judgement: killed, retried: 1, refusals: [], noMutants: [], fellBack: null }), 'scripts: 2 killed of 2 in 2 file(s) (1 Killed, 1 RuntimeError; 1 timeout(s) retried) - pass');
-  assert.match(summaryLine(plan, { judgement: judge([{ ...m, status: 'Survived' }]), retried: 0, refusals: [], noMutants: [], fellBack: null }), /- 1 blocking$/);
-  assert.match(summaryLine(plan, { judgement: judge([]), retried: 0, refusals: ['x'], noMutants: [], fellBack: null }), /\(no mutants; 0 timeout\(s\) retried\) - REFUSED$/);
+  assert.equal(summaryLine(plan, { judgement: killed, retried: 1, refusals: [], noMutants: [], fellBack: null, ownSuites: [] }), 'scripts: 2 killed of 2 in 2 file(s) (1 Killed, 1 RuntimeError; 1 timeout(s) retried) - pass');
+  assert.match(summaryLine(plan, { judgement: judge([{ ...m, status: 'Survived' }]), retried: 0, refusals: [], noMutants: [], fellBack: null, ownSuites: [] }), /- 1 blocking$/);
+  assert.match(summaryLine(plan, { judgement: judge([]), retried: 0, refusals: ['x'], noMutants: [], fellBack: null, ownSuites: [] }), /\(no mutants; 0 timeout\(s\) retried\) - REFUSED$/);
 });
 
 interface Fake {
@@ -346,24 +346,32 @@ test('unfinishedMerge on real git: a stopped merge in a plain repository and in 
   }
 });
 
-test('a blocking file with a sibling suite says once that the sibling is not the owner; a passing one says nothing', async () => {
-  const f = fake({ scripts: mutants('Survived', 'NoCoverage') });
-  const git = f.deps.git;
-  f.deps.git = (args) => (args[0] === 'ls-files' && args.includes('--cached') ? 'scripts/a.ts\0scripts/a.test.ts\0scripts/a-cases.test.ts\0' : git(args));
-  assert.equal(await main(['--files', 'scripts/a.ts'], f.deps), 1);
+test('a blocking file with a sibling suite, in a run narrowed to the owning suites, says once that the sibling did not run', async () => {
+  const narrowed: Lane = { ...lane('scripts', 'scripts/'), ownSuites: true };
+  const withSibling = (f: Fake): Fake => {
+    const git = f.deps.git;
+    f.deps.git = (args) => (args[0] === 'ls-files' && args.includes('--cached') ? 'scripts/a.ts\0scripts/a.test.ts\0scripts/a-cases.test.ts\0' : git(args));
+    return f;
+  };
+  const f = withSibling(fake({ scripts: mutants('Survived', 'NoCoverage') }));
+  assert.equal(await main(['--files', 'scripts/a.ts'], { ...f.deps, lanes: [narrowed] }), 1);
   assert.deepEqual(f.logs.slice(1, 4), [
     '  Survived scripts/a.ts:1 (M)',
     '  NoCoverage scripts/a.ts:2 (M)',
-    '  a-cases.test.ts is not the owner; only a.test.ts kills mutants of a.ts: put the tests that should kill them there',
+    '  a-cases.test.ts is not the owner, so it did not run; only a.test.ts kills mutants of a.ts here: put the tests that should kill them there',
   ]);
 
+  // Under a related filter (the lane's own run not narrowed) the sibling ran if it imports the file: nothing to say.
+  const related = withSibling(fake({ scripts: mutants('Survived') }));
+  assert.equal(await main(['--files', 'scripts/a.ts', '--no-reuse'], related.deps), 1);
+  assert.equal(related.logs.some((line) => line.includes('not the owner')), false, 'related mode, no line');
+
   const alone = fake({ scripts: mutants('Survived') });
-  assert.equal(await main(['--files', 'scripts/a.ts', '--no-reuse'], alone.deps), 1);
+  assert.equal(await main(['--files', 'scripts/a.ts', '--no-reuse'], { ...alone.deps, lanes: [narrowed] }), 1);
   assert.equal(alone.logs.some((line) => line.includes('not the owner')), false, 'no sibling, no line');
 
-  const passing = fake({ scripts: mutants('Killed') });
-  passing.deps.git = f.deps.git;
-  assert.equal(await main(['--files', 'scripts/a.ts', '--no-reuse'], passing.deps), 0);
+  const passing = withSibling(fake({ scripts: mutants('Killed') }));
+  assert.equal(await main(['--files', 'scripts/a.ts', '--no-reuse'], { ...passing.deps, lanes: [narrowed] }), 0);
   assert.equal(passing.logs.some((line) => line.includes('not the owner')), false, 'nothing blocks, nothing to say');
 });
 

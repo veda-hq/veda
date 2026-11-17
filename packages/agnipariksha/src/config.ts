@@ -189,6 +189,7 @@ export function lanesOf(config: Config): Lane[] {
     };
     const { fallbackEnv } = lane;
     if (fallbackEnv !== undefined) built.fallback = (suites) => fill(fallbackEnv, suites);
+    if (Object.values(lane.env).some((value) => value.includes(SUITES_PLACEHOLDER))) built.ownSuites = true;
     return built;
   });
 }

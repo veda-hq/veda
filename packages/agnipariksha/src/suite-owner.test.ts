@@ -55,10 +55,10 @@ test('siblingSuites: dash and qualified suites beside the source, never one of i
 test('notTheOwner names the siblings, the owner and the source by file name, with what to do', () => {
   assert.equal(
     notTheOwner('a/foo.ts', 'a/foo.test.ts', ['a/foo-cases.test.ts']),
-    'foo-cases.test.ts is not the owner; only foo.test.ts kills mutants of foo.ts: put the tests that should kill them there',
+    'foo-cases.test.ts is not the owner, so it did not run; only foo.test.ts kills mutants of foo.ts here: put the tests that should kill them there',
   );
   assert.equal(
     notTheOwner('foo.ts', 'foo.test.ts', ['foo-a.test.ts', 'foo-b.test.ts', 'foo.int.test.ts']),
-    'foo-a.test.ts, foo-b.test.ts and foo.int.test.ts are not the owner; only foo.test.ts kills mutants of foo.ts: put the tests that should kill them there',
+    'foo-a.test.ts, foo-b.test.ts and foo.int.test.ts are not the owner, so they did not run; only foo.test.ts kills mutants of foo.ts here: put the tests that should kill them there',
   );
 });

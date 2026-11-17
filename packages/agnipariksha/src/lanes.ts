@@ -21,6 +21,8 @@ export interface Lane {
   env: (suites: readonly string[]) => Record<string, string>;
   /** Variables for one rerun when the dry run fails on a `FALLBACK_TRIGGERS` line. */
   fallback?: (suites: readonly string[]) => Record<string, string>;
+  /** Whether the lane's own run is narrowed to the owning suites (its `env` names them). */
+  ownSuites?: boolean;
 }
 
 /** Stryker's line when the initial test run outlives its cap: the machine is busy. */
@@ -97,6 +99,12 @@ export interface LaneResult {
   /** Why the lane reran (all or some targets) in its fallback mode; that run's results count for them. */
   fellBack: string | null;
   /**
+   * Targets judged with only the changed files' own suites run: the lane's
+   * `ownSuites`, or its fallback mode. Elsewhere a related filter lets any
+   * suite that imports a file kill its mutants, a sibling suite included.
+   */
+  ownSuites: string[];
+  /**
    * A lane with no fallback mode whose initial test run failed and then
    * passed when run again with the same variables: which tests flaked. That
    * second run's results count.
@@ -162,7 +170,7 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
     reuseArgs.push('--incremental', '--incrementalFile', file);
   }
 
-  const refused = (refusal: string, fellBack: string | null): LaneResult => ({ judgement: judge([]), retried: 0, refusals: [refusal], noMutants: [], fellBack });
+  const refused = (refusal: string, fellBack: string | null): LaneResult => ({ judgement: judge([]), retried: 0, refusals: [refusal], noMutants: [], fellBack, ownSuites: [] });
   /** Files judged in the fallback mode; their timeouts retry in it too. */
   const ownSuite = new Set<string>();
   let fellBack: string | null = null;
@@ -213,5 +221,6 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
   );
   const judgement = judge(pass.mutants);
   const refusals = [...pass.refusals, ...judgement.unknown.map((u) => `unknown status: ${u}`)];
-  return { judgement, retried: pass.retried, refusals, noMutants, fellBack, ...(flaky === undefined ? {} : { flaky }) };
+  const ownSuites = lane.ownSuites === true ? [...plan.targets] : plan.targets.filter((file) => ownSuite.has(file));
+  return { judgement, retried: pass.retried, refusals, noMutants, fellBack, ownSuites, ...(flaky === undefined ? {} : { flaky }) };
 }

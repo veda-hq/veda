@@ -190,7 +190,9 @@ async function judgeAll(args: Args, deps: CliDeps): Promise<number> {
     if (result.flaky !== undefined) deps.log(`  flaky: ${lane.name}: ${result.flaky}`);
     for (const file of result.noMutants) deps.log(`  no mutants (absent from Stryker's report): ${file}`);
     for (const m of result.judgement.blocking) deps.log(`  ${formatBlocking(m)}`);
-    for (const file of new Set(result.judgement.blocking.map((m) => m.file))) {
+    // Only where the run was narrowed to the owning suites: under a related filter a sibling that imports the file ran.
+    const narrowed = new Set(result.ownSuites);
+    for (const file of new Set(result.judgement.blocking.map((m) => m.file).filter((file) => narrowed.has(file)))) {
       const owner = ownerOf(file, deps.exists);
       const siblings = owner === null ? [] : siblingSuites(file, listTracked());
       if (owner !== null && siblings.length > 0) deps.log(`  ${notTheOwner(file, owner, siblings)}`);

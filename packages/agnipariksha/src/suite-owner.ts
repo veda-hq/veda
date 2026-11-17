@@ -41,12 +41,14 @@ export function siblingSuites(sourcePath: string, files: readonly string[]): str
 }
 
 /**
- * The gate's line for a file with blocking mutants and sibling suites:
- * a test added to a sibling looks as if it should kill them, and kills none.
+ * The gate's line for a file with blocking mutants and sibling suites, judged
+ * in a run narrowed to the owning suites: a test added to a sibling looks as
+ * if it should kill them, and never ran.
  */
 export function notTheOwner(sourcePath: string, owner: string, siblings: readonly string[]): string {
   const name = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
   const names = siblings.map(name);
   const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
-  return `${list} ${names.length === 1 ? 'is' : 'are'} not the owner; only ${name(owner)} kills mutants of ${name(sourcePath)}: put the tests that should kill them there`;
+  const one = names.length === 1;
+  return `${list} ${one ? 'is' : 'are'} not the owner, so ${one ? 'it' : 'they'} did not run; only ${name(owner)} kills mutants of ${name(sourcePath)} here: put the tests that should kill them there`;
 }

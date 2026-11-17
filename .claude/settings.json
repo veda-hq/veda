@@ -71,7 +71,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|AskUserQuestion|mcp__ccd_turn__wrap_up",
         "hooks": [
           {
             "type": "command",

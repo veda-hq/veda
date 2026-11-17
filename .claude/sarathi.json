@@ -11,7 +11,8 @@
         "matcher": "Bash",
         "command": "input=$(cat); cmd=$(printf '%s' \"$input\" | sed -nE 's/.*\"command\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\\1/p'); printf '%s' \"$cmd\" | grep -Eq '(^|[^[:alnum:]_-])(gh|git)([^[:alnum:]_-]|$)' || exit 0; cli=\"$HOME/.config/niyam/bin/niyam\"; [ -x \"$cli\" ] || cli=niyam; printf '%s' \"$input\" | \"$cli\" guard && exit 0; [ $? -eq 2 ] && exit 2; echo \"niyam: refused, because the niyam CLI did not run here to check this command. Do not work around it; tell the owner.\" >&2; exit 2",
         "failClosed": true
-      }
+      },
+      { "matcher": "AskUserQuestion|mcp__ccd_turn__wrap_up", "command": "bash \"$SARATHI_HOOKS\"/ask-gate.sh", "timeout": 10 }
     ],
     "PostToolUse": [
       {

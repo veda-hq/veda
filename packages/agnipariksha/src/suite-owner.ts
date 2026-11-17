@@ -17,3 +17,38 @@ export function suiteCandidatesFor(sourcePath: string): string[] {
 export function ownerOf(sourcePath: string, exists: Exists): string | null {
   return suiteCandidatesFor(sourcePath).find((candidate) => exists(candidate)) ?? null;
 }
+
+const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const SUITE = /\.test\.tsx?$/;
+
+/**
+ * The suites beside a source that kill none of its mutants: `<stem>-*.test.ts`
+ * or a qualified `<stem>.<qualifier>.test.ts`, from `files` (repo-relative).
+ * A suite with a source of its own (`foo-bar.test.ts` beside `foo-bar.ts` or
+ * `foo-bar.mjs`) is that file's, so it is left out; so is any suite that
+ * could own the source.
+ */
+export function siblingSuites(sourcePath: string, files: readonly string[]): string[] {
+  const extension = /\.[^./]+$/.exec(sourcePath)?.[0] ?? '';
+  const stem = sourcePath.slice(0, sourcePath.length - extension.length);
+  const sibling = new RegExp(`^${escape(stem)}(?:-[^/]+|\\.[^./]+)\\.test\\.tsx?$`);
+  const candidates = new Set(suiteCandidatesFor(sourcePath));
+  const hasOwnSource = (suite: string): boolean => {
+    const source = new RegExp(`^${escape(suite.replace(SUITE, ''))}\\.[^./]+$`);
+    return files.some((file) => source.test(file) && !SUITE.test(file));
+  };
+  return files.filter((file) => sibling.test(file) && !candidates.has(file) && !hasOwnSource(file));
+}
+
+/**
+ * The gate's line for a file with blocking mutants and sibling suites, judged
+ * in a run narrowed to the owning suites: a test added to a sibling looks as
+ * if it should kill them, and never ran.
+ */
+export function notTheOwner(sourcePath: string, owner: string, siblings: readonly string[]): string {
+  const name = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
+  const names = siblings.map(name);
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+  const one = names.length === 1;
+  return `${list} ${one ? 'is' : 'are'} not the owner, so ${one ? 'it' : 'they'} did not run; only ${name(owner)} kills mutants of ${name(sourcePath)} here: put the tests that should kill them there`;
+}

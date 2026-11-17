@@ -97,4 +97,13 @@ test('env and fallbackEnv fill in the owning suites', () => {
   const [plain] = lanesOf(parsed(valid()));
   assert.equal(plain?.fallback, undefined);
   assert.equal(Object.hasOwn(plain ?? {}, 'fallback'), false);
+  // An env naming the suites narrows the lane's own run to them; a fallbackEnv alone does not.
+  assert.equal(only?.ownSuites, true);
+  assert.equal(only?.fallbackOwnSuites, true);
+  assert.equal(Object.hasOwn(plain ?? {}, 'ownSuites'), false);
+  assert.equal(Object.hasOwn(plain ?? {}, 'fallbackOwnSuites'), false);
+  const [fallbackOnly] = lanesOf(parsed(valid({ lanes: [{ ...lane, env: { MODE: 'related' }, fallbackEnv: { SUITES: '{suites}' } }] })));
+  assert.deepEqual([fallbackOnly?.ownSuites, fallbackOnly?.fallbackOwnSuites], [undefined, true]);
+  const [wideFallback] = lanesOf(parsed(valid({ lanes: [{ ...lane, env: { SUITES: '{suites}' }, fallbackEnv: { MODE: 'related' } }] })));
+  assert.deepEqual([wideFallback?.ownSuites, wideFallback?.fallbackOwnSuites], [true, undefined]);
 });

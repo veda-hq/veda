@@ -188,7 +188,10 @@ export function lanesOf(config: Config): Lane[] {
       env: (suites) => fill(lane.env, suites),
     };
     const { fallbackEnv } = lane;
+    const namesSuites = (env: Record<string, string>): boolean => Object.values(env).some((value) => value.includes(SUITES_PLACEHOLDER));
     if (fallbackEnv !== undefined) built.fallback = (suites) => fill(fallbackEnv, suites);
+    if (namesSuites(lane.env)) built.ownSuites = true;
+    if (fallbackEnv !== undefined && namesSuites(fallbackEnv)) built.fallbackOwnSuites = true;
     return built;
   });
 }

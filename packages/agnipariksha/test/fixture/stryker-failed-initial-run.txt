@@ -1,0 +1,8 @@
+[32m09:24:22 (64020) INFO ProjectReader[39m Found 1 of 4 file(s) to be mutated.
+[32m09:24:23 (64020) INFO Instrumenter[39m Instrumented 1 source file(s) with 2 mutant(s)
+[32m09:24:23 (64020) INFO ConcurrencyTokenProvider[39m Creating 17 test runner process(es).
+[32m09:24:23 (64020) INFO DryRunExecutor[39m Starting initial test run (vitest test runner with "perTest" coverage analysis). This may take a while.
+[91m09:24:23 (64020) ERROR DryRunExecutor[39m One or more tests failed in the initial test run:
+	the clock is pinned
+		expected +0 to be 1 // Object.is equality
+[91m09:24:23 (64020) ERROR Stryker[39m There were failed tests in the initial test run.

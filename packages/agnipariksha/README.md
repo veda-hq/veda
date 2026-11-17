@@ -6,18 +6,24 @@ lane by lane, and blocks the push on a mutant no test kills. Part of
 [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/agnipariksha@0.6.8 [--base <ref>] [--files a,b] [--lane <name>]... [--tracked-only] [--no-reuse]
+npx @veda-hq/agnipariksha@0.7.2 [--base <ref>] [--files a,b] [--lane <name>]... [--tracked-only] [--no-reuse]
 ```
 
 Exit 0 when every judged mutant is caught, 1 on a blocking mutant, and 2 when
 it refuses or cannot judge: a bad argument, a missing or bad
-`agnipariksha.json`, another run holding the machine lock, a Stryker run that
+`agnipariksha.json`, a merge not yet committed, another run holding the
+machine lock, a Stryker run that
 fails or writes no report. A refusal never reads as blocking. Node 24.15 or
 later, and `@stryker-mutator/core` 10.1.1 or a later 10.x as a peer: the gate
 runs the repository's own `node_modules/.bin/stryker`.
 
 ## What it judges
 
+- **Never a half-merged tree.** While a merge stopped before its commit
+  (`MERGE_HEAD` exists, in a linked worktree too), the gate refuses with
+  exit 2, before the machine lock: the working tree would be judged against
+  the merge-base, so its verdict would say nothing about the branch. The
+  refusal names the merge; commit it or abort it, then run again.
 - **The files.** Those changed since the merge-base of `HEAD` with `--base`
   (default: the config's `upstream`), deletions left out, plus untracked
   files unless `--tracked-only` is given. A pre-push hook passes it, because
@@ -44,10 +50,26 @@ runs the repository's own `node_modules/.bin/stryker`.
 - **Blocking**: `Survived` and `NoCoverage`. Caught: `Killed`, `Timeout` (after
   a retry), `RuntimeError`, `CompileError`. `Ignored` is not counted, and any
   other status refuses.
+- **A sibling suite that did not run is named.** In a run narrowed to the
+  owning suites (a lane whose `env` names `{suites}`, or a fallback rerun
+  whose `fallbackEnv` does),
+  only those suites run. When a file judged there has blocking mutants and a
+  suite beside it does not own it (`a-cases.test.ts`, or a qualified
+  `a.integration.test.ts`, with no source of its own), the gate says so once
+  for the file: `a-cases.test.ts is not the owner, so it did not run; only
+  a.test.ts kills mutants of a.ts here`. Under a related filter any suite
+  that imports the file runs, a sibling included, so there it says nothing.
 - **A timed-out mutant** is rerun once alone, with concurrency 1 and a
   three-minute timeout; one that times out again counts as caught. The retry
   pass refuses once it has run 15 minutes, or when a retry's dry run times
-  out: the machine is busy.
+  out: the machine is busy. A retry whose dry run fails on a test refuses as
+  flaky, naming the tests Stryker printed: the lane's own run had passed
+  them.
+- **A failed test in the dry run** is named in the gate's own line. A lane
+  with no `fallbackEnv` reruns such a dry run once with the same variables.
+  If it passes, the gate says the test is flaky and that run's results
+  count. If it fails again, the lane refuses: the initial test run failed on
+  both runs.
 - **Reuse.** A lane with `reuse: true` runs with `--incremental` and a reuse
   file named by a key over the files that can change its results: the
   lockfile and the rest of `reuseKey.always`, the lane's config, its

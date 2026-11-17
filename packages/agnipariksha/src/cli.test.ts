@@ -11,6 +11,7 @@ import {
   inheritedEnv,
   isEntry,
   main,
+  MAX_LINE,
   parseArgs,
   readText,
   realDeps,
@@ -21,9 +22,11 @@ import {
   selectLanes,
   spawnStryker,
   summaryLine,
+  unfinishedMerge,
   type CliDeps,
 } from './cli.ts';
 import { parseConfig, type Config } from './config.ts';
+import { FAILED_TESTS_HEADER } from './failed-tests.ts';
 import { DRY_RUN_TIMEOUT, type Lane, type Plan } from './lanes.ts';
 import { judge } from './verdict.ts';
 
@@ -95,9 +98,9 @@ test('summaryLine names counts, statuses, retries and the verdict', () => {
   const plan: Plan = { lane: lane('scripts', 'scripts/'), targets: ['a', 'b'], suites: [], notJudged: [] };
   const m = { file: 'a', mutator: 'M', replacement: 'r', line: 1, column: 1, endLine: 1, endColumn: 2 };
   const killed = judge([{ ...m, status: 'Killed' }, { ...m, status: 'RuntimeError' }]);
-  assert.equal(summaryLine(plan, { judgement: killed, retried: 1, refusals: [], noMutants: [], fellBack: null }), 'scripts: 2 killed of 2 in 2 file(s) (1 Killed, 1 RuntimeError; 1 timeout(s) retried) - pass');
-  assert.match(summaryLine(plan, { judgement: judge([{ ...m, status: 'Survived' }]), retried: 0, refusals: [], noMutants: [], fellBack: null }), /- 1 blocking$/);
-  assert.match(summaryLine(plan, { judgement: judge([]), retried: 0, refusals: ['x'], noMutants: [], fellBack: null }), /\(no mutants; 0 timeout\(s\) retried\) - REFUSED$/);
+  assert.equal(summaryLine(plan, { judgement: killed, retried: 1, refusals: [], noMutants: [], fellBack: null, ownSuites: [] }), 'scripts: 2 killed of 2 in 2 file(s) (1 Killed, 1 RuntimeError; 1 timeout(s) retried) - pass');
+  assert.match(summaryLine(plan, { judgement: judge([{ ...m, status: 'Survived' }]), retried: 0, refusals: [], noMutants: [], fellBack: null, ownSuites: [] }), /- 1 blocking$/);
+  assert.match(summaryLine(plan, { judgement: judge([]), retried: 0, refusals: ['x'], noMutants: [], fellBack: null, ownSuites: [] }), /\(no mutants; 0 timeout\(s\) retried\) - REFUSED$/);
 });
 
 interface Fake {
@@ -130,6 +133,7 @@ function fake(reports: Record<string, string>, over: Partial<CliDeps> = {}): Fak
       return outputs[args[0] as string] ?? '';
     },
     exists: (path) => path.endsWith('.test.ts') && !path.startsWith('scripts/c.'),
+    pathExists: (path) => files.has(path),
     runStryker: async (_cwd, args) => {
       strykerRuns.push(args);
       const name = /agnipariksha\/(.+)\.stryker\.config\.mjs$/.exec(args[1] ?? '')?.[1] ?? '';
@@ -214,7 +218,7 @@ test('a lane that falls back says so, and its fallback result is the verdict', a
     env.MODE === 'related' ? { code: 1, seen: ['Vitest failed to find test files related to mutated files'] } : run(cwd, args, env);
   assert.equal(await main(['--files', 'scripts/a.ts'], { ...f.deps, lanes: [related] }), 0);
   assert.ok(
-    f.logs.includes('  fallback: scripts reran in its own-suite mode: its dry run failed: "Vitest failed to find test files related to mutated files"'),
+    f.logs.includes('  fallback: scripts reran with its fallbackEnv: its dry run failed: "Vitest failed to find test files related to mutated files"'),
   );
   assert.match(f.logs.at(-1) ?? '', /1 killed of 1 in 1 lane\(s\), 0 blocking, 0 refused - exit 0/);
 });
@@ -263,7 +267,156 @@ test('a git failure refuses with exit 2 and releases the lock', async () => {
   assert.equal(f.files.has('/repo/.git/agnipariksha.lock'), false);
 });
 
+test('an unfinished merge refuses before the lock, naming the merge and the way out', async () => {
+  const f = fake({ scripts: mutants('Killed') });
+  f.files.set('/repo/.git/MERGE_HEAD', 'abcdef0123456789abcdef0123456789abcdef01\n');
+  f.files.set('/repo/.git/MERGE_MSG', "Merge remote-tracking branch 'origin/main' into feat\n\n# Conflicts:\n#\tscripts/a.ts\n");
+  const git = f.deps.git;
+  f.deps.git = (args) => (args[0] === 'rev-parse' && args[1] === '--git-path' ? `.git/${args[2]}\n` : git(args));
+  assert.equal(await main(['--files', 'scripts/a.ts'], f.deps), 2);
+  assert.deepEqual(f.logs, [
+    `agnipariksha REFUSED: "Merge remote-tracking branch 'origin/main' into feat" (MERGE_HEAD abcdef012345) is not committed: the working tree is half-merged, so a verdict now would say nothing about the branch. Commit the merge (git commit) or abort it (git merge --abort), then run again`,
+  ]);
+  assert.equal(f.strykerRuns.length, 0);
+  assert.equal(f.gitCalls.some((args) => args.includes('--git-common-dir')), false, 'refused before the lock');
+
+  const failing = fake({});
+  failing.deps.git = () => {
+    throw new Error('git: not a repository');
+  };
+  assert.equal(await main([], failing.deps), 2);
+  assert.deepEqual(failing.logs, ['agnipariksha REFUSED: git: not a repository']);
+});
+
+test('unfinishedMerge reads git paths relative to the root or absolute, names a merge with no message by its head, and refuses an unreadable one', () => {
+  const on = (files: Record<string, string>) => [(path: string) => files[path], (path: string) => Object.hasOwn(files, path)] as const;
+  const relative = (args: string[]) => `.git/${args[2]}\n`;
+  assert.equal(unfinishedMerge(relative, '/repo', ...on({})), null);
+  const absolute = (args: string[]) => `/main/.git/worktrees/w/${args[2]}\n`;
+  assert.match(
+    unfinishedMerge(absolute, '/elsewhere', ...on({ '/main/.git/worktrees/w/MERGE_HEAD': '1111111111112222\n3333333333334444\n' })) ?? '',
+    /^a merge \(MERGE_HEAD 111111111111\) is not committed: /,
+  );
+  assert.match(unfinishedMerge(relative, '/repo', ...on({ '/repo/.git/MERGE_HEAD': 'abc\n', '/repo/.git/MERGE_MSG': '\n' })) ?? '', /^a merge \(MERGE_HEAD abc\)/);
+  // There but unreadable (a permission, a race): the tree may still be half-merged, so it refuses.
+  const unreadable = unfinishedMerge(relative, '/repo', () => undefined, (path) => path === '/repo/.git/MERGE_HEAD');
+  assert.match(unreadable ?? '', /^a merge \(\/repo\/\.git\/MERGE_HEAD, unreadable\) is not committed: .*then run again$/);
+});
+
+test('unfinishedMerge on real git: a stopped merge in a plain repository and in a linked worktree; a committed merge passes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agnipariksha-'));
+  // Hermetic: none of the machine's git config, trace or maintenance reaches the fixture, and it has its own identity.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|COMMON_DIR|CONFIG)/.test(key)));
+  Object.assign(env, { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_TRACE2: '0', GIT_TRACE2_EVENT: '0', GIT_TRACE2_PERF: '0' });
+  const settings = ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0'];
+  const git = (cwd: string) => (args: string[]) => execFileSync('git', [...settings, ...args], { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const main_ = join(dir, 'main');
+  const wt = join(dir, 'wt');
+  try {
+    git(dir)(['init', '-q', '-b', 'main', main_]);
+    const g = git(main_);
+    writeFileSync(join(main_, 'a.txt'), 'base\n');
+    g(['add', 'a.txt']);
+    g(['commit', '-qm', 'base']);
+    g(['branch', 'side']);
+    writeFileSync(join(main_, 'a.txt'), 'main\n');
+    g(['commit', '-qam', 'main']);
+    g(['worktree', 'add', '-q', wt, 'side']);
+    const w = git(wt);
+    writeFileSync(join(wt, 'a.txt'), 'side\n');
+    w(['commit', '-qam', 'side']);
+
+    assert.equal(unfinishedMerge(g, main_, readText, existsSync), null);
+    // A conflict stops each merge before its commit; the fixture's shape is checked, not only the exit.
+    assert.throws(() => g(['merge', 'side']));
+    assert.match(g(['rev-parse', '--verify', '-q', 'MERGE_HEAD']), /^[0-9a-f]{40}\n$/);
+    assert.match(unfinishedMerge(g, main_, readText, existsSync) ?? '', /^"Merge branch 'side'" \(MERGE_HEAD [0-9a-f]{12}\) is not committed/);
+    assert.throws(() => w(['merge', 'main']));
+    assert.match(w(['rev-parse', '--verify', '-q', 'MERGE_HEAD']), /^[0-9a-f]{40}\n$/);
+    assert.ok(w(['rev-parse', '--git-path', 'MERGE_HEAD']).startsWith('/'), "a linked worktree's git path is absolute");
+    assert.match(unfinishedMerge(w, wt, readText, existsSync) ?? '', /^"Merge branch 'main' into side" \(MERGE_HEAD [0-9a-f]{12}\) is not committed/);
+
+    writeFileSync(join(main_, 'a.txt'), 'merged\n');
+    g(['commit', '-qam', 'merged']);
+    assert.equal(unfinishedMerge(g, main_, readText, existsSync), null, 'committed: the way out works');
+    w(['merge', '--abort']);
+    assert.equal(unfinishedMerge(w, wt, readText, existsSync), null, 'aborted: the way out works');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a blocking file with a sibling suite, in a run narrowed to the owning suites, says once that the sibling did not run', async () => {
+  const narrowed: Lane = { ...lane('scripts', 'scripts/'), ownSuites: true };
+  const withSibling = (f: Fake): Fake => {
+    const git = f.deps.git;
+    f.deps.git = (args) => (args[0] === 'ls-files' && args.includes('--cached') ? 'scripts/a.ts\0scripts/a.test.ts\0scripts/a-cases.test.ts\0' : git(args));
+    return f;
+  };
+  const f = withSibling(fake({ scripts: mutants('Survived', 'NoCoverage') }));
+  assert.equal(await main(['--files', 'scripts/a.ts'], { ...f.deps, lanes: [narrowed] }), 1);
+  assert.deepEqual(f.logs.slice(1, 4), [
+    '  Survived scripts/a.ts:1 (M)',
+    '  NoCoverage scripts/a.ts:2 (M)',
+    '  a-cases.test.ts is not the owner, so it did not run; only a.test.ts kills mutants of a.ts here: put the tests that should kill them there',
+  ]);
+
+  // Under a related filter (the lane's own run not narrowed) the sibling ran if it imports the file: nothing to say.
+  const related = withSibling(fake({ scripts: mutants('Survived') }));
+  assert.equal(await main(['--files', 'scripts/a.ts', '--no-reuse'], related.deps), 1);
+  assert.equal(related.logs.some((line) => line.includes('not the owner')), false, 'related mode, no line');
+
+  const alone = fake({ scripts: mutants('Survived') });
+  assert.equal(await main(['--files', 'scripts/a.ts', '--no-reuse'], { ...alone.deps, lanes: [narrowed] }), 1);
+  assert.equal(alone.logs.some((line) => line.includes('not the owner')), false, 'no sibling, no line');
+
+  const passing = withSibling(fake({ scripts: mutants('Killed') }));
+  assert.equal(await main(['--files', 'scripts/a.ts', '--no-reuse'], { ...passing.deps, lanes: [narrowed] }), 0);
+  assert.equal(passing.logs.some((line) => line.includes('not the owner')), false, 'nothing blocks, nothing to say');
+});
+
+test('a lane whose first dry run flaked says so', async () => {
+  const f = fake({ scripts: mutants('Killed') });
+  const run = f.deps.runStryker;
+  let calls = 0;
+  f.deps.runStryker = async (cwd, args, env) =>
+    (calls += 1) === 1 ? { code: 1, seen: ['There were failed tests in the initial test run'], failedTests: ['t'] } : run(cwd, args, env);
+  assert.equal(await main(['--files', 'scripts/a.ts'], f.deps), 0);
+  assert.ok(f.logs.includes('  flaky: scripts: its initial test run failed on "t", then passed when run again: the test is flaky; fix the flake first (an injected, pinned clock is the usual cure), then run again'));
+});
+
 const node = process.execPath;
+
+test("spawnStryker names the failing tests from Stryker's real output, split anywhere, and a last line with no newline", async () => {
+  const children = new Set<ChildProcess>();
+  const real = readFileSync(fileURLToPath(new URL('../test/fixture/stryker-failed-initial-run.txt', import.meta.url)), 'utf8');
+  const cut = real.indexOf('the clock') + 4;
+  const script = `process.stdout.write(${JSON.stringify(real.slice(0, cut))}); setTimeout(() => { process.stdout.write(${JSON.stringify(real.slice(cut))}); process.stderr.write(${JSON.stringify(`${FAILED_TESTS_HEADER}\n\tlast one`)}); process.exit(1); }, 50);`;
+  const result = await spawnStryker([node, '-e', script], children)('.', [], {});
+  assert.deepEqual(result, { code: 1, seen: ['There were failed tests in the initial test run'], failedTests: ['the clock is pinned', 'last one'] });
+
+  const long = `process.stdout.write(${JSON.stringify(FAILED_TESTS_HEADER)} + '\\n\\t' + 'x'.repeat(${MAX_LINE * 3}))`;
+  const cutShort = await spawnStryker([node, '-e', long], children)('.', [], {});
+  assert.equal(cutShort.failedTests?.[0]?.length, MAX_LINE - 1, 'a line past the cap is cut, never held whole');
+});
+
+test('spawnStryker keeps a test name whole across chunks: a split character is joined, and an over-long line is its prefix only', async () => {
+  const children = new Set<ChildProcess>();
+  // "é" is two bytes in UTF-8: the first chunk ends between them.
+  const split = `const b = Buffer.from(${JSON.stringify(`${FAILED_TESTS_HEADER}\n\tcafé works\n`)}); const at = b.indexOf(0xc3) + 1; process.stdout.write(b.subarray(0, at)); setTimeout(() => process.stdout.write(b.subarray(at)), 50);`;
+  assert.deepEqual((await spawnStryker([node, '-e', split], children)('.', [], {})).failedTests, ['café works']);
+
+  // The over-long line spans three chunks and ends in "TAIL"; the next line is whole.
+  const write = (text: string) => `process.stdout.write(${JSON.stringify(text)})`;
+  const spliced = [
+    write(`${FAILED_TESTS_HEADER}\n\t${'a'.repeat(MAX_LINE)}`),
+    write('b'.repeat(MAX_LINE)),
+    write('TAIL\n\tnext test\n'),
+  ];
+  const script = `${spliced[0]}; setTimeout(() => { ${spliced[1]}; setTimeout(() => ${spliced[2]}, 50); }, 50);`;
+  const names = (await spawnStryker([node, '-e', script], children)('.', [], {})).failedTests ?? [];
+  assert.deepEqual(names, [`${'a'.repeat(MAX_LINE - 1)}`, 'next test'], 'the prefix only, never the prefix spliced to the tail');
+});
 
 test('spawnStryker returns the exit code and the markers it saw, across chunks and streams', async () => {
   const children = new Set<ChildProcess>();

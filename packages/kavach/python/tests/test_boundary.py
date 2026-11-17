@@ -892,7 +892,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "git index-pack --stdin --fix-thin",
             "git index-pack --threads=2 --strict .tmp/x.pack",
             "git config -f .tmp/x core.x y",
-            "git config core.x y",
+            "git config user.name x",
             "git config --unset core.x",
             "git config --global --get user.name",
             "git config --global user.name",
@@ -1086,6 +1086,171 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "git -C nested read-tree --index-output=.tmp/idx HEAD",
             "git credential-store --file .tmp/c store",
             "git credential-store get",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(outside.exists())
+
+    def test_git_programs_verbs_and_config_elsewhere_are_refused(self) -> None:
+        """mailsplit, mailinfo, interpret-trailers and the object-dir writers
+        name what they write their own way; transports run a program; a verb
+        git does not list, a runner's git and a config key that runs a
+        program are unproven. Git 2.54 writes or runs each the probe ran for
+        real (#189); each once counted only its folder."""
+        outside = self.external / "out"
+        nested = self.claude / "nested"
+        nested.mkdir()
+        relative = os.path.relpath(outside, nested)
+        # interpret-trailers and the object-dir writers resolve from the top
+        # of the work tree.
+        top_relative = os.path.relpath(outside, self.claude)
+        for command in (
+            f"git mailsplit -o{outside} m",
+            f"git mailsplit -b -o{outside} m",
+            f"git mailsplit -d3 --keep-cr -o{outside} m",
+            f"git -C nested mailsplit -o{relative} ../m",
+            f"git mailinfo {outside}/msg {outside}/patch",
+            f"git mailinfo -k --encoding=UTF-8 {outside}/msg patch",
+            f"git mailinfo msg {outside}/patch -k",
+            f"git mailinfo -- msg {outside}/patch",
+            f"git -C nested mailinfo {relative}/msg patch",
+            f"git commit-graph write --object-dir {outside}",
+            f"git commit-graph --object-dir={outside} write",
+            f"git commit-graph write --obj={outside} --reachable",
+            f"git multi-pack-index --object-dir={outside} write",
+            f"git multi-pack-index write --object-dir {outside}",
+            f"git -C nested multi-pack-index --object-dir={top_relative} write",
+            "git -C nested commit-graph write --object-dir ../x",
+            f"git interpret-trailers --in-place --trailer x=y {outside}/msg",
+            f"git interpret-trailers --in {outside}/msg",
+            f"git interpret-trailers --in-place -- {outside}/msg",
+            f"git -C nested interpret-trailers --in-place {top_relative}/msg",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("outside this session's Claude worktree", result.stderr)
+        for command in (
+            f"git fetch --upload-pack='touch {outside}/x; git-upload-pack' .",
+            f"git fetch --upl='touch {outside}/x; git-upload-pack' .",
+            f"git fetch --upload-pack 'touch {outside}/x; git-upload-pack' .",
+            f"git fetch . --upload-pack='touch {outside}/x; git-upload-pack'",
+            f"git pull --upload-pack='touch {outside}/x; git-upload-pack' . main",
+            f"git fetch-pack --exec='touch {outside}/x' . main",
+            f"git fetch-pack --upload-pack='touch {outside}/x' . main",
+            f"git push --receive-pack='touch {outside}/x; git-receive-pack' . HEAD:y",
+            f"git push --exec='touch {outside}/x; git-receive-pack' . HEAD:y",
+            f"git push --e 'touch {outside}/x; git-receive-pack' . HEAD:y",
+            f"git push -o --exec='touch {outside}/x' . HEAD:y",
+            f"git send-pack --receive-pack='touch {outside}/x' . main:y",
+            f"git ls-remote --upload-pack='touch {outside}/x; git-upload-pack' .",
+            f"git ls-remote --exec='touch {outside}/x; git-upload-pack' .",
+            f"git archive --remote=. --exec='touch {outside}/x' HEAD",
+            f"git grep -O'touch {outside}/x' alpha",
+            f"git grep -iO'touch {outside}/x' alpha",
+            f"git grep --open-files-in-pager='touch {outside}/x' alpha",
+            f"git grep --op='touch {outside}/x' alpha",
+            # A verb git does not list: an alias (`!` runs the shell), a
+            # git-<name> on PATH, and the verbs left out on purpose.
+            "git lg",
+            "git x",
+            "git ai",
+            f"git daemon --detach --pid-file={outside}/pid --listen=127.0.0.1 --port=0",
+            f"git daemon --base-path={outside}",
+            f"git shell -c 'git-receive-pack {outside}'",
+            f"git receive-pack {outside}",
+            "git instaweb",
+            f"git cvsexportcommit -w {outside} HEAD",
+            "git for-each-repo --config=maintenance.repo gc",
+            "git merge-index -a touch",
+            "git init-db",
+            "git maintenance register",
+            "git maintenance unregister",
+            "git maintenance start",
+            "git maintenance stop",
+            f"git maintenance register --config-file {outside}/cfg",
+            "git maintenance",
+            # git under a runner gets none of git's readers.
+            f"GIT_DIR={outside} pnpm exec git init",
+            f"pnpm exec git rebase -x 'touch {outside}/x' HEAD~1",
+            f"GIT_TRACE={outside}/t pnpm exec git status",
+            f"pnpm exec git fetch --upload-pack='touch {outside}/x; git-upload-pack' .",
+            "pnpm exec -- git status",
+            "pnpm --filter x exec git status",
+            f"npx git rebase -x 'touch {outside}/x' HEAD~1",
+            f"npm exec git rebase -x 'touch {outside}/x' HEAD~1",
+            "yarn exec git status",
+            "mise exec -- git status",
+            "pnpm exec /usr/bin/git status",
+            # Config that runs a program, moves a write, or names a file.
+            f"git config alias.x '!touch {outside}/x'",
+            f"git config core.fsmonitor 'touch {outside}/x'",
+            f"git config core.hooksPath {outside}",
+            f"git config set core.fsmonitor 'touch {outside}/x'",
+            f"git config --add core.sshCommand 'touch {outside}/x'",
+            f"git config --replace-all diff.external 'touch {outside}/x'",
+            f"git config --worktree core.worktree {outside}",
+            f"git config --local include.path {outside}/c",
+            f"git config CORE.FSMONITOR 'touch {outside}/x'",
+            f"git config filter.x.clean 'touch {outside}/x'",
+            f"git config remote.origin.uploadpack 'touch {outside}/x'",
+            "git config protocol.ext.allow always",
+            "git config core.x y",
+            "git config user.x.name y",
+            "git config branch.main.x y",
+            "git config --rename-section x alias",
+            "git config rename-section x alias",
+            "git config --edit",
+            "git config -e",
+            "git config edit",
+            "git config \"$KEY\" y",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("mutation targets could not be resolved", result.stderr)
+        for command in (
+            "git mailsplit -o.tmp m",
+            "git mailsplit m",
+            f"git mailsplit -- -o{outside} m",
+            "git mailinfo .tmp/msg .tmp/patch",
+            "git commit-graph write --reachable",
+            "git commit-graph write --object-dir .git/objects",
+            "git multi-pack-index write",
+            f"git interpret-trailers --trailer x=y {outside}/msg",
+            "git interpret-trailers --in-place .tmp/msg",
+            "git interpret-trailers --no-in-place .tmp/msg",
+            "git maintenance run",
+            "git maintenance run --task=gc",
+            "git fetch",
+            "git fetch origin main",
+            "git pull --rebase",
+            "git push origin main",
+            "git push -u origin HEAD",
+            "git ls-remote origin",
+            "git archive -o .tmp/a.tar HEAD",
+            "git grep -n alpha",
+            "git grep -o alpha",
+            "git annotate tracked.txt",
+            "git history --help",
+            "git config user.name x",
+            "git config user.email x@example.invalid",
+            "git config set user.name x",
+            "git config --add remote.origin.fetch '+refs/heads/x:refs/remotes/origin/x'",
+            "git config branch.Main.remote origin",
+            "git config Branch.main.Merge refs/heads/main",
+            "git config push.autoSetupRemote true",
+            "git config advice.detachedHead false",
+            "git config --worktree --unset core.hooksPath",
+            "git config --unset-all alias.x",
+            "git config unset core.fsmonitor",
+            "git config --remove-section alias",
+            "git config core.hooksPath",
+            "git config --get alias.x",
+            "git config -f .tmp/x alias.x '!true'",
+            "pnpm exec tsx .tmp/x.ts",
+            "pnpm exec node --version",
         ):
             with self.subTest(command=command):
                 result = self.claude_bash(self.claude, command)

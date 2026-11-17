@@ -64,6 +64,11 @@ class UnresolvedNamesTheConstruct(BoundaryFixture):
                 "uses `frobnicate`, a program whose writes the guard does not know and a chain of commands",
             ),
             ("frobnicate | sort", "uses `frobnicate`, a program whose writes the guard does not know and a pipeline"),
+            ("git lg", "uses `git lg`, a git command or option whose writes the guard does not read"),
+            (
+                "git -C . config core.fsmonitor x",
+                "uses `git config`, a git command or option whose writes the guard does not read",
+            ),
         ):
             with self.subTest(command=command):
                 self.assertIn(named, self.refused(command))

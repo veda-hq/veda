@@ -739,6 +739,25 @@ class OwnCheckoutTest(BoundaryFixture):
     counts as its own, in the environment the setting names, with its git
     folder still refused."""
 
+    def test_a_program_option_is_read_from_three_characters(self) -> None:
+        """git 2.54 runs `git push --e <cmd>`: `--e` abbreviates --exec, the
+        receive-pack it starts. The boundary refuses it before this reader
+        runs; `runs_program` must not let it through on its own either."""
+        from kavach import clone_writers
+
+        for verb, word in (
+            ("push", "--e"),
+            ("push", "--e=x"),
+            ("fetch", "--upl=x"),
+            ("ls-remote", "--exec"),
+            ("grep", "-iO.tmp/x.sh"),
+        ):
+            with self.subTest(word=word):
+                self.assertTrue(clone_writers.runs_program(verb, word))
+        for verb, word in (("push", "--"), ("log", "--reverse"), ("push", "-u"), ("fetch", "--all")):
+            with self.subTest(word=word):
+                self.assertFalse(clone_writers.runs_program(verb, word))
+
     def hosted_env(
         self, project: Path | None = None, *, setting: bool = True, **variables: str
     ) -> dict[str, str]:
@@ -1016,13 +1035,7 @@ class OwnCheckoutTest(BoundaryFixture):
             "git submodule update",
             "git bisect start",
             "git clone . .tmp/copy",
-            "git config core.fsmonitor .tmp/x.sh",
-            "git config --add core.hooksPath .tmp",
-            "git fetch --upload-pack=.tmp/x.sh .",
-            "git fetch --upload-p=.tmp/x.sh .",
-            "git push --receive-pack=.tmp/x.sh .",
-            "git grep -O.tmp/x.sh guard",
-            "git grep -iO.tmp/x.sh guard",
+            "git config user.name x",
             "git --exec-path=.tmp commit -qm x",
             "git diff-files --output=.claude/hooks/guard.sh",
         )
@@ -1031,12 +1044,20 @@ class OwnCheckoutTest(BoundaryFixture):
                 result = self.claude_bash(self.main, command, environment)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("an owned plain clone does not open it", result.stderr)
-        # An abbreviated --output, and a verb git does not list (an alias),
-        # are unproven in any checkout, before the owned clone's fences are
-        # read.
+        # An abbreviated --output, a verb git does not list (an alias), a
+        # config key that runs a program and an option that does are
+        # unproven in any checkout, before the owned clone's fences are read.
         for command in (
             "git whatchanged --outpu=.claude/hooks/guard.sh",
             "git co evil",
+            "git config core.fsmonitor .tmp/x.sh",
+            "git config --add core.hooksPath .tmp",
+            "git fetch --upload-pack=.tmp/x.sh .",
+            "git fetch --upload-p=.tmp/x.sh .",
+            "git push --receive-pack=.tmp/x.sh .",
+            "git push --e .tmp/x.sh .",
+            "git grep -O.tmp/x.sh guard",
+            "git grep -iO.tmp/x.sh guard",
         ):
             with self.subTest(command=command):
                 result = self.claude_bash(self.main, command, environment)

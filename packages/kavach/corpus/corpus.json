@@ -1304,6 +1304,105 @@
     "text": "git bisect start HEAD HEAD~1 && git bisect run touch {P}/pwned"
   },
   {
+    "id": "ow-git-fetch-upload-pack",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "fetch runs its --upload-pack through the shell, here against the worktree itself (#189).",
+    "text": "git fetch -q --upload-pack='touch {P}/pwned; git-upload-pack' ."
+  },
+  {
+    "id": "ow-git-push-exec-abbrev",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "push takes --e for --exec, its --receive-pack, and runs it through the shell (#189).",
+    "text": "git push -q --e 'touch {P}/pwned; git-receive-pack' . HEAD:refs/heads/corpus-exec"
+  },
+  {
+    "id": "ow-git-ls-remote-exec",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "ls-remote, which only lists refs, runs its --exec through the shell (#189).",
+    "text": "git ls-remote --exec='touch {P}/pwned; git-upload-pack' ."
+  },
+  {
+    "id": "ow-git-archive-remote-exec",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "archive --remote runs its --exec through the shell (#189).",
+    "text": "git archive --remote=. --exec='touch {P}/pwned; git-upload-archive' HEAD README.md"
+  },
+  {
+    "id": "ow-git-grep-pager",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "grep -O runs its pager with the matching files, from the worktree too (#189).",
+    "text": "git grep -O'touch {P}/pwned' alpha"
+  },
+  {
+    "id": "ow-git-mailsplit-o",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "mailsplit writes each message as a numbered file in its -o<dir>; -b takes a file with no From line as one message (#189).",
+    "text": "git mailsplit -b -o{P} README.md"
+  },
+  {
+    "id": "ow-git-mailinfo",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "mailinfo writes the message and the patch it reads from stdin into its two operands (#189).",
+    "text": "git mailinfo {P}/msg {P}/patch < README.md"
+  },
+  {
+    "id": "ow-git-interpret-trailers-in-place",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "interpret-trailers --in-place rewrites each file it names (#189).",
+    "text": "git interpret-trailers --in-place --trailer corpus=yes {P}/README.md"
+  },
+  {
+    "id": "ow-git-alias-shell",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git config",
+    "note": "git runs a ! alias through the shell; the repository config is the main checkout's (#189).",
+    "text": "git config alias.corpus '!touch {P}/pwned' && git corpus"
+  },
+  {
+    "id": "ow-git-config-fsmonitor",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git config",
+    "note": "git runs core.fsmonitor as a hook on the next status (#189).",
+    "text": "git config core.fsmonitor 'touch {P}/pwned' && git status"
+  },
+  {
+    "id": "ow-git-config-user",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git config",
+    "note": "A key that runs nothing and names no file, in the same shared config (#189).",
+    "text": "git config user.name corpus && git status"
+  },
+  {
     "id": "ow-corrected-inside",
     "intent": "outside-write",
     "role": "corrected",

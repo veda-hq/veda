@@ -1341,6 +1341,24 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 result = self.claude_bash(self.claude, command)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("`curl` with a config", result.stderr)
+        # The hook's environment stands for the Bash tool's: a default config
+        # there, or a variable naming a file curl writes, leaves curl unproven.
+        disabled = "for r in a b; do curl -q -sS https://api.github.com/repos/o/$r; done"
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / ".curlrc").write_text('output = "/elsewhere/x"\n')
+            configured = {**hermetic_git_env(), "HOME": home, "CURL_HOME": home, "XDG_CONFIG_HOME": home}
+            result = self.claude_bash(self.main, loop, env=configured)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            result = self.claude_bash(self.main, disabled, env=configured)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = self.claude_bash(self.claude, loop, env=configured)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("`curl -q` first skips the config", result.stderr)
+            result = self.claude_bash(self.claude, disabled, env=configured)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        keylog = {**hermetic_git_env(), "SSLKEYLOGFILE": f"{self.external}/keys"}
+        result = self.claude_bash(self.main, disabled, env=keylog)
+        self.assertEqual(result.returncode, 2, result.stderr)
         # A wrapper around such a curl is not named as a second unknown program.
         for wrapper in ("env", "timeout 5", "nohup"):
             with self.subTest(wrapper=wrapper):
@@ -3392,6 +3410,9 @@ class ReadOnlyFormsTest(unittest.TestCase):
         "SSLKEYLOGFILE=/x curl -s https://x.example",
         "QLOGDIR=/x curl -s https://x.example",
         "for r in a b; do curl -s -o $r.json https://x.example/$r; done",
+        # xargs hands curl words the guard never sees, `-o` among them.
+        "printf '%s\\n' -o /x https://x.example | xargs curl -s",
+        "xargs curl -s < urls",
         # veda#195: gh writes sigstore's TUF metadata to its cache on every run.
         "gh attestation trusted-root",
     )

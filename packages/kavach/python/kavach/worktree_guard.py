@@ -800,6 +800,13 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
         if not words or words[0].dynamic:
             continue
         head = os.path.basename(words[0].text)
+        texts = [word.text for word in words]
+        curl_at = next((i for i, text in enumerate(texts) if os.path.basename(text) == "curl"), None)
+        if curl_at is not None and boundary.curl_inherits_writes(texts[curl_at + 1 :]):
+            add(
+                "`curl` where a default config may set its output, or `SSLKEYLOGFILE` "
+                "or `QLOGDIR` is set (`curl -q` first skips the config)"
+            )
         if curl_config and any(os.path.basename(word.text) == "curl" for word in words):
             # Named above; a wrapper (`env curl -K cfg`, `timeout 5 curl`)
             # is not a second unknown program.

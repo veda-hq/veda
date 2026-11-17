@@ -64,7 +64,8 @@ runs the repository's own `node_modules/.bin/stryker`.
 - **A failed test in the dry run** is named in the gate's own line. A lane
   with no `fallbackEnv` reruns such a dry run once with the same variables.
   If it passes, the gate says the test is flaky and that run's results
-  count. If it fails again, the lane refuses: those tests fail every run.
+  count. If it fails again, the lane refuses: the initial test run failed on
+  both runs.
 - **Reuse.** A lane with `reuse: true` runs with `--incremental` and a reuse
   file named by a key over the files that can change its results: the
   lockfile and the rest of `reuseKey.always`, the lane's config, its

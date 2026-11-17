@@ -766,6 +766,25 @@ class OwnCheckoutTest(BoundaryFixture):
             cwd, tool_input={"file_path": str(target), "content": "x\n"}, env=env
         )
 
+    def test_git_destinations_in_the_owned_clone(self) -> None:
+        """In the hosted clone, a write to the global config is unproven, as
+        in a desktop worktree, and a read of it runs. The other #179 verbs
+        stay refused there by clone_writers, which allows only the git
+        subcommands it reads, even into the clone's own folders."""
+        environment = self.hosted_env()
+        for command, expected in (
+            ("git config --global user.name x", "mutation targets could not be resolved"),
+            ("git config -f .tmp/x core.x y", "an owned plain clone does not open it"),
+            ("git bugreport -o .tmp", "an owned plain clone does not open it"),
+            ("git checkout-index -a --prefix=.tmp/co/", "an owned plain clone does not open it"),
+            ("git config --global user.name", ""),
+            ("git config --global --get user.name", ""),
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 2 if expected else 0, result.stderr)
+                self.assertIn(expected, result.stderr)
+
     def test_the_clone_is_owned_in_the_named_environment(self) -> None:
         environment = self.hosted_env()
         (self.main / "sub").mkdir()

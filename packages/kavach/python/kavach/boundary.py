@@ -1477,8 +1477,11 @@ def git_destination_operands(words: list[str], command_index: int) -> list[str] 
     if verb == "init":
         return git_repository_destinations(args, GIT_INIT_OPTIONS, max_operands=1)
     if verb in {"bugreport", "diagnose"}:
-        # `-o`/`--output-directory`; git 2.54 writes `--suffix -- -o <dir>`.
-        return git_dash_o_outputs(args, ("--output-directory",))
+        # `-o`/`--output-directory`; git 2.54 writes `--suffix -- -o <dir>`
+        # and `--suffix -- --outp <dir>`.
+        return git_dash_o_outputs(
+            args, ("--output-directory",), abbreviated="--output-directory"
+        )
     if verb == "index-pack":
         return git_index_pack_outputs(args)
     if verb == "config":
@@ -1625,13 +1628,18 @@ def git_config_file_outputs(args: list[str]) -> list[str] | None:
                     writes = True
                 elif letter != "z":
                     unplaced = True
+    if unplaced:
+        # An abbreviated value option swallows the next word: git 2.54
+        # writes `git config --comm -- -f <file> core.x y`, where this read
+        # stopped at the `--`. git_safety refuses these options too.
+        return None
     if not files and not elsewhere:
         return []
     if not subcommand and positionals == 1 and not writes:
         reads = True
-    if reads and not writes and not unplaced:
+    if reads and not writes:
         return []
-    if elsewhere or unplaced or any(not value or value.startswith("-") for value in files):
+    if elsewhere or any(not value or value.startswith("-") for value in files):
         return None
     return files
 
@@ -1659,8 +1667,16 @@ def git_checkout_index_prefixes(args: list[str]) -> list[str] | None:
     return prefixes
 
 
-def git_dash_o_outputs(args: list[str], long_options: tuple[str, ...]) -> list[str] | None:
+def git_dash_o_outputs(
+    args: list[str], long_options: tuple[str, ...], *, abbreviated: str = ""
+) -> list[str] | None:
     """``-o <v>``, ``-o<v>`` and each of ``long_options`` with ``=<v>`` or ``<v>``.
+
+    Where ``abbreviated`` names the verb's only long option that starts
+    with ``--o``, every prefix of it from ``--o`` on is read as that option:
+    after a swallowed ``--``, git 2.54 writes
+    ``bugreport --suffix -- --o=<dir>``, where `git_output_options` has
+    stopped reading.
 
     Git permutes options, so every word is read, not only those before the
     first operand. A ``--`` does not end the read: an option that takes the
@@ -1675,7 +1691,11 @@ def git_dash_o_outputs(args: list[str], long_options: tuple[str, ...]) -> list[s
     while index < len(args):
         word = args[index]
         name, has_value, _ = word.partition("=")
-        if word == "-o" or name in long_options:
+        if (
+            word == "-o"
+            or name in long_options
+            or (abbreviated and len(name) > len("--") and abbreviated.startswith(name))
+        ):
             if has_value and word != "-o":
                 value = shell_option_value(word)
             else:

@@ -301,12 +301,15 @@ test('unfinishedMerge reads git paths relative to the root or absolute, and name
 
 test('unfinishedMerge on real git: a stopped merge in a plain repository and in a linked worktree; a committed merge passes', () => {
   const dir = mkdtempSync(join(tmpdir(), 'agnipariksha-'));
-  const git = (cwd: string) => (args: string[]) =>
-    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  // Hermetic: none of the machine's git config, trace or maintenance reaches the fixture, and it has its own identity.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|COMMON_DIR|CONFIG)/.test(key)));
+  Object.assign(env, { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_TRACE2: '0', GIT_TRACE2_EVENT: '0', GIT_TRACE2_PERF: '0' });
+  const settings = ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0'];
+  const git = (cwd: string) => (args: string[]) => execFileSync('git', [...settings, ...args], { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const main_ = join(dir, 'main');
   const wt = join(dir, 'wt');
   try {
-    execFileSync('git', ['init', '-q', '-b', 'main', main_]);
+    git(dir)(['init', '-q', '-b', 'main', main_]);
     const g = git(main_);
     writeFileSync(join(main_, 'a.txt'), 'base\n');
     g(['add', 'a.txt']);
@@ -320,9 +323,13 @@ test('unfinishedMerge on real git: a stopped merge in a plain repository and in 
     w(['commit', '-qam', 'side']);
 
     assert.equal(unfinishedMerge(g, main_, readText), null);
-    assert.throws(() => g(['merge', '-q', 'side']), /CONFLICT|conflict|failed/);
+    // A conflict stops each merge before its commit; the fixture's shape is checked, not only the exit.
+    assert.throws(() => g(['merge', 'side']));
+    assert.match(g(['rev-parse', '--verify', '-q', 'MERGE_HEAD']), /^[0-9a-f]{40}\n$/);
     assert.match(unfinishedMerge(g, main_, readText) ?? '', /^"Merge branch 'side'" \(MERGE_HEAD [0-9a-f]{12}\) is not committed/);
-    assert.throws(() => w(['merge', '-q', 'main']), /CONFLICT|conflict|failed/);
+    assert.throws(() => w(['merge', 'main']));
+    assert.match(w(['rev-parse', '--verify', '-q', 'MERGE_HEAD']), /^[0-9a-f]{40}\n$/);
+    assert.ok(w(['rev-parse', '--git-path', 'MERGE_HEAD']).startsWith('/'), "a linked worktree's git path is absolute");
     assert.match(unfinishedMerge(w, wt, readText) ?? '', /^"Merge branch 'main' into side" \(MERGE_HEAD [0-9a-f]{12}\) is not committed/);
 
     writeFileSync(join(main_, 'a.txt'), 'merged\n');

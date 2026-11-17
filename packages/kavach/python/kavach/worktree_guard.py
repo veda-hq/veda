@@ -784,6 +784,15 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
         for word in (*each.words, *each.redirect_targets, *each.input_targets, *each.herestrings)
     ) or any(each.expanded_bodies for each in commands):
         add("a command substitution (`$(...)`, backticks or `<(...)`)")
+    curl_config = boundary.curl_environment_is_moved(command) or boundary.curl_config_is_unproven(
+        [[word.text for word in each.words] for each in commands]
+    )
+    if curl_config:
+        add(
+            "`curl` with a config that may set its output (`-K`, or `HOME`, "
+            "`CURL_HOME` or `XDG_CONFIG_HOME` assigned), a `-w` that writes a file, "
+            "or `SSLKEYLOGFILE` or `QLOGDIR` assigned"
+        )
     for each in commands:
         words = list(each.words)
         while words and words[0].is_assignment() is not None:
@@ -791,6 +800,17 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
         if not words or words[0].dynamic:
             continue
         head = os.path.basename(words[0].text)
+        texts = [word.text for word in words]
+        curl_at = next((i for i, text in enumerate(texts) if os.path.basename(text) == "curl"), None)
+        if curl_at is not None and boundary.curl_inherits_writes(texts[curl_at + 1 :]):
+            add(
+                "`curl` where a default config may set its output, or `SSLKEYLOGFILE` "
+                "or `QLOGDIR` is set (`curl -q` first skips the config)"
+            )
+        if curl_config and any(os.path.basename(word.text) == "curl" for word in words):
+            # Named above; a wrapper (`env curl -K cfg`, `timeout 5 curl`)
+            # is not a second unknown program.
+            continue
         if head in INTERPRETERS or re.fullmatch(r"python[0-9]+(\.[0-9]+)*", head):
             inline = next((word.text for word in words[1:] if word.text in inline_flags(head)), None)
             if inline is not None:

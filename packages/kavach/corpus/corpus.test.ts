@@ -43,6 +43,15 @@ function brokenContracts(list: readonly Disagreement[]): Disagreement[] {
   return list.filter(entry => entry.kind !== 'over-refusal');
 }
 
+/** `curl --version`'s first line, or empty where there is no curl. */
+function curlVersion(): string {
+  try {
+    return execFileSync('curl', ['--version'], { timeout: 10_000 }).toString();
+  } catch {
+    return '';
+  }
+}
+
 /** The first issue's message, or null when the table parsed. */
 function firstIssue(data: unknown): string | null {
   const parsed = CORPUS_SCHEMA.safeParse(data);
@@ -63,7 +72,7 @@ const ROW: CorpusRow = {
 
 describe('corpus.json', () => {
   it('reads a row with every optional field and drops its note', () => {
-    const full: CorpusRow = { ...ROW, inPrimary: true, gitSince: '2.46' };
+    const full: CorpusRow = { ...ROW, inPrimary: true, gitSince: '2.46', curlSince: '8.3' };
     assert.deepEqual(CORPUS_SCHEMA.parse([{ ...full, note: 'why' }]), [full]);
   });
 
@@ -88,6 +97,7 @@ describe('corpus.json', () => {
     ['note', 1],
     ['inPrimary', 'yes'],
     ['gitSince', 2.46],
+    ['curlSince', 8.3],
   ] as const) {
     it(`refuses a row whose ${field} has the wrong type`, () => {
       assert.equal(
@@ -155,11 +165,12 @@ describe('corpus.json', () => {
     });
   }
 
-  it('refuses an intent, a role or a git release it does not know', () => {
+  it('refuses an intent, a role or a git or curl release it does not know', () => {
     for (const row of [
       { ...ROW, intent: 'no-such-intent' },
       { ...ROW, role: 'no-such-role' },
       { ...ROW, gitSince: '2' },
+      { ...ROW, curlSince: '8' },
     ]) {
       assert.equal(CORPUS_SCHEMA.safeParse([row]).success, false);
     }
@@ -190,6 +201,27 @@ describe('happensUnder', () => {
       });
     });
   }
+
+  const CURL: CorpusRow = { ...ROW, curlSince: '8.3' };
+  const GIT = 'git version 2.46.0';
+  for (const [label, row, version, expected] of [
+    ['a curl row under an older curl', CURL, 'curl 8.2.1 (x86_64)', false],
+    ['a curl row under the same release', CURL, 'curl 8.3.0 (x86_64)', true],
+    ['a curl row under a newer curl', CURL, 'curl 8.7.1 (x86_64)', true],
+    ['a curl row with no curl', CURL, '', false],
+    ['a row with no curl floor, with no curl', ROW, '', true],
+    ['a curl row under an older git', { ...CURL, gitSince: '2.99' }, 'curl 8.7.1', false],
+  ] as const) {
+    it(`answers ${label}`, () => {
+      assert.equal(happensUnder(row, GIT, version), expected);
+    });
+  }
+
+  it('refuses a curl version it cannot read', () => {
+    assert.throws(() => happensUnder(CURL, GIT, 'curl'), {
+      message: 'not a curl version: curl',
+    });
+  });
 });
 
 describe('isStrict', () => {
@@ -348,8 +380,9 @@ describe('the fixture pass', () => {
       env: hermeticGitEnv(),
       timeout: 10_000,
     }).toString();
+    const curl = curlVersion();
     const wrong = results
-      .filter(result => result.truth !== happensUnder(result.row, git))
+      .filter(result => result.truth !== happensUnder(result.row, git, curl))
       .map(
         result =>
           `${result.row.id}: declared ${String(result.row.happens)}, bash ${String(result.truth)}`,

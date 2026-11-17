@@ -1378,6 +1378,35 @@
     "text": "git -C {P} grep -O'touch {P}/pwned' alpha"
   },
   {
+    "id": "ow-curl-loop",
+    "note": "veda#195: kavach 0.7.1 refused curl in a for loop, though it only prints.",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "curl",
+    "text": "for p in 1 2; do curl -s http://127.0.0.1:$p/; done"
+  },
+  {
+    "id": "ow-curl-write-out",
+    "note": "curl's -w %output{file} (curl 8.3) writes the rest of the format to that file, even when the connection is refused.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "curl",
+    "curlSince": "8.3",
+    "text": "curl -s -o /dev/null -w '%output{{P}/pwned}x' http://127.0.0.1:1/"
+  },
+  {
+    "id": "ow-curl-config-stdin",
+    "note": "A config read with -K - sets curl's -w, out of the command line's sight.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "curl",
+    "curlSince": "8.3",
+    "text": "printf 'write-out = \"%%output{{P}/pwned}x\"\\n' | curl -s -o /dev/null -K - http://127.0.0.1:1/"
+  },
+  {
     "id": "pw-touch",
     "note": "The main checkout is read-only for a session standing in it.",
     "intent": "outside-write",

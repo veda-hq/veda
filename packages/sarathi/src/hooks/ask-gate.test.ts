@@ -174,6 +174,8 @@ test('ask-gate: a wrap_up is gated only when its ask offers a choice', () => {
     ['a bare A/B', { recap: 'r', ask: 'A/B?' }],
     ['"or" glued between two URLs', { recap: 'r', ask: 'Ship (https://a.example/x)or(https://b.example/y)?', actions: [{ label: 'Yes' }] }],
     ['"or" glued to a URL by a comma', { recap: 'r', ask: 'Ship https://a.example/x,or https://b.example/y?', actions: [{ label: 'Yes' }] }],
+    ['"or" glued to a URL by a semicolon', { recap: 'r', ask: 'Ship https://a.example/x;or https://b.example/y?', actions: [{ label: 'Yes' }] }],
+    ['"or" glued to a URL by a pipe', { recap: 'r', ask: 'Ship https://a.example/x|or https://b.example/y?', actions: [{ label: 'Yes' }] }],
     ['"go with" buttons', { recap: 'r', ask: 'Pick one?', actions: [{ label: 'Go with the parser' }, { label: 'Go with the lexer' }] }],
   ] as const) {
     assert.equal(exit(t, WRAP_UP, input), 2, why);

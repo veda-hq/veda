@@ -11,9 +11,10 @@
 // or `--config` names; `.pariksha.json` for an inline entry) judges every
 // file: a tightened check
 // must meet the code it did not change, and a change of settings alone would
-// otherwise check nothing.
+// otherwise check nothing. A settings file git does not track never shows in
+// a diff, so the top-level `package.json` stands in for it (`settingsInputs`).
 import { lstatSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { must, PLAIN_DIFF, type Git } from './git.ts';
 
 export type Selection = { readonly kind: 'staged' } | { readonly kind: 'range'; readonly base: string; readonly head: string } | { readonly kind: 'all' };
@@ -57,6 +58,20 @@ const isFile = (top: string, path: string): boolean => {
     // fail-open: a path gone from the working tree has nothing to read, and is left out as a deletion is.
     return false;
   }
+};
+
+/**
+ * The files whose change stands for a change of a check's settings at
+ * `settings` (absolute): the file itself, and when it is no tracked file of
+ * the checkout at `top` (outside it, or ignored, as under `node_modules/`),
+ * the top-level `package.json`, which the pin bump that changes such a file
+ * edits.
+ */
+export const settingsInputs = (git: Git, top: string, settings: string): string[] => {
+  const rel = relative(top, settings);
+  const inside = rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+  const tracked = inside && must(git, ['ls-files', '-z', '--', `:(literal)${rel.split(sep).join('/')}`]) !== '';
+  return tracked ? [settings] : [settings, join(top, 'package.json')];
 };
 
 /**

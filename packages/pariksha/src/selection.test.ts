@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { run } from './cli.ts';
 import { gitAt } from './git.ts';
-import { changedPaths, selectedList, selectionOf } from './selection.ts';
+import { changedPaths, selectedList, selectionOf, settingsInputs } from './selection.ts';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.email=a@example.com', '-c', 'user.name=a', '-c', 'commit.gpgsign=false', ...args], { cwd, stdio: 'pipe' }).toString();
 
@@ -92,6 +92,19 @@ describe('changedPaths and selectedList', () => {
     assert.deepEqual(listed(root, selectedList(gitAt(root), root, { kind: 'staged' }, [join(root, 'cfg.json')])), ['a.md', 'b.md', 'cfg.json']);
   });
 
+  it('has package.json stand in for settings git does not track', () => {
+    const root = repo({ '.gitignore': 'node_modules/\n', 'cfg.json': '{}', 'package.json': '{}' });
+    write(root, { 'node_modules/rules/cfg.json': '{}', 'untracked.json': '{}' });
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-cfg-')));
+    const inputs = (settings: string) => settingsInputs(gitAt(root), root, settings);
+    assert.deepEqual(inputs(join(root, 'cfg.json')), [join(root, 'cfg.json')]);
+    assert.deepEqual(inputs(join(root, 'node_modules/rules/cfg.json')), [join(root, 'node_modules/rules/cfg.json'), join(root, 'package.json')]);
+    assert.deepEqual(inputs(join(root, 'untracked.json')), [join(root, 'untracked.json'), join(root, 'package.json')]);
+    assert.deepEqual(inputs(join(outside, 'cfg.json')), [join(outside, 'cfg.json'), join(root, 'package.json')]);
+    // The top level itself, and the folder above it, are no tracked file either.
+    assert.deepEqual(inputs(root), [root, join(root, 'package.json')]);
+    assert.deepEqual(inputs(dirname(root)), [dirname(root), join(root, 'package.json')]);  });
+
   it('fails, never lists nothing, when git fails', () => {
     const outside = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-nogit-')));
     assert.throws(() => changedPaths(gitAt(outside), { kind: 'staged' }), /git diff --cached .* failed/);
@@ -133,6 +146,35 @@ describe('the selection, run by the checks that judge files', () => {
     git(root, 'add', '-A');
     const c = capture(root);
     assert.equal(run(['absolute-paths', '--root', root, '--staged'], c.io, '1.0.0', {}), 1);
+  });
+
+  /** Settings in an ignored dependency folder, as a shared package holds them. */
+  const SHARED = { '.gitignore': 'node_modules/\n', 'old.md': BAD, 'package.json': '{"devDependencies": {"rules": "1.0.0"}}\n', '.pariksha.json': '{"checks": {"absolute-paths": "node_modules/rules/abs.json"}}' };
+  const shared = (): string => {
+    const root = repo(SHARED);
+    write(root, { 'node_modules/rules/abs.json': '{"include": "\\\\.md$"}' });
+    return root;
+  };
+
+  it('a pin bump stands for a change to settings git does not track, and judges every document', () => {
+    const root = shared();
+    write(root, { 'new.md': 'clean\n', 'package.json': '{"devDependencies": {"rules": "1.1.0"}}\n' });
+    git(root, 'add', '-A');
+    assert.equal(run(['absolute-paths', '--root', root, '--staged'], capture(root).io, '1.0.0', {}), 1);
+  });
+
+  it('untracked settings without a package.json change judge only the selection', () => {
+    const root = shared();
+    write(root, { 'new.md': 'clean\n' });
+    git(root, 'add', '-A');
+    assert.equal(run(['absolute-paths', '--root', root, '--staged'], capture(root).io, '1.0.0', {}), 0);
+  });
+
+  it('tracked settings are their own stand-in: a package.json change does not widen', () => {
+    const root = repo({ 'old.md': BAD, 'package.json': '{}\n', 'cfg/abs.json': '{"include": "\\\\.md$"}', '.pariksha.json': '{"checks": {"absolute-paths": "cfg/abs.json"}}' });
+    write(root, { 'new.md': 'clean\n', 'package.json': '{"private": true}\n' });
+    git(root, 'add', '-A');
+    assert.equal(run(['absolute-paths', '--root', root, '--staged'], capture(root).io, '1.0.0', {}), 0);
   });
 
   it('refuses two modes, and a selection outside a repository', () => {

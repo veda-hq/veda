@@ -2036,6 +2036,48 @@ GIT_GLOBAL_VALUES = frozenset({
 })
 GIT_GLOBAL_ATTACHED = GIT_GLOBAL_VALUES - {"-c"} | {"--exec-path", "--list-cmds"}
 
+# The git verbs this guard places, from git 2.54's `git --list-cmds=main`.
+# Each writes only into the repository and its work tree, or names what else
+# it writes in words a reader here places (`git_destination_operands`,
+# `git_top_relative_outputs`, the runners and program options). Any other
+# verb is unproven: an alias (`!` runs a shell command), a `git-<name>` on
+# PATH, and the verbs left out on purpose:
+# - servers and transports: daemon, shell, upload-pack, receive-pack,
+#   upload-archive, http-backend, http-fetch, http-push, remote-* (each
+#   serves or writes a repository it is pointed at, or runs a command);
+# - mail and foreign tools: send-email, imap-send, p4, quiltimport and
+#   subtree;
+# - credential-cache and credential-osxkeychain, which keep secrets outside;
+# - for-each-repo, which runs git in every repository a config list names;
+# - merge-index and the merge-* strategy programs, which run a program;
+# - init-db (init's old name, which `git_repository_destinations` does not
+#   read) and the runners in GIT_UNPLACED_RUNNERS.
+GIT_KNOWN_VERBS = frozenset({
+    "add", "am", "annotate", "apply", "archive", "backfill", "bisect", "blame",
+    "branch", "bugreport", "bundle", "cat-file", "check-attr", "check-ignore",
+    "check-mailmap", "check-ref-format", "checkout", "checkout-index", "cherry",
+    "cherry-pick", "clean", "clone", "column", "commit", "commit-graph",
+    "commit-tree", "config", "count-objects", "credential", "credential-store",
+    "describe", "diagnose", "diff", "diff-files", "diff-index", "diff-pairs",
+    "diff-tree", "fast-export", "fast-import", "fetch", "fetch-pack",
+    "fmt-merge-msg", "for-each-ref", "format-patch", "fsck", "fsck-objects",
+    "gc", "get-tar-commit-id", "grep", "hash-object", "help", "history", "hook",
+    "index-pack", "init", "interpret-trailers", "last-modified", "log",
+    "ls-files", "ls-remote", "ls-tree", "mailinfo", "mailsplit", "maintenance",
+    "merge", "merge-base", "merge-file", "merge-tree", "mktag", "mktree",
+    "multi-pack-index", "mv", "name-rev", "notes", "pack-objects",
+    "pack-redundant", "pack-refs", "patch-id", "pickaxe", "prune",
+    "prune-packed", "pull", "push", "range-diff", "read-tree", "rebase",
+    "reflog", "refs", "remote", "repack", "replace", "replay", "repo",
+    "request-pull", "rerere", "reset", "restore", "rev-list", "rev-parse",
+    "revert", "rm", "send-pack", "shortlog", "show", "show-branch",
+    "show-index", "show-ref", "sparse-checkout", "stage", "stash", "status",
+    "stripspace", "submodule", "switch", "symbolic-ref", "tag", "unpack-file",
+    "unpack-objects", "update-index", "update-ref", "update-server-info", "var",
+    "verify-commit", "verify-pack", "verify-tag", "version", "whatchanged",
+    "worktree", "write-tree",
+})
+
 # Verbs that run a command from a place the guard cannot read: filter-branch
 # evals its filters in a temporary tree, difftool and mergetool run a tool
 # (`-x <cmd>`, or the configured one) on temporary files. `submodule foreach`
@@ -5255,6 +5297,8 @@ def mutation_path_operands(
     if name == "git":
         command_index, git_cwd = git_command(words, cwd)
         if command_index is None or git_cwd is None or command_index >= len(words):
+            return None
+        if words[command_index] not in GIT_KNOWN_VERBS:
             return None
         if words[command_index] == "worktree":
             return git_worktree_mutation_paths(words, command_index, git_cwd)

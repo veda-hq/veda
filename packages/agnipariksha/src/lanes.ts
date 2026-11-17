@@ -23,6 +23,8 @@ export interface Lane {
   fallback?: (suites: readonly string[]) => Record<string, string>;
   /** Whether the lane's own run is narrowed to the owning suites (its `env` names them). */
   ownSuites?: boolean;
+  /** Whether its fallback rerun is narrowed to the owning suites (its `fallbackEnv` names them). */
+  fallbackOwnSuites?: boolean;
 }
 
 /** Stryker's line when the initial test run outlives its cap: the machine is busy. */
@@ -99,9 +101,10 @@ export interface LaneResult {
   /** Why the lane reran (all or some targets) in its fallback mode; that run's results count for them. */
   fellBack: string | null;
   /**
-   * Targets judged with only the changed files' own suites run: the lane's
-   * `ownSuites`, or its fallback mode. Elsewhere a related filter lets any
-   * suite that imports a file kill its mutants, a sibling suite included.
+   * Targets judged with only the changed files' own suites run, by the run
+   * whose results count for each: `fallbackOwnSuites` for a file the fallback
+   * reran, `ownSuites` otherwise. Elsewhere a related filter lets any suite
+   * that imports a file kill its mutants, a sibling suite included.
    */
   ownSuites: string[];
   /**
@@ -221,6 +224,7 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
   );
   const judgement = judge(pass.mutants);
   const refusals = [...pass.refusals, ...judgement.unknown.map((u) => `unknown status: ${u}`)];
-  const ownSuites = lane.ownSuites === true ? [...plan.targets] : plan.targets.filter((file) => ownSuite.has(file));
+  // Each target by the run whose results count for it: the fallback's for a file it reran, the lane's own otherwise.
+  const ownSuites = plan.targets.filter((file) => (ownSuite.has(file) ? lane.fallbackOwnSuites : lane.ownSuites) === true);
   return { judgement, retried: pass.retried, refusals, noMutants, fellBack, ownSuites, ...(flaky === undefined ? {} : { flaky }) };
 }

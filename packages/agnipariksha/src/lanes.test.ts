@@ -201,6 +201,7 @@ const toolingPlan: Plan = {
     reuse: false,
     env: () => ({ RELATED: '1' }),
     fallback: (suites) => ({ RELATED: '0', SUITES: suites.join(',') }),
+    fallbackOwnSuites: true,
   },
   targets: ['scripts/a.ts'],
   suites: ['scripts/a.test.ts'],
@@ -375,6 +376,12 @@ test('ownSuites: every target of a narrowed lane, the targets a fallback reran, 
   const refusedRun = fakeDeps([], [{ code: 2, seen: [] }], null);
   refusedRun.setPlan(narrowedPlan);
   assert.deepEqual((await judgeLane(narrowedPlan, refusedRun.deps)).ownSuites, []);
+
+  // A narrowed lane whose fallback is not narrowed: the fallback's results count, so nothing is narrowed.
+  const wideFallback: Plan = { ...toolingPlan, lane: { ...toolingPlan.lane, ownSuites: true, fallbackOwnSuites: false } };
+  const wide = fakeDeps([undefined, report({ 'scripts/a.ts': [strykerMutant('Survived')] })], [{ code: 1, seen: ['No tests were executed'] }]);
+  wide.setPlan(wideFallback);
+  assert.deepEqual((await judgeLane(wideFallback, wide.deps)).ownSuites, []);
 });
 
 test('a fallback names the tests that failed its first dry run', async () => {

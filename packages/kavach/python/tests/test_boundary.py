@@ -1151,6 +1151,15 @@ class WorktreeBoundaryTest(BoundaryFixture):
             f"git grep -iO'touch {outside}/x' alpha",
             f"git grep --open-files-in-pager='touch {outside}/x' alpha",
             f"git grep --op='touch {outside}/x' alpha",
+            # Options that let a listed verb write where no reader places.
+            f"git apply --unsafe-paths --directory={outside} .tmp/p.patch",
+            "git apply --uns .tmp/p.patch",
+            f"git repack -a -d --filter=blob:none --filter-to={outside}/f",
+            f"git repack -a -d --filter-t={outside}/f",
+            f"git repack -a -d --cruft --expire-to={outside}/e",
+            f"git gc --cruft --expire-to={outside}/g",
+            "git --exec-path=.tmp commit -qm x",
+            "git --exec-path=.tmp status",
             # A verb git does not list: an alias (`!` runs the shell), a
             # git-<name> on PATH, and the verbs left out on purpose.
             "git lg",
@@ -1232,6 +1241,11 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "git archive -o .tmp/a.tar HEAD",
             "git grep -n alpha",
             "git grep -o alpha",
+            "git apply .tmp/p.patch",
+            "git apply --directory=sub .tmp/p.patch",
+            "git repack -a -d --filter=blob:none",
+            "git gc --auto",
+            "git --exec-path",
             "git annotate tracked.txt",
             "git history --help",
             "git config user.name x",

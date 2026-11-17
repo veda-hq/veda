@@ -1394,6 +1394,24 @@
     "text": "git config core.fsmonitor 'touch {P}/pwned' && git status"
   },
   {
+    "id": "ow-git-apply-unsafe-paths",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "apply --unsafe-paths takes a --directory outside the work tree; the patch comes from stdin (#198).",
+    "text": "printf 'diff --git a/pwned b/pwned\\nnew file mode 100644\\n--- /dev/null\\n+++ b/pwned\\n@@ -0,0 +1 @@\\n+x\\n' | git apply --unsafe-paths --directory={P}"
+  },
+  {
+    "id": "ow-git-repack-filter-to",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git destination",
+    "note": "repack --filter-to writes the filtered-out objects as a pack at the prefix it names (#198).",
+    "text": "git repack -q -a -d --filter=blob:none --filter-to={P}/pwned"
+  },
+  {
     "id": "ow-git-config-user",
     "intent": "outside-write",
     "role": "near-miss",

@@ -1014,7 +1014,6 @@ class OwnCheckoutTest(BoundaryFixture):
             "git apply --directory=.claude/hooks .tmp/new.patch",
             "git apply --index .tmp/plain.patch .tmp/hooks.patch",
             "git apply --apply --stat .tmp/hooks.patch",
-            "git apply --unsafe-paths .tmp/plain.patch",
             "git apply",
             "git merge evil",
             "git pull",
@@ -1036,7 +1035,6 @@ class OwnCheckoutTest(BoundaryFixture):
             "git bisect start",
             "git clone . .tmp/copy",
             "git config user.name x",
-            "git --exec-path=.tmp commit -qm x",
             "git diff-files --output=.claude/hooks/guard.sh",
         )
         for command in refused:
@@ -1058,6 +1056,8 @@ class OwnCheckoutTest(BoundaryFixture):
             "git push --e .tmp/x.sh .",
             "git grep -O.tmp/x.sh guard",
             "git grep -iO.tmp/x.sh guard",
+            "git apply --unsafe-paths .tmp/plain.patch",
+            "git --exec-path=.tmp commit -qm x",
         ):
             with self.subTest(command=command):
                 result = self.claude_bash(self.main, command, environment)

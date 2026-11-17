@@ -1651,13 +1651,33 @@ GIT_PROGRAM_OPTIONS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Options that let a listed verb write outside the work tree, each with the
+# shortest spelling read as it: `apply --unsafe-paths` applies `../` paths and
+# `--directory=<outside>` (git 2.54 writes both), `repack --filter-to` and
+# `--expire-to` write packs at the prefix they name, as does gc's
+# `--expire-to`. `--filter-` keeps `repack --filter=blob:none` placed.
+GIT_ELSEWHERE_OPTIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    "apply": (("--unsafe-paths", "--uns"),),
+    "repack": (("--filter-to", "--filter-"), ("--expire-to", "--ex")),
+    "gc": (("--expire-to", "--ex"),),
+}
+
+
 def git_runs_program(verb: str, args: list[str]) -> bool:
     """Whether a word of ``git <verb> <args>`` names a program for git to
-    run: an option of GIT_PROGRAM_OPTIONS, or grep's ``-O<pager>`` alone or
-    in a cluster of short flags (``-iO``)."""
+    run (an option of GIT_PROGRAM_OPTIONS, or grep's ``-O<pager>`` alone or
+    in a cluster of short flags, ``-iO``), or lets it write where no reader
+    here places (GIT_ELSEWHERE_OPTIONS)."""
     options = GIT_PROGRAM_OPTIONS.get(verb, ())
+    elsewhere = GIT_ELSEWHERE_OPTIONS.get(verb, ())
     for word in args:
         if any(git_long_prefix(word, option) for option in options):
+            return True
+        name = word.partition("=")[0]
+        if any(
+            git_long_prefix(word, option) and len(name) >= len(shortest)
+            for option, shortest in elsewhere
+        ):
             return True
         if verb == "grep" and word.startswith("-") and not word.startswith("--") and "O" in word:
             return True
@@ -5801,6 +5821,11 @@ def mutation_directories(
             # Above the read-only gate: `GIT_EXTERNAL_DIFF=<cmd> git diff`
             # runs the command, and `GIT_TRACE=<file> git status` writes.
             if not git_prefix_is_inert(prefix):
+                return None
+            # `--exec-path=<dir>` runs git's own helpers from <dir>: git 2.54
+            # runs `<dir>/git` for the `gc --auto` after a commit. Bare
+            # `--exec-path` only prints the folder.
+            if any(word.startswith("--exec-path=") for word in words[1:_index]):
                 return None
             programs = (
                 git_runner_programs(words, _index) if _index < len(words) else []

@@ -67,7 +67,7 @@ class UnresolvedNamesTheConstruct(BoundaryFixture):
             ("git lg", "uses `git lg`, a git command or option whose writes the guard does not read"),
             (
                 "pnpm exec git status",
-                "uses `pnpm` running `git`, whose writes the guard reads only when `git` is the command itself",
+                "uses `pnpm` with `git` on its line, which the guard reads only when `git` is the command itself",
             ),
             (
                 "git -C . config core.fsmonitor x",

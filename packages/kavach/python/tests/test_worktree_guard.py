@@ -1114,7 +1114,7 @@ class OwnCheckoutTest(BoundaryFixture):
         for command in ("pnpm exec git checkout HEAD -- .claude", "mise exec -- git restore .claude"):
             with self.subTest(reason=command):
                 result = self.claude_bash(self.main, command, environment)
-                self.assertIn("running `git`, whose writes the guard reads only", result.stderr)
+                self.assertIn("with `git` on its line, which the guard reads only", result.stderr)
 
     def test_a_name_both_a_tag_and_a_branch_is_judged_both_ways(self) -> None:
         """`git checkout twin` takes branch `twin` where `rev-parse twin`

@@ -2257,7 +2257,10 @@ GIT_GLOBAL_ATTACHED = GIT_GLOBAL_VALUES - {"-c"} | {"--exec-path", "--list-cmds"
 #   serves or writes a repository it is pointed at, or runs a command);
 # - mail and foreign tools: send-email, imap-send, p4, quiltimport and
 #   subtree;
-# - credential-cache and credential-osxkeychain, which keep secrets outside;
+# - credential, credential-cache and credential-osxkeychain, which run the
+#   configured helper or keep secrets outside;
+# - hook, whose `run` starts a hook by name, from a folder the session may
+#   have written (a `core.hooksPath` inside the worktree);
 # - for-each-repo, which runs git in every repository a config list names;
 # - merge-index and the merge-* strategy programs, which run a program;
 # - init-db (init's old name, which `git_repository_destinations` does not
@@ -2267,11 +2270,11 @@ GIT_KNOWN_VERBS = frozenset({
     "branch", "bugreport", "bundle", "cat-file", "check-attr", "check-ignore",
     "check-mailmap", "check-ref-format", "checkout", "checkout-index", "cherry",
     "cherry-pick", "clean", "clone", "column", "commit", "commit-graph",
-    "commit-tree", "config", "count-objects", "credential", "credential-store",
+    "commit-tree", "config", "count-objects", "credential-store",
     "describe", "diagnose", "diff", "diff-files", "diff-index", "diff-pairs",
     "diff-tree", "fast-export", "fast-import", "fetch", "fetch-pack",
     "fmt-merge-msg", "for-each-ref", "format-patch", "fsck", "fsck-objects",
-    "gc", "get-tar-commit-id", "grep", "hash-object", "help", "history", "hook",
+    "gc", "get-tar-commit-id", "grep", "hash-object", "help", "history",
     "index-pack", "init", "interpret-trailers", "last-modified", "log",
     "ls-files", "ls-remote", "ls-tree", "mailinfo", "mailsplit", "maintenance",
     "merge", "merge-base", "merge-file", "merge-tree", "mktag", "mktree",

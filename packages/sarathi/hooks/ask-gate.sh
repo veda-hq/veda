@@ -61,10 +61,15 @@ ALTERNATIVES = re.compile(r"\b(which|or|how should|either)\b", re.I)
 PAIR = re.compile(r"(?<![\w/.:#@~-])[A-Za-z]+/[A-Za-z]+(?![\w/.:#@-])")
 # A URL names no alternatives, its query and fragment included: it is read
 # out of the ask before either check.
-# It ends at whitespace or a bracket or quote, so words glued to it stay.
+# It ends at whitespace, a bracket, a quote, or , ; | so words glued to it
+# stay; it keeps a bracketed IPv6 host and balanced parentheses in its path.
 # The quotes are hex escapes (\x22 \x27 \x60): bare, they would break the
 # shell's reading of this $(...) block.
-URL = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s()<>\[\]{}\x22\x27\x60]+", re.I)
+URL = re.compile(
+    r"\b[a-z][a-z0-9+.-]*://(?:\[[0-9a-f:.]+\])?"
+    r"(?:[^\s()<>\[\]{}\x22\x27\x60,;|]|\([^\s()<>\[\]{}\x22\x27\x60,;|]*\))+",
+    re.I,
+)
 # Content a person attaches in place of words.
 ATTACHMENTS = {"image", "document"}
 

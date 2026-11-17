@@ -173,6 +173,7 @@ test('ask-gate: a wrap_up is gated only when its ask offers a choice', () => {
     ['A/B', { recap: 'r', ask: 'Keep the cache/drop it?' }],
     ['a bare A/B', { recap: 'r', ask: 'A/B?' }],
     ['"or" glued between two URLs', { recap: 'r', ask: 'Ship (https://a.example/x)or(https://b.example/y)?', actions: [{ label: 'Yes' }] }],
+    ['"or" glued to a URL by a comma', { recap: 'r', ask: 'Ship https://a.example/x,or https://b.example/y?', actions: [{ label: 'Yes' }] }],
     ['"go with" buttons', { recap: 'r', ask: 'Pick one?', actions: [{ label: 'Go with the parser' }, { label: 'Go with the lexer' }] }],
   ] as const) {
     assert.equal(exit(t, WRAP_UP, input), 2, why);
@@ -189,6 +190,8 @@ test('ask-gate: a wrap_up is gated only when its ask offers a choice', () => {
     ['a URL', { recap: 'r', ask: 'Publish to https://example.com/docs/page now?', actions: [{ label: 'Yes' }, { label: 'Not now' }] }],
     ['a shallow path with yes/no buttons', { recap: 'r', ask: 'Delete src/file?', actions: [{ label: 'Yes' }, { label: 'No' }] }],
     ['a URL with a slash in its query', { recap: 'r', ask: 'Open https://example.com?next=foo/bar now?' }],
+    ['a URL with parentheses in its path', { recap: 'r', ask: 'Cite https://example.com/wiki/Fork_(which-way)?', actions: [{ label: 'Yes' }] }],
+    ['a URL with an IPv6 host', { recap: 'r', ask: 'Open http://[::1]:8080/which/or now?', actions: [{ label: 'Yes' }] }],
     ['a URL whose path holds a word that names alternatives', { recap: 'r', ask: 'Publish https://example.com/which/or now?', actions: [{ label: 'Yes' }] }],
   ] as const) {
     assert.equal(exit(t, WRAP_UP, input), 0, why);

@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { constants, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { after, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -17,7 +17,8 @@ after(() => {
 
 /** A scratch root of the test's own, removed after the suite. */
 function scratch() {
-  const root = mkdtempSync(join(tmpdir(), 'fresh-tmpdir-test-'));
+  // A space in the name: a run's paths are reported, and matched, with any characters a TMPDIR holds.
+  const root = mkdtempSync(join(tmpdir(), 'fresh tmpdir test-'));
   roots.push(root);
   return root;
 }
@@ -26,6 +27,15 @@ function scratch() {
 function sink() {
   const lines = [];
   return { lines, write: text => lines.push(text) };
+}
+
+/**
+ * The report of one path left in a run's directory under `base`, matched
+ * exactly: any characters `base` holds, the run's own `vt-*` name, then `name`.
+ */
+function leftOne(base, name) {
+  const dir = `${RegExp.escape(join(base, PREFIX))}[^${RegExp.escape(sep)}]+`;
+  return new RegExp(`left 1 path in its TMPDIR:\\n {2}${dir}${RegExp.escape(sep + name)}\\n`);
 }
 
 /** Run a Node program under the wrapper, in this process, with `base` as the parent temp directory. */
@@ -44,10 +54,14 @@ describe('tmpEnv', () => {
 
 describe('leftovers', () => {
   test('names each entry as a full path, sorted', () => {
-    assert.deepEqual(leftovers('/d', () => ['b', 'a']), ['/d/a', '/d/b']);
+    assert.deepEqual(leftovers('/d', () => ['b', 'a']), [join('/d', 'a'), join('/d', 'b')]);
   });
   test('is undefined when the directory is gone', () => {
     assert.equal(leftovers(join(scratch(), 'gone')), undefined);
+  });
+  test('is undefined when the directory is no longer one', () => {
+    const notDir = Object.assign(new Error('not a directory'), { code: 'ENOTDIR' });
+    assert.equal(leftovers('/d', () => { throw notDir; }), undefined);
   });
   test('passes on any other error', () => {
     const denied = Object.assign(new Error('denied'), { code: 'EACCES' });
@@ -74,7 +88,7 @@ describe('verdict', () => {
   test('a run whose directory was removed fails', () => {
     const { code, message } = verdict(0, undefined, '/d');
     assert.equal(code, 1);
-    assert.match(message, /TMPDIR \/d was removed during the run/);
+    assert.match(message, /TMPDIR \/d was removed or replaced during the run/);
     assert.equal(verdict(5, undefined, '/d').code, 5);
   });
 });
@@ -105,22 +119,49 @@ describe('run', () => {
   });
 
   test('a passing command that leaves a folder fails and names it', async () => {
-    const { code, base, stderr } = await runNode(`require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'leak-'));`);
+    const { code, base, stderr } = await runNode(`require('node:fs').mkdirSync(require('node:path').join(require('node:os').tmpdir(), 'leak'));`);
     assert.equal(code, 1);
-    assert.match(stderr, /left 1 path in its TMPDIR:\n {2}\S+\/vt-\w+\/leak-\w+\n/);
+    assert.match(stderr, leftOne(base, 'leak'));
     assert.deepEqual(readdirSync(base), [], 'the directory is removed with what was left in it');
   });
 
   test('a failing command keeps its code and still names what it left', async () => {
-    const { code, stderr } = await runNode(`require('node:fs').writeFileSync(require('node:os').tmpdir() + '/a', ''); process.exit(3);`);
+    const { code, base, stderr } = await runNode(`require('node:fs').writeFileSync(require('node:path').join(require('node:os').tmpdir(), 'a'), ''); process.exit(3);`);
     assert.equal(code, 3);
-    assert.match(stderr, /left 1 path in its TMPDIR:\n {2}\S+\/a\n/);
+    assert.match(stderr, leftOne(base, 'a'));
   });
 
   test('a command that removes its own directory fails', async () => {
     const { code, stderr } = await runNode(`require('node:fs').rmSync(require('node:os').tmpdir(), { recursive: true });`);
     assert.equal(code, 1);
-    assert.match(stderr, /was removed during the run/);
+    assert.match(stderr, /was removed or replaced during the run/);
+  });
+
+  test('a command that replaces its directory with a file fails, and the file is removed', async () => {
+    const { code, base, stderr } = await runNode(`const fs = require('node:fs'); const d = require('node:os').tmpdir(); fs.rmSync(d, { recursive: true }); fs.writeFileSync(d, '');`);
+    assert.equal(code, 1);
+    assert.match(stderr, /was removed or replaced during the run/);
+    assert.deepEqual(readdirSync(base), []);
+  });
+
+  test('a directory it cannot read fails the run, and is still removed', async () => {
+    const base = scratch();
+    const denied = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+    const read = () => {
+      throw denied;
+    };
+    await assert.rejects(run([process.execPath, '-e', ''], { base, stderr: sink(), signals: new EventEmitter(), read }), error => {
+      assert.match(error.message, /^fresh-tmpdir: cannot read the run's TMPDIR /);
+      assert.equal(error.cause, denied);
+      return true;
+    });
+    assert.deepEqual(readdirSync(base), []);
+  });
+
+  test('when the directory cannot be made, it throws and leaves no handler behind', () => {
+    const signals = new EventEmitter();
+    assert.throws(() => run([process.execPath], { base: join(scratch(), 'missing'), signals }), { code: 'ENOENT' });
+    for (const signal of FORWARDED) assert.equal(signals.listenerCount(signal), 0, signal);
   });
 
   test('a command a signal ends exits as a shell gives it', async () => {
@@ -166,14 +207,14 @@ describe('main', () => {
 
   test('as a program, exits with the run\'s code and prints what was left', () => {
     const base = scratch();
-    const r = spawnSync(process.execPath, [SCRIPT, process.execPath, '-e', `require('node:fs').writeFileSync(require('node:os').tmpdir() + '/left', '')`], {
+    const r = spawnSync(process.execPath, [SCRIPT, process.execPath, '-e', `require('node:fs').writeFileSync(require('node:path').join(require('node:os').tmpdir(), 'left'), '')`], {
       encoding: 'utf8',
       env: { PATH: process.env.PATH, TMPDIR: base },
       timeout: 30_000,
       killSignal: 'SIGKILL',
     });
     assert.equal(r.status, 1, r.stderr);
-    assert.match(r.stderr, /left 1 path in its TMPDIR:\n {2}\S+\/left\n/);
+    assert.match(r.stderr, leftOne(base, 'left'));
     assert.deepEqual(readdirSync(base), []);
   });
 });

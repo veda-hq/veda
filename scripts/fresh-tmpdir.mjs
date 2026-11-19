@@ -22,7 +22,7 @@ export const TMPDIR_KEYS = Object.freeze(['TMPDIR', 'TEMP', 'TMP']);
 /** Short, so a Unix socket a test opens under it stays inside macOS's 104-byte limit. */
 export const PREFIX = 'vt-';
 /** The signals passed on to the command, so the directory is still removed when the run is stopped. */
-export const FORWARDED = Object.freeze(['SIGINT', 'SIGTERM', 'SIGHUP']);
+export const FORWARDED = Object.freeze(['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT']);
 /** The exit code when the command cannot be started, as a shell gives it. */
 export const NOT_STARTED = 127;
 
@@ -33,7 +33,7 @@ export function tmpEnv(env, dir) {
 
 /**
  * What a run left in `dir`: each entry as a full path, sorted. Undefined when
- * `dir` itself is gone.
+ * `dir` is gone, or is no longer a directory.
  * @param {string} dir
  * @param {(dir: string) => string[]} [read]
  * @returns {string[] | undefined}
@@ -42,7 +42,8 @@ export function leftovers(dir, read = readdirSync) {
   try {
     return read(dir).sort().map(name => join(dir, name));
   } catch (error) {
-    if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return undefined;
+    const code = /** @type {NodeJS.ErrnoException} */ (error).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return undefined;
     throw error;
   }
 }
@@ -60,7 +61,7 @@ export function verdict(code, left, dir) {
   if (left === undefined) {
     return {
       code: failed,
-      message: `fresh-tmpdir: the run's TMPDIR ${dir} was removed during the run: something in it removed files outside its own scratch.`,
+      message: `fresh-tmpdir: the run's TMPDIR ${dir} was removed or replaced during the run: something in it removed files outside its own scratch.`,
     };
   }
   if (left.length === 0) return { code, message: undefined };
@@ -83,34 +84,59 @@ export function exitCode(code, signal) {
 /**
  * Run `command` under a fresh temp directory and resolve to the run's exit code.
  * @param {readonly string[]} command
- * @param {{ env?: NodeJS.ProcessEnv, base?: string, stderr?: { write(text: string): unknown }, signals?: NodeJS.EventEmitter }} [options]
+ * The signal handlers go on before the directory is made, so a signal never
+ * takes Node's default exit between the two and leaves the directory behind.
+ * @param {readonly string[]} command
+ * @param {{ env?: NodeJS.ProcessEnv, base?: string, stderr?: { write(text: string): unknown }, signals?: NodeJS.EventEmitter, read?: (dir: string) => string[] }} [options]
  * @returns {Promise<number>}
  */
-export function run(command, { env = process.env, base = tmpdir(), stderr = process.stderr, signals = process } = {}) {
-  const dir = mkdtempSync(join(base, PREFIX));
-  return new Promise(resolve => {
-    const child = spawn(/** @type {string} */ (command[0]), command.slice(1), { stdio: 'inherit', env: tmpEnv(env, dir) });
-    /** @type {Array<[string, () => void]>} */
-    const handlers = FORWARDED.map(signal => [signal, () => child.kill(/** @type {NodeJS.Signals} */ (signal))]);
-    for (const [signal, handler] of handlers) signals.on(signal, handler);
+export function run(command, { env = process.env, base = tmpdir(), stderr = process.stderr, signals = process, read = readdirSync } = {}) {
+  /** @type {import('node:child_process').ChildProcess | undefined} */
+  let child;
+  // A handler runs from the event loop, never between these lines and the
+  // spawn below, so it always finds the child.
+  /** @type {Array<[string, () => void]>} */
+  const handlers = FORWARDED.map(signal => [signal, () => child?.kill(/** @type {NodeJS.Signals} */ (signal))]);
+  const unlisten = () => {
+    for (const [name, handler] of handlers) signals.off(name, handler);
+  };
+  for (const [signal, handler] of handlers) signals.on(signal, handler);
+  /** @type {string} */
+  let dir;
+  try {
+    dir = mkdtempSync(join(base, PREFIX));
+  } catch (error) {
+    unlisten();
+    throw error;
+  }
+  return new Promise((resolve, reject) => {
+    const started = spawn(/** @type {string} */ (command[0]), command.slice(1), { stdio: 'inherit', env: tmpEnv(env, dir) });
+    child = started;
     let done = false;
     /** @param {number} code */
     const finish = code => {
       if (done) return;
       done = true;
-      for (const [name, handler] of handlers) signals.off(name, handler);
-      const left = leftovers(dir);
-      rmSync(dir, { recursive: true, force: true });
-      const result = verdict(code, left, dir);
+      unlisten();
+      /** @type {{ code: number, message: string | undefined }} */
+      let result;
+      try {
+        result = verdict(code, leftovers(dir, read), dir);
+      } catch (error) {
+        reject(new Error(`fresh-tmpdir: cannot read the run's TMPDIR ${dir}`, { cause: error }));
+        return;
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
       if (result.message) stderr.write(`${result.message}\n`);
       resolve(result.code);
     };
-    child.on('error', error => {
+    started.on('error', error => {
       stderr.write(`fresh-tmpdir: ${command[0]}: ${error.message}\n`);
       // A command that never started gets no 'close'; one that did still ends with its own.
-      if (child.pid === undefined) finish(NOT_STARTED);
+      if (started.pid === undefined) finish(NOT_STARTED);
     });
-    child.on('close', (code, signal) => finish(exitCode(code, signal)));
+    started.on('close', (code, signal) => finish(exitCode(code, signal)));
   });
 }
 

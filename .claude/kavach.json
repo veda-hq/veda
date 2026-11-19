@@ -44,6 +44,17 @@
         ".pnpmfile.mjs",
         ".npmrc"
       ]
-    }
+    },
+    "protectedPaths": [
+      ".githooks/",
+      "scripts/guards.sh",
+      "scripts/released-pins.mjs",
+      ".dvara.json",
+      ".veda/records-baseline.json",
+      ".veda/required-settings.json",
+      ".github/niyam.json",
+      "node_modules/"
+    ],
+    "protectedPathsReason": "veda's git hooks run them on every commit and push, from each worktree's own copy (veda#235); Alok changes them, or allows one session by taking the path off this list in the main checkout (CLAUDE.md, Git hooks)"
   }
 }

@@ -188,8 +188,8 @@ importers:
         specifier: 0.5.20
         version: 0.5.20(eslint@9.39.1(supports-color@7.2.0))(typescript@5.9.3)
       '@veda-hq/sarathi':
-        specifier: 0.7.5
-        version: 0.7.5
+        specifier: 0.7.6
+        version: 0.7.6
       eslint:
         specifier: 9.39.1
         version: 9.39.1(supports-color@7.2.0)
@@ -583,8 +583,8 @@ packages:
       typescript:
         optional: true
 
-  '@veda-hq/kavach@0.7.5':
-    resolution: {integrity: sha512-ZbjC5JpQanoaBHK7buwz7BUvTJW9tcSXIIgtRAQ1pQt8N0KHInhcu3ZwhOnVK/uS3WtTjfZppIktWjtXECD7/A==}
+  '@veda-hq/kavach@0.7.6':
+    resolution: {integrity: sha512-pTRvbnfEpNralRaA8kVEiYOjseXIJN9Vp+TSxOBNTqiIyjnUp9VIYKNk7atGxQourXp/idLge92jDxv3leWCiA==}
     engines: {node: '>=24.15'}
     hasBin: true
 
@@ -606,8 +606,8 @@ packages:
       typescript:
         optional: true
 
-  '@veda-hq/sarathi@0.7.5':
-    resolution: {integrity: sha512-hvSxZYWhg9ZUC1K2ZLuQheIDp6qqt9KMeQLG6q31VeomSJLf82VxN+c4Q6kYkJ6yLVkZQY93URbbTSRnPvg+5g==}
+  '@veda-hq/sarathi@0.7.6':
+    resolution: {integrity: sha512-B46vlgBTDsh2obseAfS/hrrDed5xOt+HQXp+xNSsznbHv6MbRHhI/YQfLusCaMozUZ4Py+yLwL/08iEryEdG2w==}
     engines: {node: '>=24.15'}
     hasBin: true
 
@@ -1348,7 +1348,7 @@ snapshots:
     optionalDependencies:
       typescript: 5.9.3
 
-  '@veda-hq/kavach@0.7.5': {}
+  '@veda-hq/kavach@0.7.6': {}
 
   '@veda-hq/niyam@0.7.1':
     dependencies:
@@ -1363,9 +1363,9 @@ snapshots:
       eslint: 9.39.1(supports-color@7.2.0)
       typescript: 5.9.3
 
-  '@veda-hq/sarathi@0.7.5':
+  '@veda-hq/sarathi@0.7.6':
     dependencies:
-      '@veda-hq/kavach': 0.7.5
+      '@veda-hq/kavach': 0.7.6
 
   acorn-jsx@5.3.2(acorn@8.19.0):
     dependencies:

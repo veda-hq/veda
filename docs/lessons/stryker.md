@@ -30,6 +30,12 @@ without suppressing them, and the traps of a gate scoped to a diff.
   mutant and overflows `$GITHUB_STEP_SUMMARY`. Unset `GITHUB_ACTIONS` and `GITHUB_STEP_SUMMARY`
   in the env Stryker passes to its test runner.
 
+- **One lane of veda's own gate by hand.** veda's lanes are in `agnipariksha.json` at the root,
+  one per package, each on the `tap` runner through `stryker/lane.mjs`. Judge files by hand with
+  `pnpm exec agnipariksha --lane <name> --files <repo-relative paths> --no-reuse`. Naming the lane
+  judges it whatever the cut-off. Without `--files`, it judges what the branch changed. The
+  reports land in `reports/agnipariksha/`, which git ignores.
+
 ## Speed and incremental mode
 
 - **A campaign playbook.** For a large mutant-killing campaign, give each executor 3 to 6 files

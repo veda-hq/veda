@@ -7,6 +7,9 @@ coverage/
 __pycache__/
 # dvara's run history and logs (.dvara.json's historyDir).
 .dvara/
+# agnipariksha's reports and wrapper configs, and Stryker's sandboxes (#272).
+/reports/
+.stryker-tmp/
 
 # Agent scratch files, and the per-machine .local link (or folder) worktrees make.
 .tmp/

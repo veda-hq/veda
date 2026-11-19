@@ -12,7 +12,7 @@
     "check": "pnpm provenance && pnpm check:offline",
     "check:offline": "pnpm -r check && pnpm test:scripts && pnpm lint && pnpm guards",
     "provenance": "node scripts/own-provenance.mjs",
-    "test:scripts": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 '--test-coverage-include=scripts/*.mjs' '--test-coverage-exclude=scripts/*.test.mjs' scripts/*.test.mjs",
+    "test:scripts": "node scripts/fresh-tmpdir.mjs node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 '--test-coverage-include=scripts/*.mjs' '--test-coverage-exclude=scripts/*.test.mjs' scripts/*.test.mjs",
     "lint": "eslint .",
     "guards": "bash scripts/guards.sh"
   },
@@ -25,7 +25,7 @@
     "@veda-hq/agnipariksha": "0.7.9",
     "@veda-hq/dvara": "0.5.16",
     "@veda-hq/eslint-plugin-shuddhi": "0.2.0",
-    "@veda-hq/niyam": "0.7.1",
+    "@veda-hq/niyam": "0.7.5",
     "@veda-hq/pariksha": "0.5.20",
     "@veda-hq/sarathi": "0.7.8",
     "eslint": "9.39.1",

@@ -90,11 +90,13 @@ class UnresolvedNamesTheConstruct(BoundaryFixture):
             (
                 "pnpm exec deno eval 1",
                 "uses `pnpm` starting a program the guard reads as it would without `pnpm` and "
-                "cannot prove (`deno eval`, `xargs`), a package it would download, a bin that is "
-                "not installed, or an option the guard does not list for it; install the bin as "
-                "a dependency, or drop the option",
+                "cannot prove (`deno eval`, `xargs`), a package or tool it would download or put "
+                "first, a bin that is not installed, or an option the guard does not list for it; "
+                "install the bin as a dependency, or drop the option",
             ),
             ("mise exec -- xargs touch", "uses `mise` starting a program the guard reads as it would without `mise`"),
+            ("mise exec npm:cowsay -- touch .tmp/x", "a package or tool it would download or put first"),
+            ("yarn dlx cowsay", "uses `yarn` starting a program"),
             ("git send-pack ../other main", "uses `git send-pack` to a repository the guard cannot place"),
             (
                 "git push $REPO HEAD:x",

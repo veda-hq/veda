@@ -4,6 +4,19 @@ import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { devNull, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { after } from "node:test";
+
+/** Every repository this process made, removed once its tests are done. */
+const made: string[] = [];
+after(() => {
+  for (const root of made) rmSync(root, { recursive: true, force: true });
+});
+
+const scratch = (prefix: string): string => {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  made.push(root);
+  return root;
+};
 
 /**
  * This process's environment without git's own variables (a test run from a
@@ -45,8 +58,7 @@ export interface Repo {
 
 /** A new repository on `main` with no commits. */
 export const repo = (prefix = "dvara-records-"): Repo => {
-  const root = mkdtempSync(join(tmpdir(), prefix));
-  const r = at(root);
+  const r = at(scratch(prefix));
   r.git("init", "-q", "-b", "main");
   return r;
 };
@@ -59,7 +71,7 @@ export const template = (make: () => Repo): (() => Repo) => {
   let built: Repo | undefined;
   return () => {
     built ??= make();
-    const root = mkdtempSync(join(tmpdir(), "dvara-copy-"));
+    const root = scratch("dvara-copy-");
     cpSync(built.root, root, { recursive: true });
     return at(root);
   };

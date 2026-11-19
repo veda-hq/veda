@@ -76,17 +76,24 @@ export interface Io {
 }
 
 /**
- * Flags the config file sets that no user can type: the settings text of an
- * inline entry, and that the settings came from the config file at all.
+ * What `.pariksha.json` gave a run's flags, kept beside them since no user
+ * can type it: the config file, when the settings came from it at all, and
+ * an inline entry's settings text.
  */
-const INLINE = '\0inline-config';
-const FROM_PROJECT = '\0from-config-file';
+const projectFile = new WeakMap<Map<string, string>, string>();
+const inlineText = new WeakMap<Map<string, string>, string>();
 
-/** The config file the settings came from, when they did. */
-const PROJECT_FILE = '\0config-file';
+/**
+ * No paths, and no arguments: one list for both, so a mutant that fills it
+ * shows as ESLint arguments nobody passed.
+ */
+const NONE: readonly string[] = [];
+
+/** The folder `--root` names, the working directory without one. */
+const rootOf = (f: Map<string, string>): string => resolve(f.get('--root') ?? process.cwd());
 
 /** The text of the settings `--config` names, or the inline entry's. */
-const configText = (f: Map<string, string>, root: string): string => f.get(INLINE) ?? readFileSync(resolve(root, f.get('--config') as string), 'utf8');
+const configText = (f: Map<string, string>, root: string): string => inlineText.get(f) ?? readFileSync(resolve(root, f.get('--config') as string)).toString();
 
 /**
  * What `body` returns; when it throws, undefined, with the reason on stderr
@@ -130,11 +137,10 @@ const listOf = (f: Map<string, string>, io: Io, root: string, widen = true): str
   // file itself, any other the file named. So an edit to one check's entry
   // in `.pariksha.json` widens no other check's run.
   const configPath = f.get('--config');
-  const settings = !widen ? undefined : f.has(INLINE) ? f.get(PROJECT_FILE) : configPath === undefined ? undefined : resolve(root, configPath);
-  // An untracked settings file has package.json stand in for it; `--all`
-  // lists every file anyway.
+  const settings = !widen ? undefined : inlineText.has(f) ? projectFile.get(f) : configPath === undefined ? undefined : resolve(root, configPath);
+  // An untracked settings file has package.json stand in for it.
   const git = gitAt(top);
-  const inputs = settings === undefined || selection.kind === 'all' ? [] : settingsInputs(git, top, real(settings));
+  const inputs = [settings].filter((s) => s !== undefined).flatMap((s) => settingsInputs(git, top, real(s)));
   // Relative to the root, as a caller's list names them: a check's `include`
   // is matched against the path as listed, so `^docs/` must see `docs/a.md`.
   const base = real(root);
@@ -201,20 +207,19 @@ export const trackedFiles = (root: string): TrackedFile[] => {
  * `switches` (`--no-base`), each once, held as ''; undefined on anything else.
  * An empty value is refused: `--base ""` names no ref.
  */
-export const flags = (rest: readonly string[], allowed: readonly string[], switches: readonly string[] = []): Map<string, string> | undefined => {
+export const flags = (rest: readonly string[], allowed: readonly string[], switches?: readonly string[]): Map<string, string> | undefined => {
   const out = new Map<string, string>();
-  for (let i = 0; i < rest.length; ) {
-    const name = rest[i];
-    if (name === undefined || out.has(name)) return undefined;
-    if (switches.includes(name)) {
+  for (let i = 0; i < rest.length; i += 1) {
+    const name = rest[i] as string;
+    if (out.has(name)) return undefined;
+    if (switches?.includes(name)) {
       out.set(name, '');
-      i += 1;
       continue;
     }
     const value = rest[i + 1];
     if (!allowed.includes(name) || !value) return undefined;
     out.set(name, value);
-    i += 2;
+    i += 1;
   }
   return out;
 };
@@ -230,7 +235,7 @@ const docCheck =
   (name: string, defaultGuidance: readonly string[], check: (docs: readonly Doc[], base: string, guidance: ReturnType<typeof parseDocConfig>) => { ok: boolean; out: string[] }) =>
   (f: Map<string, string>, io: Io): number => {
     const P = `pariksha ${name}:`;
-    const base = resolve(f.get('--root') ?? '.');
+    const base = rootOf(f);
     try {
       const configPath = f.get('--config');
       const config = parseDocConfig(configPath === undefined ? undefined : configText(f, base), defaultGuidance);
@@ -268,12 +273,13 @@ const listFrom = (from: string, io: Io): string => (from === '-' ? (io.stdin ?? 
  * when clean and stderr when not, as the original printed it.
  */
 const maskedExitCodes = (f: Map<string, string>, io: Io): number => {
-  const root = resolve(f.get('--root') ?? '.');
+  const root = rootOf(f);
   try {
     const configPath = f.get('--config');
     const config = configPath === undefined ? DEFAULT_MASKED_CONFIG : parseMaskedConfig(configText(f, root));
     const files = shellFiles(root, config);
-    const problems = files.length === 0 ? [] : findMaskedExits(root, files, maskedReaderFor(f.has('--staged')), config);
+    // No files reads nothing, so finds nothing; formatMasked fails that run.
+    const problems = findMaskedExits(root, files, maskedReaderFor(f.has('--staged')), config);
     const result = formatMasked(problems, files.length, config.id);
     result.out.forEach(io.out);
     result.err.forEach(io.err);
@@ -291,7 +297,7 @@ const maskedExitCodes = (f: Map<string, string>, io: Io): number => {
  */
 const shellGates = (f: Map<string, string>, io: Io): number => {
   const P = '❌ Shell gates could not run:';
-  const root = resolve(f.get('--root') ?? '.');
+  const root = rootOf(f);
   const modes = ['--staged', '--all', '--base', '--files-from'].filter((name) => f.has(name));
   if (modes.length > 1) {
     io.err(`${P} choose one of --staged, --all, --base, --files-from (got ${modes.join(', ')})`);
@@ -328,7 +334,7 @@ const shellGates = (f: Map<string, string>, io: Io): number => {
 };
 
 const aggregateGateNeeds = (f: Map<string, string>, io: Io): number => {
-  const root = resolve(f.get('--root') ?? '.');
+  const root = rootOf(f);
   const configPath = f.get('--config');
   let config = DEFAULT_GATE_CONFIG;
   try {
@@ -344,7 +350,7 @@ const aggregateGateNeeds = (f: Map<string, string>, io: Io): number => {
 };
 
 const pnpmSettings = (f: Map<string, string>, io: Io): number => {
-  const root = resolve(f.get('--root') ?? '.');
+  const root = rootOf(f);
   const configPath = f.get('--config');
   try {
     const config = configPath === undefined ? DEFAULT_PNPM_CONFIG : parsePnpmConfig(configText(f, root));
@@ -359,7 +365,7 @@ const pnpmSettings = (f: Map<string, string>, io: Io): number => {
 };
 
 const boundary = (f: Map<string, string>, io: Io): number => {
-  const root = resolve(f.get('--root') ?? '.');
+  const root = rootOf(f);
   const denyPath = resolve(root, f.get('--deny') ?? DENY_FILE);
   if (!existsSync(denyPath)) {
     io.err(`pariksha boundary: no deny list at ${denyPath}`);
@@ -388,10 +394,11 @@ const boundary = (f: Map<string, string>, io: Io): number => {
 const fileSize = (path: string): number | undefined => {
   try {
     const s = statSync(path);
-    return s.isFile() ? s.size : undefined;
+    if (s.isFile()) return s.size;
   } catch {
-    return undefined;
+    // A path that cannot be read has no size, as a folder has none.
   }
+  return undefined;
 };
 
 const docBudgets = (f: Map<string, string>, io: Io): number => {
@@ -400,7 +407,7 @@ const docBudgets = (f: Map<string, string>, io: Io): number => {
     io.err(USAGE);
     return 2;
   }
-  const root = resolve(f.get('--root') ?? '.');
+  const root = rootOf(f);
   const tablePath = resolve(root, table);
   if (fileSize(tablePath) === undefined) {
     io.err(`pariksha doc-budgets: no budget table at ${tablePath}`);
@@ -425,7 +432,8 @@ const docReferences = (f: Map<string, string>, io: Io): number => {
   const configPath = f.get('--config');
   const base = f.get('--base');
   const all = f.has('--all');
-  const baseline = f.has('--update-baseline') ? 'update' : f.has('--write-baseline') ? 'write' : undefined;
+  // The baseline switch given, by the name runGate takes: --update-baseline or --write-baseline.
+  const baseline = (['update', 'write'] as const).find((kind) => f.has(`--${kind}-baseline`));
   const modes = [f.has('--staged'), all, base !== undefined].filter(Boolean).length;
   if (configPath === undefined || modes !== 1 || (f.has('--update-baseline') && f.has('--write-baseline')) || (baseline !== undefined && !all) || (f.has('--head') && base === undefined)) {
     io.err(USAGE);
@@ -437,7 +445,7 @@ const docReferences = (f: Map<string, string>, io: Io): number => {
     io.err(`${P} --checks: ${listed.unknown} ${CHECK_IDS.join(', ')}`);
     return 2;
   }
-  const dir = resolve(f.get('--root') ?? '.');
+  const dir = rootOf(f);
   const root = topOf(dir);
   if (root === undefined) {
     io.err(`${P} ${dir} is not in a git repository`);
@@ -455,7 +463,7 @@ const docReferences = (f: Map<string, string>, io: Io): number => {
     io.err(`${P} ${(e as Error).message}; nothing was checked, so this is not a pass`);
     return 2;
   }
-  const result = formatDocReferences(report, { config, mode, checks }, f.has(FROM_PROJECT) ? undefined : configPath);
+  const result = formatDocReferences(report, { config, mode, checks }, projectFile.has(f) ? undefined : configPath);
   result.out.forEach(io.out);
   result.err.forEach(io.err);
   return result.ok ? 0 : 1;
@@ -467,7 +475,7 @@ const enforcementClaims = async (f: Map<string, string>, io: Io): Promise<number
     io.err(USAGE);
     return 2;
   }
-  const root = resolve(f.get('--root') ?? '.');
+  const root = rootOf(f);
   let P = 'pariksha enforcement-claims:';
   try {
     const config = parseClaimsConfig(configText(f, root));
@@ -488,7 +496,7 @@ const enforcementClaims = async (f: Map<string, string>, io: Io): Promise<number
 };
 
 const exportDeletions = (f: Map<string, string>, io: Io): number => {
-  const dir = resolve(f.get('--root') ?? '.');
+  const dir = rootOf(f);
   const git = gitAtTop(dir);
   if (git === undefined) {
     io.err(`pariksha export-deletions: ${dir} is not in a git repository`);
@@ -527,7 +535,7 @@ const authorityCitations = (f: Map<string, string>, io: Io, env: NodeJS.ProcessE
     io.err(USAGE);
     return 2;
   }
-  const dir = resolve(f.get('--root') ?? '.');
+  const dir = rootOf(f);
   const root = topOf(dir);
   if (root === undefined) {
     io.err(`pariksha authority-citations: ${dir} is not in a git repository`);
@@ -553,7 +561,7 @@ const authorityCitations = (f: Map<string, string>, io: Io, env: NodeJS.ProcessE
 };
 
 const coverageByType = (f: Map<string, string>, io: Io): number => {
-  const dir = resolve(f.get('--root') ?? '.');
+  const dir = rootOf(f);
   const root = topOf(dir);
   if (root === undefined) {
     io.err(`pariksha coverage-by-type: ${dir} is not in a git repository`);
@@ -591,7 +599,7 @@ const coverageExemptions = (f: Map<string, string>, io: Io): number => {
     io.err(USAGE);
     return 2;
   }
-  const dir = resolve(f.get('--root') ?? '.');
+  const dir = rootOf(f);
   const root = topOf(dir);
   if (root === undefined) {
     io.err(`pariksha coverage-exemptions: ${dir} is not in a git repository`);
@@ -638,13 +646,15 @@ const coverageExemptions = (f: Map<string, string>, io: Io): number => {
 
 const envGateSwitches = (f: Map<string, string>, io: Io): number => {
   const P = 'pariksha env-gate-switches:';
+  // One name for the working tree, the default and what staged mode also lists.
+  const TREE = 'tree';
   const configPath = f.get('--config');
-  const mode = f.get('--mode') ?? 'tree';
-  if (configPath === undefined || (mode !== 'staged' && mode !== 'tree')) {
+  const mode = f.get('--mode') ?? TREE;
+  if (configPath === undefined || (mode !== 'staged' && mode !== TREE)) {
     io.err(USAGE);
     return 2;
   }
-  const dir = resolve(f.get('--root') ?? '.');
+  const dir = rootOf(f);
   const root = topOf(dir);
   if (root === undefined) {
     io.err(`${P} ${dir} is not in a git repository`);
@@ -666,7 +676,7 @@ const envGateSwitches = (f: Map<string, string>, io: Io): number => {
     const listed = listFiles(reads, mode).filter((l) => reader.isGateCode(l.file));
     // A tree with no gate code is a config whose gatePaths match nothing (a
     // typo): staged mode would pass every commit under it, so both refuse.
-    if (!(mode === 'tree' ? listed.length > 0 : listFiles(reads, 'tree').some((l) => reader.isGateCode(l.file)))) {
+    if (!(mode === TREE ? listed.length > 0 : listFiles(reads, TREE).some((l) => reader.isGateCode(l.file)))) {
       io.err(`${P} no tracked file is gate code under the config's gatePaths; nothing was checked, so this is not a pass`);
       return 2;
     }
@@ -674,7 +684,7 @@ const envGateSwitches = (f: Map<string, string>, io: Io): number => {
       const text = readGate(reads, mode, entry);
       return text === undefined ? [] : [{ file: entry.file, text }];
     });
-    if (mode === 'tree' && sources.length === 0) {
+    if (mode === TREE && sources.length === 0) {
       // Staged mode reads the index, which holds every file it lists.
       io.err(`${P} every tracked gate file (${listed.length}) is gone from the working tree; nothing was checked, so this is not a pass`);
       return 2;
@@ -729,7 +739,7 @@ const runRatchet = <C extends { readonly baseline: string; readonly skipped: rea
     io.err(USAGE);
     return 2;
   }
-  const dir = resolve(f.get('--root') ?? '.');
+  const dir = rootOf(f);
   const root = topOf(dir);
   if (root === undefined) {
     io.err(`${P} ${dir} is not in a git repository`);
@@ -795,7 +805,8 @@ const FAULT_INJECTION_REGISTRY: Ratchet<FaultConfig> = {
   roots: (config) => [...new Set(Object.values(config.discover).flatMap((g) => g.roots))],
   discover: (root, files, config) =>
     Object.fromEntries(Object.entries(config.discover).map(([name, group]) => [name, discoverGroup(root, files.filter((file) => group.roots.some((r) => file === r || file.startsWith(`${r}/`))), group)])),
-  kind: (list, config) => ({ noun: `${list} source`, roots: config.discover[list]?.roots ?? [] }),
+  // `list` is one of discovery's own lists, so a group of that name exists.
+  kind: (list, config) => ({ noun: `${list} source`, roots: (config.discover[list] as FaultConfig['discover'][string]).roots }),
   fileOf: wholeId,
   findings: (root, config, found, baseline, grown, ts) => faultFindings(ts(), root, config, found, baseline, grown),
   format: formatFaultFindings,
@@ -813,11 +824,12 @@ const requiredSettings = (f: Map<string, string>, io: Io): number => {
     io.err(USAGE);
     return 2;
   }
-  const root = resolve(f.get('--root') ?? '.');
+  const root = rootOf(f);
   const settingsPath = f.get('--settings') ?? DEFAULT_SETTINGS;
   const read = (path: string, what: string): string | undefined => {
     try {
-      return readFileSync(resolve(root, path), 'utf8');
+      // UTF-8, a Buffer's default: both files are JSON, which reads no other.
+      return readFileSync(resolve(root, path)).toString();
     } catch {
       io.err(`${P} cannot read the ${what} ${resolve(root, path)}; nothing was checked, so this is not a pass`);
       return undefined;
@@ -870,7 +882,7 @@ const testFiles = (f: Map<string, string>, io: Io, root: string, include: RegExp
 /** duplicate-tests: the report on stdout, warnings and parse errors on stderr, as the original printed them. */
 const duplicateTests = (f: Map<string, string>, io: Io): number => {
   const P = 'pariksha duplicate-tests:';
-  const dir = resolve(f.get('--root') ?? '.');
+  const dir = rootOf(f);
   const root = topOf(dir);
   if (root === undefined) {
     io.err(`${P} ${dir} is not in a git repository`);
@@ -904,7 +916,7 @@ const flakyTests = (f: Map<string, string>, io: Io): number => {
     io.err('--runs must be an integer from 1 to 1000');
     return 2;
   }
-  const dir = resolve(f.get('--root') ?? '.');
+  const dir = rootOf(f);
   const root = topOf(dir);
   if (root === undefined) {
     io.err(`${P} ${dir} is not in a git repository`);
@@ -936,7 +948,7 @@ const eslintByWorkspace = (f: Map<string, string>, named: readonly string[], esl
   }
   // Paths are relative to the checkout's top level, wherever it is run from;
   // `--root` names another folder, and outside git the folder it runs in.
-  const here = (io.cwd ?? (() => process.cwd()))();
+  const here = io.cwd?.() ?? process.cwd();
   const root = resolve(f.get('--root') ?? topOf(here) ?? here);
   const read = unchecked(P, io, () => ({
     config: f.has('--config') ? parseEslintByWorkspaceConfig(configText(f, root)) : DEFAULT_ESLINT_BY_WORKSPACE,
@@ -954,7 +966,7 @@ const eslintTargets = (f: Map<string, string>, io: Io): number => {
     io.err(USAGE);
     return 2;
   }
-  const dir = resolve(f.get('--root') ?? '.');
+  const dir = rootOf(f);
   const root = topOf(dir);
   if (root === undefined) {
     io.err(`${P} ${dir} is not in a git repository`);
@@ -968,22 +980,14 @@ const eslintTargets = (f: Map<string, string>, io: Io): number => {
 
 /** python-floor: the packaged script under the `--python` the caller names, its output and exit code passed through. */
 const pythonFloor = (f: Map<string, string>, io: Io): number => {
-  const python = f.get('--python');
-  const floorFile = f.get('--floor-file');
-  if (python === undefined || floorFile === undefined) {
+  if (!f.has('--python') || !f.has('--floor-file')) {
     io.err(USAGE);
     return 2;
   }
-  const root = f.get('--root');
-  const exclude = f.get('--exclude');
-  const selector = f.get('--selector');
-  const options: PythonFloorOptions = {
-    python,
-    floorFile,
-    ...(root === undefined ? {} : { root }),
-    ...(exclude === undefined ? {} : { exclude }),
-    ...(selector === undefined ? {} : { selector }),
-  };
+  // Each flag given, as the option it sets: one not given sets none, so the
+  // script's own default holds.
+  const option: Readonly<Record<string, keyof PythonFloorOptions>> = { '--python': 'python', '--floor-file': 'floorFile', '--root': 'root', '--exclude': 'exclude', '--selector': 'selector' };
+  const options = Object.fromEntries([...f].map(([flag, value]) => [option[flag], value])) as unknown as PythonFloorOptions;
   return runPythonFloor(options, io.python ?? inheritRunner, io.err);
 };
 
@@ -1024,7 +1028,7 @@ const codeqlBaseline = (f: Map<string, string>, io: Io): number => {
  * it records; otherwise as `--config`, or the inline entry, gives it.
  */
 const registryText = (f: Map<string, string>, root: string, read: Reader, staged: boolean): string => {
-  if (staged && !f.has(INLINE)) {
+  if (staged && !inlineText.has(f)) {
     const under = relative(real(root), real(resolve(root, f.get('--config') as string)))
       .split(sep)
       .join('/');
@@ -1047,7 +1051,7 @@ const regressionControls = (f: Map<string, string>, io: Io): number => {
     io.err(USAGE);
     return 2;
   }
-  const root = resolve(f.get('--root') ?? '.');
+  const root = rootOf(f);
   const staged = f.has('--staged');
   const ts = (io.typescript ?? (() => loadTypescript(typescriptLoaders(root))))();
   if (typeof ts === 'string') {
@@ -1101,11 +1105,11 @@ const schemaRoots = (rest: readonly string[], io: Io): number => {
     io.err(USAGE);
     return 2;
   }
-  const root = resolve(f.get('--root') ?? '.');
+  const root = rootOf(f);
   const from = f.get('--files-from');
   let documents: ReturnType<typeof readDocuments>;
   try {
-    const listed = [...named, ...(from === undefined ? [] : entries(listFrom(from, io)))];
+    const listed = from === undefined ? named : [...named, ...entries(listFrom(from, io))];
     const files = [...new Set(jsonFiles(listed).map((p) => relative(root, resolve(root, p))))];
     documents = readDocuments(files, (file) => readFileSync(resolve(root, file), 'utf8'));
   } catch (e) {
@@ -1121,21 +1125,21 @@ const schemaRoots = (rest: readonly string[], io: Io): number => {
 /** Every repo-rules rule, in the order a run reports them. */
 export const REPO_RULES: readonly RepoRule[] = [...WORKFLOW_RULES, ...FILE_RULES, ...CONFIG_RULES, turboInputsCoverReads];
 
-/** The old paths a selection deletes or renames away. */
-const removedPaths = (top: string, f: Map<string, string>): string[] => {
-  const selection = selectionOf(f);
-  if (selection === undefined || 'error' in selection || selection.kind === 'all') return [];
+/** A selection `listOf` has accepted: one, or none. */
+type Accepted = Exclude<ReturnType<typeof selectionOf>, { readonly error: string }>;
+
+/**
+ * The old paths a selection deletes or renames away. Renames are not paired
+ * (`PLAIN_DIFF`), so a rename's old path is listed as the deletion it is.
+ */
+const removedPaths = (top: string, selection: Accepted): readonly string[] => {
+  if (selection === undefined || selection.kind === 'all') return NONE;
   const git = gitAt(top);
-  const range = selection.kind === 'staged' ? ['--cached'] : [`${must(git, ['rev-parse', '--verify', '--end-of-options', `${selection.base}^{commit}`]).trim()}...${must(git, ['rev-parse', '--verify', '--end-of-options', `${selection.head}^{commit}`]).trim()}`];
-  const fields = must(git, ['diff', '--name-status', '-z', '-M', '--diff-filter=DR', ...PLAIN_DIFF.filter((o) => o !== '--no-renames'), ...range]).split('\0');
-  const out: string[] = [];
-  for (let i = 0; i < fields.length; ) {
-    const status = fields[i] ?? '';
-    if (status === '') break;
-    out.push(fields[i + 1] as string);
-    i += status.startsWith('R') ? 3 : 2;
-  }
-  return out;
+  const commit = (ref: string): string => must(git, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]).trim();
+  const range = selection.kind === 'staged' ? ['--cached'] : [`${commit(selection.base)}...${commit(selection.head)}`];
+  return must(git, ['diff', '--name-only', '-z', '--diff-filter=D', ...PLAIN_DIFF, ...range])
+    .split('\0')
+    .filter(Boolean);
 };
 
 /**
@@ -1144,7 +1148,7 @@ const removedPaths = (top: string, f: Map<string, string>): string[] => {
  */
 const repoRules = (f: Map<string, string>, io: Io): number => {
   const P = 'pariksha repo-rules:';
-  const root = resolve(f.get('--root') ?? '.');
+  const root = rootOf(f);
   const outcome = unchecked(P, io, (): ReturnType<typeof runRules> | 'stale' => {
     const top = topOf(root);
     if (top === undefined) throw new Error(`${root} is not in a git repository`);
@@ -1159,9 +1163,10 @@ const repoRules = (f: Map<string, string>, io: Io): number => {
       for (const s of stale) io.err(`${P} ${s} names a file git does not track; drop the stale allowance`);
       return 'stale';
     }
-    const selection = selectionOf(f);
-    const side: Side = selection !== undefined && !('error' in selection) && selection.kind === 'staged' ? { kind: 'index' } : selection !== undefined && !('error' in selection) && selection.kind === 'range' ? { kind: 'commit', commit: selection.head } : { kind: 'tree' };
-    return runRules(diskRepo(top, files, tracked, () => removedPaths(top, f), git, side), REPO_RULES, config);
+    // listOf has refused flags that name no one selection, so these name one or none.
+    const selection = selectionOf(f) as Accepted;
+    const side: Side = selection?.kind === 'staged' ? { kind: 'index' } : selection?.kind === 'range' ? { kind: 'commit', commit: selection.head } : { kind: 'tree' };
+    return runRules(diskRepo(top, files, tracked, () => removedPaths(top, selection), git, side), REPO_RULES, config);
   });
   if (outcome === undefined) return 2;
   if (outcome === 'stale') return 1;
@@ -1213,7 +1218,12 @@ const FLAG_FIELDS: Readonly<Record<string, Readonly<Record<string, FlagField>>>>
 };
 
 /** The checks an entry in `.pariksha.json` can configure: those taking `--config`, and those with settable flags. */
-export const CONFIGURABLE = [...Object.keys(COMMANDS).filter((name) => COMMANDS[name]?.allowed.includes('--config') || Object.hasOwn(FLAG_FIELDS, name)), 'eslint-by-workspace'].sort();
+export const CONFIGURABLE = [
+  ...Object.entries(COMMANDS)
+    .filter(([name, spec]) => spec.allowed.includes('--config') || Object.hasOwn(FLAG_FIELDS, name))
+    .map(([name]) => name),
+  'eslint-by-workspace',
+].sort();
 
 /** A flag-only check's entry as its flags, onto `f` where the command line did not give them. */
 const applyFlags = (command: string, entry: Entry, folder: string, f: Map<string, string>, version: string): void => {
@@ -1235,20 +1245,21 @@ const applyFlags = (command: string, entry: Entry, folder: string, f: Map<string
 const applyProject = (command: string, f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv, version: string): void => {
   const project = loadProjectConfig((io.cwd ?? (() => process.cwd()))(), env, CONFIGURABLE, version);
   const entry = project.checks.get(command);
-  if (entry === undefined || project.file === undefined) return;
+  if (entry === undefined) return;
+  // A config with an entry was read from a file.
+  const file = project.file as string;
   if (Object.hasOwn(FLAG_FIELDS, command)) {
-    applyFlags(command, entry, dirname(project.file), f, version);
+    applyFlags(command, entry, dirname(file), f, version);
     return;
   }
   if (f.has('--config')) return;
-  f.set(FROM_PROJECT, '');
-  f.set(PROJECT_FILE, project.file);
+  projectFile.set(f, file);
   if (entry.kind === 'file') {
     f.set('--config', entry.path);
     return;
   }
   f.set('--config', `${CONFIG_FILE} (checks.${command})`);
-  f.set(INLINE, entryText(entry));
+  inlineText.set(f, entryText(entry));
 };
 
 /** Whether `.pariksha.json`'s settings for `command` were read into `f`; why not is on stderr. */
@@ -1280,26 +1291,35 @@ export const run = (args: readonly string[], io: Io, version: string = ownVersio
       return 2;
     }
     if (!projectApplied(command, f, io, env, version)) return 2;
-    return eslintByWorkspace(f, files, cut === -1 ? [] : rest.slice(cut + 1), io);
+    return eslintByWorkspace(f, files, cut === -1 ? NONE : rest.slice(cut + 1), io);
   }
-  const spec = command !== undefined && Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;
-  const f = spec && flags(rest, spec.allowed, spec.switches);
-  if (!spec || !f) {
+  const entry = Object.entries(COMMANDS).find(([name]) => name === command);
+  const f = entry && flags(rest, entry[1].allowed, entry[1].switches);
+  if (!entry || !f) {
     io.err(USAGE);
     return 2;
   }
-  if (CONFIGURABLE.includes(command as string) && !projectApplied(command as string, f, io, env, version)) return 2;
+  const [name, spec] = entry;
+  if (CONFIGURABLE.includes(name) && !projectApplied(name, f, io, env, version)) return 2;
   return spec.run(f, io, env);
 };
 
-const isMain = (): boolean => {
-  const entry = process.argv[1];
-  return entry !== undefined && realpathSync(entry) === fileURLToPath(import.meta.url);
+/** The console as an Io: what a check prints to stdout and stderr. */
+export const consoleIo: Io = {
+  out: (line) => console.info(line),
+  err: (line) => console.error(line),
 };
 
-if (isMain()) {
-  process.exitCode = await run(process.argv.slice(2), {
-    out: (line) => console.info(line),
-    err: (line) => console.error(line),
-  });
-}
+/**
+ * The exit code of a process started as `argv` (node, the script, then its
+ * arguments) when the script is this file; undefined when cli.ts is only
+ * imported.
+ */
+export const main = async (argv: readonly string[], io: Io = consoleIo): Promise<number | undefined> => {
+  const [, entry, ...args] = argv;
+  return entry !== undefined && realpathSync(entry) === fileURLToPath(import.meta.url) ? run(args, io) : undefined;
+};
+
+// Imported, it leaves the importer's exit code as it is.
+const code = await main(process.argv);
+if (code !== undefined) process.exitCode = code;

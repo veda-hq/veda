@@ -81,7 +81,7 @@ and leave the setting alone.
 `.veda/required-settings.json`, `.github/niyam.json`, and `node_modules/`
 (`pnpm install` still runs). A worktree runs its own
 copy of each, so an edit would let that session's own pushes skip the
-checks. Once veda's hooks run kavach 0.7.5, `worktree.protectedPaths` in
+checks. Once veda's hooks run kavach 0.7.6, `worktree.protectedPaths` in
 `.claude/kavach.json` lists them, and kavach refuses a session's writes to
 them: Edit, Write, Bash, and the git commands that write the paths they
 name (`git restore .` and `git checkout .` included). A command that names

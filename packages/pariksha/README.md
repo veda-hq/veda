@@ -4,8 +4,8 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.7.2 <check> [flags]
-npx @veda-hq/pariksha@0.7.2 --version
+npx @veda-hq/pariksha@0.7.10 <check> [flags]
+npx @veda-hq/pariksha@0.7.10 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
@@ -1277,10 +1277,27 @@ naming the key, what is wrong and the reason. A missing settings file is a
 refusal; a requirements file it cannot read or parse, or one listing no key,
 exits 2.
 
+In both files it also refuses a rule in `permissions.allow`, `deny` or `ask`
+that Claude Code does not match as written
+([permissions](https://code.claude.com/docs/en/permissions)): in the settings
+whether or not a requirement names it, in the requirements file as an exit 2.
+
+- A path rule on `Write`, `NotebookEdit` or `MultiEdit`, such as
+  `Write(./**)`. Claude Code checks file edits against `Edit(path)` rules
+  only, and `Edit(path)` covers every file-editing tool. A bare `Write`
+  names the whole tool and passes.
+- A `Bash(…)` rule ending in `:*` with another `*` before it, such as
+  `Bash(*git push* :*)`. Claude Code reads `:*` as a prefix only at the end
+  of a rule with no other wildcard; on Claude Code 2.1.326 that rule let
+  `git push origin :feature-x` through. Write `:**` for a colon followed by
+  anything: Claude Code 2.1.326 reads two adjacent stars as one wildcard,
+  and prints one informational line for the rule.
+
 `baselines/claude-settings.json` (`@veda-hq/pariksha/baselines/claude-settings.json`)
 is the permission baseline every repository agents work in keeps:
 
-- allow: edits inside the checkout; selected git commands (`status`,
+- allow: edits inside the checkout (`Edit(./**)`, which Claude Code also
+  applies to `Write`, `NotebookEdit` and `MultiEdit`); selected git commands (`status`,
   `diff`, `log`, `show`, `branch`, `ls-remote`, `worktree list`) and gh
   commands (`pr view`, `pr list`, `pr checks`, `run view`, `run list`,
   `issue list`, and `pr comment`, which posts: agents leave their evidence
@@ -1291,8 +1308,9 @@ is the permission baseline every repository agents work in keeps:
   that started this one;
 - deny: `Bash(*--no-verify*)`;
 - ask: every push that rewrites or deletes published history (`--force`,
-  `-f`, `--mirror`, `--delete`, `-d`, `--prune`, a `+` or empty-source `:`
-  refspec, and the abbreviations git accepts), a forced branch delete
+  `-f`, `--mirror`, `--delete`, `-d`, `--prune`, a `+` refspec or an
+  empty-source one such as `:feature-x` (`Bash(*git push* :**)`), and the
+  abbreviations git accepts), a forced branch delete
   (`git branch -D`, `-df`, `-fd`, and any `-d`/`--delete` with
   `-f`/`--force` in either order: the two globs `*-d*-f*` and `*-f*-d*`
   also ask for a plain `-d` of a branch whose name holds `-f`, which errs

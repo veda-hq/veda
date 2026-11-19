@@ -4,7 +4,9 @@
 // one committed line, and one edit deletes it without any test noticing. The
 // project lists what it requires, with why, and this check refuses a settings
 // file that lacks a key, holds another value, or drops an entry from a list
-// (a permission rule, say) the project requires.
+// (a permission rule, say) the project requires. In both files it also
+// refuses a Claude Code permission rule written in a form Claude Code does
+// not match as written (`ruleProblem`).
 import { isDeepStrictEqual } from 'node:util';
 
 interface RequirementBase {
@@ -19,15 +21,60 @@ export type Requirement =
   | (RequirementBase & { readonly kind: 'value'; readonly expected: unknown })
   | (RequirementBase & { readonly kind: 'includes'; readonly expected: readonly unknown[] });
 
-export interface Finding {
-  readonly key: string;
-  readonly kind: 'value' | 'includes';
-  /** The value it must hold, or the required entries the list lacks. */
-  readonly expected: unknown;
-  /** The value found; absent when the key is missing. */
-  readonly found?: unknown;
-  readonly why: string;
+export type Finding =
+  | {
+      readonly key: string;
+      readonly kind: 'value' | 'includes';
+      /** The value it must hold, or the required entries the list lacks. */
+      readonly expected: unknown;
+      /** The value found; absent when the key is missing. */
+      readonly found?: unknown;
+      readonly why: string;
+    }
+  | {
+      readonly key: string;
+      /** A permission rule in a form Claude Code does not match as written. */
+      readonly kind: 'rule';
+      readonly rule: string;
+      /** What Claude Code does with it, and the form to write instead. */
+      readonly why: string;
+    };
+
+/** Claude Code's permission lists, whose entries `ruleProblem` judges in both files. */
+export const PERMISSION_LISTS: readonly string[] = ['permissions.allow', 'permissions.deny', 'permissions.ask'];
+
+const FILE_TOOLS = /^(Write|NotebookEdit|MultiEdit)\(/;
+
+/**
+ * Why Claude Code does not match a permission rule as written, or undefined
+ * for a rule it reads. Two forms, from https://code.claude.com/docs/en/permissions
+ * (read 2026-11-20):
+ * - a path rule on Write, NotebookEdit or MultiEdit: "Claude Code checks file
+ *   permissions against `Edit(path)` and `Read(path)` rules", so `Edit(path)`
+ *   covers every file-editing tool and a path on another one never matches.
+ *   A bare `Write`, with no parentheses, names the whole tool and is read.
+ * - a Bash rule ending in `:*` with another `*` before it: "The `:*` form is
+ *   only recognized at the end of a pattern", as the prefix form of a rule
+ *   with no other wildcard. On Claude Code 2.1.326, `Bash(*git push* :*)`
+ *   did not match `git push origin :feature-x`; `Bash(*git push* :**)` did.
+ */
+export function ruleProblem(rule: string): string | undefined {
+  const tool = FILE_TOOLS.exec(rule)?.[1];
+  if (tool !== undefined) return `Claude Code checks file edits against Edit(path) rules only, so a path on ${tool} never matches; write Edit(path), which covers every file-editing tool`;
+  if (!rule.startsWith('Bash(') || !rule.endsWith(')')) return undefined;
+  const body = rule.slice('Bash('.length, -1);
+  if (body.endsWith(':*') && body.slice(0, -2).includes('*'))
+    return 'Claude Code reads a ":*" ending as a prefix only in a rule with no other "*", so this rule does not match a colon followed by anything; write ":**" for that';
+  return undefined;
 }
+
+/** A finding for each rule in a permission list that `ruleProblem` refuses. */
+const ruleFindings = (key: string, list: readonly unknown[]): Finding[] =>
+  list.flatMap((rule) => {
+    if (typeof rule !== 'string') return [];
+    const why = ruleProblem(rule);
+    return why === undefined ? [] : [{ key, kind: 'rule' as const, rule, why }];
+  });
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -35,7 +82,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 /**
  * Parses the requirements file:
  * `{ "<key>": { "value": <any JSON>, "why": "…" } | { "includes": [<any JSON>, …], "why": "…" }, … }`.
- * Throws on anything else, so a malformed list never passes as an empty one.
+ * Throws on anything else, so a malformed list never passes as an empty one,
+ * and on a required permission rule Claude Code does not match as written.
  */
 export function parseRequirements(text: string): Requirement[] {
   let raw: unknown;
@@ -57,6 +105,9 @@ export function parseRequirements(text: string): Requirement[] {
     const extra = Object.keys(spec).filter((k) => k !== 'value' && k !== 'includes' && k !== 'why');
     if (extra.length > 0) throw new Error(`"${key}": unknown key ${extra.map((k) => `"${k}"`).join(', ')}`);
     if (typeof spec.why !== 'string' || spec.why.trim() === '') throw new Error(`"${key}" needs a "why"`);
+    const rules: unknown = hasIncludes ? spec.includes : spec.value;
+    const bad = PERMISSION_LISTS.includes(key) && Array.isArray(rules) ? ruleFindings(key, rules) : [];
+    if (bad.length > 0) throw new Error(bad.map(describe).join('; '));
     if (!hasIncludes) {
       out.push({ key, kind: 'value', expected: spec.value, why: spec.why });
       continue;
@@ -95,7 +146,11 @@ const judge = (settings: unknown, r: Requirement): Finding | undefined => {
   return lacking.length === 0 ? undefined : { ...base, expected: lacking, found: got.value };
 };
 
-/** Every requirement the settings break: a missing key, a different value, or a list without a required entry. */
+/**
+ * Every requirement the settings break (a missing key, a different value, or
+ * a list without a required entry), then every rule in the settings'
+ * permission lists that Claude Code does not match as written.
+ */
 export function findMissing(settingsText: string, requirements: readonly Requirement[]): Finding[] {
   let settings: unknown;
   try {
@@ -104,11 +159,17 @@ export function findMissing(settingsText: string, requirements: readonly Require
     throw new Error(`the settings are not JSON (${(e as Error).message})`);
   }
   if (!isRecord(settings)) throw new Error('the settings must hold an object');
-  return requirements.flatMap((r) => judge(settings, r) ?? []);
+  const broken = requirements.flatMap((r) => judge(settings, r) ?? []);
+  const rules = PERMISSION_LISTS.flatMap((key) => {
+    const got = lookup(settings, key);
+    return !got.missing && Array.isArray(got.value) ? ruleFindings(key, got.value) : [];
+  });
+  return [...broken, ...rules];
 }
 
 /** One finding as a line: what is wrong and how to fix it. */
-const describe = (f: Finding): string => {
+function describe(f: Finding): string {
+  if (f.kind === 'rule') return `"${f.key}" lists ${JSON.stringify(f.rule)}: ${f.why}`;
   if (f.kind === 'value') {
     const has = Object.hasOwn(f, 'found') ? `holds ${JSON.stringify(f.found)}` : 'is missing';
     return `"${f.key}" ${has}; it must be ${JSON.stringify(f.expected)}`;
@@ -117,7 +178,7 @@ const describe = (f: Finding): string => {
   if (!Object.hasOwn(f, 'found')) return `"${f.key}" is missing; it must be a list holding ${entries}`;
   if (!Array.isArray(f.found)) return `"${f.key}" holds ${JSON.stringify(f.found)}, not a list; it must be a list holding ${entries}`;
   return `"${f.key}" lacks ${entries}`;
-};
+}
 
 /** The check's lines: one per finding on err, or one pass line on out. */
 export function formatFindings(findings: readonly Finding[], count: number, settingsPath: string, requirePath: string): { ok: boolean; out: string[]; err: string[] } {
@@ -126,6 +187,10 @@ export function formatFindings(findings: readonly Finding[], count: number, sett
   return {
     ok: false,
     out: [],
-    err: findings.map((f) => `${P} ${settingsPath}: ${describe(f)} (${f.why}). Put it back; to change the requirement, edit ${requirePath}.`),
+    err: findings.map((f) =>
+      f.kind === 'rule'
+        ? `${P} ${settingsPath}: ${describe(f)}.`
+        : `${P} ${settingsPath}: ${describe(f)} (${f.why}). Put it back; to change the requirement, edit ${requirePath}.`,
+    ),
   };
 }

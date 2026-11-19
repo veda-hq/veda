@@ -1612,6 +1612,10 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm exec bun run -",
             "npx node@20 -e 1",
             "pnpm dlx tsx@4 -e 1",
+            # Nor is a path to the interpreter.
+            "pnpm exec /usr/bin/node -e 1",
+            "pnpm exec ./node_modules/.bin/tsx -e 1",
+            "npx /usr/bin/python3 -c 1",
             "pnpm --filter x add node",
             "pnpm exec perl -e 1",
             "pnpm exec perl -E 1",

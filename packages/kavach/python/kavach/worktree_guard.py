@@ -978,6 +978,7 @@ def not_owned(
     cwd: Path,
     targets: list[Path] | None,
     segments: list[Any] | None = None,
+    push_hosts: Sequence[str] = boundary.DEFAULT_PUSH_HOSTS,
 ) -> str:
     """The refusal outside an owned checkout, naming why the call counts as a
     mutation (veda#6): the words of a command the guard could not read, or
@@ -996,7 +997,7 @@ def not_owned(
     if not places:
         if tool != "Bash":
             return f"{NOT_OWNED}."
-        found = unreadable_found(boundary.tool_command(values), cwd)
+        found = unreadable_found(boundary.tool_command(values), cwd, push_hosts)
         if not found:
             return f"{NOT_OWNED}. The guard cannot prove this command writes nothing."
         return (
@@ -1342,6 +1343,7 @@ def refuse_named_root(
     fences: tuple[Fence, ...],
     read_namespaces: tuple[Path, ...],
     way_out: str,
+    push_hosts: Sequence[str] = boundary.DEFAULT_PUSH_HOSTS,
 ) -> None:
     """Refuse a command that names the checkout's root as what it writes.
 
@@ -1354,7 +1356,9 @@ def refuse_named_root(
     """
 
     for words, cwd, _prefix, _alone in segments:
-        operands = boundary.mutation_path_operands(list(words), cwd, read_namespaces=read_namespaces)
+        operands = boundary.mutation_path_operands(
+            list(words), cwd, read_namespaces=read_namespaces, push_hosts=push_hosts
+        )
         for operand in operands or ():
             if is_root(operand, root):
                 place, what = fences[0]
@@ -1491,7 +1495,7 @@ def main() -> None:
     if clone:
         fences = clone_fences(root, loaded.own_checkout, os.environ)
     elif not linked or not boundary.is_claude_managed(root, primary):
-        boundary.deny(not_owned(tool, values, cwd, targets, segments))
+        boundary.deny(not_owned(tool, values, cwd, targets, segments, loaded.push_hosts))
     # The consumer's `protectedPaths` hold in either kind of owned checkout.
     fences += protected_fences(root, loaded)
     way_out = CLONE_WAY_OUT if clone else WORKTREE_WAY_OUT
@@ -1523,7 +1527,7 @@ def main() -> None:
         ):
             refuse_target(target, root, primary, fences, folders, way_out)
     if fences and tool == "Bash":
-        refuse_named_root(segments, root, fences, read_namespaces, way_out)
+        refuse_named_root(segments, root, fences, read_namespaces, way_out, loaded.push_hosts)
         # git and package managers write paths their command lines do not
         # name (`clone_writers`). In an owned clone they are judged by all
         # they can write. In a worktree, only git's subcommands that write

@@ -870,6 +870,20 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
     return found
 
 
+def unreadable_found(command: str, cwd: Path) -> list[str]:
+    """`unreadable_constructs`, or nothing when it cannot read the command:
+    a refusal's wording never turns into a crash."""
+
+    try:
+        return unreadable_constructs(command, cwd) if command else []
+    except Exception:
+        return []
+
+
+def joined(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
 def unresolved(tool: object, values: dict[str, object], cwd: Path) -> str:
     """The refusal for a call whose writes could not be read, naming what in
     it could not be read and the way out. The leading words stay as they
@@ -881,13 +895,10 @@ def unresolved(tool: object, values: dict[str, object], cwd: Path) -> str:
             "Give the tool an absolute path inside this worktree."
         )
     command = boundary.tool_command(values)
-    try:
-        found = unreadable_constructs(command, cwd) if command else []
-    except Exception:
-        found = []
+    found = unreadable_found(command, cwd)
     if not found:
         return f"{UNRESOLVED}: the guard cannot read off this command what it writes. {WAY_OUT}"
-    named = found[0] if len(found) == 1 else ", ".join(found[:-1]) + " and " + found[-1]
+    named = joined(found)
     extra = ""
     if any(item.startswith("an output redirection") for item in found):
         extra += REDIRECTION_WAY_OUT
@@ -897,6 +908,64 @@ def unresolved(tool: object, values: dict[str, object], cwd: Path) -> str:
         f"{UNRESOLVED}: this command uses {named}, so the guard cannot read off it what it writes. "
         f"{WAY_OUT}{extra}"
     )
+
+
+NOT_OWNED = "Claude mutations require this session's Claude-managed worktree; use EnterWorktree"
+
+
+def run_folders(segments: list[Any]) -> set[Path]:
+    """The folders the mutating segments run in, as `mutation_directories`
+    counts them: where each one runs after any `cd`, or git's `-C` folder."""
+
+    folders: set[Path] = set()
+    for words, current, *_rest in segments:
+        folder = current
+        if os.path.basename(words[0]) == "git":
+            _verb, git_target = boundary.git_command(list(words), current)
+            folder = git_target or current
+        folders.add(folder)
+    return folders
+
+
+def not_owned(
+    tool: object,
+    values: dict[str, object],
+    cwd: Path,
+    targets: list[Path] | None,
+    segments: list[Any] | None = None,
+) -> str:
+    """The refusal outside an owned checkout, naming why the call counts as a
+    mutation (veda#6): the words of a command the guard could not read, or
+    the places it writes. The leading words stay as they were, so earlier
+    logs and searches still match."""
+
+    if targets is None and tool != "Bash":
+        return f"{NOT_OWNED}. The tool's file path cannot be read as one place."
+    # A folder a command runs in is counted as a write there with every
+    # file it names: it comes last, said as that, so the files show first.
+    folders = run_folders(segments or []) if tool == "Bash" else set()
+    unique = list(dict.fromkeys(targets or []))
+    places = [place for place in unique if place not in folders] + [
+        place for place in unique if place in folders
+    ]
+    if not places:
+        if tool != "Bash":
+            return f"{NOT_OWNED}."
+        found = unreadable_found(boundary.tool_command(values), cwd)
+        if not found:
+            return f"{NOT_OWNED}. The guard cannot prove this command writes nothing."
+        return (
+            f"{NOT_OWNED}. The guard counts this command as a mutation because it uses "
+            f"{joined(found)}, and cannot read off it what it writes."
+        )
+    shown_places = [
+        f"`{place}`, the folder it runs in, where it cannot prove the command writes nothing"
+        if place in folders else f"`{place}`"
+        for place in places[:3]
+    ]
+    if len(places) > 3:
+        shown_places.append(f"{len(places) - 3} more")
+    return f"{NOT_OWNED}. The guard counts this call as writing {joined(shown_places)}."
 
 
 # A push in progress (0086 P-06). A pre-push hook that runs kavach's
@@ -1320,7 +1389,7 @@ def main() -> None:
     if not linked and owns_plain_checkout(loaded.own_checkout, root, os.environ):
         fences = clone_fences(root, loaded.own_checkout, os.environ)
     elif not linked or not boundary.is_claude_managed(root, primary):
-        boundary.deny("Claude mutations require this session's Claude-managed worktree; use EnterWorktree")
+        boundary.deny(not_owned(tool, values, cwd, targets, segments))
     if tool == "Bash" and boundary.trusted_request(
         boundary.tool_command(values), cwd, root, trusted
     ):

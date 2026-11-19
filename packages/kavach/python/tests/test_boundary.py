@@ -1343,6 +1343,12 @@ class WorktreeBoundaryTest(BoundaryFixture):
             f"sh -c 'git remote set-url origin {outside}' && git push origin main",
             f"git remote set-url origin {outside} && sh -c 'git push origin main'",
             f"git remote set-url origin {outside} && git send-pack origin main",
+            # `&` and `|` run commands side by side: a write anywhere there
+            # may land before the push reads the config.
+            f"git push origin main & git remote set-url origin {outside}",
+            f"git push origin main | git remote set-url origin {outside}",
+            f"sh -c 'sleep 1; git push origin main' & git remote set-url origin {outside}",
+            f"sh -c 'git push origin main &'; git remote set-url origin {outside}",
         ):
             with self.subTest(command=command):
                 result = self.claude_bash(self.claude, command)
@@ -1385,6 +1391,9 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "git add tracked.txt && git commit -qm x && git push origin HEAD",
             "git commit -qm x && git push",
             "git push origin HEAD && git push origin --tags",
+            "git push origin HEAD; touch .tmp/after",
+            "git push origin HEAD | cat",
+            "git push origin HEAD & git push origin --tags",
             # Config alone writes no other repository; the push is read.
             f"git remote add o {outside}",
             f"git remote set-url origin {outside}",

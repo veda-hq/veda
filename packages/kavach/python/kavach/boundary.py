@@ -6172,7 +6172,7 @@ def mutation_directories(
     relinked: list[Path] | None = None,
     collected: list[tuple[tuple[str, ...], Path, tuple[str, ...], bool]] | None = None,
     alone: bool = True,
-    wrote: list[bool] | None = None,
+    push_order: dict[str, bool] | None = None,
 ) -> list[Path] | None:
     """Resolve the directory in which each mutating segment would run.
 
@@ -6180,12 +6180,16 @@ def mutation_directories(
     (`relinked_locations`), shared with a nested shell's program: a later
     write at or through one is unprovable.
 
-    ``wrote``, shared the same way, holds whether an earlier segment wrote
-    something other than git's own objects and refs: a push is placed from
-    the config as it is before the line runs, so `git remote set-url o <dir>
-    && git push o`, or a `cp` over a nested repository's config, would push
-    where the check never looked. Such a push after a write is unproven;
-    the verbs of GIT_CONFIG_FREE_VERBS before it do not count.
+    ``push_order``, shared the same way, holds whether a segment so far
+    wrote something other than git's own objects and refs (`wrote`), ran a
+    push (`pushed`), and whether the line has a `&` or `|` anywhere
+    (`unordered`). A push is placed from the config as it is before the line
+    runs, so `git remote set-url o <dir> && git push o`, or a `cp` over a
+    nested repository's config, would push where the check never looked.
+    Such a push after a write is unproven, and on a line where `&` or `|`
+    runs commands side by side (`git push o & git remote set-url o <dir>`),
+    so is a push beside any write. The verbs of GIT_CONFIG_FREE_VERBS do not
+    count as writes.
 
     ``collected``, when given, receives each mutating segment as (its words
     after wrappers, the folder it runs in, the words before it, whether it is
@@ -6198,11 +6202,13 @@ def mutation_directories(
         return None
     if relinked is None:
         relinked = []
-    if wrote is None:
-        wrote = [False]
+    if push_order is None:
+        push_order = {"wrote": False, "pushed": False, "unordered": False}
     tokens = tokenize_command(command)
     if tokens is None:
         return None
+    if any(is_shell_operator(token) and token in {"&", "|", "|&"} for token in tokens):
+        push_order["unordered"] = True
     # The simple directory model below follows successful sequential `cd`
     # operations. Directory changes in failure branches or subshells require a
     # control-flow graph, so actual navigation commands in those forms fail
@@ -6323,7 +6329,7 @@ def mutation_directories(
                 relinked=relinked,
                 collected=collected,
                 alone=alone,
-                wrote=wrote,
+                push_order=push_order,
             )
             if nested is None:
                 return None
@@ -6337,8 +6343,10 @@ def mutation_directories(
                 return None
             target = git_target
             verb = words[_index] if _index < len(words) else ""
-            if verb in {"push", "send-pack"} and wrote[0]:
-                return None
+            if verb in {"push", "send-pack"}:
+                if push_order["wrote"]:
+                    return None
+                push_order["pushed"] = True
             if not read_only and any(
                 option in {"-c", "--config-env", "--git-dir", "--work-tree"}
                 or option.startswith(
@@ -6378,7 +6386,7 @@ def mutation_directories(
                         relinked=relinked,
                         collected=collected,
                         alone=False,
-                        wrote=wrote,
+                        push_order=push_order,
                     )
                     if nested is None:
                         return None
@@ -6417,7 +6425,9 @@ def mutation_directories(
                 return None
             relinked.extend(made)
             if verb not in GIT_CONFIG_FREE_VERBS:
-                wrote[0] = True
+                if push_order["pushed"] and push_order["unordered"]:
+                    return None
+                push_order["wrote"] = True
     return mutations
 
 

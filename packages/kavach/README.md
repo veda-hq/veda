@@ -135,8 +135,8 @@ URLs are read from git's config, with every `insteadOf` and `pushInsteadOf`
 rewrite, and a `git push` with no repository reads every remote. Adding or
 changing a remote still runs; the push to it is what is judged. The config is
 read before the line runs, so a push after another write on its line, other
-than `git add`, `commit`, `push` or `tag`, is refused: push in a call of its
-own.
+than `git add`, `commit`, `push` or `tag`, is refused, and so is a push beside
+any write on a line with `&` or `|`: push in a call of its own.
 
 ## What a refusal says
 

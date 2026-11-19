@@ -207,9 +207,9 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   `mkdtemp` gives) and remove the folder there, in `after()`, `t.after()` or a `finally`
   around the test's body, with `rmSync(dir, { recursive: true, force: true })`. A folder a
   child process or a helper made counts too: the child inherits the `TMPDIR`. "was removed
-  during the run" means something removed the `TMPDIR` itself, usually a cleanup that lost
-  its child path. Mutation testing does not see a leak, and no lint checks that a temp root is
-  removed, so this check is the one that does.
+  or replaced during the run" means something removed the `TMPDIR` itself, usually a cleanup
+  that lost its child path. Mutation testing does not see a leak, and no lint checks that a
+  temp root is removed, so this check is the one that does.
   <!-- held by: scripts/fresh-tmpdir.mjs (fails a test run that leaves anything in its TMPDIR) -->
   <!-- when: error "fresh-tmpdir: the run left" -->
 

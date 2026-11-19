@@ -47,7 +47,7 @@ const stopped = (message: unknown, extra: Entry = {}): Entry => ({
   hook_event_name: 'SubagentStop',
   stop_hook_active: false,
   last_assistant_message: message,
-  agent_type: 'researcher',
+  agent_type: 'sarathi:researcher',
   agent_id: `a${agents++}`,
   session_id: 's',
   ...extra,
@@ -70,6 +70,12 @@ test('researcher-report: a report in the shape passes silently, on either event'
     ['a claim on the Claims line', 'Verdict: Settled. Yes.\nClaims: the cap is 8: https://code.claude.com/docs/en/hooks, read 2026-11-19\nNext: act.'],
     ['Not settled with no claims', 'Verdict: Not settled. Nothing documents it.\nClaims: none\nNext: ask the owner; it is a preference.'],
     ['Not settled with no Claims line', '**Verdict:** Not settled. A preference.\n**Next:** ask.'],
+    ['a wrapped claim', 'Verdict: Settled. Yes.\nClaims:\n- The cap is 8 consecutive continuations, set by\n  CLAUDE_CODE_STOP_HOOK_BLOCK_CAP: https://code.claude.com/docs/en/hooks,\n  current docs, read 2026-11-19\nNext: act.'],
+    ['a claim with sub-bullets', 'Verdict: Settled. Yes.\nClaims:\n- The cap is 8.\n  - https://code.claude.com/docs/en/hooks\n  - read 2026-11-19\n- It came in 2.1.143: https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md, read 2026-11-19\nNext: act.'],
+    ['headings', '## Verdict: Settled\n\nYes.\n\n## Claims\n\n1. x: https://a.example/doc, v1, read 2026-11-19\n\n## Next\n\nact.'],
+    ['a claims table', 'Verdict: Settled. Yes.\nClaims:\n| Claim | Source | Version | Read |\n| --- | --- | --- | --- |\n| The cap is 8 | https://code.claude.com/docs/en/hooks | current | 2026-11-19 |\nNext: act.'],
+    ['a claim naming Next.js', 'Verdict: Settled. Yes.\nClaims:\n- Next.js 16 drops it: https://nextjs.org/blog/next-16, read 2026-11-19\nNext: act.'],
+    ['a claim none among none', 'Verdict: Not settled. A preference.\nClaims:\n- none\nNext: ask.'],
   ] as const) {
     assert.equal(hook(handback(report)).status, 0, why);
   }
@@ -84,6 +90,12 @@ test('researcher-report: a report that falls short is refused with what it lacks
     ['a claim with no source', 'Verdict: Settled. Yes.\nClaims:\n- The cap is 8, read 2026-11-19\nNext: act.', /the claim "The cap is 8, read 2026-11-19" lacks a URL or repository path/],
     ['a claim with no date', 'Verdict: Settled. Yes.\nClaims:\n- The cap is 8: https://code.claude.com/docs/en/hooks\nNext: act.', /lacks a read date/],
     ['a claim with neither', 'Verdict: Settled. Yes.\nClaims:\n- The cap is 8\nNext: act.', /lacks a URL or repository path and a read date/],
+    ['a date only inside a URL', 'Verdict: Settled. Yes.\nClaims:\n- Ask when unsure: https://model-spec.openai.com/2026-10-29.html#ask_clarifying_questions\nNext: act.', /lacks a read date/],
+    ['a product name as the source', 'Verdict: Settled. Yes.\nClaims:\n- Node.js 24 strips types, read 2026-11-19\nNext: act.', /lacks a URL or repository path/],
+    ['"e.g." as the source', 'Verdict: Settled. Yes.\nClaims:\n- Flags, e.g. --fast, are gone, read 2026-11-19\nNext: act.', /lacks a URL or repository path/],
+    ['a version as the source', 'Verdict: Settled. Yes.\nClaims:\n- Fixed in 0.7.x, read 2026-11-19\nNext: act.', /lacks a URL or repository path/],
+    ['a table row with no date', 'Verdict: Settled. Yes.\nClaims:\n| Claim | Source |\n| --- | --- |\n| The cap is 8 | https://code.claude.com/docs/en/hooks |\nNext: act.', /lacks a read date/],
+    ['"Claims made" is no Claims label', 'Verdict: Settled. Yes.\nClaims made by the docs are below.\nNext: act.', /no claims under Claims for a Settled verdict/],
   ] as const) {
     const run = hook(handback(report));
     assert.equal(run.status, 2, why);
@@ -125,6 +137,8 @@ test('researcher-report: other agents, tools and events pass', () => {
     ['another tool', handback('no shape', { tool_name: 'Bash' })],
     ['another event', { ...handback('no shape'), hook_event_name: 'PostToolUse' }],
     ['another agent stopping', stopped('no shape', { agent_type: 'worker' })],
+    ["a user's own agent named researcher", handback('no shape', { agent_type: 'researcher' })],
+    ["a user's own researcher stopping", stopped('no shape', { agent_type: 'researcher' })],
   ] as const) {
     assert.deepEqual(hook(input), { status: 0, stdout: '', stderr: '' }, why);
   }
@@ -176,7 +190,16 @@ test('researcher-report: through sarathi hook, matched on the agent type', () =>
   const entry = { command: 'bash "$SARATHI_HOOKS"/researcher-report.sh', timeout: 10 };
   writeFileSync(
     join(dir, '.claude', 'sarathi.json'),
-    JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'SubagentHandback', ...entry }], SubagentStop: [{ matcher: 'researcher|sarathi:researcher', ...entry }] } }),
+    JSON.stringify({
+      hooks: {
+        PreToolUse: [{ matcher: 'SubagentHandback', ...entry }],
+        // A sibling that always blocks, under the same matcher, shows what the matcher lets through.
+        SubagentStop: [
+          { matcher: '^sarathi:researcher$', ...entry },
+          { matcher: '^sarathi:researcher$', command: 'cat >/dev/null; echo matched >&2; exit 2' },
+        ],
+      },
+    }),
   );
   const through = (event: string, input: Entry): Run => {
     const result = spawnSync(process.execPath, [bin, 'hook', event], {
@@ -192,8 +215,8 @@ test('researcher-report: through sarathi hook, matched on the agent type', () =>
   const refused = through('PreToolUse', handback('no shape'));
   assert.equal(refused.status, 2);
   assert.match(refused.stderr, /^BLOCKED: researcher report: no Verdict line/);
-  const kept = through('SubagentStop', stopped('no shape'));
-  assert.equal(kept.status, 0, kept.stderr);
-  assert.equal((JSON.parse(kept.stdout) as { decision: string }).decision, 'block');
-  assert.deepEqual(through('SubagentStop', stopped('no shape', { agent_type: 'Explore' })), { status: 0, stdout: '', stderr: '' }, 'the matcher leaves other agents alone');
+  assert.deepEqual(through('SubagentStop', stopped('no shape')), { status: 2, stdout: '', stderr: 'matched\n' }, 'the matcher takes the plugin agent');
+  for (const agent of ['Explore', 'researcher', 'other:sarathi:researcher']) {
+    assert.deepEqual(through('SubagentStop', stopped('no shape', { agent_type: agent })), { status: 0, stdout: '', stderr: '' }, `the matcher leaves ${agent} alone`);
+  }
 });

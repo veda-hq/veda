@@ -1,9 +1,11 @@
 #!/bin/bash
 # PreToolUse and SubagentStop handler: the researcher agent's report keeps
-# its shape. A report from the researcher (agent type researcher or
-# sarathi:researcher) must carry a Verdict line (Settled, Conflicting or Not
-# settled), and each line under Claims must name its source (a URL, or a
-# repository path) and the date it was read. A Settled or Conflicting verdict
+# its shape. A report from the plugin's researcher (agent type
+# sarathi:researcher; a bare "researcher" is a user's or a project's own
+# agent) must carry a Verdict line (Settled, Conflicting or Not settled), and
+# each claim under Claims (a list item with its wrapped and indented lines,
+# or a table row) must name its source (a URL, or a repository path) and the
+# date it was read, outside any URL. A Settled or Conflicting verdict
 # needs at least one claim. A report that falls short goes back to the agent
 # with what is missing.
 #
@@ -26,23 +28,52 @@ PY_SRC=$(cat <<'PYEOF'
 import json, os, re, sys
 
 HANDBACK = "SubagentHandback"
-RESEARCHERS = {"researcher", "sarathi:researcher"}
+# The plugin's agent only. A bare "researcher" is another agent: a user's or
+# a project's own, whose report has no such shape.
+RESEARCHERS = {"sarathi:researcher"}
 MAX_REFUSALS = 2
 # Markdown bold and code marks around the labels and the verdict. The
 # backtick and the list marker's closing parenthesis are hex escapes (\x60
 # \x29): bare, they would break the shell's reading of this $(...) block.
 MARKS = re.compile(r"\*\*|__|\x60")
-BULLET = r"([-+*]|\d+[.\x29])"
-VERDICT = re.compile(r"^\s*" + BULLET + r"?\s*verdict\s*:\s*(settled|conflicting|not settled)\b", re.I | re.M)
-CLAIMS = re.compile(r"^\s*" + BULLET + r"?\s*claims\s*:(.*)$", re.I | re.M)
-NEXT = re.compile(r"^\s*" + BULLET + r"?\s*next\s*:", re.I | re.M)
-ITEM = re.compile(r"^\s*" + BULLET + r"\s+(.*\S)")
+LABEL = r"^[ \t]*(#{1,6}[ \t]*)?([-+*]|\d+[.\x29])?[ \t]*"
+# A label ends at a colon, or at the line's end for a heading: "Next.js" or
+# "Claims made by X" is no label.
+VERDICT = re.compile(LABEL + r"verdict[ \t]*:?[ \t]*(?P<verdict>settled|conflicting|not settled)\b", re.I | re.M)
+CLAIMS = re.compile(LABEL + r"claims[ \t]*(:(?P<inline>.*)|$)", re.I | re.M)
+NEXT = re.compile(LABEL + r"next[ \t]*(:|$)", re.I | re.M)
+ITEM = re.compile(r"^([ \t]*)([-+*]|\d+[.\x29])[ \t]+(.*\S)")
+ROW = re.compile(r"^[ \t]*\|(.*)\|[ \t]*$")
+RULE = re.compile(r"^[\s|:-]+$")
 NONE = re.compile(r"^\s*(none|n/a|-)\s*\.?\s*$", re.I)
-SOURCE = re.compile(
-    r"https?://\S+"
-    r"|(?<![\w/])[\w.-]+(/[\w.-]+)*\.[A-Za-z][A-Za-z0-9]{0,5}(:\d+(-\d+)?)?(?![\w/])"
+URL = re.compile(r"https?://\S+")
+# A repository path: one with a slash and an extension that starts with a
+# letter (src/flags.ts:12), or a bare file name with a listed extension. Not
+# Node.js, e.g. or 0.7.x.
+PATH = re.compile(
+    r"(?<![\w/.])[\w.-]+/[\w./-]*\.[A-Za-z][A-Za-z0-9]{0,5}\b"
+    r"|\b[\w-]+\.(ts|tsx|mjs|cjs|json|md|sh|py|ya?ml|toml|lock|rs|rb|java|kt|swift|css|html|sql)\b"
 )
 DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+
+def claim_lines(section):
+    """The claims in a Claims section: each top-level list item with the
+    lines indented under it or wrapped after it, or each table body row."""
+    claims, current, top = [], None, None
+    rows = [ROW.match(line).group(1) for line in section.splitlines() if ROW.match(line)]
+    if rows:
+        body = [row for row in rows[1:] if not RULE.match(row)]
+        return [row for row in body if row.strip()]
+    for line in section.splitlines():
+        item = ITEM.match(line)
+        indent = len(item.group(1).expandtabs()) if item else None
+        if item and (top is None or indent <= top):
+            top = indent if top is None else top
+            current = [item.group(3)]
+            claims.append(current)
+        elif line.strip() and current is not None:
+            current.append(line.strip())
+    return [" ".join(parts) for parts in claims if not NONE.match(parts[0])]
 
 def passes():
     sys.exit(0)
@@ -57,20 +88,22 @@ def problems(report):
     claims = []
     found = CLAIMS.search(text)
     if found:
-        inline = found.group(2).strip()
+        inline = (found.group("inline") or "").strip()
         if inline and not NONE.match(inline):
             claims.append(inline)
         rest = text[found.end():]
         stop = NEXT.search(rest)
-        for line in (rest[: stop.start()] if stop else rest).splitlines():
-            item = ITEM.match(line)
-            if item and not NONE.match(item.group(2)):
-                claims.append(item.group(2))
-    needs_claims = verdict and verdict.group(2).lower() != "not settled"
+        claims += claim_lines(rest[: stop.start()] if stop else rest)
+    needs_claims = verdict and verdict.group("verdict").lower() != "not settled"
     if needs_claims and not claims:
-        missing.append("no claims under Claims for a %s verdict" % verdict.group(2))
+        missing.append("no claims under Claims for a %s verdict" % verdict.group("verdict"))
     for claim in claims:
-        lacks = [what for what, pattern in (("a URL or repository path", SOURCE), ("a read date (YYYY-MM-DD)", DATE)) if not pattern.search(claim)]
+        lacks = []
+        if not (URL.search(claim) or PATH.search(claim)):
+            lacks.append("a URL or repository path")
+        # A date inside a URL (a dated page) is no read date.
+        if not DATE.search(URL.sub(" ", claim)):
+            lacks.append("a read date (YYYY-MM-DD)")
         if lacks:
             short = claim if len(claim) <= 80 else claim[:77] + "..."
             missing.append("the claim \x22%s\x22 lacks %s" % (short, " and ".join(lacks)))

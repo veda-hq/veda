@@ -90,7 +90,7 @@ folder, which holds handlers any TypeScript repository can list:
 | `arch-guard.sh` | PostToolUse, `Edit\|Write` | Runs the repository's `.dependency-cruiser.js` on a `.ts`/`.tsx` edit that touches imports; refuses what it refuses, and refuses when it cannot run. `scripts/` is exempt too. |
 | `session-dedupe-guard.sh` | PreToolUse, session starts | Refuses starting a session unless the conversation called `list_sessions` successfully in the last 15 minutes. |
 | `ask-gate.sh` | PreToolUse `AskUserQuestion\|mcp__ccd_turn__wrap_up`; Stop | Holds, once per turn, a question to the owner when the session has done no research since the owner's last message: refuses the ask, or on Stop keeps the turn going when the closing message asks the owner to choose ("Research before you ask"). |
-| `researcher-report.sh` | PreToolUse `SubagentHandback`; SubagentStop `researcher\|sarathi:researcher` | Sends the researcher agent's report back when it has no Verdict line or a claim without its source and read date ("The researcher's report"). |
+| `researcher-report.sh` | PreToolUse `SubagentHandback`; SubagentStop `^sarathi:researcher$` | Sends the researcher agent's report back when it has no Verdict line or a claim without its source and read date ("The researcher's report"). |
 | `lessons.sh` | PreToolUse `Bash\|Edit\|Write\|Agent\|Task\|mcp__ccd_session__start_session`; PostToolUseFailure | Shows a lesson whose `when` line matches the call ("Lessons at their moment"). Never blocks. |
 | `autofix-watch.sh` | PostToolUse `Bash\|mcp__ccd_pr__set_monitor\|mcp__ccd_pr__get_status\|mcp__ccd_turn__wrap_up`; PostToolUseFailure `mcp__ccd_pr__set_monitor` | Lists every pull request the session opens and tells the model, in its context, about each open one that Auto-fix is not on for ("Auto-fix for every pull request"). Never blocks. |
 | `worktree-archive.sh` | PreToolUse `ExitWorktree` (and Codex's `set_thread_archived`) | Denies removing or archiving the session's worktree while `sarathi worktree archive-check` finds work that would be lost ("Worktrees"). List it with `"failClosed": true`. |
@@ -234,13 +234,21 @@ and a timeout of at least the longest Stop handler's:
 `researcher-report.sh` checks the plugin's `researcher` agent's report. The
 agent's prompt asks for a shape; this handler holds the agent to it:
 
+- **Whose report:** the plugin's agent, whose `agent_type` is
+  `sarathi:researcher` (a plugin agent reports its plugin-scoped name). A
+  bare `researcher` is a user's or a project's own agent, with its own
+  format: on one machine, 52 of 52 such reports had no Verdict line, so it is
+  left alone.
 - **Verdict:** a line `Verdict: Settled`, `Conflicting` or `Not settled`,
-  with or without bold, code marks or a list marker.
-- **Claims:** every line under `Claims:` (and any claim on that line itself),
-  up to `Next:`, names its source and the date it was read: a URL, or a
-  repository path (`src/flags.ts:12`), and a `YYYY-MM-DD` date. A `Settled`
-  or `Conflicting` verdict needs at least one claim; `Not settled` may have
-  none (`Claims: none`).
+  with or without bold, code marks, a list marker or a heading mark.
+- **Claims:** each claim under `Claims` (a claim on that line itself, each
+  top-level list item with the lines wrapped or indented under it, or each
+  table row), up to `Next`, names its source and the date it was read: a
+  URL, or a repository path (`src/flags.ts:12`, `README.md`), and a
+  `YYYY-MM-DD` date outside any URL (a dated page is no read date). A
+  product name (`Node.js`), `e.g.` or a version is no source. A `Settled` or
+  `Conflicting` verdict needs at least one claim; `Not settled` may have none
+  (`Claims: none`).
 - **Where it reads the report:** Claude Code 2.1.271 and later deliver a
   subagent's report through the `SubagentHandback` tool, and a `PreToolUse`
   hook on it gets the report as `tool_input.message`. On older versions the
@@ -259,6 +267,11 @@ agent's prompt asks for a shape; this handler holds the agent to it:
   A `SubagentStop` with `stop_hook_active` set passes too.
 - **Passing** is a silent exit 0. Other agents (the `agent_type` in the hook
   input) and anything it cannot read pass.
+- **Limits:** the subagent's transcript can lag at `SubagentStop`, so a
+  report already delivered through `SubagentHandback` may be missed there,
+  and the closing text sent back once. Claude Code also fires `SubagentStop`
+  for its internal agents with the session's own agent name, so a session
+  run as `sarathi:researcher` (`--agent`) has those checked too.
 
 A project lists it in `.claude/sarathi.json` on both events:
 
@@ -269,19 +282,21 @@ A project lists it in `.claude/sarathi.json` on both events:
       { "matcher": "SubagentHandback", "command": "bash \"$SARATHI_HOOKS\"/researcher-report.sh", "timeout": 10 }
     ],
     "SubagentStop": [
-      { "matcher": "researcher|sarathi:researcher", "command": "bash \"$SARATHI_HOOKS\"/researcher-report.sh", "timeout": 10 }
+      { "matcher": "^sarathi:researcher$", "command": "bash \"$SARATHI_HOOKS\"/researcher-report.sh", "timeout": 10 }
     ]
   }
 }
 ```
 
-It widens its settings' `PreToolUse` matcher to include `SubagentHandback`. It
+The `:` puts a plugin-scoped name on the regular-expression path, so the
+matcher is anchored for an exact match, as the hooks reference advises
+([SubagentStart](https://code.claude.com/docs/en/hooks#subagentstart)). It
+widens its settings' `PreToolUse` matcher to include `SubagentHandback`. It
 also gives the settings a `SubagentStop` entry that runs
 `npx --no-install sarathi hook SubagentStop`, with no matcher and a timeout
-of at least 10 s. The `:` makes `researcher|sarathi:researcher` a regular
-expression, so `sarathi check` cannot prove a narrower settings matcher
-covers it, and refuses one. `sarathi check` says when either entry is
-missing or too narrow.
+of at least 10 s: `sarathi check` cannot prove that a narrower settings
+matcher covers a regular expression, so it refuses one. `sarathi check` says
+when either entry is missing or too narrow.
 
 ### Auto-fix for every pull request
 

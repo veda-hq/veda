@@ -83,7 +83,6 @@ export function exitCode(code, signal) {
 
 /**
  * Run `command` under a fresh temp directory and resolve to the run's exit code.
- * @param {readonly string[]} command
  * The signal handlers go on before the directory is made, so a signal never
  * takes Node's default exit between the two and leaves the directory behind.
  * @param {readonly string[]} command
@@ -109,9 +108,18 @@ export function run(command, { env = process.env, base = tmpdir(), stderr = proc
     unlisten();
     throw error;
   }
+  /** @type {import('node:child_process').ChildProcess} */
+  let started;
+  try {
+    started = spawn(/** @type {string} */ (command[0]), command.slice(1), { stdio: 'inherit', env: tmpEnv(env, dir) });
+  } catch (error) {
+    // spawn refuses some arguments before it starts anything, by throwing.
+    unlisten();
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
+  child = started;
   return new Promise((resolve, reject) => {
-    const started = spawn(/** @type {string} */ (command[0]), command.slice(1), { stdio: 'inherit', env: tmpEnv(env, dir) });
-    child = started;
     let done = false;
     /** @param {number} code */
     const finish = code => {

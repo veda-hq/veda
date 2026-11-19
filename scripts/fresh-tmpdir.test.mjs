@@ -158,6 +158,14 @@ describe('run', () => {
     assert.deepEqual(readdirSync(base), []);
   });
 
+  test('when spawn refuses the command, it throws and leaves no directory or handler behind', () => {
+    const base = scratch();
+    const signals = new EventEmitter();
+    assert.throws(() => run([process.execPath, 'nul\0byte'], { base, stderr: sink(), signals }), { code: 'ERR_INVALID_ARG_VALUE' });
+    assert.deepEqual(readdirSync(base), []);
+    for (const signal of FORWARDED) assert.equal(signals.listenerCount(signal), 0, signal);
+  });
+
   test('when the directory cannot be made, it throws and leaves no handler behind', () => {
     const signals = new EventEmitter();
     assert.throws(() => run([process.execPath], { base: join(scratch(), 'missing'), signals }), { code: 'ENOENT' });

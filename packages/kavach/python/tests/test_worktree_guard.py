@@ -1322,12 +1322,16 @@ class OwnCheckoutTest(BoundaryFixture):
             "npm i left-pad",
             "yarn",
             "yarn add left-pad",
-            "npx left-pad",
         ):
             with self.subTest(refused=command):
                 result = self.claude_bash(self.main, command, environment)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("an owned plain clone does not open it", result.stderr)
+        # A package npx would download, which the guard does not review, is
+        # unproven before the clone's own reading of npx (#256).
+        result = self.claude_bash(self.main, "npx left-pad", environment)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("could not be resolved", result.stderr)
 
     def test_a_worktree_session_is_judged_as_before(self) -> None:
         """Outside an owned clone nothing here applies: a Claude-managed
@@ -1505,6 +1509,22 @@ class ProtectedPathsTest(BoundaryFixture):
 
     def bash(self, command: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         return self.claude_bash(self.claude if cwd is None else cwd, command, self.env)
+
+    def test_a_runners_program_from_the_root_does_not_name_the_root(self) -> None:
+        # #256 reads the program a runner starts as a line of its own; the
+        # folder it runs in is the runner's, already counted, so it does not
+        # count as naming the checkout's root, which holds the fences.
+        for command in (
+            "pnpm exec vitest run",
+            "pnpm exec touch .tmp/x",
+            "pnpm exec env CI=1 vitest run",
+            "mise exec -- go test ./...",
+        ):
+            with self.subTest(command=command):
+                result = self.bash(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.refused(self.bash("pnpm exec touch .githooks/pre-push"), PROTECTED, "(.githooks/)")
+        self.refused(self.bash("pnpm exec touch ."), "the checkout's root")
 
     def test_an_edit_of_the_hook_is_refused(self) -> None:
         hook = self.claude / ".githooks" / "pre-push"

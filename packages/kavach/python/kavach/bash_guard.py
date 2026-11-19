@@ -83,7 +83,10 @@ def ansi_c(body):
     def one(m):
         s = m.group(0)[1:]
         if s[0] in "xuU":
-            return chr(int(s[1:], 16))
+            # bash takes `\U00110000`, past what a character can hold; read
+            # it as no character rather than fail on it.
+            code = int(s[1:], 16)
+            return chr(code) if code <= 0x10FFFF else "�"
         if s[0] == "c":
             return chr(ord(s[1]) & 0x1F)
         if s[0].isdigit():
@@ -98,20 +101,53 @@ def ansi_c(body):
     )
 
 
-if PROTECTED_VAR is not None:
-    bare = re.sub(r"\\\n", "", cmd)
-    bare = re.sub(r"\$'((?:[^'\\]|\\.)*)'", lambda m: ansi_c(m.group(1)), bare, flags=re.S)
-    bare = re.sub(r"\$(?=\")", "", bare)
-    bare = re.sub(r"[\\'\"]", "", bare)
-    if (
-        re.search(r"(?<![\w$])" + PROTECTED_VAR + r"\s*\+?=", bare)
-        or re.search(r"\$\{" + PROTECTED_VAR + r":?=", bare)
+def sets_variable(pattern, bare):
+    """Whether ``bare`` (quoting undone) assigns, declares or exports a
+    variable whose name ``pattern`` matches."""
+    return bool(
+        re.search(r"(?<![\w$])" + pattern + r"\s*\+?=", bare)
+        or re.search(r"\$\{" + pattern + r":?=", bare)
         or re.search(
             r"(?<![\w-])(?:export|declare|typeset|readonly|local|read|printf\s[^\n;&|]*?-v)\s[^\n;&|]*?(?<![\w$])"
-            + PROTECTED_VAR,
+            + pattern,
             bare,
         )
-    ):
+    )
+
+
+bare = re.sub(r"\\\n", "", cmd)
+bare = re.sub(r"\$'((?:[^'\\]|\\.)*)'", lambda m: ansi_c(m.group(1)), bare, flags=re.S)
+bare = re.sub(r"\$(?=\")", "", bare)
+bare = re.sub(r"[\\'\"]", "", bare)
+
+# Program variables (#256): environment variables that hand a program text,
+# or a library, to run, whatever command the line runs, and so whatever the
+# other guards read of it. Each was probed with a harmless print, but for the
+# two marked: `NODE_OPTIONS=--import=data:…` (any case of `data:`, through a
+# package script too), pnpm's and npm's `node-options` setting as an
+# environment variable (any case, `-` or `_`) or an option
+# (`pnpm --config.node-options=…`, `npm --node-options=…`), `PERL5OPT=-M…;code`,
+# `BASH_ENV`, and `DYLD_INSERT_LIBRARIES`, which Homebrew's `jq`, a command
+# read as only reading, loaded. `LD_PRELOAD` (Linux) and `BUN_OPTIONS` are
+# from their documentation, unprobed here. Not listed: `RUBYOPT` and
+# `NODE_OPTIONS=--eval` (both refuse inline text), `PYTHONSTARTUP` (read only
+# when interactive). Searching for a name, without `=`, passes.
+PROGRAM_VARIABLES = ("NODE_OPTIONS", "PERL5OPT", "BASH_ENV", "BUN_OPTIONS", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD")
+PROGRAM_VAR = r"(?:" + "|".join(PROGRAM_VARIABLES) + r"|(?i:p?npm_config_node[-_]options))\b"
+PROGRAM_OPTION = r"(?i)(?<![\w-])--(?:config\.)?node[-_]options\b"
+if sets_variable(PROGRAM_VAR, bare) or re.search(PROGRAM_OPTION, bare):
+    print(
+        "BLOCKED: this command sets a variable or option that hands a program text or a library to run "
+        f"({', '.join(PROGRAM_VARIABLES)}, or npm's and pnpm's node-options), which the guard does not "
+        "read: `NODE_OPTIONS=--import=data:…` runs the text it holds whatever command follows. Run the "
+        "program without it; for a setting such as `--max-old-space-size`, put it in a package script the "
+        "repository reviews. To search for a name, leave out the `=` (and an option's leading `--`).",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+if PROTECTED_VAR is not None:
+    if sets_variable(PROTECTED_VAR, bare):
         print(
             "BLOCKED: this command sets " + " or ".join(CONFIG.protected_variables)
             + ", which this repository protects: " + CONFIG.protected_variables_reason.rstrip(".")
@@ -960,7 +996,8 @@ ANSI_SIMPLE = {
 def ansi_char(m):
     s = m.group(1)
     if s[0] in "xuU" and len(s) > 1:
-        return chr(int(s[1:], 16))
+        code = int(s[1:], 16)
+        return chr(code) if code <= 0x10FFFF else "�"
     if s[0] in "01234567":
         return chr(int(s, 8) & 0xFF)
     if s[0] == "c" and len(s) > 1:

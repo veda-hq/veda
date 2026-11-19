@@ -1448,6 +1448,15 @@
     "text": "pnpm exec node -e 'require(\"fs\").writeFileSync(\"{P}/pwned\", \"\")'"
   },
   {
+    "id": "ow-runner-xargs",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "runner",
+    "note": "A program a runner starts that the guard did not list ran unread, though the same line without the runner is refused: xargs takes what it runs from standard input (#256).",
+    "text": "printf '%s' '{P}/pwned' | pnpm exec xargs touch"
+  },
+  {
     "id": "ow-git-config-user",
     "intent": "outside-write",
     "role": "near-miss",

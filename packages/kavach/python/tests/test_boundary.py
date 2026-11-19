@@ -36,6 +36,9 @@ sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 ADAPTER_PATH = PACKAGE / "worktree_guard.py"
+SCRIPTS_MANIFEST = json.dumps(
+    {"name": "fixture", "scripts": {name: "true" for name in ("check", "test:python", "build", "lint", "guards")}}
+)
 ADAPTER_SPEC = importlib.util.spec_from_file_location(
     "kavach_worktree_guard_under_test", ADAPTER_PATH
 )
@@ -169,6 +172,12 @@ class BoundaryFixture(GuardFixture):
         self.claude.parent.mkdir(parents=True)
         git(self.main, "worktree", "add", "-qb", "claude-task", str(self.claude))
         git(self.main, "worktree", "add", "-qb", "manual-task", str(self.manual))
+        # The package scripts the rows run: pnpm runs a word that is no
+        # script of the package as a program (#256).
+        for checkout in (self.main, self.claude):
+            (checkout / "package.json").write_text(SCRIPTS_MANIFEST, encoding="utf-8")
+        (self.claude / "pkg").mkdir()
+        (self.claude / "pkg" / "package.json").write_text(SCRIPTS_MANIFEST, encoding="utf-8")
 
     def claude_bash(
         self, cwd: Path, command: str, env: dict[str, str] | None = None
@@ -1051,7 +1060,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 self.assertIn("mutation targets could not be resolved", result.stderr)
         for command in (
             "git rebase -x 'pnpm test' HEAD~1",
-            "git rebase --exec='pnpm --dir packages/kavach test:python' HEAD~1",
+            "git rebase --exec='pnpm --dir pkg test:python' HEAD~1",
             "git rebase -x 'touch .tmp/x' HEAD~1",
             "git rebase -i HEAD~1",
             "git -C nested rebase -x 'touch .tmp/x' HEAD~1",
@@ -1415,6 +1424,12 @@ class WorktreeBoundaryTest(BoundaryFixture):
         outside = self.external / "repo"
         git(self.main, "remote", "add", "origin", "https://github.com/veda-hq/veda.git")
         host = socket.gethostname()
+        # The package bins the allowed rows run, installed: npx fetches a
+        # bin it does not find (#256).
+        bins = self.claude / "node_modules" / ".bin"
+        bins.mkdir(parents=True)
+        for name in ("tsc", "vitest"):
+            (bins / name).write_text("#!/bin/sh\n", encoding="utf-8")
         for command in (
             f"pnpm exec sh -c 'git push {outside} HEAD:x'",
             f"pnpm exec sh -c 'touch {outside}/x'",
@@ -1514,7 +1529,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm exec tsx .tmp/x.ts",
             "pnpm exec node --experimental-strip-types .tmp/x.ts",
             "pnpm exec node --version",
-            "pnpm --dir nested test:python -k x",
+            "pnpm --dir pkg test:python -k x",
             "pnpm --filter @veda-hq/kavach check",
             "pnpm install --frozen-lockfile",
             "pnpm exec bash run.sh",
@@ -1620,7 +1635,9 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm exec /usr/bin/node -e 1",
             "pnpm exec ./node_modules/.bin/tsx -e 1",
             "npx /usr/bin/python3 -c 1",
-            "pnpm --filter x add node",
+            # Past an option the runner's tables do not list, a package verb
+            # does not spare the line.
+            "pnpm --no-such-option add node -e 1",
             "pnpm exec perl -e 1",
             "pnpm exec perl -E 1",
             "pnpm exec ruby -e 1",
@@ -1679,8 +1696,11 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "npm install tsx",
             "mise install node",
             "mise ls python",
+            # ...found past the runner's global options (#256).
+            "pnpm --filter x add node",
+            "pnpm -w add -D tsx",
             "pnpm exec vitest run",
-            "pnpm --dir nested test:python -k x",
+            "pnpm --dir pkg test:python -k x",
             "git push origin main",
             "git push https://github.com/veda-hq/veda.git HEAD:x",
             "git push ssh://git@GitHub.com:22/veda-hq/veda.git HEAD:x",
@@ -1691,6 +1711,190 @@ class WorktreeBoundaryTest(BoundaryFixture):
             with self.subTest(command=command):
                 result = self.claude_bash(self.claude, command)
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_runners_program_is_read_as_the_bare_line(self) -> None:
+        """#256: the program a runner starts is judged as the same words
+        would be without it, in the folder it runs in, unless it is a shell
+        or a listed interpreter (read as #239 and #251 read them) or a
+        package bin installed in a bin folder the runner looks in first,
+        which is the repository's code (the README's runner limit)."""
+        nested = self.claude / "nested"
+        nested.mkdir()
+        bins = self.claude / "node_modules" / ".bin"
+        bins.mkdir(parents=True)
+        tool = bins / "fixturetool"
+        tool.write_text("#!/bin/sh\n", encoding="utf-8")
+        tool.chmod(0o755)
+        for command in (
+            # Programs the bare line refuses, under every runner form.
+            "pnpm exec deno eval 1",
+            "pnpm exec osascript -e 1",
+            "pnpm exec fish -c 1",
+            "pnpm exec pwsh -c 1",
+            "pnpm exec xargs touch",
+            "pnpm exec find . -exec deno eval 1 {} +",
+            "pnpm exec zx --eval 1",
+            "pnpm exec node22 -e 1",
+            "pnpm exec pypy3 -c 1",
+            "pnpm exec sqlite3 x .shell",
+            "pnpm exec vim -c 1",
+            "pnpm exec env deno eval 1",
+            "pnpm exec timeout 5 deno eval 1",
+            "pnpm deno eval 1",
+            "pnpm -r exec deno eval 1",
+            "pnpm recursive exec deno eval 1",
+            "pnpm --filter x exec deno eval 1",
+            "pnpm --reporter silent deno eval 1",
+            "npx deno eval 1",
+            "npx -y cowsay hi",
+            "npx -p cowsay cowsay hi",
+            "npx -p cowsay touch x",
+            # Behind `--package`, a shell's or an interpreter's name is one of
+            # the package's bins.
+            "npx -p cowsay sh run.sh",
+            "npx --package=cowsay node .tmp/x.js",
+            "npm exec -p cowsay -- tsx .tmp/x.ts",
+            "pnpm dlx --package cowsay bash run.sh",
+            "pnpm dlx touch x",
+            "pnpm dlx prettier@3 --check .",
+            "npx vitest run",
+            "npm exec -- deno eval 1",
+            "npm x deno eval 1",
+            "pnpm dlx cowsay hi",
+            "mise exec -- deno eval 1",
+            "mise x node@20 -- deno eval 1",
+            # A path to a program, as the bare line reads one.
+            "pnpm exec ./node_modules/.bin/fixturetool",
+            # pnpm's dlx shell mode, as #239 read exec's.
+            "pnpm dlx -c 'touch x'",
+            "pnpm dlx --package cowsay --shell-mode 'cowsay hi'",
+            # Forms the guard does not read.
+            "pnpm create vite",
+            "pnpm with 9 exec tsc",
+            "pnpm --no-such-option exec tsc",
+            "npm --no-such-option exec tsc",
+            "npx --no-such-option tsc",
+            # A package bin only in a folder pnpm does not look in: under
+            # `--dir`, only that folder's own and, in a workspace, the
+            # root's (pnpm 12.9).
+            "pnpm --dir nested exec fixturetool",
+            "pnpm -C nested exec fixturetool",
+            "pnpm exec --dir nested fixturetool",
+            "pnpm --reporter silent --dir nested exec fixturetool",
+            "pnpm --dir nested --filter y exec fixturetool",
+            "pnpm --dir missing exec fixturetool",
+            # Outside a workspace, `-w` names no folder.
+            "pnpm -w exec fixturetool",
+            # npm under another folder or a workspace looks in its bins.
+            "npm --prefix nested exec -- fixturetool",
+            "npx -w nested fixturetool",
+            # mise's own options, and the folder it moves to.
+            "mise -q exec -- deno eval 1",
+            "mise --cd nested exec -- deno eval 1",
+            "mise --no-such-option exec -- tsc",
+            # A setting every later run reads, and a package npm downloads
+            # or a command it runs elsewhere.
+            "pnpm config set node-options --import=x",
+            "pnpm set script-shell /x",
+            "npm config set node-options --import=x",
+            "npm init vite",
+            "npm create vite",
+            "npm explore left-pad -- ls",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(
+            self.claude_bash(self.claude, f"pnpm exec touch {self.external / 'x'}").returncode, 2
+        )
+        for command in (
+            "pnpm exec fixturetool --any -e 1",
+            "pnpm fixturetool --any",
+            "npx fixturetool --any",
+            "npm exec -- fixturetool",
+            "pnpm exec touch .tmp/x",
+            "pnpm exec env CI=1 vitest run",
+            "pnpm exec vitest run",
+            "pnpm uname -s",
+            "pnpm check",
+            "pnpm test",
+            "pnpm run build",
+            "pnpm --filter x check",
+            "pnpm -r check",
+            "pnpm -v",
+            "npm --version",
+            "npm run check",
+            "pnpm dlx tsx .tmp/x.ts",
+            "mise exec -- go test ./...",
+            "mise exec node@24 -- node --version",
+            "mise -q exec -- go test ./...",
+            "mise run lint",
+            "pnpm config get registry",
+            "npm init -y",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        # In a workspace, pnpm looks in the root's bin folder from every
+        # package too; across packages, a script of any of them is a script.
+        (nested / "package.json").write_text(
+            '{"name": "nested", "scripts": {"deno": "true"}}', encoding="utf-8"
+        )
+        (self.claude / "pnpm-workspace.yaml").write_text("packages:\n  - nested\n", encoding="utf-8")
+        for command in (
+            "pnpm --dir nested exec fixturetool",
+            "pnpm -r exec fixturetool",
+            "pnpm -w exec fixturetool",
+            "pnpm -r deno eval 1",
+            # Every package has `deno`, so any selection runs the script.
+            "pnpm --filter 'nested...' deno eval 1",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        # A filter the guard cannot resolve may select a package without the
+        # script, where pnpm runs the word as a program (pnpm 12.9 printed
+        # `Darwin` for `--filter 'b...' uname`, the script only in `a`); and
+        # a selector in the exec slot moves it, as pnpm applies one there.
+        other = self.claude / "other"
+        other.mkdir()
+        (other / "package.json").write_text('{"name": "other"}', encoding="utf-8")
+        (self.claude / "pnpm-workspace.yaml").write_text(
+            "packages:\n  - nested\n  - other\n", encoding="utf-8"
+        )
+        for command in (
+            "pnpm --filter 'other...' deno eval 1",
+            "pnpm exec --filter nested fixturetool",
+            "pnpm exec -r fixturetool",
+            "pnpm exec -w fixturetool",
+            "pnpm dlx --filter nested fixturetool",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+        for command in (
+            "pnpm -r deno eval 1",
+            "pnpm exec -r -- tsx .tmp/x.ts",
+            "pnpm exec --filter nested tsc",
+            "pnpm -r --include-workspace-root lint",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        # The root is no package `-r` selects: a script only in its manifest
+        # is a program in each package (pnpm 12.9 printed `Darwin` for
+        # `pnpm -r uname`, the script only in the root's).
+        self.assertEqual(self.claude_bash(self.claude, "pnpm -r lint").returncode, 2)
+        # Behind a selector the program runs in packages the guard does not
+        # place, so it is read from the workspace root too: from a folder
+        # deep below, `../../x` stays inside, and from the root it leaves.
+        deep = nested / "a" / "b"
+        deep.mkdir(parents=True)
+        for command in ("pnpm exec -w touch ../../x", "pnpm -r exec touch ../../x"):
+            with self.subTest(command=command):
+                result = self.claude_bash(deep, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(self.claude_bash(deep, "pnpm exec -w touch x").returncode, 0)
 
     def test_a_listed_host_that_is_this_machine_is_still_unproven(self) -> None:
         """`worktree.pushHosts` widens which hosts are remote, never this
@@ -3213,7 +3417,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
             (f"pnpm exec bash {self.external / 'run.sh'}", "run.sh"),
             (f"pnpm exec /bin/bash {self.external / 'run.sh'}", "run.sh"),
             (f"pnpm exec -- /bin/bash {self.external / 'run.sh'}", "run.sh"),
-            (f"pnpm exec /bin/cp run.sh {self.external / 'copied.sh'}", "copied.sh"),
+            (f"pnpm exec cp run.sh {self.external / 'copied.sh'}", "copied.sh"),
         ):
             with self.subTest(command=command):
                 result = self.invoke(
@@ -3226,6 +3430,14 @@ class WorktreeBoundaryTest(BoundaryFixture):
                     f"mutation target {(self.external / outside).resolve()} is outside",
                     result.stderr,
                 )
+        # A program other than a shell or a listed interpreter is read as the
+        # bare line is (#256), where a path to it is unproven: `/bin/cp` may be
+        # a shim the repository put there.
+        result = self.invoke(
+            self.claude, tool_name="Bash", tool_input={"command": "pnpm exec /bin/cp run.sh copied.sh"}
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("could not be resolved", result.stderr)
         # Any other shape keeps the program word confined, as before.
         for command in (
             "pnpm -C . exec /bin/bash run.sh",

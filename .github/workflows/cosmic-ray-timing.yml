@@ -20,7 +20,8 @@ concurrency:
 
 jobs:
   time:
-    name: ${{ matrix.module }}
+    # A fixed name: GitHub adds the module to it, as "cosmic-ray timing (boundary)".
+    name: cosmic-ray timing
     runs-on: ubuntu-latest
     # GitHub-hosted jobs stop at 360 minutes.
     timeout-minutes: 350

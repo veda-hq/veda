@@ -149,9 +149,10 @@ settled a question, so it checks that a look happened, not what it found.
   or a test run (`pnpm test`, `pnpm check`, `node --test`, `vitest`,
   `pytest`, `go test` …). A `git commit`, a `gh pr create` or a
   `pnpm install` is no look. A look does not count for other asks. In 2,333
-  local session transcripts (2026-11-19), the gate held 732 asks with no web
-  research. 629 of them (86%) came after a repo read, so counting a read for
-  every ask would have passed nearly all of them, including the questions
+  local session transcripts (2026-11-19, the script on veda-hq/veda#218),
+  732 asks the gate covers had no web research before them. 629 of them
+  (86%) came after a repo read, so counting a read for every ask would have
+  passed 86% of them, including the questions
   official docs settle (API behaviour, defaults, version facts), the common
   miss in veda-hq/veda#176's sample. Scoped, 380 pass, all naming repository
   state, and 352 stay held. On Stop, reading the question's own paragraph
@@ -208,7 +209,8 @@ It widens its settings' `PreToolUse` matcher to include
 `AskUserQuestion|mcp__ccd_turn__wrap_up`, for example
 `Bash|Edit|Write|NotebookEdit|AskUserQuestion|mcp__ccd_turn__wrap_up`. It
 also gives the settings a `Stop` entry that runs sarathi, with no matcher
-(Stop has none) and a timeout of at least the longest Stop handler's:
+(`sarathi check` refuses one there, since the handler runs on every Stop)
+and a timeout of at least the longest Stop handler's:
 
 ```json
 {

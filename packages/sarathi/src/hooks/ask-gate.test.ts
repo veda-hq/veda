@@ -1068,3 +1068,91 @@ test('ask-gate: the state file, old and new, and what it cannot read', () => {
     assert.deepEqual(shape.lines().map((l) => l['outcome']), ['passed: declared money', 'passed: state unreadable'], kept);
   }
 });
+
+// --- Stop: an ask to the owner that no wrap_up carries -----------------------------
+/** The desktop app names its wrap_up for the session's hooks. */
+const DESKTOP = { CLAUDE_CODE_TERMINAL_MCP_TOOLS: WRAP_UP };
+/** Two closing messages of a real side session that waited on the owner and was never filed (2026-11-19). */
+const NEEDS_YOU_259 =
+  '**Needs you:** to let the sarathi fix ship, please 👍 the [Proposal on veda-hq/veda#259](https://github.com/veda-hq/veda/issues/259#issuecomment-7008691971). Until you do, veda\'s rules refuse the push.\n' +
+  '**Done:** the veda session committed the skill fix and the bump to sarathi 0.7.7 on its own branch (6faba89), and tests pass. Nothing is pushed or on npm yet.\n' +
+  '**Next:** after your 👍 it pushes, merges and publishes the release.';
+const NEEDS_YOU_261 =
+  '**Needs you:** to unblock the second sarathi fix, please 👍 the [Proposal on veda-hq/veda#261](https://github.com/veda-hq/veda/issues/261#issuecomment-7008845476). The working-rules session needs it before it can edit anything.\n' +
+  '**Done:** veda-hq/veda#260 is set to auto-merge but hasn\'t merged yet.\n' +
+  '**Next:** once it merges, the veda session tags `v0.7.7` and checks npm.';
+/** A side session's turn: another session's message starts it, and it works. */
+const sideTurn = (...more: string[]): string => transcript(peer(), toolUse('Bash', { command: 'git status' }), toolResult(), ...more);
+
+/** The feedback a Stop gives, or '' when the turn ends. */
+function stopFeedbackOf(path: string, message: unknown, env: NodeJS.ProcessEnv = DESKTOP, extra: Entry = {}): string {
+  const run = gate(stopEvent(path, message, extra), env);
+  assert.equal(run.status, 0, 'Stop never exits 2');
+  assert.equal(run.stderr, '');
+  if (run.stdout === '') return '';
+  return (JSON.parse(run.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+}
+
+test('ask-gate on Stop: a plain-text ask with no wrap_up ask goes on once, to make the ask', () => {
+  for (const message of [NEEDS_YOU_259, NEEDS_YOU_261]) {
+    const feedback = stopFeedbackOf(sideTurn(), message);
+    assert.match(feedback, /^file the ask\. Your closing message asks the owner something \(\*\*Needs you:\*\* /);
+    assert.match(feedback, /Call wrap_up now with the question as ask, reply buttons as actions, and blocked: true if your work stops/);
+    assert.match(feedback, /If the turn does not wait on the owner, end it again as it is\./);
+  }
+  assert.equal(stopFeedbackOf(sideTurn(), NEEDS_YOU_259, DESKTOP, { stop_hook_active: true }), '', 'once: a Stop already going on ends');
+  for (const [why, message] of [
+    ['a question that ends its line', 'The parser is fixed.\n\nShall I tag v0.7.11 now?'],
+    ['a plain "Needs you:"', 'Needs you: add the approved label to #289.'],
+    ['a bulleted question', 'Two open points:\n- Should old files go by age, by size, or both?'],
+  ] as const) {
+    assert.match(stopFeedbackOf(sideTurn(), message), /^file the ask\./, why);
+  }
+});
+
+test('ask-gate on Stop: what is no ask to the owner ends the turn', () => {
+  for (const [why, message] of [
+    ['no question', 'Merged as 5bdcdd6, and v0.7.9 is on npm.'],
+    ['a question answered on its own line', '**Can 0117 close?** Yes, once #2303 merges.'],
+    ['a quoted title', 'I archived the leftover side session, "btw: How?".'],
+    ['a question in code', 'Run `which node?` to see.'],
+    ['a quoted line', 'You asked:\n> Which one first?\n\nThe parser, done.'],
+    ['a URL with a query', 'See https://example.com/a?b=c for the run.'],
+    ['a question four paragraphs back', 'Ship it?\n\nOne.\n\nTwo.\n\nThree.'],
+  ] as const) {
+    assert.equal(stopFeedbackOf(sideTurn(), message), '', why);
+  }
+});
+
+test('ask-gate on Stop: a wrap_up ask this turn, or no wrap_up at all, ends the turn', () => {
+  const wrapUp = (input: Entry): string => toolUse(WRAP_UP, input);
+  assert.equal(stopFeedbackOf(sideTurn(wrapUp({ recap: 'r', ask: 'Approve #259?', actions: [{ label: 'Approved' }] })), NEEDS_YOU_259), '', 'the ask is filed');
+  assert.match(stopFeedbackOf(sideTurn(wrapUp({ recap: 'r' })), NEEDS_YOU_259), /^file the ask\./, 'a wrap_up without an ask');
+  assert.match(stopFeedbackOf(sideTurn(wrapUp({ recap: 'r', ask: '  ' })), NEEDS_YOU_259), /^file the ask\./, 'a blank ask');
+  assert.match(
+    stopFeedbackOf(transcript(peer(), wrapUp({ recap: 'r', ask: 'Approve #259?' }), toolResult(), owner('not yet'), toolUse('Read')), NEEDS_YOU_259),
+    /^file the ask\./,
+    'an ask in an earlier turn does not count',
+  );
+  assert.equal(
+    stopFeedbackOf(transcript(peer(), wrapUp({ recap: 'r', ask: 'Approve #259?' }), stopFeedback()), NEEDS_YOU_259),
+    '',
+    "a Stop hook's feedback starts no turn",
+  );
+  // A terminal session has no wrap_up: the research hold is as before.
+  assert.equal(stopFeedbackOf(sideTurn(), NEEDS_YOU_259, {}), '', 'no wrap_up, no plain choice: the turn ends');
+  assert.match(stopFeedbackOf(transcript(owner()), CLOSING, {}), /^research before you ask\./, 'no wrap_up: a choice is held for research');
+  // A session that has called wrap_up has it, whatever the environment says.
+  assert.match(stopFeedbackOf(sideTurn(wrapUp({ recap: 'r' })), NEEDS_YOU_259, {}), /^file the ask\./);
+  assert.match(stopFeedbackOf(transcript(owner()), CLOSING, { CLAUDE_CODE_TERMINAL_MCP_TOOLS: `mcp__other__tool,${WRAP_UP}` }), /^file the ask\./, 'a list naming it');
+});
+
+test('ask-gate log: a nudge is a line, with the asking line', () => {
+  const state = join(TMP, 'state-nudge');
+  gate({ ...stopEvent(sideTurn(), NEEDS_YOU_259), session_id: 'nudge' }, DESKTOP, state);
+  const lines = readFileSync(join(state, 'ask-log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Entry);
+  assert.deepEqual(
+    lines.map((l) => [l['via'], l['outcome'], (l['questions'] as Entry[])[0]?.['question']]),
+    [['Stop', 'nudged: no wrap_up ask', NEEDS_YOU_259.split('\n')[0]?.slice(0, 300)]],
+  );
+});

@@ -270,6 +270,36 @@ settled a question, so it checks that a look happened, not what it found.
   handler's reason alone: the gate's feedback is not shown, and its once
   for the turn is spent.
 
+**An ask the app does not see (Stop).** The desktop app and the needs-you
+plugin show that a session waits on its owner from the `ask` of its
+`wrap_up`. A turn that asks only in its closing message shows nothing, so on
+Stop, before the research hold, the handler checks the closing message:
+
+- **It asks the owner** when a line of its last three paragraphs (code and
+  quoted lines out) opens `Needs you:`, bold or not, or ends on a question,
+  with URLs, inline code and "quoted text" taken out. A question answered on
+  its own line ("**Can it close?** Yes, once …") does not end that line.
+- **No `wrap_up` carried an ask** since the turn's prompt: the last
+  user-role entry that is not a tool result or meta text, whoever sent it
+  (the owner, another session, an app event), so a side session's turn
+  counts from the message that started it.
+- **The session has `wrap_up`:** the desktop app names it in
+  `CLAUDE_CODE_TERMINAL_MCP_TOOLS`, or the transcript shows a call to it. A
+  terminal session's Stop is as before.
+
+Then the turn goes on once, with `additionalContext` that starts `file the
+ask.`, quotes the asking line, and says to call `wrap_up` with the question
+as `ask`, reply buttons, and `blocked: true` if the work stops; a turn that
+does not wait on the owner just ends again. The `wrap_up` it asks for then
+meets the research hold on PreToolUse, as any choice-shaped ask does. The
+continuation carries `stop_hook_active`, so it fires at most once a turn.
+Each one is a line in the ask log, `outcome: "nudged: no wrap_up ask"`.
+
+On this Mac's desktop transcripts (26,368 turn endings, read 2026-11-20),
+the rule fired on 82 of the 2,160 turns that called `wrap_up` without an
+ask, most of them "Needs you:" endings, and on 681 turns that asked in plain
+text and never called `wrap_up`.
+
 A project lists it in `.claude/sarathi.json`, beside its other `PreToolUse`
 and `Stop` handlers:
 

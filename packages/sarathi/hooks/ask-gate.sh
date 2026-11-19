@@ -22,6 +22,11 @@
 # is an approval, which only the owner can give, and passes; so does a closing
 # question that names no alternatives.
 #
+# On Stop, first: a closing message that asks the owner (a line opening
+# "Needs you:", or one that ends on a question) in a turn whose wrap_up
+# carried no ask goes on once, told to make the ask, where the session has
+# the desktop app's wrap_up (README, "An ask the app does not see").
+#
 # On Stop the question is read from last_assistant_message, not from the
 # transcript, which may not hold the final message yet. Stop answers with
 # hookSpecificOutput.additionalContext: guidance from a hook working as
@@ -376,6 +381,75 @@ def closing(message):
             holding.append(paragraph)
     return holding, found, where
 
+# A closing message that waits on the owner: a line that opens "Needs you:"
+# (bold or not), or a line that ends asking. Text in double quotes is someone
+# else's words, a title or a quoted prompt; a question answered on its own
+# line ("**Can it close?** Yes, once ...") does not end that line.
+NEEDS_YOU = re.compile(r"^[ \t>*_#-]*needs you[*_]*[ \t]*:", re.I | re.M)
+QUOTES = re.compile(r"\x22[^\x22\n]*\x22|“[^”\n]*”")
+ENDS_ASKING = re.compile(r"\?[\s*_\x29\]]*$")
+# The desktop app lists its wrap_up here for the session's hooks.
+APP_TOOLS = "CLAUDE_CODE_TERMINAL_MCP_TOOLS"
+
+def owner_ask(message):
+    """The line of a closing message that asks the owner something, from its
+    last paragraphs, or None: one opening "Needs you:", else the first that
+    ends on a question, with code, URLs and quoted text left out."""
+    asking = None
+    for paragraph in closing_paragraphs(message):
+        for line in paragraph.split("\n"):
+            if NEEDS_YOU.search(line):
+                return line.strip()
+            text = QUOTES.sub(" ", URL.sub(" ", INLINE_CODE.sub(" ", line)))
+            if asking is None and ENDS_ASKING.search(text):
+                asking = line.strip()
+    return asking
+
+def has_wrap_up(lines):
+    """Whether this session has the app's wrap_up: the desktop app names it
+    for the hooks, or the session has called it."""
+    if WRAP_UP in re.split(r"[\s,]+", os.environ.get(APP_TOOLS, "")):
+        return True
+    return any(WRAP_UP in line for line in lines)
+
+def is_prompt(entry):
+    """A user-role entry that starts a turn, whoever sent it: the owner,
+    another session, an app event. Not a tool result, a Stop hook's feedback
+    or other meta text."""
+    if entry.get("type") != "user" or entry.get("isSidechain") is True:
+        return False
+    if entry.get("isMeta") is True or entry.get("isCompactSummary") is True:
+        return False
+    if entry.get("toolUseResult") is not None or entry.get("sourceToolUseID"):
+        return False
+    content = (entry.get("message") or {}).get("content")
+    if isinstance(content, list):
+        return not any(isinstance(item, dict) and item.get("type") == "tool_result" for item in content)
+    return isinstance(content, str)
+
+def asked_this_turn(lines):
+    """Whether a wrap_up since the turn's prompt carried an ask."""
+    asked = False
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if is_prompt(entry):
+            asked = False
+            continue
+        if entry.get("type") != "assistant" or entry.get("isSidechain") is True:
+            continue
+        content = (entry.get("message") or {}).get("content")
+        for item in content if isinstance(content, list) else []:
+            if isinstance(item, dict) and item.get("type") == "tool_use" and item.get("name") == WRAP_UP:
+                given = item.get("input")
+                ask = given.get("ask") if isinstance(given, dict) else None
+                asked = asked or (isinstance(ask, str) and bool(ask.strip()))
+    return asked
+
 def ask_words(tool, given):
     """The words of an ask: its question, header, options and buttons."""
     parts = []
@@ -434,6 +508,30 @@ try:
         message = data.get("last_assistant_message")
         if data.get("stop_hook_active") is True or not isinstance(message, str):
             passes()
+        # A closing message that asks the owner, in a turn whose wrap_up
+        # carried no ask: the app shows nothing to say the session waits, so
+        # the turn goes on once to make the ask. It comes before the research
+        # hold, which then meets that wrap_up on PreToolUse.
+        line = owner_ask(message)
+        if line is not None:
+            with open(path) as handle:
+                lines = handle.readlines()
+            if has_wrap_up(lines) and not asked_this_turn(lines):
+                log({
+                    "session": str(data.get("session_id") or os.path.basename(path)),
+                    "via": STOP,
+                    "questions": [{"question": line[:300], "options": []}],
+                    "outcome": "nudged: no wrap_up ask",
+                })
+                print(json.dumps({"hookSpecificOutput": {"hookEventName": STOP, "additionalContext": (
+                    "file the ask. Your closing message asks the owner something (" + line[:300] + "), "
+                    "but no wrap_up this turn carried it as its ask, so the app shows nothing to say "
+                    "this session waits on them. Call wrap_up now with the question as ask, reply "
+                    "buttons as actions, and blocked: true if your work stops until they answer; then "
+                    "end the turn without repeating your message. If the turn does not wait on the "
+                    "owner, end it again as it is."
+                )}}))
+                sys.exit(0)
         # The words read for state are the question's own paragraph: "PR #12
         # failed CI. Retry it or revert?" Wider, a closing summary that names
         # a file or a commit would pass most held questions.

@@ -1,13 +1,22 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { CONFIG_ENV, CONFIG_FILE, configLocation, entryObject, entryText, loadProjectConfig, NO_CONFIG, parseProjectConfig } from './project-config.ts';
 
 const KNOWN = ['absolute-paths', 'doc-budgets'];
-const dir = (): string => realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-config-')));
+const temps: string[] = [];
+/** A fresh temporary directory, by its real path, removed when this file's tests end. */
+const dir = (): string => {
+  const made = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-config-')));
+  temps.push(made);
+  return made;
+};
+after(() => {
+  for (const made of temps) rmSync(made, { recursive: true, force: true });
+});
 
 describe('parseProjectConfig', () => {
   it('reads file and inline entries, a file entry resolved from the config file', () => {

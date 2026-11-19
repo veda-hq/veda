@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -416,10 +416,13 @@ describe('the ./markdownlint export', () => {
     assert.equal(pkg.exports['./dist/*'], './dist/*');
   });
 
-  it('loads in a consumer as markdownlint-cli2 loads it, and by a bare require', () => {
+  it('loads in a consumer as markdownlint-cli2 loads it, and by a bare require', (t) => {
     // The package as a consumer installs it: its package.json and the rules
     // module compiled as the build compiles it.
     const consumer = mkdtempSync(join(tmpdir(), 'pariksha-markdownlint-'));
+    t.after(() => {
+      rmSync(consumer, { recursive: true, force: true });
+    });
     const installed = join(consumer, 'node_modules', pkg.name);
     mkdirSync(join(installed, 'dist'), { recursive: true });
     writeFileSync(join(consumer, 'package.json'), '{"name":"consumer","private":true}');

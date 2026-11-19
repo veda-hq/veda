@@ -106,8 +106,9 @@ has none installed. They need `bash`, `jq` and `git`;
 
 ### Research before you ask
 
-`ask-gate.sh` holds the `sarathi:research-first` rule: settle what a source
-can settle before asking the owner. A hook cannot judge whether research
+`ask-gate.sh` holds the research-first rule (the skill
+`sarathi:research-first` under the plugin, `skills/research-first/SKILL.md`
+in the package): settle what a source can settle before asking the owner. A hook cannot judge whether research
 settled a question, so it checks that a look happened, not what it found.
 
 - **Gated:** every `AskUserQuestion`; a `wrap_up` whose `ask` offers a

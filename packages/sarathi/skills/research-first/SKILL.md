@@ -106,17 +106,26 @@ question about the repository or its state (a path, a pull request, a
 branch, a commit, CI), reading that state counts as the look: `Read`,
 `Grep`, `Glob`, the desktop app's pull request status
 (`mcp__ccd_pr__get_status`), a read-only `git` or `gh`, or a test run. That is step 1
-above. For other questions it does not count. The handler checks that a
-look happened, not what it found: asking again in the same turn goes
-through, so an owner-only question is asked again unchanged.
+above. It counts question by question: each question of an `AskUserQuestion`
+must name that state, and none may name something outside the repository
+(an API or SDK, a price, credits or a bill, credentials or Keychain, Claude
+Code, Anthropic or another outside service, documentation or release notes).
+No repository read settles those: they need a web search, a fetched page,
+a browser read or a research subagent. The handler checks that a look
+happened, not what it found: asking again in the same turn goes through, so
+an owner-only question is asked again unchanged.
 
-A question that declares an owner-only kind (`Kind: preference`, from the
+A question that declares `approval`, `money` or `irreversible` (from the
 Declare column) goes through the first time, and the turn's one hold stays
-for the next undeclared ask. `ambiguity` passes only after a look, since it
-is what is left after research. A declared researchable kind (`api`,
-`default`, `version`, `limit`, `error`, `convention`, `state`) stays held.
-The gate logs every kind it reads, so a kind declared to skip research
-shows. Holding a real owner-only question costs most early in a run: in one
+for the next undeclared ask. `preference`, `private` and `ambiguity` go
+through only after research or a look in the turn (research, for a question
+about something outside the repository): a choice nobody checked
+is not yet a preference, and a fact the session could read is not private.
+A declared researchable kind (`api`, `default`, `version`, `limit`, `error`,
+`convention`, `state`) stays held. Declare the kind when you first ask: a
+`Kind:` line added to a question once it is held passes nothing, and the
+gate holds that relabel once more. The gate logs every kind it reads and
+every relabel, so a kind declared to skip research shows. Holding a real owner-only question costs most early in a run: in one
 study, goal clarification raised pass@3 from 0.40
 with no clarification to 0.78 when asked at 10% of the run, and lost nearly
 all its value later [14]. Its samples are small (5 to 28 per

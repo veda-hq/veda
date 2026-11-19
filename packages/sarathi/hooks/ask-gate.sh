@@ -1,22 +1,34 @@
 #!/bin/bash
-# PreToolUse handler: research before you ask. Refuses, once per turn, a
-# question to the owner (AskUserQuestion, or a choice-shaped ask in the
-# desktop app's wrap_up) when the session has done no research since the
-# owner's last message. A hook cannot judge whether research settled the
-# question, so it enforces the look, not the verdict, like
-# session-dedupe-guard.sh.
+# PreToolUse and Stop handler: research before you ask. Holds, once per turn,
+# a question to the owner when the session has done no research since the
+# owner's last message: an AskUserQuestion or a choice-shaped ask in the
+# desktop app's wrap_up (PreToolUse, refused), or a choice-shaped question in
+# the closing message (Stop, the turn goes on with the rule as feedback). A
+# hook cannot judge whether research settled the question, so it enforces the
+# look, not the verdict, like session-dedupe-guard.sh.
 #
 # Research is a WebSearch, a WebFetch, a browser page read, or the launch of a
 # research subagent, since the owner's last message: a user-role entry that
 # holds the person's own text, not a tool result, a system reminder, a task
-# notification or another session's report. A wrap_up with no ask, a
-# go-ahead (yes/no buttons), or an app action first (commit, create_pr ...)
-# is an approval, which only the owner can give, and passes.
+# notification or another session's report. For an ask that names repository
+# or session state (a path, a pull request or issue, a branch, a commit, CI),
+# a look at that state counts too: Read, Grep, Glob, the desktop app's PR
+# status, a read-only git or gh command, or a test run. A wrap_up with no ask,
+# a go-ahead (yes/no buttons), or an app action first (commit, create_pr ...)
+# is an approval, which only the owner can give, and passes; so does a closing
+# question that names no alternatives.
 #
-# The escape: a second gated ask in the same turn passes, keyed on the turn
+# On Stop the question is read from last_assistant_message, not from the
+# transcript, which may not hold the final message yet. Stop answers with
+# hookSpecificOutput.additionalContext: guidance from a hook working as
+# designed, under the same loop protections as a block (stop_hook_active and
+# Claude Code's consecutive-continuation cap), without a hook error.
+#
+# The escape: a second held ask in the same turn passes, keyed on the turn
 # (the owner's last message), not the question text, so a rephrased question
-# does not loop. The key is kept in <dir>/<session id>, where <dir> is
-# SARATHI_ASK_GATE_DIR, else $XDG_STATE_HOME/sarathi/ask-gate, else
+# does not loop; the PreToolUse and Stop paths share the key. A Stop with
+# stop_hook_active set passes. The key is kept in <dir>/<session id>, where
+# <dir> is SARATHI_ASK_GATE_DIR, else $XDG_STATE_HOME/sarathi/ask-gate, else
 # ~/.local/state/sarathi/ask-gate.
 #
 # A pass is a silent exit 0, never an "allow" answer (an allow on
@@ -30,10 +42,42 @@ import json, os, re, sys
 
 ASK = "AskUserQuestion"
 WRAP_UP = "mcp__ccd_turn__wrap_up"
+STOP = "Stop"
 RESEARCH_TOOLS = {"WebSearch", "WebFetch"}
 BROWSER_READ = re.compile(r"^mcp__.*(Claude_Browser|claude-in-chrome)__(get_page_text|read_page|navigate)$")
 AGENT_TOOLS = {"Agent", "Task"}
 RESEARCH_AGENTS = {"researcher", "sarathi:researcher", "Explore", "general-purpose", "claude-code-guide"}
+# A look at the repository or the session's state: it counts only for an ask
+# that names such state.
+LOOK_TOOLS = {"Read", "Grep", "Glob", "mcp__ccd_pr__get_status"}
+GIT_READ = re.compile(
+    r"^git(\s+(-C|-c)\s+\S+|\s+--no-pager)*\s+(status|log|diff|show|branch|blame|ls-files|ls-remote|ls-tree|"
+    r"rev-parse|rev-list|grep|describe|shortlog|reflog|cat-file|merge-base|for-each-ref|name-rev)\b"
+)
+GH_READ = re.compile(
+    r"^gh\s+((pr|issue|run|workflow|release|repo|label|cache)\s+(view|list|checks|status|diff|watch)\b|search\b)"
+)
+GH_API = re.compile(r"^gh\s+api\b")
+GH_API_WRITE_METHOD = re.compile(r"\s(-X|--method)[\s=]*(POST|PUT|PATCH|DELETE)\b", re.I)
+GH_API_GET = re.compile(r"\s(-X|--method)[\s=]*GET\b", re.I)
+GH_API_FIELDS = re.compile(r"\s(-f|-F|--field|--raw-field|--input)\b")
+TEST_RUN = re.compile(
+    r"^((pnpm|npm|yarn|bun)(\s+\S+)*?\s+(test|check|vitest|jest)\b|npx\s+(vitest|jest)\b|node\s+--test\b|"
+    r"python3?\s+-m\s+pytest\b|pytest\b|go\s+test\b|cargo\s+test\b|make\s+(test|check)\b|vitest\b|jest\b)"
+)
+SEGMENT = re.compile(r"&&|\|\||[;|\n]")
+# What may lead a command: a subshell or group opener, a negation, variable
+# assignments, env, time. The openers are hex escapes (\x28 \x7b): bare and
+# unbalanced, they would break the shell's reading of this $(...) block.
+LEAD = re.compile(r"^[\s\x28\x7b!]*((\w+=\S*|env|time|command)\s+)*")
+# An ask that names repository or session state. A bare file name counts
+# only with an extension that is not also a product name (Node.js).
+STATE = re.compile(
+    r"(?<![\w&])#\d+\b|\bPRs?\b|(?i:\bpull requests?\b|\bbranch(es)?\b|\bcommits?\b|\bworkflows?\b)|\bCI\b"
+    r"|github\.com/\S+/(pull|issues|actions|commit)/"
+    r"|[\w.-]+/[\w./-]*\.[A-Za-z0-9]{1,6}\b"
+    r"|\b[\w-]+\.(ts|tsx|mjs|cjs|json|md|sh|py|ya?ml|toml|lock|rs|rb|java|kt|swift|css|html|sql)\b"
+)
 # A user-role entry the harness marks as not the person's: a background
 # task's report, another session's message, an app event that continues the
 # turn.
@@ -70,23 +114,29 @@ URL = re.compile(
     r"(?:[^\s()<>\[\]{}\x22\x27\x60,;|]|\([^\s()<>\[\]{}\x22\x27\x60,;|]*\))+",
     re.I,
 )
+# In a closing message: fenced code, inline code and quoted lines say no
+# question of the session's own; "... or not?" is a yes/no question.
+FENCE = re.compile(r"^[ \t]*(\x60{3,}|~{3,})[\s\S]*?(^[ \t]*\1[^\n]*$|\Z)", re.M)
+INLINE_CODE = re.compile(r"\x60[^\x60\n]*\x60")
+QUOTED = re.compile(r"^[ \t]*>[^\n]*$", re.M)
+OR_NOT = re.compile(r"\bor\s+not\b", re.I)
+PARAGRAPH = re.compile(r"\n[ \t]*\n")
+# A sentence ends at . ! or ? followed by a space, or at a line's end; a dot
+# inside a word (file.ts, e.g.) does not end one.
+SENTENCE = re.compile(r"(?<=[.!?])\s+|\n")
+# How far back from the end of the closing message a question is read.
+CLOSING_PARAGRAPHS = 3
 # Content a person attaches in place of words.
 ATTACHMENTS = {"image", "document"}
 
 def passes():
     sys.exit(0)
 
-try:
-    data = json.loads(sys.stdin.read() or "{}")
-    tool = data.get("tool_name")
-    tool_input = data.get("tool_input")
-    path = data.get("transcript_path")
-    if tool not in (ASK, WRAP_UP) or not path or not tool_input or not isinstance(tool_input, dict):
-        passes()
-    with open(path) as handle:
-        lines = handle.readlines()
-except Exception:
-    passes()
+def names_alternatives(text, pairs):
+    words = URL.sub(" ", text)
+    if ALTERNATIVES.search(words):
+        return True
+    return pairs and bool(PAIR.search(words))
 
 def choice_shaped(wrap):
     ask = wrap.get("ask")
@@ -99,15 +149,69 @@ def choice_shaped(wrap):
     replies = [a.get("label") for a in actions if not a.get("action") and isinstance(a.get("label"), str)]
     if len([r for r in replies if not YES_NO.match(r)]) >= 2:
         return True
-    words = URL.sub(" ", ask)
-    if ALTERNATIVES.search(words):
-        return True
     go_ahead = bool(replies) and all(YES_NO.match(r) for r in replies)
-    return not go_ahead and bool(PAIR.search(words))
+    return names_alternatives(ask, not go_ahead)
+
+def closing(message):
+    """The last paragraphs of a closing message, fenced code and quoted lines
+    left out, and the choice-shaped questions in them."""
+    paragraphs = [p for p in PARAGRAPH.split(QUOTED.sub("", FENCE.sub("", message))) if p.strip()]
+    paragraphs = paragraphs[-CLOSING_PARAGRAPHS:]
+    found = []
+    for paragraph in paragraphs:
+        for sentence in SENTENCE.split(URL.sub(" ", INLINE_CODE.sub(" ", paragraph))):
+            if "?" not in sentence:
+                continue
+            question = sentence[: sentence.rindex("?") + 1].strip()
+            if names_alternatives(OR_NOT.sub(" ", question), False):
+                found.append(question)
+    return "\n\n".join(paragraphs), found
+
+def ask_words(tool, given):
+    """The words of an ask: its question, header, options and buttons."""
+    parts = []
+    if tool == ASK:
+        for question in given.get("questions") or []:
+            if not isinstance(question, dict):
+                continue
+            parts += [question.get("question"), question.get("header")]
+            for option in question.get("options") or []:
+                if isinstance(option, dict):
+                    parts += [option.get("label"), option.get("description")]
+    else:
+        parts.append(given.get("ask"))
+        actions = given.get("actions")
+        for action in actions if isinstance(actions, list) else []:
+            if isinstance(action, dict):
+                parts.append(action.get("label"))
+    return "\n".join(p for p in parts if isinstance(p, str))
 
 try:
-    if tool == WRAP_UP and not choice_shaped(tool_input):
+    data = json.loads(sys.stdin.read() or "{}")
+    path = data.get("transcript_path")
+    if not path:
         passes()
+    if data.get("hook_event_name") == STOP:
+        stop = True
+        message = data.get("last_assistant_message")
+        if data.get("stop_hook_active") is True or not isinstance(message, str):
+            passes()
+        # The words an ask is read for state are its paragraphs, code and
+        # URLs kept: "PR #12 failed CI. Retry it or revert?"
+        words, choices = closing(message)
+        if not choices:
+            passes()
+    else:
+        stop = False
+        tool = data.get("tool_name")
+        tool_input = data.get("tool_input")
+        if tool not in (ASK, WRAP_UP) or not tool_input or not isinstance(tool_input, dict):
+            passes()
+        if tool == WRAP_UP and not choice_shaped(tool_input):
+            passes()
+        words = ask_words(tool, tool_input)
+    with open(path) as handle:
+        lines = handle.readlines()
 except Exception:
     passes()
 
@@ -147,8 +251,6 @@ def is_owner_message(entry):
     return person_text(message.get("content")) != ""
 
 def is_research(item):
-    if item.get("type") != "tool_use":
-        return False
     name = item.get("name")
     if name in RESEARCH_TOOLS or (isinstance(name, str) and BROWSER_READ.match(name)):
         return True
@@ -158,28 +260,51 @@ def is_research(item):
         return isinstance(given, dict) and (given.get("subagent_type") or "general-purpose") in RESEARCH_AGENTS
     return False
 
+def reads_state(command):
+    """Whether a shell command reads repository or session state."""
+    for segment in SEGMENT.split(command):
+        segment = LEAD.sub("", segment).strip()
+        if GIT_READ.match(segment) or GH_READ.match(segment) or TEST_RUN.match(segment):
+            return True
+        if GH_API.match(segment) and not GH_API_WRITE_METHOD.search(segment):
+            if GH_API_GET.search(segment) or not GH_API_FIELDS.search(segment):
+                return True
+    return False
+
+def is_look(item):
+    name = item.get("name")
+    if name in LOOK_TOOLS:
+        return True
+    given = item.get("input")
+    return name == "Bash" and isinstance(given, dict) and isinstance(given.get("command"), str) and reads_state(given["command"])
+
 def window(lines):
-    """The turn's key (the owner's last message) and whether research followed it."""
-    turn, researched = "start", False
+    """The turn's key (the owner's last message), and whether research and a
+    look at the repository's state followed it."""
+    turn, researched, looked = "start", False, False
     for number, line in enumerate(lines):
         try:
             entry = json.loads(line)
             if not isinstance(entry, dict):
                 continue
             if is_owner_message(entry):
-                turn, researched = str(entry.get("uuid") or "line-%d" % number), False
+                turn, researched, looked = str(entry.get("uuid") or "line-%d" % number), False, False
                 continue
             if entry.get("type") != "assistant" or entry.get("isSidechain") is True:
                 continue
             content = (entry.get("message") or {}).get("content")
-            if isinstance(content, list) and any(isinstance(i, dict) and is_research(i) for i in content):
-                researched = True
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "tool_use":
+                    researched = researched or is_research(item)
+                    looked = looked or is_look(item)
         except Exception:
             continue
-    return turn, researched
+    return turn, researched, looked
 
-turn, researched = window(lines)
-if researched:
+turn, researched, looked = window(lines)
+if researched or (looked and STATE.search(words)):
     passes()
 
 session = str(data.get("session_id") or os.path.basename(path))
@@ -203,17 +328,36 @@ try:
 except Exception:
     passes()
 
-print(
-    "BLOCKED: research before you ask. No WebSearch, WebFetch, browser page "
-    "read or research subagent (researcher, Explore ...) since the owner's "
-    "last message. Settle what a source can settle first: the repository, "
+LOOKED = (
+    "Since the owner's last message there has been no WebSearch, WebFetch, "
+    "browser page read or research subagent (researcher, Explore ...), and for "
+    "a question about the repository or its state (a path, a pull request, a "
+    "branch, a commit, CI) no Read, Grep, Glob, read-only git or gh, or test "
+    "run either. "
+)
+RULE = (
+    "Settle what a source can settle first: the repository, "
     "official docs at the version in use, the changelog, source at a pinned "
     "tag, the issue tracker; read state you can read; check which options "
     "actually work before offering them. If a source settles it, act and "
     "cite it (URL, version, date read) instead of asking. Only the owner can "
     "answer: a preference, an approval or decision of authority, a private "
     "fact, money or credentials, an irreversible step or a shared system, "
-    "ambiguity left after research. Research and ask again with what you "
+    "ambiguity left after research. "
+)
+if stop:
+    reason = (
+        "research before you ask. Your closing message asks the owner to "
+        "choose (" + " / ".join(choices)[:300] + "). " + LOOKED + RULE +
+        "Research and end the turn again with what you found and your "
+        "recommendation first; if the question is one of those kinds, end "
+        "the turn with it unchanged and it goes through."
+    )
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": STOP, "additionalContext": reason}}))
+    sys.exit(0)
+print(
+    "BLOCKED: research before you ask. " + LOOKED + RULE +
+    "Research and ask again with what you "
     "found and your recommendation first; if the question is one of those "
     "kinds, ask it again unchanged and it goes through.",
     file=sys.stderr,

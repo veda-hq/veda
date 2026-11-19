@@ -431,13 +431,22 @@ def has_wrap_up(lines):
             continue
     return False
 
+def is_peer(entry):
+    """Another session's message, by the origin the harness stamps on it."""
+    origin = entry.get("origin")
+    kind = origin.get("kind") if isinstance(origin, dict) else None
+    return kind in ("peer", "peer-send-message") or entry.get("turnOrigin") == "peer"
+
 def is_prompt(entry):
     """A user-role entry that starts a turn, whoever sent it: the owner,
     another session, an app event. Not a tool result, a Stop hook's feedback
-    or other meta text."""
+    or other meta text. Another session's message may be written as meta;
+    it carries its origin, which a Stop hook's feedback does not."""
     if entry.get("type") != "user" or entry.get("isSidechain") is True:
         return False
-    if entry.get("isMeta") is True or entry.get("isCompactSummary") is True:
+    if entry.get("isCompactSummary") is True:
+        return False
+    if entry.get("isMeta") is True and not is_peer(entry):
         return False
     if entry.get("toolUseResult") is not None or entry.get("sourceToolUseID"):
         return False

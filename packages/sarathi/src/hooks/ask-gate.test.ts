@@ -1139,6 +1139,14 @@ test('ask-gate on Stop: a wrap_up ask this turn, or no wrap_up at all, ends the 
     '',
     "a Stop hook's feedback starts no turn",
   );
+  // In a side session the answer comes relayed: another session's message, or an app event, starts the next turn.
+  for (const [why, next] of [['a peer message', peer()], ['an app event', appEvent()]] as const) {
+    assert.match(
+      stopFeedbackOf(transcript(peer(), wrapUp({ recap: 'r', ask: 'Approve #259?' }), toolResult(), next, toolUse('Read')), NEEDS_YOU_261),
+      /^file the ask\./,
+      `an ask before ${why} does not count`,
+    );
+  }
   assert.equal(
     stopFeedbackOf(transcript(peer(), wrapUp({ recap: 'r', ask: 'Approve #259?' }), reminderOnly()), NEEDS_YOU_259),
     '',

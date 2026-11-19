@@ -439,10 +439,16 @@ class Settings(unittest.TestCase):
         self.assertIn("they mark a hosted session; leave them as the session set them", stderr)
 
     def test_without_settings_a_program_variable_is_still_refused(self) -> None:
-        for command in ("NODE_OPTIONS=--import=data:x pnpm test", "export PERL5OPT=-Mx"):
+        for command in (
+            "NODE_OPTIONS=--import=data:x pnpm test",
+            "export PERL5OPT=-Mx",
+            "PYTHONPATH=src pnpm test",
+            "npm_config_script_shell=x npm test",
+            "pnpm --config.nodeOptions=x test",
+        ):
             actual, stderr = self.run_guard(command, PLAIN_REPO, "")
             self.assertEqual(actual, 2, stderr)
-            self.assertIn("hands a program text or a library to run", stderr)
+            self.assertIn("makes a program run text, a library or a file the guard does not read", stderr)
 
     def test_only_the_configured_variables_are_protected(self) -> None:
         config = self.write({"command": {"protectedVariables": ["OTHER_MARK"], "protectedVariablesReason": "r"}})

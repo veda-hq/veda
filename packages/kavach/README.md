@@ -286,7 +286,7 @@ guard does not read:
 - any `npm_config_*` or `pnpm_config_*` variable, in any case, `-` or `_`;
 - any pnpm `--config.<key>`, camelCase included (`--config.nodeOptions`);
 - npm's `--node-options`, `--userconfig`, `--globalconfig` and
-  `--script-shell`, and `--pnpmfile`.
+  `--script-shell`, and pnpm's `--pnpmfile` and `--global-pnpmfile`.
 
 One pass found four keys that run code:
 

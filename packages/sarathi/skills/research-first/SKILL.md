@@ -78,12 +78,18 @@ question already answered.
 
 ## Enforcement
 
-sarathi's `ask-gate.sh` handler (PreToolUse, `AskUserQuestion` and the
-desktop app's `wrap_up` asks that offer a choice) refuses an ask once per
-turn when the session has done no WebSearch, WebFetch, browser page read or
-research subagent since the owner's last message. It checks that a look
-happened, not what it found: asking again in the same turn goes through, so
-an owner-only question is asked again unchanged.
+sarathi's `ask-gate.sh` handler holds a question to the owner once per turn
+when the session has done no WebSearch, WebFetch, browser page read or
+research subagent since the owner's last message. On PreToolUse it refuses
+an `AskUserQuestion`, or a desktop-app `wrap_up` ask that offers a choice. On
+Stop it keeps the turn going when the closing message asks the owner to
+choose ("A or B?", "Which one?"). A yes/no approval passes at once. For a
+question about the repository or its state (a path, a pull request, a
+branch, a commit, CI), reading that state counts as the look: `Read`,
+`Grep`, `Glob`, a read-only `git` or `gh`, or a test run. That is step 1
+above. For other questions it does not count. The handler checks that a
+look happened, not what it found: asking again in the same turn goes
+through, so an owner-only question is asked again unchanged.
 
 ## Sources
 

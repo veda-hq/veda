@@ -1412,6 +1412,24 @@
     "text": "git repack -q -a -d --filter=blob:none --filter-to={P}/pwned"
   },
   {
+    "id": "ow-git-push-dot",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git destination",
+    "note": "A push to `.` writes only the shared repository's refs, as a commit does (#200).",
+    "text": "git push -q . HEAD:refs/heads/corpus-dot"
+  },
+  {
+    "id": "ow-git-push-primary",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git destination",
+    "note": "The main checkout's path names the same shared repository: its refs move, its files and HEAD do not (#200).",
+    "text": "git push -q {P} HEAD:refs/heads/corpus-primary"
+  },
+  {
     "id": "ow-git-config-user",
     "intent": "outside-write",
     "role": "near-miss",

@@ -828,6 +828,27 @@ class OwnCheckoutTest(BoundaryFixture):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn(expected, result.stderr)
 
+    def test_a_push_in_the_owned_clone(self) -> None:
+        """In the hosted clone, a push to the clone itself writes only its
+        git folder, as a commit does, so the fence on it does not refuse
+        one; a push into another local repository is unproven, as in a
+        desktop worktree (#200)."""
+        environment = self.hosted_env()
+        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
+        for command, expected in (
+            ("git push origin HEAD:x", ""),
+            ("git push . HEAD:refs/heads/x", ""),
+            (f"git push {self.main} HEAD:x", ""),
+            ("git push .git HEAD:x", ""),
+            (f"git push {self.external}/repo HEAD:x", "mutation targets could not be resolved"),
+            ("git push .tmp/repo HEAD:x", "mutation targets could not be resolved"),
+            (f"git send-pack {self.external}/repo main", "mutation targets could not be resolved"),
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 2 if expected else 0, result.stderr)
+                self.assertIn(expected, result.stderr)
+
     def test_the_clone_is_owned_in_the_named_environment(self) -> None:
         environment = self.hosted_env()
         (self.main / "sub").mkdir()
@@ -1143,6 +1164,8 @@ class OwnCheckoutTest(BoundaryFixture):
     def test_git_that_misses_the_fences_runs(self) -> None:
         environment = self.writers_fixture()
         (self.main / ".claude" / "hooks" / "guard.sh").write_text("guard\n", encoding="utf-8")
+        # A push is placed through its remote's URL.
+        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
         for command in (
             "git add .",
             "git commit -qm x",

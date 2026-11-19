@@ -5833,7 +5833,13 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
     it runs (yarn's documentation).
     """
     if name == "yarn":
-        return None if "dlx" in args else False
+        # The verb is the first word that is not an option (`yarn run dlx`
+        # runs a script named dlx). An option before it may take the next
+        # word, so with one there, a `dlx` anywhere fails closed.
+        verb = next((word for word in args if not word.startswith("-")), None)
+        if verb == "dlx" or (args[:1] and args[0].startswith("-") and "dlx" in args):
+            return None
+        return False
     if name == "pnpm":
         _subcommands, _modes, flags, values = RUNNER_SHELL_MODES["pnpm"]
         recursive, index = False, 0

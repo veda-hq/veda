@@ -276,6 +276,8 @@ guard does not read:
   package script; `PS4` alone does so under `bash -x` or `set -x`.
 - `ZDOTDIR` and `HOME`: zsh sources their `.zshenv`, and npm reads
   `$HOME/.npmrc`.
+- `XDG_CONFIG_HOME`: pnpm reads node-options and a global pnpmfile from its
+  `pnpm/` folder.
 - `PYTHONPATH` and `PYTHONUSERBASE`: a `sitecustomize.py` or
   `usercustomize.py` there runs in every python, and a module there shadows
   the one a program imports.

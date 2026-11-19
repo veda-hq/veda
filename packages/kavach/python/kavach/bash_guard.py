@@ -139,6 +139,8 @@ bare = re.sub(r"[\\'\"]", "", bare)
 # each probed live: `SHELLOPTS=xtrace` with `PS4='$(…)'` (every bash, every
 # package script; `PS4` alone under `bash -x` or `set -x`), `ZDOTDIR` and
 # `HOME` (zsh sources their `.zshenv`; npm reads `$HOME/.npmrc`),
+# `XDG_CONFIG_HOME` (pnpm 12.9 read node-options and a global pnpmfile from
+# its `pnpm/` folder, under `run`, `exec` and `install`; Cubic, #285),
 # `PYTHONPATH` and `PYTHONUSERBASE` (a `sitecustomize.py` or
 # `usercustomize.py` there runs in every python), `RUBYOPT=-r<file>` and
 # `RUBYLIB`. Searching for a name, without `=`, passes.
@@ -150,7 +152,8 @@ bare = re.sub(r"[\\'\"]", "", bare)
 # run nothing, pass, in any spelling.
 PROGRAM_VARIABLES = (
     "NODE_OPTIONS", "PERL5OPT", "BASH_ENV", "BUN_OPTIONS", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD",
-    "SHELLOPTS", "PS4", "ZDOTDIR", "HOME", "PYTHONPATH", "PYTHONUSERBASE", "RUBYOPT", "RUBYLIB",
+    "SHELLOPTS", "PS4", "ZDOTDIR", "HOME", "XDG_CONFIG_HOME", "PYTHONPATH", "PYTHONUSERBASE", "RUBYOPT",
+    "RUBYLIB",
 )
 INERT_SETTINGS = (
     r"(?:manage[-_]?package[-_]?manager[-_]?versions|loglevel|color|update[-_]?notifier|fund|audit|progress)"

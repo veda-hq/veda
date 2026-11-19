@@ -93,7 +93,7 @@ function app(
 const family = (): Session[] => [
   { sessionId: 'top', title: 'Self-service research framework', group: { id: 'cg-work', name: 'Work' }, pinned: true },
   { sessionId: 'middle', title: 'ask-gate on Stop', group: null, parentSessionId: 'top', startedBy: 'top', isArchived: true },
-  { sessionId: 'parent', title: 'RF-3: athya_mono on sarathi', group: null, parentSessionId: 'middle', startedBy: 'middle' },
+  { sessionId: 'parent', title: 'RF-3: a product on sarathi', group: null, parentSessionId: 'middle', startedBy: 'middle' },
   { sessionId: 'self', title: 'Approve veda#259', group: null, parentSessionId: 'parent', startedBy: 'parent' },
   { sessionId: 'sibling', title: 'Another side session', group: null, parentSessionId: 'parent', startedBy: 'parent' },
 ]

@@ -208,7 +208,7 @@ pnpm's implicit form (`pnpm uname -s`, for a word that is neither a pnpm
 command nor a script of the package), `npx`, `npm exec`, and `mise exec`.
 A program that is a package bin, installed in a `node_modules/.bin` the
 runner looks in first, is the repository's code and runs (`pnpm exec dvara`,
-`npx vitest`): pnpm looks in the package's folder (the nearest package's
+`npx tsc`, with tsc installed): pnpm looks in the package's folder (the nearest package's
 from where it runs; the folder itself under `--dir`) and the workspace
 root's, and npm in every folder above. So these are refused: a package bin
 that is not installed (`pnpm exec stryker` with no stryker in the

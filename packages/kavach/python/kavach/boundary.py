@@ -5734,10 +5734,15 @@ class RunnerProgram(NamedTuple):
     # path up and out is reached no later than from any package below it.
     also: Path | None = None
     # Whether a program not found in ``bins`` is a package the runner
-    # fetches (`npx`, `npm exec` and `pnpm dlx` never fall back to `PATH`),
-    # whose bin is that package's code, whatever its name: `npx -p <pkg>
-    # touch` runs the package's `touch`, not this machine's.
+    # fetches, whose bin is that package's code, whatever its name: `npx -p
+    # <pkg> touch` runs the package's `touch`, not this machine's. npm 11
+    # did not fall back to `PATH` (`npx --no -- uname -s` found nothing to
+    # run), and `pnpm dlx` installs the package it names.
     fetched: bool = False
+    # Whether the line names the package (`npx -p <pkg>`, `pnpm dlx
+    # --package <pkg>`): then the program is one of its bins, and even a
+    # shell's or an interpreter's name proves nothing.
+    packaged: bool = False
 
 
 def nearest_holding(folder: Path, name: str) -> Path | None:
@@ -5851,7 +5856,7 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
             return None
         if verb in {"exec", "dlx"}:
             slot_values = values | (PNPM_DLX_VALUES if verb == "dlx" else frozenset())
-            unbinned, hidden = verb == "dlx", False
+            unbinned, hidden, packaged = verb == "dlx", False, False
             index += 1
             while index < len(args) and args[index].startswith("-"):
                 option, attached, value = args[index].partition("=")
@@ -5865,6 +5870,7 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
                     # is read as the bare line, from here and from the
                     # workspace root (`RunnerProgram.also`).
                     unbinned = hidden = True
+                packaged = packaged or (verb == "dlx" and option == "--package")
                 if option in slot_values:
                     if not attached:
                         index += 1
@@ -5883,7 +5889,7 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
             spread = recursive or hidden
             return RunnerProgram(
                 index, folder, bins, nearest_holding(folder, "pnpm-workspace.yaml") if spread else None,
-                fetched=verb == "dlx",
+                fetched=verb == "dlx", packaged=packaged,
             )
         if verb in PNPM_COMMANDS:
             return False
@@ -5951,7 +5957,7 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
         else:
             moved = False
         _subcommands, _modes, flags, values = NPM_EXEC_SLOT
-        downloads = moved
+        downloads, packaged = moved, False
         while index < len(args) and args[index].startswith("-"):
             option, attached, _ = args[index].partition("=")
             if args[index] == "--":
@@ -5962,6 +5968,7 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
                 # downloads; under `--prefix` or a workspace, npm looks in
                 # another folder's bins.
                 downloads = downloads or option in {"--package", "-p", "-w", "--workspace"}
+                packaged = packaged or option in {"--package", "-p"}
                 index += 1 if attached else 2
             elif option in flags:
                 downloads = downloads or option in {"--workspaces", "--ws"}
@@ -5974,7 +5981,7 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
         # workspace root's bin from `packages/kavach`, and npx an outer
         # folder's from an inner package).
         bins = () if downloads else tuple(place / "node_modules" / ".bin" for place in (cwd, *cwd.parents))
-        return RunnerProgram(index, cwd, bins, fetched=True)
+        return RunnerProgram(index, cwd, bins, fetched=True, packaged=packaged)
     if name == "mise":
         _subcommands, _modes, flags, values = RUNNER_SHELL_MODES["mise"]
         folder, index = cwd, 0
@@ -6043,6 +6050,10 @@ def runner_program_targets(
         return []
     word = args[found.index]
     base = os.path.basename(word)
+    if found.packaged:
+        # `npx -p cowsay sh run.sh` runs cowsay's `sh`: the name proves
+        # nothing, so no shell or interpreter is read from it.
+        return None
     if base in SHELL_INTERPRETERS or runner_interpreter(word) is not None:
         return []
     if "/" not in word and any((place / word).exists() for place in found.bins):

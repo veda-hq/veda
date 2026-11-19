@@ -1749,6 +1749,12 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "npx -y cowsay hi",
             "npx -p cowsay cowsay hi",
             "npx -p cowsay touch x",
+            # Behind `--package`, a shell's or an interpreter's name is one of
+            # the package's bins.
+            "npx -p cowsay sh run.sh",
+            "npx --package=cowsay node .tmp/x.js",
+            "npm exec -p cowsay -- tsx .tmp/x.ts",
+            "pnpm dlx --package cowsay bash run.sh",
             "pnpm dlx touch x",
             "pnpm dlx prettier@3 --check .",
             "npx vitest run",

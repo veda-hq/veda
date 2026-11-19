@@ -10,10 +10,14 @@
 # Research is a WebSearch, a WebFetch, a browser page read, or the launch of a
 # research subagent, since the owner's last message: a user-role entry that
 # holds the person's own text, not a tool result, a system reminder, a task
-# notification or another session's report. For an ask that names repository
-# or session state (a path, a pull request or issue, a branch, a commit, CI),
-# a look at that state counts too: Read, Grep, Glob, the desktop app's PR
-# status, a read-only git or gh command, or a test run. A wrap_up with no ask,
+# notification or another session's report. For an ask about repository or
+# session state, a look at that state counts too: Read, Grep, Glob, the
+# desktop app's PR status, a read-only git or gh command, or a test run. It
+# counts when every unit of the ask (each AskUserQuestion question, a wrap_up
+# ask, a closing question's paragraph) names such state (a path, a pull
+# request or issue, a branch, a commit, CI) and nothing outside the
+# repository (an API, a price, credentials, an outside service by name, its
+# documentation). A wrap_up with no ask,
 # a go-ahead (yes/no buttons), or an app action first (commit, create_pr ...)
 # is an approval, which only the owner can give, and passes; so does a closing
 # question that names no alternatives.
@@ -26,16 +30,20 @@
 #
 # The escape: a second held ask in the same turn passes, keyed on the turn
 # (the owner's last message), not the question text, so a rephrased question
-# does not loop; the PreToolUse and Stop paths share the key. A Stop with
-# stop_hook_active set passes. The key is kept in <dir>/<session id>, where
-# <dir> is SARATHI_ASK_GATE_DIR, else $XDG_STATE_HOME/sarathi/ask-gate, else
-# ~/.local/state/sarathi/ask-gate.
+# does not loop; the PreToolUse and Stop paths share the key. The one
+# exception is a relabel: an ask that puts a question held this turn with
+# only its Kind: fields added or changed is held once more, and anything
+# after that passes, so a turn holds at most twice. A Stop with
+# stop_hook_active set passes. The key, and the questions held, are kept in
+# <dir>/<session id>, where <dir> is SARATHI_ASK_GATE_DIR, else
+# $XDG_STATE_HOME/sarathi/ask-gate, else ~/.local/state/sarathi/ask-gate.
 #
 # A declared owner-only kind passes the first time: a line Kind: <kind> in
 # each AskUserQuestion question (its text or header), in the wrap_up ask, or
-# in the closing paragraphs on Stop, naming preference, approval, private,
-# money, irreversible or ambiguity (README, "Declaring the kind"). Ambiguity
-# passes only after a look. A declared researchable kind stays held.
+# in the closing paragraphs on Stop, naming approval, money or irreversible;
+# or preference, private or ambiguity after research or a look in the turn
+# (README, "Declaring the kind"). A declared researchable kind stays held,
+# and so does a relabel.
 #
 # Every gated ask is a line in the ask log (README, "The ask log"), and so is
 # the owner's answer to an AskUserQuestion, read on PostToolUse from
@@ -110,6 +118,22 @@ STATE = re.compile(
     r"(?<![\w&])#\d+\b|\bPRs?\b|(?i:\bpull requests?\b|\bbranch(es)?\b|\bcommits?\b|\bworkflows?\b)|\bCI\b"
     r"|[\w.-]+/[\w./-]*\.[A-Za-z][A-Za-z0-9]{0,5}\b"
     r"|\b[\w-]+\.(ts|tsx|mjs|cjs|json|md|sh|py|ya?ml|toml|lock|rs|rb|java|kt|swift|css|html|sql)\b"
+)
+# An ask that names something outside the repository: an API or SDK, a
+# price, a bill or a quota, credentials, one of the outside tools and
+# services listed by name, their documentation or releases, case ignored.
+# No repository read settles such a question, so a look does not count for
+# it, whatever state it also names. A path or file named like one
+# (CHANGELOG.md, credentials.json, src/api/) is no such word. Words a
+# trade-off uses for the repository's own work (cost, docs-only, login,
+# endpoint) are left out: in local transcripts they named it more often
+# than anything outside. A service not listed is not seen.
+OUTSIDE = re.compile(
+    r"\$\s?\d"
+    r"|(?i:\b(apis?|sdks?|prices?|pricing|priced|billing|billed|credits|quotas?|subscriptions?|rate[ -]limits?"
+    r"|per (million|1k|1m|token)|credentials?|keychain|oauth"
+    r"|claude code|claude\.ai|anthropic|openai|marketplaces?|homebrew"
+    r"|(latest|newest) (version|release)|release notes|changelogs?|documentation)\b(?![./]\w))"
 )
 # A user-role entry the harness marks as not the person's: a background
 # task's report, another session's message, an app event that continues the
@@ -188,8 +212,11 @@ RESEARCHABLE_KINDS = {
     "error": "error", "error meanings": "error", "convention": "convention", "conventions": "convention",
     "repository conventions": "convention", "state": "state",
 }
-# Ambiguity is the kind left after research: it passes only after a look.
-NEEDS_LOOK = {"ambiguity"}
+# Kinds that pass only after research or a look in the turn: a preference
+# among options nobody checked, a private fact the session could have read,
+# and ambiguity, the kind left after research. An approval, money and an
+# irreversible step are the owner's authority, and pass bare.
+NEEDS_LOOK = {"ambiguity", "preference", "private"}
 
 def passes():
     sys.exit(0)
@@ -289,6 +316,26 @@ def names_alternatives(text, pairs):
 def names_state(text):
     return bool(STATE_URL.search(text) or STATE.search(URL.sub(" ", text)))
 
+def names_outside(text):
+    return bool(OUTSIDE.search(URL.sub(" ", text)))
+
+def unit_words(tool, given):
+    """The words of each unit of an ask, read for state: each
+    AskUserQuestion question with its header and options; a wrap_up, whole."""
+    if tool != ASK:
+        return [ask_words(tool, given)]
+    units = []
+    for question in given.get("questions") or []:
+        if isinstance(question, dict):
+            units.append(ask_words(ASK, {"questions": [question]}))
+    return units or [""]
+
+def plain(text):
+    """A question as the relabel check compares it: its Kind: fields out,
+    lowercase, words only."""
+    text = DECLARED.sub(" ", text) if isinstance(text, str) else ""
+    return " ".join(re.sub(r"[^\w]+", " ", text.lower()).split())
+
 def choice_shaped(wrap):
     ask = wrap.get("ask")
     if not isinstance(ask, str) or not ask.strip():
@@ -311,9 +358,10 @@ def closing_paragraphs(message):
 
 def closing(message):
     """The choice-shaped questions in the last paragraphs of a closing
-    message, and the paragraphs that hold them, code and URLs kept: the
-    words read for repository state."""
-    found, holding = [], []
+    message, the paragraphs that hold them, code and URLs kept (the words
+    read for repository state, one paragraph each), and for each question
+    the index of its paragraph."""
+    found, holding, where = [], [], []
     for paragraph in closing_paragraphs(message):
         here = []
         for sentence in SENTENCE.split(URL.sub(" ", INLINE_CODE.sub(" ", paragraph))):
@@ -324,8 +372,9 @@ def closing(message):
                 here.append(question)
         if here:
             found += here
+            where += [len(holding)] * len(here)
             holding.append(paragraph)
-    return "\n\n".join(holding), found
+    return holding, found, where
 
 def ask_words(tool, given):
     """The words of an ask: its question, header, options and buttons."""
@@ -388,12 +437,14 @@ try:
         # The words read for state are the question's own paragraph: "PR #12
         # failed CI. Retry it or revert?" Wider, a closing summary that names
         # a file or a commit would pass most held questions.
-        words, choices = closing(message)
+        # Each question's paragraph is read on its own, so state named in one
+        # passes no question in another.
+        texts, choices, where = closing(message)
         if not choices:
             passes()
-        # A declaration is read from the same paragraphs, inline code left
+        # A declaration is read from the closing paragraphs, inline code left
         # out: a Kind: line of its own after a blank line declares too, and
-        # prose that quotes the field in code does not.
+        # prose that quotes the field in code does not. It is one unit.
         units = [kinds("\n\n".join(INLINE_CODE.sub(" ", p) for p in closing_paragraphs(message)))]
     else:
         stop = False
@@ -403,17 +454,25 @@ try:
             passes()
         if tool == WRAP_UP and not choice_shaped(tool_input):
             passes()
-        words = ask_words(tool, tool_input)
         questions = asked(tool, tool_input)
         units = declared_units(tool, tool_input)
+        texts = unit_words(tool, tool_input)
     if stop:
         questions = [{"question": choice, "options": []} for choice in choices]
-    if len(units) == len(questions):
-        for question, unit in zip(questions, units):
-            question["kind"] = ", ".join(unit) or None
-    else:
-        for question in questions:
-            question["kind"] = ", ".join(units[0]) or None
+    # Whether each text names repository state, and whether it names
+    # something outside: a look counts when every text names state and
+    # nothing outside. A text is an AskUserQuestion question, a wrap_up ask,
+    # or a closing question's paragraph; a closing message's declaration is
+    # one unit over all its paragraphs, outside when any of them is.
+    states = [names_state(t) for t in texts]
+    outsides = [names_outside(t) for t in texts]
+    unit_outsides = [any(outsides)] if stop else outsides
+    for number, question in enumerate(questions):
+        at = number if len(units) == len(questions) else 0
+        text = where[number] if stop else (number if len(texts) == len(questions) else 0)
+        question["kind"] = ", ".join(units[at]) or None
+        question["names_state"] = states[text]
+        question["names_outside"] = outsides[text]
     with open(path) as handle:
         lines = handle.readlines()
 except Exception:
@@ -543,7 +602,6 @@ def window(lines):
 
 turn, researched, looked = window(lines)
 session = str(data.get("session_id") or os.path.basename(path))
-state_names = bool(names_state(words))
 record = {
     "session": session,
     "turn": turn,
@@ -552,47 +610,119 @@ record = {
     "questions": questions,
     "researched": researched,
     "looked": looked,
-    "names_state": state_names,
+    # Every unit names repository state; some unit names something outside.
+    "names_state": all(states),
+    "names_outside": any(outsides),
     # The kinds an ask declares, each once, in order.
     "kind": ", ".join(dict.fromkeys(k for unit in units for k in unit)) or None,
 }
-if researched or (looked and state_names):
-    log(dict(record, outcome="passed: research" if researched else "passed: look"))
+if researched:
+    log(dict(record, outcome="passed: research"))
     passes()
-# An owner-only question passes the first time when every unit of the ask
-# declares an owner-only kind. It spends nothing: a later undeclared ask in
-# the turn is still held once.
-if all(owner_only(unit, looked) for unit in units):
-    log(dict(record, outcome="passed: declared " + record["kind"]))
+# A look counts when every unit is about the repository's state: it names
+# such state and nothing outside.
+if looked and all(s and not o for s, o in zip(states, outsides)):
+    log(dict(record, outcome="passed: look"))
     passes()
 
+# The state: the turn of the last hold, then a JSON line with the questions
+# it held (plain, with the kinds each declared) and whether a relabel was
+# held. A state of the turn alone, as 0.7.8 wrote it, holds no questions.
 folder = state_dir()
 state = os.path.join(folder, re.sub(r"[^A-Za-z0-9._-]", "_", session))
+kept, unreadable = None, False
 try:
     with open(state) as handle:
-        if handle.read().strip() == turn:
-            log(dict(record, outcome="passed: second ask"))
-            passes()
+        held_turn, _, rest = handle.read().partition("\n")
+    if held_turn.strip() == turn:
+        kept = {"held": [], "relabel_held": False}
+        if rest.strip():
+            loaded = json.loads(rest)
+            # Anything but the shape this handler writes is unreadable.
+            held_list = loaded.get("held") if isinstance(loaded, dict) else None
+            if not isinstance(held_list, list) or not isinstance(loaded.get("relabel_held"), bool) or not all(
+                isinstance(item, dict) and isinstance(item.get("question"), str)
+                and isinstance(item.get("kind"), list) and all(isinstance(k, str) for k in item["kind"])
+                for item in held_list
+            ):
+                raise ValueError("the held list is not the shape ask-gate writes")
+            kept = {"held": held_list, "relabel_held": loaded["relabel_held"]}
 except FileNotFoundError:
     pass
 except Exception:
+    # Unreadable, the state names no hold this turn; a hold this turn could
+    # not be told, so the ask passes once nothing else holds it.
+    kept, unreadable = None, True
+
+def unit_questions(number):
+    """The questions a unit puts, plain: one for an AskUserQuestion
+    question or a wrap_up, every choice of a closing message."""
+    if stop:
+        return [plain(c) for c in choices]
+    if tool == ASK:
+        return [plain(questions[number]["question"])] if number < len(questions) else []
+    return [plain(tool_input.get("ask"))]
+
+def relabelled():
+    """Whether, in the turn of a hold, the ask puts a question held then
+    with only its Kind: fields added or changed."""
+    if not kept:
+        return False
+    held = {}
+    for item in kept.get("held") or []:
+        if item["question"]:
+            held.setdefault(item["question"], []).append(sorted(item["kind"]))
+    for number, unit in enumerate(units):
+        for question in unit_questions(number):
+            if question in held and unit and sorted(unit) not in held[question]:
+                return True
+    return False
+
+relabel = relabelled()
+# An owner-only question passes the first time when every unit of the ask
+# declares an owner-only kind. It spends nothing: a later undeclared ask in
+# the turn is still held once. A Kind: line added to a question once it is
+# held passes nothing. For a kind that needs a look, a unit that names
+# something outside needs research: no repository read settles it.
+if not relabel and all(owner_only(unit, looked and not outside) for unit, outside in zip(units, unit_outsides)):
+    log(dict(record, outcome="passed: declared " + record["kind"]))
+    passes()
+if unreadable:
     log(dict(record, outcome="passed: state unreadable"))
     passes()
+# The second hold of a turn: a relabel, once. Any other ask after a hold, or
+# one after a relabel's hold, passes.
+if kept is not None and not (relabel and not kept.get("relabel_held")):
+    log(dict(record, outcome="passed: second ask", relabelled=relabel))
+    passes()
+if kept is None:
+    kept = {"held": [], "relabel_held": False}
+# A relabel's hold keeps the questions as first held, so the relabel asked
+# again still reads as one.
+kept["relabel_held"] = kept.get("relabel_held") is True or relabel
+if not relabel:
+    kept["held"] = list(kept.get("held") or []) + [
+        {"question": question, "kind": sorted(unit)}
+        for number, unit in enumerate(units) for question in unit_questions(number) if question
+    ]
 try:
     os.makedirs(folder, exist_ok=True)
     with open(state, "w") as handle:
-        handle.write(turn + "\n")
+        handle.write(turn + "\n" + json.dumps(kept, ensure_ascii=False) + "\n")
 except Exception:
     log(dict(record, outcome="passed: state unwritable"))
     passes()
-log(dict(record, outcome="held"))
+log(dict(record, outcome="held: relabelled" if relabel else "held"))
 
 LOOKED = (
     "Since the owner's last message there has been no WebSearch, WebFetch, "
-    "browser page read or research subagent (researcher, Explore ...), and for "
-    "a question about the repository or its state (a path, a pull request, a "
-    "branch, a commit, CI) no Read, Grep, Glob, read-only git or gh, or test "
-    "run either. "
+    "browser page read or research subagent (researcher, Explore ...). A look "
+    "at the repository (Read, Grep, Glob, read-only git or gh, a test run) "
+    "counts only for a question about the repository or its state (a path, a "
+    "pull request, a branch, a commit, CI) that names nothing outside it; "
+    + ("there was a look, but " if looked else "there was none either, and ") +
+    "a question about an outside tool, service, API, price or credentials "
+    "needs that research, since no repository read settles it. "
 )
 RULE = (
     "Settle what a source can settle first: the repository, "
@@ -605,23 +735,44 @@ RULE = (
     "ambiguity left after research. "
 )
 DECLARE = (
-    "Next time, declare such a question on a line of its own, Kind: "
-    "preference (or approval, private, money, irreversible, ambiguity), and "
-    "it goes through the first time; ambiguity only after a look at the "
-    "sources. A declared researchable kind (api, default, version, limit, "
+    "When you first ask such a question, declare it on a line of its own, "
+    "Kind: approval (or money, irreversible), and it goes through; Kind: "
+    "preference (or private, ambiguity) goes through only after research or "
+    "a look at the sources. A Kind: line added once a question is held does "
+    "not pass it. A declared researchable kind (api, default, version, limit, "
     "error, convention, state) is held, and every declared kind is logged. "
 )
+RELABEL = (
+    "This question was held earlier in this turn, and only its Kind: line "
+    "is new: a label added after a hold passes nothing, and the relabel is "
+    "logged. "
+)
 if stop:
-    reason = (
-        "research before you ask. Your closing message asks the owner to "
-        "choose (" + " / ".join(choices)[:300] + "). " + LOOKED + RULE +
-        "Research and end the turn again with what you found and your "
-        "recommendation first. If the question is one of those kinds, end "
-        "the turn again and it goes through: the owner already sees the "
-        "question, so do not repeat it. " + DECLARE
-    )
+    if relabel:
+        reason = (
+            "research before you ask. " + RELABEL + LOOKED + RULE +
+            "Research and end the turn again with what you found and your "
+            "recommendation first; ended again, the turn ends."
+        )
+    else:
+        reason = (
+            "research before you ask. Your closing message asks the owner to "
+            "choose (" + " / ".join(choices)[:300] + "). " + LOOKED + RULE +
+            "Research and end the turn again with what you found and your "
+            "recommendation first. If the question is one of those kinds, end "
+            "the turn again and it goes through: the owner already sees the "
+            "question, so do not repeat it. " + DECLARE
+        )
     print(json.dumps({"hookSpecificOutput": {"hookEventName": STOP, "additionalContext": reason}}))
     sys.exit(0)
+if relabel:
+    print(
+        "BLOCKED: research before you ask. " + RELABEL + LOOKED + RULE +
+        "Research and ask again with what you found and your recommendation "
+        "first; asked once more, it goes through.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 print(
     "BLOCKED: research before you ask. " + LOOKED + RULE +
     "Research and ask again with what you "

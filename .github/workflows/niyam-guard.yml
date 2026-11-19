@@ -19,4 +19,4 @@ jobs:
       contents: read
       pull-requests: read
       issues: read
-    uses: veda-hq/niyam/.github/workflows/shared-guard.yml@v0.7.5
+    uses: veda-hq/niyam/.github/workflows/shared-guard.yml@v0.7.6

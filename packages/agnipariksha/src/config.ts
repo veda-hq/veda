@@ -105,8 +105,8 @@ function variables(value: unknown, where: string): Record<string, string> {
 }
 
 function positiveInteger(value: unknown, where: string): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) throw new ConfigError(`${where} must be a whole number of 1 or more`);
-  return value;
+  if (!Number.isSafeInteger(value) || (value as number) < 1) throw new ConfigError(`${where} must be a whole number of 1 or more`);
+  return value as number;
 }
 
 function laneConfig(value: unknown, where: string): LaneConfig {

@@ -438,6 +438,12 @@ class Settings(unittest.TestCase):
         self.assertIn("HOSTED_REMOTE or HOSTED_ENTRYPOINT", stderr)
         self.assertIn("they mark a hosted session; leave them as the session set them", stderr)
 
+    def test_without_settings_a_program_variable_is_still_refused(self) -> None:
+        for command in ("NODE_OPTIONS=--import=data:x pnpm test", "export PERL5OPT=-Mx"):
+            actual, stderr = self.run_guard(command, PLAIN_REPO, "")
+            self.assertEqual(actual, 2, stderr)
+            self.assertIn("hands a program text or a library to run", stderr)
+
     def test_only_the_configured_variables_are_protected(self) -> None:
         config = self.write({"command": {"protectedVariables": ["OTHER_MARK"], "protectedVariablesReason": "r"}})
         self.assertEqual(self.run_guard("export HOSTED_REMOTE=true", PLAIN_REPO, config)[0], 0)

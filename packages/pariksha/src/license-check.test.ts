@@ -331,21 +331,22 @@ describe('runLicenseCheck', () => {
     assert.deepEqual(c.out, []);
   });
 
-  it('fails closed when pnpm prints something other than JSON', () => {
+  it('throws, naming the source, when pnpm prints something other than JSON', () => {
     const c = capture();
-    assert.equal(runLicenseCheck({ config: CONFIG, root: '.' }, () => 'ERR_PNPM_NETWORK', c.io), 2);
-    assert.match(c.err[0] ?? '', /^pariksha license-check: cannot read pnpm licenses list: .*JSON.*; nothing was checked, so this is not a pass$/);
+    assert.throws(() => runLicenseCheck({ config: CONFIG, root: '.' }, () => 'ERR_PNPM_NETWORK', c.io), /^Error: cannot read pnpm licenses list: .*JSON/);
+    assert.deepEqual([c.out, c.err], [[], []]);
   });
 
-  it('fails closed when pnpm cannot run, or the report is missing', () => {
-    const failed = capture();
-    const status = runLicenseCheck({ config: CONFIG, root: '.' }, () => {
-      throw new Error('spawn pnpm ENOENT');
-    }, failed.io);
-    assert.equal(status, 2);
-    assert.deepEqual(failed.err, ['pariksha license-check: cannot read pnpm licenses list: spawn pnpm ENOENT; nothing was checked, so this is not a pass']);
-    const missing = capture();
-    assert.equal(runLicenseCheck({ config: CONFIG, root: '.', report: join(temp(), 'none.json') }, () => '{}', missing.io), 2);
-    assert.match(missing.err[0] ?? '', /^pariksha license-check: cannot read .*none\.json: ENOENT/);
+  it('throws, naming the source, when pnpm cannot run, or the report is missing', () => {
+    const c = capture();
+    assert.throws(
+      () =>
+        runLicenseCheck({ config: CONFIG, root: '.' }, () => {
+          throw new Error('spawn pnpm ENOENT');
+        }, c.io),
+      { message: 'cannot read pnpm licenses list: spawn pnpm ENOENT' },
+    );
+    assert.throws(() => runLicenseCheck({ config: CONFIG, root: '.', report: join(temp(), 'none.json') }, () => '{}', c.io), /^Error: cannot read .*none\.json: ENOENT/);
+    assert.deepEqual([c.out, c.err], [[], []]);
   });
 });

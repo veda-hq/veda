@@ -1002,7 +1002,7 @@ const licenseCheck = (f: Map<string, string>, io: Io): number => {
   const config = unchecked(P, io, () => parseLicenseConfig(configText(f, root)));
   if (config === undefined) return 2;
   const report = f.get('--report');
-  return runLicenseCheck({ config, root, ...(report === undefined ? {} : { report }) }, io.licenses ?? pnpmLicenses(), io);
+  return unchecked(P, io, () => runLicenseCheck({ config, root, ...(report === undefined ? {} : { report }) }, io.licenses ?? pnpmLicenses(), io)) ?? 2;
 };
 
 /** codeql-baseline: one of `--check <sarif>` or `--write <sarif>`, against the baseline `--baseline` names under `--root`. */
@@ -1014,7 +1014,8 @@ const codeqlBaseline = (f: Map<string, string>, io: Io): number => {
     io.err(USAGE);
     return 2;
   }
-  return runCodeqlBaseline({ mode: check === undefined ? 'write' : 'check', sarif, root: resolve(f.get('--root') ?? '.'), baseline: f.get('--baseline') ?? CODEQL_BASELINE }, io);
+  const options = { mode: check === undefined ? 'write' : 'check', sarif, root: resolve(f.get('--root') ?? '.'), baseline: f.get('--baseline') ?? CODEQL_BASELINE } as const;
+  return unchecked('pariksha codeql-baseline:', io, () => runCodeqlBaseline(options, io.out)) ?? 2;
 };
 
 /**

@@ -181,22 +181,24 @@ export interface Options {
   readonly report?: string;
 }
 
+/** The inventory's text, parsed: the saved report when one is named, else pnpm's. Throws, naming the source, when it cannot be read. */
+export const readInventory = (options: Options, runner: LicensesRunner): unknown => {
+  const source = options.report === undefined ? 'pnpm licenses list' : options.report;
+  try {
+    return JSON.parse(options.report === undefined ? runner(options.root) : readFileSync(resolve(options.report), 'utf8')) as unknown;
+  } catch (e) {
+    throw new Error(`cannot read ${source}: ${(e as Error).message}`, { cause: e });
+  }
+};
+
 /**
  * The report's verdict on stdout, as the script it was ported from printed
- * it; 2, with the reason on `err`, when the inventory cannot be read: pnpm
- * failed, the file is missing, the text is not JSON or not pnpm's shape, or
- * it lists no package.
+ * it; 2, on `err`, when it lists no package or is not pnpm's shape. An
+ * inventory that cannot be read throws (readInventory): the CLI turns that
+ * into exit 2, never a pass.
  */
 export const runLicenseCheck = (options: Options, runner: LicensesRunner, io: { readonly out: (line: string) => void; readonly err: (line: string) => void }): number => {
-  const source = options.report === undefined ? 'pnpm licenses list' : options.report;
-  let parsed: unknown;
-  try {
-    const text = options.report === undefined ? runner(options.root) : readFileSync(resolve(options.report), 'utf8');
-    parsed = JSON.parse(text);
-  } catch (e) {
-    io.err(`pariksha license-check: cannot read ${source}: ${(e as Error).message}; nothing was checked, so this is not a pass`);
-    return 2;
-  }
+  const parsed = readInventory(options, runner);
   const { lines, status } = judge(fromPnpm(parsed), options.config);
   // A verdict on stdout; a report that judged nothing is an input error, on stderr.
   lines.forEach(status === 2 ? io.err : io.out);

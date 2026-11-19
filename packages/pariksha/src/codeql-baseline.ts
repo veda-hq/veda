@@ -75,11 +75,20 @@ const isSuppressed = (result: SarifResult): boolean => (result.suppressions ?? [
 /** The query that turns `// codeql[rule-id]` comments into SARIF suppressions. */
 export const ALERT_SUPPRESSION = 'codeql/javascript-queries:AlertSuppression.ql';
 
+/** Why a SARIF log cannot be judged: it has no runs. */
+const NO_RUNS = 'CodeQL SARIF has no runs; the analysis output is unusable';
+
+/** Whether a SARIF log holds at least one run. */
+const hasRuns = (sarif: unknown): boolean => {
+  const runs = (sarif as { runs?: unknown } | null)?.runs;
+  return Array.isArray(runs) && runs.length > 0;
+};
+
 /** Every unsuppressed error-level alert in a SARIF log, reading each result's effective level. */
 export const errorAlerts = (sarif: unknown): ErrorAlert[] => {
-  const runs = (sarif as { runs?: unknown } | null)?.runs;
   // Fail closed: a log with no runs is a broken analysis, never a clean one.
-  if (!Array.isArray(runs) || runs.length === 0) throw new Error('CodeQL SARIF has no runs; the analysis output is unusable');
+  if (!hasRuns(sarif)) throw new Error(NO_RUNS);
+  const runs = (sarif as { runs: unknown[] }).runs;
   return (runs as SarifRun[]).flatMap((run) => {
     const defaults = new Map<string, string | undefined>();
     for (const component of [run.tool?.driver, ...(run.tool?.extensions ?? [])]) {
@@ -133,13 +142,11 @@ export const readBaseline = (root: string, path: string = BASELINE_PATH): ErrorA
 
 /** Print the verdict for a SARIF log against the baseline; returns the exit status. */
 export const checkSarif = (sarif: unknown, baseline: readonly ErrorAlert[], log: (line: string) => void): number => {
-  let current: ErrorAlert[];
-  try {
-    current = errorAlerts(sarif);
-  } catch (error) {
-    log(`CodeQL: ${(error as Error).message}`);
+  if (!hasRuns(sarif)) {
+    log(`CodeQL: ${NO_RUNS}`);
     return 1;
   }
+  const current = errorAlerts(sarif);
   const added = newAlerts(current, baseline);
   const fixed = newAlerts(baseline, current).length;
   log(
@@ -161,40 +168,35 @@ export interface Options {
   readonly baseline: string;
 }
 
+/** `body`'s value; when it throws, the same failure with `what` in front of its reason. */
+const naming = <T>(what: string, body: () => T): T => {
+  try {
+    return body();
+  } catch (e) {
+    throw new Error(`${what}: ${(e as Error).message}`, { cause: e });
+  }
+};
+
 /**
- * `check`: the verdict on stdout, exit 1 on a new alert (or a log with no
- * runs). `write`: the baseline regenerated from the log. Exit 2, with the
- * reason on `err`, when the log or the baseline cannot be read or written.
+ * `check`: the verdict on `out`, exit 1 on a new alert (or a log with no
+ * runs). `write`: the baseline regenerated from the log. Throws, naming
+ * the file, when the log or the baseline cannot be read or written: the
+ * CLI turns that into exit 2, never a pass.
  */
-export const runCodeqlBaseline = (options: Options, io: { readonly out: (line: string) => void; readonly err: (line: string) => void }): number => {
-  const P = 'pariksha codeql-baseline:';
+export const runCodeqlBaseline = (options: Options, out: (line: string) => void): number => {
   const target = resolve(options.root, options.baseline);
   const shown = isAbsolute(options.baseline) ? relative(options.root, target) : options.baseline;
-  let sarif: unknown;
-  try {
-    sarif = JSON.parse(readFileSync(resolve(options.sarif), 'utf8'));
-  } catch (e) {
-    io.err(`${P} cannot read the SARIF log ${options.sarif}: ${(e as Error).message}; nothing was checked, so this is not a pass`);
-    return 2;
-  }
+  const sarif = naming(`cannot read the SARIF log ${options.sarif}`, () => JSON.parse(readFileSync(resolve(options.sarif), 'utf8')) as unknown);
   if (options.mode === 'write') {
-    try {
-      const baseline = toBaseline(errorAlerts(sarif));
+    const baseline = naming(`no baseline was written to ${shown}`, () => {
+      const built = toBaseline(errorAlerts(sarif));
       mkdirSync(dirname(target), { recursive: true });
-      writeFileSync(target, `${JSON.stringify(baseline, null, 2)}\n`);
-      io.out(`Wrote ${baseline.alerts.length.toString()} alert(s) to ${shown}`);
-      return 0;
-    } catch (e) {
-      io.err(`${P} ${(e as Error).message}; no baseline was written`);
-      return 2;
-    }
+      writeFileSync(target, `${JSON.stringify(built, null, 2)}\n`);
+      return built;
+    });
+    out(`Wrote ${baseline.alerts.length.toString()} alert(s) to ${shown}`);
+    return 0;
   }
-  let alerts: ErrorAlert[];
-  try {
-    alerts = readBaseline(options.root, target);
-  } catch (e) {
-    io.err(`${P} cannot read the baseline ${shown}: ${(e as Error).message}; nothing was checked, so this is not a pass`);
-    return 2;
-  }
-  return checkSarif(sarif, alerts, io.out);
+  const alerts = naming(`cannot read the baseline ${shown}`, () => readBaseline(options.root, target));
+  return checkSarif(sarif, alerts, out);
 };

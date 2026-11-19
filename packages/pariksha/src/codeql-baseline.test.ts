@@ -196,14 +196,14 @@ describe('runCodeqlBaseline', () => {
     const file = join(root, 'scan.sarif');
     writeFileSync(file, JSON.stringify(log));
     const wrote = capture();
-    assert.equal(runCodeqlBaseline({ mode: 'write', sarif: file, root, baseline: BASELINE_PATH }, wrote.io), 0);
+    assert.equal(runCodeqlBaseline({ mode: 'write', sarif: file, root, baseline: BASELINE_PATH }, wrote.io.out), 0);
     assert.deepEqual(wrote.out, [`Wrote 3 alert(s) to ${BASELINE_PATH}`]);
     const written = readFileSync(join(root, BASELINE_PATH), 'utf8');
     assert.equal(written, `${JSON.stringify(toBaseline(readBaseline(root)), null, 2)}\n`);
     const checked = capture();
-    assert.equal(runCodeqlBaseline({ mode: 'check', sarif: file, root, baseline: BASELINE_PATH }, checked.io), 0);
+    assert.equal(runCodeqlBaseline({ mode: 'check', sarif: file, root, baseline: BASELINE_PATH }, checked.io.out), 0);
     assert.deepEqual(checked.out, ['CodeQL: 3 error-level alert(s), 3 in the baseline']);
-    assert.equal(runCodeqlBaseline({ mode: 'write', sarif: file, root, baseline: BASELINE_PATH }, capture().io), 0);
+    assert.equal(runCodeqlBaseline({ mode: 'write', sarif: file, root, baseline: BASELINE_PATH }, capture().io.out), 0);
     assert.equal(readFileSync(join(root, BASELINE_PATH), 'utf8'), written);
   });
 
@@ -213,23 +213,30 @@ describe('runCodeqlBaseline', () => {
     writeFileSync(join(root, 'baseline.json'), JSON.stringify(toBaseline(errorAlerts(log))));
     writeFileSync(file, JSON.stringify(sarif([...results, result('js/sql-injection', 'src/db.ts', 9, 'h3:1', 'error')])));
     const c = capture();
-    assert.equal(runCodeqlBaseline({ mode: 'check', sarif: file, root, baseline: join(root, 'baseline.json') }, c.io), 1);
+    assert.equal(runCodeqlBaseline({ mode: 'check', sarif: file, root, baseline: join(root, 'baseline.json') }, c.io.out), 1);
     assert.deepEqual(c.out, ['CodeQL: 4 error-level alert(s), 3 in the baseline', 'CodeQL: 1 new error-level alert(s):', '  js/sql-injection  src/db.ts:9  js/sql-injection message']);
   });
 
-  it('exits 2 on a SARIF log it cannot read, a baseline it cannot read, or a scan it cannot write from', () => {
+  it('throws, naming the file, on a SARIF log it cannot read, a baseline it cannot read, or a scan it cannot write from', () => {
     const root = temp();
-    const missing = capture();
-    assert.equal(runCodeqlBaseline({ mode: 'check', sarif: join(root, 'none.sarif'), root, baseline: BASELINE_PATH }, missing.io), 2);
-    assert.match(missing.err[0] ?? '', /^pariksha codeql-baseline: cannot read the SARIF log .*none\.sarif: ENOENT.*; nothing was checked, so this is not a pass$/);
+    const out = capture();
+    assert.throws(() => runCodeqlBaseline({ mode: 'check', sarif: join(root, 'none.sarif'), root, baseline: BASELINE_PATH }, out.io.out), /^Error: cannot read the SARIF log .*none\.sarif: ENOENT/);
     const file = join(root, 'scan.sarif');
     writeFileSync(file, JSON.stringify(log));
-    const noBaseline = capture();
-    assert.equal(runCodeqlBaseline({ mode: 'check', sarif: file, root, baseline: join(root, 'none.json') }, noBaseline.io), 2);
-    assert.match(noBaseline.err[0] ?? '', /^pariksha codeql-baseline: cannot read the baseline none\.json: ENOENT.*; nothing was checked, so this is not a pass$/);
+    assert.throws(() => runCodeqlBaseline({ mode: 'check', sarif: file, root, baseline: join(root, 'none.json') }, out.io.out), /^Error: cannot read the baseline none\.json: ENOENT/);
     writeFileSync(join(root, 'empty.sarif'), '{"runs": []}');
-    const noRuns = capture();
-    assert.equal(runCodeqlBaseline({ mode: 'write', sarif: join(root, 'empty.sarif'), root, baseline: 'b.json' }, noRuns.io), 2);
-    assert.deepEqual(noRuns.err, ['pariksha codeql-baseline: CodeQL SARIF has no runs; the analysis output is unusable; no baseline was written']);
+    assert.throws(() => runCodeqlBaseline({ mode: 'write', sarif: join(root, 'empty.sarif'), root, baseline: 'b.json' }, out.io.out), {
+      message: 'no baseline was written to b.json: CodeQL SARIF has no runs; the analysis output is unusable',
+    });
+    assert.deepEqual(out.out, []);
+  });
+
+  it('fails, not throws, a check of a log with no runs', () => {
+    const root = temp();
+    writeFileSync(join(root, 'b.json'), JSON.stringify(toBaseline([])));
+    writeFileSync(join(root, 'empty.sarif'), '{"runs": []}');
+    const c = capture();
+    assert.equal(runCodeqlBaseline({ mode: 'check', sarif: join(root, 'empty.sarif'), root, baseline: 'b.json' }, c.io.out), 1);
+    assert.deepEqual(c.out, ['CodeQL: CodeQL SARIF has no runs; the analysis output is unusable']);
   });
 });

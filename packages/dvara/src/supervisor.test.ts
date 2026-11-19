@@ -24,10 +24,32 @@ import {
 
 const STAGES = resolve(import.meta.dirname, "..", "shell", "stages.sh");
 
+/**
+ * Git hermetic for the whole process: the fixtures' git and the hooks the
+ * supervisor runs spawn git with this process's environment. A global trace2
+ * event target (a daemon's socket) could otherwise write into a fixture's
+ * .git while after() removes it, and fail it with ENOTEMPTY.
+ */
+const HERMETIC = {
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_TRACE2: "0",
+  GIT_TRACE2_EVENT: "0",
+  GIT_TRACE2_PERF: "0",
+};
+const inherited = Object.entries(process.env).filter(([name]) =>
+  name.startsWith("GIT_"),
+);
+for (const [name] of inherited) delete process.env[name];
+Object.assign(process.env, HERMETIC);
+
 /** Every folder the tests made, removed once they are done. */
 const dirs: string[] = [];
 after(() => {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  for (const name of Object.keys(HERMETIC)) delete process.env[name];
+  Object.assign(process.env, Object.fromEntries(inherited));
 });
 
 const scratch = (prefix: string): string => {

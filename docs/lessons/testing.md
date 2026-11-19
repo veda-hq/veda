@@ -206,7 +206,9 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   either way, so the paths are only names. Find the suite by the name's prefix (the one its
   `mkdtemp` gives) and remove the folder there, in `after()`, `t.after()` or a `finally`
   around the test's body, with `rmSync(dir, { recursive: true, force: true })`. A folder a
-  child process or a helper made counts too: the child inherits the `TMPDIR`. "was removed
+  child process or a helper made counts too: the child inherits the `TMPDIR`. A cleanup that
+  throws (ENOTEMPTY, see "Hermetic git" above) stops its `after()`, so the folders it had not
+  reached show up in the list too: the error printed above the list is the cause. "was removed
   or replaced during the run" means something removed the `TMPDIR` itself, usually a cleanup
   that lost its child path. Mutation testing does not see a leak, and no lint checks that a
   temp root is removed, so this check is the one that does.

@@ -797,6 +797,21 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
         words = list(each.words)
         while words and words[0].is_assignment() is not None:
             words.pop(0)
+        if (
+            len(words) in (2, 3)
+            and words[0].text == "claude"
+            and words[1].text in boundary.CLAUDE_VERSION_FLAGS
+            and [word.text for word in words[2:]] in ([], ["--verbose"])
+            and (
+                boundary.claude_runtime_is_moved()
+                or boundary.claude_environment_is_moved(command)
+            )
+        ):
+            add(
+                "`claude` with a `BUN_` variable or `NODE_OPTIONS` set, which can load "
+                "a program before it prints its version"
+            )
+            continue
         if not words or words[0].dynamic:
             continue
         head = os.path.basename(words[0].text)
@@ -820,8 +835,34 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
                 add(f"an interpreter running a file or module (`{shown(typed)}`)")
             continue
         own = each.heredocs or each.redirect_targets or any(word.bodies or word.dynamic for word in words)
+        if own and head == "git" and any(word.dynamic for word in words):
+            # `git push $REPO HEAD:x`: the expansion is named elsewhere only
+            # as a construct, so name the push whose destination it hides.
+            texts = [word.text for word in words]
+            verb, _ = boundary.git_command(texts, None)
+            if verb is not None and verb < len(texts) and texts[verb] in {"push", "send-pack"}:
+                add(f"`git {texts[verb]}` with an expansion on its line, whose destination the guard cannot place")
         if not own and boundary.mutation_directories(shlex.join(word.text for word in words), cwd) is None:
-            add(f"`{head}`, a program whose writes the guard does not know")
+            texts = [word.text for word in words]
+            verb, _ = boundary.git_command(texts, None) if head == "git" else (None, None)
+            if verb is not None and verb < len(texts) and texts[verb] in {"push", "send-pack"}:
+                add(
+                    f"`git {texts[verb]}` to a repository the guard cannot place "
+                    "(only a remote URL, or this repository itself, is placed)"
+                )
+            elif verb is not None and verb < len(texts):
+                # An alias, a verb git does not list, or a form of a known
+                # verb the guard does not place (`config core.fsmonitor`).
+                add(f"`git {shown(texts[verb])}`, a git command or option whose writes the guard does not read")
+            elif head in boundary.GIT_RUNNERS and any(os.path.basename(text) == "git" for text in texts[1:]):
+                # `pnpm add git` names a package, but is refused the same
+                # way: the word, not where it sits, is what fails closed.
+                add(
+                    f"`{head}` with `git` on its line, which the guard reads only "
+                    "when `git` is the command itself"
+                )
+            else:
+                add(f"`{head}`, a program whose writes the guard does not know")
     if any(each.piped_from is not None for each in commands):
         add("a pipeline (`|`)")
     if any(each.follows in (";", "&&", "||", "\n", "&") for each in commands[1:]):

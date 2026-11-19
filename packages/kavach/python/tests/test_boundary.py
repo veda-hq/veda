@@ -657,6 +657,8 @@ class WorktreeBoundaryTest(BoundaryFixture):
         nested = self.claude / "nested"
         nested.mkdir()
         relative = os.path.relpath(outside, nested)
+        # A push is placed through its remote's URL.
+        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
         for command in (
             f"git format-patch -1 -o {outside}",
             f"git format-patch -1 -o{outside}",
@@ -892,7 +894,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "git index-pack --stdin --fix-thin",
             "git index-pack --threads=2 --strict .tmp/x.pack",
             "git config -f .tmp/x core.x y",
-            "git config core.x y",
+            "git config user.name x",
             "git config --unset core.x",
             "git config --global --get user.name",
             "git config --global user.name",
@@ -1091,6 +1093,363 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 result = self.claude_bash(self.claude, command)
                 self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(outside.exists())
+
+    def test_git_programs_verbs_and_config_elsewhere_are_refused(self) -> None:
+        """mailsplit, mailinfo, interpret-trailers and the object-dir writers
+        name what they write their own way; transports run a program; a verb
+        git does not list, a runner's git and a config key that runs a
+        program are unproven. Git 2.54 writes or runs each the probe ran for
+        real (#189); each once counted only its folder."""
+        outside = self.external / "out"
+        nested = self.claude / "nested"
+        nested.mkdir()
+        relative = os.path.relpath(outside, nested)
+        # A push is placed through its remote's URL.
+        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
+        # interpret-trailers and the object-dir writers resolve from the top
+        # of the work tree.
+        top_relative = os.path.relpath(outside, self.claude)
+        for command in (
+            f"git mailsplit -o{outside} m",
+            f"git mailsplit -b -o{outside} m",
+            f"git mailsplit -d3 --keep-cr -o{outside} m",
+            f"git -C nested mailsplit -o{relative} ../m",
+            f"git mailinfo {outside}/msg {outside}/patch",
+            f"git mailinfo -k --encoding=UTF-8 {outside}/msg patch",
+            f"git mailinfo msg {outside}/patch -k",
+            f"git mailinfo -- msg {outside}/patch",
+            f"git -C nested mailinfo {relative}/msg patch",
+            f"git commit-graph write --object-dir {outside}",
+            f"git commit-graph --object-dir={outside} write",
+            f"git commit-graph write --obj={outside} --reachable",
+            f"git multi-pack-index --object-dir={outside} write",
+            f"git multi-pack-index write --object-dir {outside}",
+            f"git -C nested multi-pack-index --object-dir={top_relative} write",
+            "git -C nested commit-graph write --object-dir ../x",
+            f"git interpret-trailers --in-place --trailer x=y {outside}/msg",
+            f"git interpret-trailers --in {outside}/msg",
+            f"git interpret-trailers --in-place -- {outside}/msg",
+            f"git -C nested interpret-trailers --in-place {top_relative}/msg",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("outside this session's Claude worktree", result.stderr)
+        for command in (
+            f"git fetch --upload-pack='touch {outside}/x; git-upload-pack' .",
+            f"git fetch --upl='touch {outside}/x; git-upload-pack' .",
+            f"git fetch --upload-pack 'touch {outside}/x; git-upload-pack' .",
+            f"git fetch . --upload-pack='touch {outside}/x; git-upload-pack'",
+            f"git pull --upload-pack='touch {outside}/x; git-upload-pack' . main",
+            f"git fetch-pack --exec='touch {outside}/x' . main",
+            f"git fetch-pack --upload-pack='touch {outside}/x' . main",
+            f"git push --receive-pack='touch {outside}/x; git-receive-pack' . HEAD:y",
+            f"git push --exec='touch {outside}/x; git-receive-pack' . HEAD:y",
+            f"git push --e 'touch {outside}/x; git-receive-pack' . HEAD:y",
+            f"git push -o --exec='touch {outside}/x' . HEAD:y",
+            f"git send-pack --receive-pack='touch {outside}/x' . main:y",
+            f"git ls-remote --upload-pack='touch {outside}/x; git-upload-pack' .",
+            f"git ls-remote --exec='touch {outside}/x; git-upload-pack' .",
+            f"git archive --remote=. --exec='touch {outside}/x' HEAD",
+            f"git grep -O'touch {outside}/x' alpha",
+            f"git grep -iO'touch {outside}/x' alpha",
+            f"git grep --open-files-in-pager='touch {outside}/x' alpha",
+            f"git grep --op='touch {outside}/x' alpha",
+            # Options that let a listed verb write where no reader places.
+            f"git apply --unsafe-paths --directory={outside} .tmp/p.patch",
+            "git apply --uns .tmp/p.patch",
+            f"git repack -a -d --filter=blob:none --filter-to={outside}/f",
+            f"git repack -a -d --filter-t={outside}/f",
+            f"git repack -a -d --cruft --expire-to={outside}/e",
+            f"git gc --cruft --expire-to={outside}/g",
+            "git --exec-path=.tmp commit -qm x",
+            "git --exec-path=.tmp status",
+            # A verb git does not list: an alias (`!` runs the shell), a
+            # git-<name> on PATH, and the verbs left out on purpose.
+            "git lg",
+            "git x",
+            "git ai",
+            f"git daemon --detach --pid-file={outside}/pid --listen=127.0.0.1 --port=0",
+            f"git daemon --base-path={outside}",
+            f"git shell -c 'git-receive-pack {outside}'",
+            f"git receive-pack {outside}",
+            "git instaweb",
+            f"git cvsexportcommit -w {outside} HEAD",
+            "git for-each-repo --config=maintenance.repo gc",
+            "git merge-index -a touch",
+            "git init-db",
+            "git credential fill",
+            "git credential approve",
+            "git hook run pre-commit",
+            "git maintenance register",
+            "git maintenance unregister",
+            "git maintenance start",
+            "git maintenance stop",
+            f"git maintenance register --config-file {outside}/cfg",
+            "git maintenance",
+            # git under a runner gets none of git's readers.
+            f"GIT_DIR={outside} pnpm exec git init",
+            f"pnpm exec git rebase -x 'touch {outside}/x' HEAD~1",
+            f"GIT_TRACE={outside}/t pnpm exec git status",
+            f"pnpm exec git fetch --upload-pack='touch {outside}/x; git-upload-pack' .",
+            "pnpm exec -- git status",
+            "pnpm --filter x exec git status",
+            f"npx git rebase -x 'touch {outside}/x' HEAD~1",
+            f"npm exec git rebase -x 'touch {outside}/x' HEAD~1",
+            "yarn exec git status",
+            "mise exec -- git status",
+            "pnpm exec /usr/bin/git status",
+            # Config that runs a program, moves a write, or names a file.
+            f"git config alias.x '!touch {outside}/x'",
+            f"git config core.fsmonitor 'touch {outside}/x'",
+            f"git config core.hooksPath {outside}",
+            f"git config set core.fsmonitor 'touch {outside}/x'",
+            f"git config --add core.sshCommand 'touch {outside}/x'",
+            f"git config --replace-all diff.external 'touch {outside}/x'",
+            f"git config --worktree core.worktree {outside}",
+            f"git config --local include.path {outside}/c",
+            f"git config CORE.FSMONITOR 'touch {outside}/x'",
+            f"git config filter.x.clean 'touch {outside}/x'",
+            f"git config remote.origin.uploadpack 'touch {outside}/x'",
+            "git config protocol.ext.allow always",
+            "git config core.x y",
+            "git config user.x.name y",
+            "git config branch.main.x y",
+            "git config --rename-section x alias",
+            "git config rename-section x alias",
+            "git config --edit",
+            "git config -e",
+            "git config edit",
+            "git config \"$KEY\" y",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("mutation targets could not be resolved", result.stderr)
+        for command in (
+            "git mailsplit -o.tmp m",
+            "git mailsplit m",
+            f"git mailsplit -- -o{outside} m",
+            "git mailinfo .tmp/msg .tmp/patch",
+            "git commit-graph write --reachable",
+            "git commit-graph write --object-dir .git/objects",
+            "git multi-pack-index write",
+            f"git interpret-trailers --trailer x=y {outside}/msg",
+            "git interpret-trailers --in-place .tmp/msg",
+            "git interpret-trailers --no-in-place .tmp/msg",
+            "git maintenance run",
+            "git maintenance run --task=gc",
+            "git fetch",
+            "git fetch origin main",
+            "git pull --rebase",
+            "git push origin main",
+            "git push -u origin HEAD",
+            "git ls-remote origin",
+            "git archive -o .tmp/a.tar HEAD",
+            "git grep -n alpha",
+            "git grep -o alpha",
+            "git apply .tmp/p.patch",
+            "git apply --directory=sub .tmp/p.patch",
+            "git repack -a -d --filter=blob:none",
+            "git gc --auto",
+            "git --exec-path",
+            "git annotate tracked.txt",
+            "git history --help",
+            "git config user.name x",
+            "git config user.email x@example.invalid",
+            "git config set user.name x",
+            "git config --add remote.origin.fetch '+refs/heads/x:refs/remotes/origin/x'",
+            "git config branch.Main.remote origin",
+            "git config Branch.main.Merge refs/heads/main",
+            "git config push.autoSetupRemote true",
+            "git config advice.detachedHead false",
+            "git config --worktree --unset core.hooksPath",
+            "git config --unset-all alias.x",
+            "git config unset core.fsmonitor",
+            "git config --remove-section alias",
+            "git config core.hooksPath",
+            "git config --get alias.x",
+            "git config -f .tmp/x alias.x '!true'",
+            "pnpm exec tsx .tmp/x.ts",
+            "pnpm exec node --version",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(outside.exists())
+
+    def test_git_push_to_another_local_repository_is_unproven(self) -> None:
+        """A push writes the refs and objects of the repository it names and
+        runs that repository's hooks (#200). A destination is placed only
+        when it is plainly remote, or this repository itself. Git reads a
+        path from the top of the work tree, after `git -C sub` too, and
+        follows a `.git` file inside the worktree anywhere (git 2.54)."""
+        outside = self.external / "repo"
+        nested = self.claude / "nested"
+        nested.mkdir()
+        # From the top, as git reads it; `git -C nested` does not move it.
+        from_top = os.path.relpath(outside, self.claude)
+        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
+        for command in (
+            f"git push {outside} HEAD:refs/heads/x",
+            f"git push {from_top} HEAD:x",
+            f"git -C nested push {from_top} HEAD:x",
+            f"git push file://{outside} HEAD:x",
+            f"git push file://localhost{outside} HEAD:x",
+            f"git push file://host{outside} HEAD:x",
+            "git push 'file:///s%20p' HEAD:x",
+            "git push FILE:///repo HEAD:x",
+            "git push testgit::/repo HEAD:x",
+            "git push ftp://example.invalid/repo HEAD:x",
+            "git push '~/repo' HEAD:x",
+            "git push ~/repo HEAD:x",
+            f"git push -f {outside} HEAD:x",
+            f"git push {outside} -f HEAD:x",
+            f"git push -qfo ci.skip {outside} HEAD:x",
+            f"git push -o ci.skip {outside} HEAD:x",
+            f"git push -- {outside} HEAD:x",
+            f"git push --repo={outside}",
+            f"git push --repo {outside}",
+            f"git push -u --repo={outside}",
+            # Inside the worktree but not this repository: git follows a
+            # `.git` file there, or a `<path>.git` link, to anywhere.
+            "git push nested HEAD:x",
+            "git push ./nested HEAD:x",
+            "git push .tmp/scratch.git HEAD:x",
+            # A name the config does not hold, which git reads as a path.
+            "git push nosuch HEAD:x",
+            # Options off git 2.54's `git push -h`, abbreviated, or missing
+            # their value; and submodules pushed to their own remotes.
+            "git push --forc origin HEAD:x",
+            "git push --mirr origin",
+            "git push --frobnicate origin HEAD:x",
+            "git push origin HEAD:x -o",
+            "git push --recurse-submodules=on-demand origin HEAD:x",
+            "git push --recurse-submodules only origin HEAD:x",
+            "git push $REPO HEAD:x",
+            f"git send-pack {outside} main",
+            f"git send-pack {from_top} main",
+            f"git -C nested send-pack {from_top} main",
+            f"git send-pack --thin file://{outside} main",
+            f"git send-pack --remote=origin {outside} main",
+            "git send-pack nested main",
+            # The config is read before the line runs: a write before the
+            # push on its line could move where it goes.
+            f"git remote set-url origin {outside} && git push origin main",
+            f"git config remote.origin.pushurl {outside} && git push origin HEAD:x",
+            f"git remote add o {outside}; git push o HEAD:x",
+            "git fetch --set-upstream . main && git push",
+            "touch .tmp/x && git push origin main",
+            f"sh -c 'git remote set-url origin {outside}' && git push origin main",
+            f"git remote set-url origin {outside} && sh -c 'git push origin main'",
+            f"git remote set-url origin {outside} && git send-pack origin main",
+            # `&` and `|` run commands side by side: a write anywhere there
+            # may land before the push reads the config.
+            f"git push origin main & git remote set-url origin {outside}",
+            f"git push origin main | git remote set-url origin {outside}",
+            f"sh -c 'sleep 1; git push origin main' & git remote set-url origin {outside}",
+            f"sh -c 'git push origin main &'; git remote set-url origin {outside}",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("mutation targets could not be resolved", result.stderr)
+        for command in (
+            "git push origin main",
+            "git push -u origin HEAD",
+            "git push",
+            "git push --all",
+            "git push --tags origin",
+            "git push -qf origin HEAD:x",
+            "git push --force-with-lease origin HEAD:x",
+            "git push --force-with-lease=main:abc origin HEAD:x",
+            "git push --no-force-with-lease origin HEAD:x",
+            "git push --signed=if-asked origin HEAD:x",
+            "git push -o ci.skip origin HEAD:x",
+            "git push -oci.skip origin HEAD:x",
+            "git push --push-option=ci.skip origin HEAD:x",
+            "git push --recurse-submodules=check origin HEAD:x",
+            "git push --recurse-submodules no origin HEAD:x",
+            "git push --repo=origin",
+            f"git push --repo={outside} origin HEAD:x",
+            "git push origin --delete x",
+            "git push https://github.com/veda-hq/veda.git HEAD:x",
+            "git push git@github.com:veda-hq/veda.git HEAD:x",
+            "git push ssh://git@github.com/veda-hq/veda.git HEAD:x",
+            # An unconfigured name is read as a URL: here scp-like ssh.
+            "git push github.com:veda HEAD:x",
+            # This repository itself: what every commit already writes.
+            "git push . HEAD:refs/heads/x",
+            "git -C nested push . HEAD:x",
+            f"git push {self.main} HEAD:x",
+            f"git push {self.main}/.git HEAD:x",
+            f"git push file://{self.main} HEAD:x",
+            f"git push {self.claude} HEAD:x",
+            "git push nested/.. HEAD:x",
+            "git send-pack . main:refs/heads/x",
+            f"git send-pack {self.main} main:refs/heads/x",
+            "git add tracked.txt && git commit -qm x && git push origin HEAD",
+            "git commit -qm x && git push",
+            "git push origin HEAD && git push origin --tags",
+            "git push origin HEAD; touch .tmp/after",
+            "git push origin HEAD | cat",
+            "git push origin HEAD & git push origin --tags",
+            # Config alone writes no other repository; the push is read.
+            f"git remote add o {outside}",
+            f"git remote set-url origin {outside}",
+            f"git config remote.o.url {outside}",
+            f"git fetch {outside}",
+            f"git pull {outside} main",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_git_push_through_a_local_remote_is_unproven(self) -> None:
+        """A remote's URL, push URL, and each `url.<base>.insteadOf` or
+        `pushInsteadOf` rewrite of a URL are read from the config; a bare
+        `git push` reads every remote and each name it may pick (#200)."""
+        outside = self.external / "repo"
+        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
+        git(self.main, "config", "branch.claude-task.pushRemote", str(outside))
+        for command, expected in (
+            ("git push", 2),
+            ("git push --all", 2),
+            ("git push origin HEAD:x", 0),
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, expected, result.stderr)
+        git(self.main, "config", "--unset", "branch.claude-task.pushRemote")
+        git(self.main, "config", "branch.claude-task.remote", ".")
+        result = self.claude_bash(self.claude, "git push")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        git(self.main, "remote", "add", "loc", str(outside))
+        git(self.main, "remote", "add", "rel", "../../../../external/repo")
+        git(self.main, "remote", "add", "pu", "https://example.invalid/pu.git")
+        git(self.main, "config", "remote.pu.pushurl", f"file://{outside}")
+        git(self.main, "remote", "add", "gh", "https://mirror.invalid/gh.git")
+        git(self.main, "config", f"url.{self.external}/.pushInsteadOf", "https://mirror.invalid/")
+        git(self.main, "remote", "add", "Up", "https://example.invalid/up.git")
+        for command in (
+            "git push loc HEAD:x",
+            "git push rel HEAD:x",
+            "git push pu HEAD:x",
+            "git push gh HEAD:x",
+            "git push https://mirror.invalid/gh.git HEAD:x",
+            "git push up HEAD:x",
+            "git push",
+            "git push -u",
+            "git push --tags",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("mutation targets could not be resolved", result.stderr)
+        for command in ("git push origin HEAD:x", "git push Up HEAD:x"):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_git_inspection_flags_preserve_reads_and_deny_ambiguous_writes(self) -> None:
         reads = ("git diff --stat", "git show HEAD", "git log -1 --oneline", "git diff -- --output=filename", "git show -- --ext-diff")
@@ -1366,6 +1725,47 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("`curl` with a config", result.stderr)
                 self.assertNotIn("a program whose writes the guard does not know", result.stderr)
+
+    def test_brief_6_reads_pass_from_each_checkout(self) -> None:
+        """veda#6. kavach 0.7.3 refused `claude --version` and an attached
+        `git log -S'…'` everywhere, naming `claude` and `git log`."""
+
+        clean = {
+            key: value for key, value in hermetic_git_env().items()
+            if not key.startswith("BUN_") and key != "NODE_OPTIONS"
+        }
+        for cwd in (self.claude, self.main):
+            for command in (
+                "claude --version",
+                "claude -v",
+                "ls -A . 2>/dev/null",
+                "git log -S'base' --oneline",
+                "git log -G'ba.e' --oneline -- tracked.txt",
+            ):
+                with self.subTest(cwd=cwd, command=command):
+                    result = self.claude_bash(cwd, command, env=clean)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+        for command in ("claude -p hi", "claude --help"):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.main, command, env=clean)
+                self.assertEqual(result.returncode, 2, result.stderr)
+        result = self.claude_bash(self.claude, f"git log -Sbase --output={self.external}/x")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("outside this session's Claude worktree", result.stderr)
+        # The hook's environment stands for the Bash tool's: a program
+        # BUN_OPTIONS or NODE_OPTIONS loads runs before the version prints.
+        for name in ("BUN_OPTIONS", "NODE_OPTIONS"):
+            with self.subTest(name=name):
+                moved = {**clean, name: f"--preload {self.external}/p.js"}
+                result = self.claude_bash(self.main, "claude --version", env=moved)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                result = self.claude_bash(self.claude, "claude --version", env=moved)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("`claude` with a `BUN_` variable or `NODE_OPTIONS` set", result.stderr)
+                self.assertNotIn("a program whose writes the guard does not know", result.stderr)
+        result = self.claude_bash(self.claude, "BUN_OPTIONS=--preload=./p.js claude --version", env=clean)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("`claude` with a `BUN_` variable or `NODE_OPTIONS` set", result.stderr)
 
     def test_git_c_own_worktree_keeps_every_other_refusal(self) -> None:
         commands = (
@@ -3124,7 +3524,8 @@ class ReadOnlyFormsTest(unittest.TestCase):
         environment = mock.patch.dict(
             os.environ,
             {key: value for key, value in os.environ.items()
-             if key.upper() not in {"SSLKEYLOGFILE", "QLOGDIR"}},
+             if key.upper() not in {"SSLKEYLOGFILE", "QLOGDIR", "NODE_OPTIONS"}
+             and not key.startswith("BUN_")},
             clear=True,
         )
         environment.start()
@@ -3242,6 +3643,23 @@ class ReadOnlyFormsTest(unittest.TestCase):
         "curl -u user:pass -r 0-99 --url https://x.example FILE:///etc/hosts",
         'curl -s "https://x.example/$r"',
         "curl -q -s file:///etc/hosts",
+        # veda#6: Claude Code's version, and git's attached pickaxe.
+        "claude --version",
+        "claude -v",
+        "claude -V",
+        "claude --version --verbose",
+        "claude -v | head -1",
+        "git log -S'segment_is_read_only' --oneline",
+        "git log --oneline -S\"two words\" -- src",
+        "git log -G'read_.*only' --pickaxe-regex --pickaxe-all -p",
+        "git diff -Sneedle HEAD~1",
+        "git diff-tree -r -Gx HEAD",
+        "git show -Sx HEAD",
+        "git rev-list -Sx HEAD",
+        "git stash show -p -Sx",
+        # The rest of the word is the pickaxe, whatever it spells.
+        "git log -S--output=out",
+        "git log -S'x --output=out'",
     )
 
     WRITES = (
@@ -3415,6 +3833,40 @@ class ReadOnlyFormsTest(unittest.TestCase):
         "xargs curl -s < urls",
         # veda#195: gh writes sigstore's TUF metadata to its cache on every run.
         "gh attestation trusted-root",
+        # veda#6: any other claude starts the full CLI, which writes its
+        # config; BUN_OPTIONS or NODE_OPTIONS can load a program first.
+        "claude",
+        "claude -p hi",
+        "claude --help",
+        "claude -v -v",
+        "claude --verbose -v",
+        "claude --version x",
+        "claude --versio",
+        "claude update",
+        "./claude --version",
+        "$c --version",
+        "BUN_OPTIONS=--preload=./p.js claude --version",
+        "NODE_OPTIONS=--require=./p.js claude --version",
+        "export BUN_OPTIONS=--preload=./p.js; claude --version",
+        "env BUN_OPTIONS=--preload=./p.js claude --version",
+        "BUN_OPTIONS=--preload=./p.js; echo $(claude --version)",
+        "bash -c 'BUN_OPTIONS=--preload=./p.js claude --version'",
+        "claude --version > out",
+        # Setters with no `=` for the whole-text check to see stay
+        # unproven themselves.
+        "export BUN_OPTIONS; read -r BUN_OPTIONS < f; claude --version",
+        "printf -v BUN_OPTIONS %s '--preload ./p.js'; export BUN_OPTIONS; claude -v",
+        "for BUN_OPTIONS in '--preload ./p.js'; do export BUN_OPTIONS; claude -v; done",
+        "declare -x BUN_OPTIONS; claude -v",
+        "PATH=.tmp:$PATH claude --version",
+        # veda#6: an attached pickaxe hides nothing, but an expansion or
+        # another option still may.
+        "git log -S",
+        "git log -S$X",
+        "git log -S\"$X\"",
+        "git log -Sx --output=out",
+        "git log -Sx --outp=out",
+        "git log -Sx -O$X",
     )
 
     def test_read_only_forms_are_read_only(self) -> None:
@@ -3424,6 +3876,30 @@ class ReadOnlyFormsTest(unittest.TestCase):
 
     def test_writing_forms_are_not(self) -> None:
         for command in self.WRITES:
+            with self.subTest(command=command):
+                self.assertFalse(MODULE.shell_is_read_only(command))
+
+    def test_claude_version_reads_only_where_nothing_loads_a_program(self) -> None:
+        """veda#6: `BUN_OPTIONS=--preload` ran a file before Claude Code
+        2.1.326 printed its version; under node, `NODE_OPTIONS` does."""
+
+        self.assertTrue(MODULE.shell_is_read_only("claude --version"))
+        for name, value in (
+            ("BUN_OPTIONS", "--preload ./p.js"),
+            ("BUN_INSTALL", "/h/.bun"),
+            ("NODE_OPTIONS", "--require ./p.js"),
+        ):
+            with self.subTest(name=name), mock.patch.dict(os.environ, {name: value}):
+                self.assertFalse(MODULE.shell_is_read_only("claude --version"))
+                self.assertTrue(MODULE.shell_is_read_only("node --version"))
+        with mock.patch.dict(os.environ, {"BUN_OPTIONS": "", "NODE_OPTIONS": ""}):
+            self.assertTrue(MODULE.shell_is_read_only("claude --version"))
+
+    def test_attached_pickaxe_only_where_s_is_the_pickaxe(self) -> None:
+        """blame's -S names a revisions file, and the other READ_GIT verbs
+        have none: an attached -S or -G there stays unproven."""
+
+        for command in ("git blame -Srevs f", "git status -Sx", "git ls-files -Gx"):
             with self.subTest(command=command):
                 self.assertFalse(MODULE.shell_is_read_only(command))
 

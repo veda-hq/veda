@@ -52,14 +52,65 @@ off. If the refusal is wrong, it is a kavach bug: tell Alok the command
 and the reason. If the reason says sarathi is not installed, the main
 checkout needs `pnpm install` after a pin bump: ask Alok.
 
+## Git hooks
+
+git runs the tracked hooks in `.githooks/`: `pre-commit` (dvara's records
+and frozen gates) and `pre-push` (those gates, `pnpm guards`, then niyam's
+pre-push for an agent session). The main checkout's shared git config sets
+`core.hooksPath` to `.githooks`, set once by Alok. Worktrees share that
+config, and the path is relative, so each worktree runs its own branch's
+hooks under its own `node_modules`. When a hook says a pinned package is
+not installed, run `pnpm install` in your worktree. The hooks folder in the
+git directory, where `niyam onboard` once wrote its pre-push, never runs.
+onboard now reads `.githooks/pre-push` as its own and leaves it alone. A
+Claude cloud session's fresh clone has no such config, so niyam's session
+start writes its own pre-push into that clone's git directory. Check the
+setting with `git config --show-scope --show-origin --get-all core.hooksPath`,
+run inside the checkout or worktree you mean. Outside a repository it reads
+only global and system config. It should print one `local` line, from the
+main checkout's config file, with the value `.githooks`. git uses the last
+line it prints. A `global` or `system` line comes first and loses to the
+`local` one. The repository has `extensions.worktreeConfig` on, so a
+`worktree` line, from that worktree's own `config.worktree`, comes last and
+wins there, and that worktree skips `.githooks`. For either, tell Alok,
+and leave the setting alone.
+
 ## Merging
 
 Right after `gh pr create`, turn on auto-merge: `gh pr merge --auto --squash`
 (in the Claude app, the pull request tools' auto-merge does the same). The
 `main` ruleset holds the merge until every required check passes and every
-review thread is resolved. Nobody clicks merge. No AI review runs: veda-hq's
-Cubic trial is used up, and Alok said on 2026-11-14 he is OK with
-unreviewed pull requests. Cubic's check still reports, as skipped.
+review thread is resolved. Nobody clicks merge.
+
+Cubic reviews pull requests again: its monthly review allowance reset, Alok
+said on 2026-11-19. `cubic.yaml` at the root lists the files it skips, so
+the allowance goes on sources, tests, scripts, guards and hooks; what it
+skips is Alok's call. Each Cubic finding is a review thread, and the merge
+waits for all of them:
+
+- Fix a real finding, push the fix and wait for green before resolving its
+  thread. With auto-merge on, resolving the last thread merges the head as
+  it stands.
+- Answer every finding in its thread: the commit that fixes it, or why
+  there is none. kavach refuses `niyam review-thread … --body-file`, so
+  reply with `gh api graphql`'s `addPullRequestReviewThreadReply`, the
+  body read from a file under `.tmp/` (`-F body=@.tmp/<file>`). Cubic
+  resolves a thread it sees fixed; resolve the rest with
+  `niyam review-thread <PRRT_…> --resolve`.
+- A green Cubic check is not a finished review: read the pull request's
+  `reviewThreads` too.
+- When Cubic missed a push it had reviewed before, comment
+  `@cubic incremental review`. `@cubic-dev-ai review` reviews the whole
+  pull request again and spends the allowance on every line again: use it
+  only on a pull request Cubic never reviewed. A push that adds nothing to
+  the pull request's diff gets a neutral Cubic check, which `main`'s
+  ruleset passes (neutral pull requests have merged), so it needs no new
+  review. Merge `main` in only on a real conflict: a moved merge base buys
+  a fresh review.
+
+If the allowance runs out, the check reports neutral and the pull request
+goes unreviewed: tell Alok rather than assume that is fine.
+`docs/lessons/review-bots.md` has the rest.
 
 One exception waits for a person: the ruleset requires code-owner review,
 so a pull request touching any path `.github/CODEOWNERS` names for Alok
@@ -68,12 +119,13 @@ the release rules (`.github/workflows/release.yml`,
 `.github/workflows/version-rule.yml`, `scripts/version-rule.mjs`,
 `README.md`), the files that run the required checks
 (`.github/workflows/ci.yml`, `.github/workflows/niyam.yml`,
-`.github/niyam.json`), and `.github/CODEOWNERS` itself; a change to any one
-of them alone waits too. Until he approves, it is open, not done. Every
-other path, the other workflows included, has no owner: his approval of the
-slice, state or work item is the review. The check files stay owned until
-veda runs niyam's shared Guard, which judges a change to them from main's
-copy.
+`.github/niyam.json`), the lint rules and their suppressions
+(`eslint.config.js`, `eslint-suppressions.json`), and `.github/CODEOWNERS`
+itself; a change to any one of them alone waits too. Until he approves, it
+is open, not done. Every other path, the other workflows included, has no
+owner: his approval of the slice, state or work item is the review. The
+check files stay owned until veda runs niyam's shared Guard, which judges a
+change to them from main's copy.
 
 Leave auto-merge off only to hold a pull request on purpose (say why in it),
 or for a change that needs Alok's yes first, such as a major release

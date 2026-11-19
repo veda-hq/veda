@@ -89,7 +89,7 @@ folder, which holds handlers any TypeScript repository can list:
 | `code-quality-guard.sh` | PostToolUse, `Edit\|Write` | Refuses `@ts-ignore`, `@ts-nocheck`, `eslint-disable`, `any` and skipped tests in a `.ts`/`.tsx` edit. `.claude/`, `.agent/` and `docs/` are exempt. |
 | `arch-guard.sh` | PostToolUse, `Edit\|Write` | Runs the repository's `.dependency-cruiser.js` on a `.ts`/`.tsx` edit that touches imports; refuses what it refuses, and refuses when it cannot run. `scripts/` is exempt too. |
 | `session-dedupe-guard.sh` | PreToolUse, session starts | Refuses starting a session unless the conversation called `list_sessions` successfully in the last 15 minutes. |
-| `ask-gate.sh` | PreToolUse `AskUserQuestion\|mcp__ccd_turn__wrap_up` | Refuses, once per turn, a question to the owner when the session has done no research since the owner's last message ("Research before you ask"). |
+| `ask-gate.sh` | PreToolUse `AskUserQuestion\|mcp__ccd_turn__wrap_up`; Stop | Holds, once per turn, a question to the owner when the session has done no research since the owner's last message: refuses the ask, or on Stop keeps the turn going when the closing message asks the owner to choose ("Research before you ask"). |
 | `lessons.sh` | PreToolUse `Bash\|Edit\|Write\|Agent\|Task\|mcp__ccd_session__start_session`; PostToolUseFailure | Shows a lesson whose `when` line matches the call ("Lessons at their moment"). Never blocks. |
 | `autofix-watch.sh` | PostToolUse `Bash\|mcp__ccd_pr__set_monitor\|mcp__ccd_pr__get_status\|mcp__ccd_turn__wrap_up`; PostToolUseFailure `mcp__ccd_pr__set_monitor` | Lists every pull request the session opens and tells the model, in its context, about each open one that Auto-fix is not on for ("Auto-fix for every pull request"). Never blocks. |
 | `worktree-archive.sh` | PreToolUse `ExitWorktree` (and Codex's `set_thread_archived`) | Denies removing or archiving the session's worktree while `sarathi worktree archive-check` finds work that would be lost ("Worktrees"). List it with `"failClosed": true`. |
@@ -118,38 +118,114 @@ settled a question, so it checks that a look happened, not what it found.
 - **Passed:** a `wrap_up` whose first action is an app action (`commit`,
   `create_pr` …), or with no `ask`; and a go-ahead (yes/no buttons, or one
   button) whose `ask` names no alternatives: approvals are the owner's.
+- **Gated on Stop:** a question written as plain text in the closing
+  message. The handler reads `last_assistant_message` from the Stop input,
+  not the transcript, which "isn't guaranteed to include the final message
+  at Stop time" ([hooks reference, Stop input](https://code.claude.com/docs/en/hooks#stop-input)).
+  It takes the question sentences in the last three paragraphs, leaving out
+  fenced code, inline code, quoted lines and URLs. A question is held when it
+  names alternatives ("which", "or", "how should", "either"). "… or not?" and
+  a bare "A/B" do not count, since no buttons tell a pair from a path. A
+  yes/no question that names no alternative ("Force-push to main?", "Delete
+  the branch?") lets the turn end at once. An irreversible step asked as a choice ("Delete the branch or
+  keep it?") is held once, as a `wrap_up` ask is.
 - **Research:** since the owner's last message, a `WebSearch`, a `WebFetch`,
   a browser page read (`…Claude_Browser__get_page_text`, `read_page`,
   `navigate`), or an `Agent`/`Task` launch of `researcher`,
   `sarathi:researcher`, `Explore`, `general-purpose` (also the default with
   no type) or `claude-code-guide`. The owner's last message is a user-role
   entry holding the person's text: not a tool result, a system reminder, a
-  background task's report, another session's message or an app event.
-- **Refused:** exit 2, with the rule and the owner-only kinds on stderr,
-  which reaches the model. A second gated ask in the same turn goes through,
-  keyed on the turn (the owner's last message), not the question's text, so
-  an owner-only question is asked again unchanged. The key is kept in
-  `<dir>/<session id>`, where `<dir>` is `SARATHI_ASK_GATE_DIR`, else
-  `$XDG_STATE_HOME/sarathi/ask-gate`, else `~/.local/state/sarathi/ask-gate`.
+  background task's report, another session's message, an app event, or a
+  Stop hook's feedback.
+- **Repo research, for repo questions:** an ask can name repository or
+  session state in its question, header, options or buttons, or, on Stop,
+  in the paragraph that holds the question. That means a path or a file name (`README.md`),
+  `#N` or `owner/repo#N`, a pull request URL, "PR", "pull request",
+  "branch", "commit", "CI" or "workflow". For such an ask a look at that
+  state counts too: `Read`, `Grep`, `Glob`, `mcp__ccd_pr__get_status`, or a
+  Bash call running a read-only `git` verb (`status`, `log`, `diff`, `show`,
+  `branch`, `blame` …), a read-only `gh` (`pr`/`issue`/`run` `view`,
+  `list`, `checks`; `gh search`; `gh api` with no fields, or a literal
+  `GET`), or a test run (`pnpm test`, `pnpm check`, `node --test`, `vitest`,
+  `pytest`, `go test` …). A `git commit`, a `git branch -D` or a new branch
+  name, a `git reflog expire`, an `--output` file, a `gh pr create`, a
+  `gh api --method "$METHOD"` or a `pnpm install` is no look. Neither is a
+  command that may not run: one after `||`, or after `&&` behind a `false`,
+  `exit` or `return`. A look does not count for other asks. In 2,333
+  local session transcripts (2026-11-19, the script on veda-hq/veda#218),
+  732 asks the gate covers had no web research before them. 629 of them
+  (86%) came after a repo read, so counting a read for every ask would have
+  passed 86% of them, including the questions
+  official docs settle (API behaviour, defaults, version facts), the common
+  miss in veda-hq/veda#176's sample. Scoped, 380 pass, all naming repository
+  state, and 352 stay held. On Stop, reading the question's own paragraph
+  passes 50 of 166 held closing questions; reading the last three paragraphs
+  would pass 102, since a closing summary names files and commits.
+- **Refused (PreToolUse):** exit 2, with the rule and the owner-only kinds on
+  stderr, which reaches the model.
+- **Held (Stop):** exit 0 with
+  `{"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": "<the rule>"}}`,
+  so the turn goes on with the rule as `Stop hook feedback`. The hooks
+  reference gives `additionalContext` for "when the hook is working as
+  designed and giving Claude guidance": it keeps the loop protections of
+  `decision: "block"` (`stop_hook_active`, and the cap of eight consecutive
+  continuations) but shows no hook error
+  ([Stop decision control](https://code.claude.com/docs/en/hooks#stop-decision-control),
+  read 2026-11-19). It needs Claude Code 2.1.163 or later; an older one
+  ignores the field, and the turn ends as before.
+- **Once per turn:** a second held ask in the same turn goes through, keyed
+  on the turn (the owner's last message), not the question's text, so an
+  owner-only question is asked again unchanged. The PreToolUse and Stop
+  paths share the key: a Stop passes in a turn whose ask was held, and the
+  other way round. A Stop with `stop_hook_active` set passes and spends
+  nothing. The key is kept in `<dir>/<session id>`, where `<dir>` is
+  `SARATHI_ASK_GATE_DIR`, else `$XDG_STATE_HOME/sarathi/ask-gate`, else
+  `~/.local/state/sarathi/ask-gate`.
 - **Passing** is a silent exit 0, never an allow answer. Anything it cannot
   read passes.
+- **Limits on Stop:** the question has already reached the owner when Stop
+  runs; the feedback tells the model to research and end again, and not to
+  repeat an owner-only question. The transcript can lag, so research in the
+  turn's last moments may not be in it yet; the cost is one extra
+  continuation. A Stop
+  handler that exits 2 beside it wins, and sarathi answers with that
+  handler's reason alone: the gate's feedback is not shown, and its once
+  for the turn is spent.
 
 A project lists it in `.claude/sarathi.json`, beside its other `PreToolUse`
-handlers:
+and `Stop` handlers:
 
 ```json
 {
   "hooks": {
     "PreToolUse": [
       { "matcher": "AskUserQuestion|mcp__ccd_turn__wrap_up", "command": "bash \"$SARATHI_HOOKS\"/ask-gate.sh", "timeout": 10 }
+    ],
+    "Stop": [
+      { "command": "bash \"$SARATHI_HOOKS\"/ask-gate.sh", "timeout": 10 }
     ]
   }
 }
 ```
 
-and widens its settings' `PreToolUse` matcher to include
-`AskUserQuestion|mcp__ccd_turn__wrap_up` (`sarathi check` says when it does
-not), for example `Bash|Edit|Write|NotebookEdit|AskUserQuestion|mcp__ccd_turn__wrap_up`.
+It widens its settings' `PreToolUse` matcher to include
+`AskUserQuestion|mcp__ccd_turn__wrap_up`, for example
+`Bash|Edit|Write|NotebookEdit|AskUserQuestion|mcp__ccd_turn__wrap_up`. It
+also gives the settings a `Stop` entry that runs sarathi, with no matcher
+(`sarathi check` refuses one there, since the handler runs on every Stop)
+and a timeout of at least the longest Stop handler's:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "npx --no-install sarathi hook Stop", "timeout": 20 }] }
+    ]
+  }
+}
+```
+
+`sarathi check` says when either entry is missing or too narrow.
 
 ### Auto-fix for every pull request
 

@@ -12,6 +12,13 @@ veda-hq/veda#176), 12 were settled or narrowed by research the agent could
 have done first; the common miss was offering options before checking which
 of them work, with research only after the owner pushed back.
 
+For context, Anthropic counts why Claude Code stops itself, across a
+different population and with a different measure: 35% of those stops
+present a choice between proposed approaches, and 21% gather diagnostic
+information or test results [13]. The study does not say whether those
+questions were researchable; it shows where asks happen, not which could
+have been settled.
+
 ## Who can answer
 
 Only the owner can answer these. Ask them:
@@ -23,7 +30,7 @@ Only the owner can answer these. Ask them:
 | A private or undocumented fact | a deploy step in someone's head, a business goal | Claude Code best practices, "Tell Claude what it can't see" [4] |
 | Money or credentials | spending, keys | Model Spec, side effects [3c]; OWASP LLM01, human approval [5] |
 | Irreversible steps or shared systems | deletion, force-push, publishing | Amazon 2015 letter, Type 1 decisions [6] |
-| Ambiguity left after research | the candidate solutions still disagree | ClarifyGPT [7]; Clarify When Necessary [8]; Ambig-SWE [9] |
+| Ambiguity left after research | the candidate solutions still disagree | Claude's constitution, "genuine ambiguity" [11a]; ClarifyGPT [7]; Clarify When Necessary [8]; Ambig-SWE [9] |
 
 Researchable, so never asked: API behaviour, defaults, version facts, limits,
 error meanings, repository conventions, and state you can read (has the pull
@@ -32,7 +39,11 @@ it, what the cloud image holds, which branch a cloud session clones).
 
 The middle tier: a gap that is cheap to get wrong and easy to undo is not a
 question. State the assumption and proceed (Model Spec, clarifying questions
-[3b]; Amazon, Type 2 decisions [6]).
+[3b]; Amazon, Type 2 decisions [6]). Claude's constitution counts checking in
+"more than necessary for simple agentic tasks" against helpfulness [11b], and
+Anthropic's prompting guide offers an opt-in system-prompt pattern that has
+Claude infer the most useful likely action and use tools to find missing
+details rather than guess [12].
 
 ## Where to look
 
@@ -78,16 +89,23 @@ question already answered.
 
 ## Enforcement
 
-sarathi's `ask-gate.sh` handler (PreToolUse, `AskUserQuestion` and the
-desktop app's `wrap_up` asks that offer a choice) refuses an ask once per
-turn when the session has done no WebSearch, WebFetch, browser page read or
-research subagent since the owner's last message. It checks that a look
-happened, not what it found: asking again in the same turn goes through, so
-an owner-only question is asked again unchanged.
+sarathi's `ask-gate.sh` handler holds a question to the owner once per turn
+when the session has done no WebSearch, WebFetch, browser page read or
+research subagent since the owner's last message. On PreToolUse it refuses
+an `AskUserQuestion`, or a desktop-app `wrap_up` ask that offers a choice. On
+Stop it keeps the turn going when the closing message asks the owner to
+choose ("A or B?", "Which one?"). A yes/no approval passes at once. For a
+question about the repository or its state (a path, a pull request, a
+branch, a commit, CI), reading that state counts as the look: `Read`,
+`Grep`, `Glob`, the desktop app's pull request status
+(`mcp__ccd_pr__get_status`), a read-only `git` or `gh`, or a test run. That is step 1
+above. For other questions it does not count. The handler checks that a
+look happened, not what it found: asking again in the same turn goes
+through, so an owner-only question is asked again unchanged.
 
 ## Sources
 
-Read 2026-11-16.
+Read 2026-11-16; 11 to 13 read 2026-11-19.
 
 1. Andukuri et al., "STaR-GATE: Teaching Language Models to Ask Clarifying
    Questions", arXiv 2403.19154, abstract.
@@ -126,3 +144,22 @@ Read 2026-11-16.
    https://arxiv.org/abs/2502.13069
 10. RFC 2026, 4.2 "Non-Standards Track Maturity Levels".
     https://www.rfc-editor.org/rfc/rfc2026.html#section-4.2
+11. Anthropic, "Claude's Constitution" (no version or date shown on the
+    page), "Being helpful":
+    a. "What constitutes genuine helpfulness": "Claude should ask for
+       clarification in cases of genuine ambiguity."
+    b. "Balancing helpfulness with other values", among the behaviours a
+       thoughtful senior Anthropic employee would dislike: "Checks in or asks
+       clarifying questions more than necessary for simple agentic tasks."
+    https://www.anthropic.com/constitution
+12. Anthropic, Claude prompting best practices, "Tool usage": the
+    `<default_to_action>` sample prompt: when intent is unclear, "infer the
+    most useful likely action and proceed", using tools to find missing
+    details rather than guessing; with its opposite,
+    `<do_not_act_before_instructions>`, for a hesitant default.
+    https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices
+13. Anthropic, "Measuring AI agent autonomy in practice", 2026-02-18, Table 1
+    (why Claude Code stops itself): "To present the user with a choice
+    between proposed approaches" 35%, "To gather diagnostic information or
+    test results" 21%.
+    https://www.anthropic.com/research/measuring-agent-autonomy

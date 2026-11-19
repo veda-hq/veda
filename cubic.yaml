@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=https://cubic.dev/schema/cubic-repository-config.schema.json
+#
+# Cubic's review settings for veda (https://docs.cubic.dev/configure/cubic-yaml).
+# Cubic reads this file from main only, so a change here applies from the
+# next pull request after it merges. A field set here replaces the same field
+# in Cubic's dashboard settings. A file that fails validation is ignored as a
+# whole and the dashboard settings apply, so keep it to the schema's keys.
+#
+# Which files Cubic reviews is Alok's call: its monthly review allowance goes
+# on package sources, tests, scripts, guards and hooks. Files skipped here
+# spend none of it.
+version: 1
+reviews:
+  ignore:
+    files:
+      # Written by pnpm from package.json.
+      - pnpm-lock.yaml
+      # Recorded data the scripts' tests read: attestation bundles and
+      # Sigstore's trusted root.
+      - scripts/fixtures/
+      - scripts/sigstore-trusted-root.json
+      # ESLint's bulk-suppression counts, written by its --suppress-* and
+      # --prune-suppressions flags; the code they count is still reviewed.
+      - eslint-suppressions.json
+      # Written by `niyam onboard`; their source is reviewed in veda-hq/niyam.
+      # Wildcards skip dot-named folders, so these name `.github` outright.
+      - .github/niyam/
+      - .github/niyam.json
+      - .github/workflows/niyam.yml
+      # Lessons for agents, in prose.
+      - docs/lessons/

@@ -55,7 +55,14 @@ in the environment. A default config is `.curlrc`, `curlrc` or
 passwd home. Any `curl`, read-only or not, is
 unproven with `-K`/`--config`, with a `-w` that writes or reads a file, or in
 a command that assigns `CURL_HOME`, `XDG_CONFIG_HOME` or `HOME` (a config may
-set its `output`), or `SSLKEYLOGFILE` or `QLOGDIR` (files curl writes). When it
+set its `output`), or `SSLKEYLOGFILE` or `QLOGDIR` (files curl writes). A
+`git log`, `show`, `diff`, `diff-tree` or `rev-list` pickaxe passes attached
+(`-S'text'`, `-G'regex'`) as it does spaced. `claude --version` (`-v`, `-V`,
+either one alone or followed by `--verbose`) passes where no `BUN_` variable
+and no `NODE_OPTIONS` is set in the environment or on its line: Claude Code
+prints its version before it loads anything, but `BUN_OPTIONS=--preload`
+(the native build) or `NODE_OPTIONS=--require` (an npm install) runs a
+program first. Any other `claude` starts the full CLI. When it
 cannot prove a command, it treats it as writing, and from outside an owned
 worktree that refuses. An expansion that could become an option (`git log
 $X`, where `X=--output=/elsewhere`) leaves the command unproven.
@@ -121,6 +128,25 @@ have made into a link is unprovable and refused. That covers a new link
 whose relative links now lead elsewhere (`mv deep/S S && touch S/x`). Make
 the link in one call and write through it in the next: by then it exists, and
 the path resolves to where it leads.
+
+## Pushes
+
+A push writes the refs and objects of the repository it names, and runs that
+repository's hooks. So `git push` and `git send-pack` run only to a remote URL
+(`https://`, `http://`, `ssh://`, `git://`, or scp-like `host:path`), or to
+this repository itself: `.`, the worktree, the main checkout or its `.git`.
+Any other destination is refused as unproven: a local path or a `file` URL
+(read from the top of the work tree, as git reads it), a remote helper, or a
+path inside the worktree, where git follows a `.git` file anywhere. The limit:
+`ssh://localhost/…`, `localhost:/path` and `git://localhost/…` count as
+remote, and reach a repository on this machine when sshd or `git daemon` runs
+here (#226). A remote's
+URLs are read from git's config, with every `insteadOf` and `pushInsteadOf`
+rewrite, and a `git push` with no repository reads every remote. Adding or
+changing a remote still runs; the push to it is what is judged. The config is
+read before the line runs, so a push after another write on its line, other
+than `git add`, `commit`, `push` or `tag`, is refused, and so is a push beside
+any write on a line with `&` or `|`: push in a call of its own.
 
 ## What a refusal says
 

@@ -3675,6 +3675,13 @@ class ReadOnlyFormsTest(unittest.TestCase):
         "BUN_OPTIONS=--preload=./p.js; echo $(claude --version)",
         "bash -c 'BUN_OPTIONS=--preload=./p.js claude --version'",
         "claude --version > out",
+        # Setters with no `=` for the whole-text check to see stay
+        # unproven themselves.
+        "export BUN_OPTIONS; read -r BUN_OPTIONS < f; claude --version",
+        "printf -v BUN_OPTIONS %s '--preload ./p.js'; export BUN_OPTIONS; claude -v",
+        "for BUN_OPTIONS in '--preload ./p.js'; do export BUN_OPTIONS; claude -v; done",
+        "declare -x BUN_OPTIONS; claude -v",
+        "PATH=.tmp:$PATH claude --version",
         # veda#6: an attached pickaxe hides nothing, but an expansion or
         # another option still may.
         "git log -S",

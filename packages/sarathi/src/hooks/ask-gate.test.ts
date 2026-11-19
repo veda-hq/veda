@@ -8,7 +8,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
@@ -210,7 +210,7 @@ test('ask-gate: a second gated ask in the same turn passes, whatever it says', (
   const ask = (input: Entry, tool = ASK): number | null => gate({ tool_name: tool, tool_input: input, transcript_path: t, session_id: 'escape' }, {}, state).status;
   assert.equal(ask(QUESTION), 2);
   assert.equal(ask(CHOICE, WRAP_UP), 0, 'rephrased, through the other tool');
-  assert.equal(readdirSync(state).join(), 'escape', 'state is kept per session in the state folder');
+  assert.deepEqual(readdirSync(state).sort(), ['ask-log.jsonl', 'escape'], 'state is kept per session in the state folder');
   // A new owner message is a new turn: the gate asks for research again.
   writeFileSync(t, `${readFileSync(t, 'utf8')}${owner('next task')}\n`);
   assert.equal(ask(QUESTION), 2);
@@ -257,16 +257,16 @@ test('ask-gate: a session without an id is keyed on its transcript', () => {
   const t = transcript(owner());
   assert.equal(gate({ tool_name: ASK, tool_input: QUESTION, transcript_path: t }, {}, state).status, 2);
   assert.equal(gate({ tool_name: ASK, tool_input: QUESTION, transcript_path: t }, {}, state).status, 0);
-  assert.deepEqual(readdirSync(state), [t.split('/').pop()]);
+  assert.deepEqual(readdirSync(state).sort(), [t.split('/').pop(), 'ask-log.jsonl'].sort());
 });
 
 test('ask-gate: state goes under XDG_STATE_HOME, else ~/.local/state', () => {
   const xdg = join(TMP, 'xdg');
   const input = { tool_name: ASK, tool_input: QUESTION, transcript_path: transcript(owner()), session_id: 'xdg/../s' };
   assert.equal(gate(input, { SARATHI_ASK_GATE_DIR: '', XDG_STATE_HOME: xdg }).status, 2);
-  assert.deepEqual(readdirSync(join(xdg, 'sarathi', 'ask-gate')), ['xdg_.._s']);
+  assert.deepEqual(readdirSync(join(xdg, 'sarathi', 'ask-gate')).sort(), ['ask-log.jsonl', 'xdg_.._s']);
   assert.equal(gate(input, { SARATHI_ASK_GATE_DIR: '' }).status, 2);
-  assert.deepEqual(readdirSync(join(TMP, '.local', 'state', 'sarathi', 'ask-gate')), ['xdg_.._s']);
+  assert.deepEqual(readdirSync(join(TMP, '.local', 'state', 'sarathi', 'ask-gate')).sort(), ['ask-log.jsonl', 'xdg_.._s']);
 });
 
 test('ask-gate: runs the launcher interpreter when it names one', () => {
@@ -602,6 +602,12 @@ test("ask-gate log: the owner's answer to an AskUserQuestion, from PostToolUse",
     assert.deepEqual(post(response, tool), { status: 0, stdout: '', stderr: '' }, why);
   }
   assert.equal(lines().length, 1);
+  // A multi-select answer can come as a list, and an owner can type their own.
+  post({ questions: QUESTION.questions, answers: { 'Which parts?': ['a', 'b'], 'Which name?': 'my own words, ₹90k' } });
+  assert.deepEqual(lines()[1]?.['answers'], { 'Which parts?': ['a', 'b'], 'Which name?': 'my own words, ₹90k' });
+  // A hook may answer for the owner through the input's answers.
+  run({ hook_event_name: 'PostToolUse', tool_name: ASK, tool_input: { ...QUESTION, answers: { 'Which name?': 'b' } }, tool_response: 'done', session_id: 'p', transcript_path: 'x' });
+  assert.deepEqual(lines()[2]?.['answers'], { 'Which name?': 'b' });
   assert.deepEqual(gate({ hook_event_name: 'PostToolUse', tool_name: ASK, tool_response: { answers: { q: 'a' } } }, { SARATHI_ASK_LOG: join(TMP, 'logs', 'nopath.jsonl') }).status, 0, 'no transcript path or session');
   assert.equal((JSON.parse(readFileSync(join(TMP, 'logs', 'nopath.jsonl'), 'utf8')) as Entry)['session'], '');
 });
@@ -610,15 +616,31 @@ test('ask-gate log: where it goes, how it is turned off, and that it never chang
   const t = transcript(owner());
   const ask = (session: string): Entry => ({ tool_name: ASK, tool_input: QUESTION, transcript_path: t, session_id: session });
 
-  const home = join(TMP, 'log-home');
-  assert.equal(gate(ask('d'), { SARATHI_ASK_LOG: '' }, join(home, 'ask-gate')).status, 2);
-  assert.equal(readFileSync(join(home, 'ask-log.jsonl'), 'utf8').split('\n').filter(Boolean).length, 1, 'beside the state folder by default');
+  const home = join(TMP, 'log-home', 'ask-gate');
+  assert.equal(gate(ask('d'), { SARATHI_ASK_LOG: '' }, home).status, 2);
+  const file0 = join(home, 'ask-log.jsonl');
+  assert.equal(readFileSync(file0, 'utf8').split('\n').filter(Boolean).length, 1, 'in the state folder by default');
+  assert.equal(statSync(file0).mode & 0o777, 0o600, "the owner's alone");
+  chmodSync(file0, 0o644);
+  gate(ask('d2'), { SARATHI_ASK_LOG: '' }, home);
+  assert.equal(statSync(file0).mode & 0o777, 0o600, 'made so again if it was opened up');
 
   for (const off of ['0', 'false', 'OFF', 'no']) {
     const state = join(TMP, `log-off-${off}`, 'ask-gate');
     assert.equal(gate(ask(`off-${off}`), { SARATHI_ASK_LOG: off }, state).status, 2);
-    assert.equal(existsSync(join(TMP, `log-off-${off}`, 'ask-log.jsonl')), false, off);
+    assert.equal(existsSync(join(state, 'ask-log.jsonl')), false, off);
   }
+
+  const c = logged();
+  const rupee = { questions: [{ question: 'Pay ₹90k or ₹60k?', header: 'Pay', options: [{ label: '₹90k' }, { label: '₹60k' }], multiSelect: false }] };
+  assert.equal(c.run({ tool_name: ASK, tool_input: rupee, transcript_path: t, session_id: 'c-locale' }, { LC_ALL: 'C', LANG: 'C' }).status, 2);
+  assert.deepEqual(c.lines()[0]?.['questions'], [{ question: 'Pay ₹90k or ₹60k?', options: ['₹90k', '₹60k'] }], 'UTF-8 under the C locale');
+
+  const unreadable = join(TMP, 'log-unreadable');
+  mkdirSync(join(unreadable, 'c-state'), { recursive: true });
+  const u = logged();
+  assert.equal(u.run(ask('c-state'), {}, unreadable).status, 0, 'a state entry it cannot read passes');
+  assert.equal(u.lines()[0]?.['outcome'], 'passed: state unreadable');
 
   const blocker = join(TMP, 'log-blocker');
   writeFileSync(blocker, '');

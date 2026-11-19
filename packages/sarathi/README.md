@@ -242,25 +242,31 @@ JSON object:
   `mcp__ccd_turn__wrap_up` or `Stop`), `tool_use_id`, `questions` (each
   question with its option labels; a `wrap_up`'s reply buttons, not its app
   actions), `researched`, `looked`, `names_state`, `kind` (`null` until asks
-  declare one), and `outcome`: `held`, `passed: research`, `passed: look` or
-  `passed: second ask`. An ask the gate passes over (a go-ahead, a Stop with
-  no choice, a Stop already continuing) is not logged.
+  declare one), and `outcome`: `held`, `passed: research`, `passed: look`,
+  `passed: second ask`, or `passed: state unreadable` / `unwritable` (the
+  gate passes what it cannot keep its once-per-turn state for). An ask the
+  gate passes over (a go-ahead, a Stop with no choice, a Stop already
+  continuing) is not logged.
 - **An answer** to an `AskUserQuestion`: `time`, `session`, `via: "answer"`,
   `tool_use_id` (the ask's line has the same one), and `answers`, which maps
-  each question's text to the chosen label (labels joined by commas for a
-  multi-select). It comes from the `PostToolUse` input's `tool_response`. The
-  hooks reference says that is the tool's structured output, and
-  `AskUserQuestion`'s holds `questions` and `answers`: all 17 object-shaped
-  results in one machine's transcripts did. A declined question's result is
-  a string, and logs nothing. A `wrap_up` or Stop answer comes as the owner's
-  next message, so the log has none.
+  each question's text to the answer: the chosen label, a list of labels, or
+  text the owner typed. It comes from the `PostToolUse` input's
+  `tool_response`, which the hooks reference says is the tool's structured
+  output, and else from the input's `answers` (set when a hook answers for
+  the owner). In one machine's transcripts, 444 of 455 `AskUserQuestion`
+  results were objects with an `answers` map (608 string values, 13 lists);
+  the other 11 were a string or nothing, as for a declined question, and log
+  nothing. A `wrap_up` or Stop answer comes as the owner's next message, so
+  the log has none.
 
-The log is `ask-log.jsonl` beside the state folder
-(`~/.local/state/sarathi/ask-log.jsonl` by default), or the file
+The log is `ask-log.jsonl` in the state folder
+(`~/.local/state/sarathi/ask-gate/ask-log.jsonl` by default), or the file
 `SARATHI_ASK_LOG` names. `SARATHI_ASK_LOG=0` (or `false`, `off`, `no`) turns
 it off. Past 5 MB it moves aside to `ask-log.jsonl.1` and starts again. It
-holds the questions' text, so it stays on the machine: nothing sends it
-anywhere. A log it cannot write changes nothing about the gate.
+holds the questions and what the owner typed, which can be a private fact,
+so the file is the owner's alone (mode 0600) and stays on the machine:
+nothing sends it anywhere. A log it cannot write changes nothing about the
+gate.
 
 To log answers, a project lists the handler on `PostToolUse` too:
 

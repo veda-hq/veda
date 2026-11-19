@@ -171,19 +171,25 @@ def state_dir():
 
 def log(record):
     """Append a line to the ask log. SARATHI_ASK_LOG names the file, or turns
-    the log off (0, false, off, no); unset, the log sits beside the state
-    folder, as ask-log.jsonl. A log it cannot write changes nothing."""
+    the log off (0, false, off, no); unset, the log is ask-log.jsonl in the
+    state folder. The file is the owner's alone (0600): it holds questions
+    and typed answers. A log it cannot write changes nothing."""
     setting = os.environ.get("SARATHI_ASK_LOG", "").strip()
     if setting.lower() in LOG_OFF:
         return
     try:
-        target = setting or os.path.join(os.path.dirname(state_dir().rstrip(os.sep)), "ask-log.jsonl")
+        target = setting or os.path.join(state_dir(), "ask-log.jsonl")
         os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
         if os.path.exists(target) and os.path.getsize(target) > LOG_LIMIT:
             os.replace(target, target + ".1")
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        with open(target, "a") as handle:
-            handle.write(json.dumps(dict({"time": stamp}, **record), ensure_ascii=False) + "\n")
+        line = json.dumps(dict({"time": stamp}, **record), ensure_ascii=False) + "\n"
+        handle = os.open(target, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.fchmod(handle, 0o600)
+            os.write(handle, line.encode("utf-8"))
+        finally:
+            os.close(handle)
     except Exception:
         pass
 
@@ -266,9 +272,13 @@ try:
     path = data.get("transcript_path")
     if data.get("hook_event_name") == "PostToolUse":
         # The owner's answer: AskUserQuestion's result maps each question's
-        # text to the chosen label.
+        # text to the chosen label, or labels, or typed text. The input may
+        # carry the map too, when a hook answered for the owner.
         response = data.get("tool_response")
         answers = response.get("answers") if isinstance(response, dict) else None
+        given = data.get("tool_input")
+        if not isinstance(answers, dict) and isinstance(given, dict):
+            answers = given.get("answers")
         if data.get("tool_name") == ASK and isinstance(answers, dict):
             log({
                 "session": str(data.get("session_id") or os.path.basename(path or "")),
@@ -458,12 +468,14 @@ try:
 except FileNotFoundError:
     pass
 except Exception:
+    log(dict(record, outcome="passed: state unreadable"))
     passes()
 try:
     os.makedirs(folder, exist_ok=True)
     with open(state, "w") as handle:
         handle.write(turn + "\n")
 except Exception:
+    log(dict(record, outcome="passed: state unwritable"))
     passes()
 log(dict(record, outcome="held"))
 

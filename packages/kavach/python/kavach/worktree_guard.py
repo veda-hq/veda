@@ -921,26 +921,30 @@ def not_owned(
     the places it writes. The leading words stay as they were, so earlier
     logs and searches still match."""
 
-    if targets is None:
-        if tool != "Bash":
-            return f"{NOT_OWNED}. The tool's file path cannot be read as one place."
-        found = unreadable_found(boundary.tool_command(values), cwd)
-        if not found:
-            return f"{NOT_OWNED}. The guard cannot read off this command what it writes."
-        return (
-            f"{NOT_OWNED}. The guard counts this command as a mutation because it uses "
-            f"{joined(found)}, and cannot read off it what it writes."
-        )
+    if targets is None and tool != "Bash":
+        return f"{NOT_OWNED}. The tool's file path cannot be read as one place."
     # A folder that holds another target (the directory a command runs in,
     # counted with every file it names) says nothing the file does not.
-    unique = list(dict.fromkeys(targets))
+    unique = list(dict.fromkeys(targets or []))
     places = [
         target for target in unique
         if not any(other != target and boundary.is_inside(other, target) for other in unique)
     ]
     if not places:
-        return f"{NOT_OWNED}."
-    shown_places = [f"`{place}`" for place in places[:3]]
+        if tool != "Bash":
+            return f"{NOT_OWNED}."
+        found = unreadable_found(boundary.tool_command(values), cwd)
+        if not found:
+            return f"{NOT_OWNED}. The guard cannot prove this command writes nothing."
+        return (
+            f"{NOT_OWNED}. The guard counts this command as a mutation because it uses "
+            f"{joined(found)}, and cannot read off it what it writes."
+        )
+    shown_places = [
+        f"`{place}`, the folder it runs in, where it cannot prove the command writes nothing"
+        if tool == "Bash" and place == cwd else f"`{place}`"
+        for place in places[:3]
+    ]
     if len(places) > 3:
         shown_places.append(f"{len(places) - 3} more")
     return f"{NOT_OWNED}. The guard counts this call as writing {joined(shown_places)}."

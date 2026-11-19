@@ -191,8 +191,14 @@ class AdapterTest(BoundaryFixture):
         with mock.patch.object(ADAPTER, "unreadable_constructs", side_effect=ValueError("x")):
             self.assertEqual(
                 ADAPTER.not_owned("Bash", {"command": "x"}, self.main, None),
-                f"{prefix}The guard cannot read off this command what it writes.",
+                f"{prefix}The guard cannot prove this command writes nothing.",
             )
+        # A command counted only as writing where it runs says so.
+        result = self.invoke(self.main, tool_name="Bash", tool_input={"command": "git commit -m x"})
+        self.assertIn(
+            f"writing `{main}`, the folder it runs in, where it cannot prove the command writes nothing.",
+            result.stderr,
+        )
 
     def test_hook_rejects_malformed_and_non_object_payloads(self) -> None:
         for payload in ("{", "[]"):

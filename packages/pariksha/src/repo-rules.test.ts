@@ -28,6 +28,9 @@ describe('parseConfig', () => {
     const refused: Array<[unknown, RegExp]> = [
       ['{', /settings are not JSON/],
       [[], /must be a JSON object/],
+      [null, /must be a JSON object/],
+      [{ rules: null }, /"rules" must be an object of rule ids/],
+      [{ rules: { 'rule-a': { off: 5 } } }, /rules\.rule-a\.off must say why/],
       [{ other: 1 }, /unknown key "other"; repo-rules reads "rules"/],
       [{ rules: [] }, /"rules" must be an object of rule ids/],
       [{ rules: { nope: {} } }, /unknown rule "nope"; the rules are rule-a, rule-b/],
@@ -84,6 +87,7 @@ describe('lines and settings checks', () => {
     assert.equal(lineAt('a\nb\nc', 0), 1);
     assert.equal(lineAt('a\nb\nc', 4), 3);
     assert.equal(lineAt('a', 9), 1);
+    assert.equal(lineAt('a\nb', 1), 1, 'the newline at the offset is not before it');
     assert.equal(lineOf('a\nb\na', 'a'), 1);
     assert.equal(lineOf('a\nb\na', 'a', 2), 3);
     assert.equal(lineOf('a\nb', /^b$/), 2);
@@ -93,7 +97,7 @@ describe('lines and settings checks', () => {
 
   it('checks list and number settings', () => {
     assert.equal(stringList(['a']), undefined);
-    for (const bad of [[], [''], [1], 'a']) assert.match(stringList(bad) ?? '', /non-empty list of strings/);
+    for (const bad of [[], [''], [1], ['a', 1], ['a', ''], 'a']) assert.match(stringList(bad) ?? '', /non-empty list of strings/, JSON.stringify(bad));
     assert.equal(positiveInteger(3), undefined);
     for (const bad of [0, -1, 1.5, '3']) assert.match(positiveInteger(bad) ?? '', /positive whole number/);
   });
@@ -101,10 +105,11 @@ describe('lines and settings checks', () => {
 
 describe('grep', () => {
   it("reads git grep's lines, a commit's prefix dropped", () => {
-    assert.deepEqual(parseGrep('HEAD:a.ts:3:x: y\nb.ts:1:z\nnot a hit\n', 'HEAD:'), [
+    assert.deepEqual(parseGrep('HEAD:a.ts:3:x: y\nHEAD:b.ts:12:z\n', 'HEAD:'), [
       { file: 'a.ts', line: 3, text: 'x: y' },
-      { file: 'b.ts', line: 1, text: 'z' },
+      { file: 'b.ts', line: 12, text: 'z' },
     ]);
+    assert.deepEqual(parseGrep('a b.ts:107:x:1:\nnot a hit\n\n'), [{ file: 'a b.ts', line: 107, text: 'x:1:' }]);
   });
 
   it('greps the index, a commit or the tree, and reads no match as no hit', () => {
@@ -113,16 +118,19 @@ describe('grep', () => {
       run: (args: readonly string[]) => {
         calls.push([...args]);
         if (args.includes('miss')) return undefined;
+        if (args.includes('t')) return 'notes/t.md:4:t\n';
         return args.includes('--cached') ? 'a.ts:1:x\n' : 'c0:b.ts:2:y\n';
       },
     };
     assert.deepEqual(sideGrep(git, { kind: 'index' })(['x'], ['*.ts']), [{ file: 'a.ts', line: 1, text: 'x' }]);
     assert.deepEqual(sideGrep(git, { kind: 'commit', commit: 'c0' })(['y'], ['.']), [{ file: 'b.ts', line: 2, text: 'y' }]);
+    assert.deepEqual(sideGrep(git, { kind: 'tree' })(['t'], ['.']), [{ file: 'notes/t.md', line: 4, text: 't' }]);
     assert.deepEqual(sideGrep(git, { kind: 'tree' })(['miss'], ['.']), []);
     assert.deepEqual(sideGrep(git, { kind: 'tree' })([], ['.']), []);
     assert.deepEqual(calls, [
       ['grep', '--no-color', '-n', '-I', '-F', '-e', 'x', '--cached', '--', '*.ts'],
       ['grep', '--no-color', '-n', '-I', '-F', '-e', 'y', 'c0', '--', '.'],
+      ['grep', '--no-color', '-n', '-I', '-F', '-e', 't', '--', '.'],
       ['grep', '--no-color', '-n', '-I', '-F', '-e', 'miss', '--', '.'],
     ]);
   });

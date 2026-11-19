@@ -1280,4 +1280,6 @@ export const main = async (argv: readonly string[], io: Io = consoleIo): Promise
   return entry !== undefined && realpathSync(entry) === fileURLToPath(import.meta.url) ? run(args, io) : undefined;
 };
 
-process.exitCode = await main(process.argv);
+// Imported, it leaves the importer's exit code as it is.
+const code = await main(process.argv);
+if (code !== undefined) process.exitCode = code;

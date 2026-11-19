@@ -254,6 +254,16 @@ describe('main and the console', () => {
     assert.deepEqual(other.err, []);
   });
 
+  it('leaves an importer’s exit code as it is', async () => {
+    process.exitCode = 7;
+    try {
+      await import(`./cli.ts?import=${Date.now()}`);
+      assert.equal(process.exitCode, 7);
+    } finally {
+      process.exitCode = undefined;
+    }
+  });
+
   it('follows a link to this file, as node names a bin', async () => {
     const link = join(temp(), 'pariksha');
     symlinkSync(script, link);
@@ -529,7 +539,6 @@ describe('.pariksha.json', () => {
   });
 });
 
-// ---- w4 ----
 /**
  * An `eslint` that is executable but can never start: its interpreter does
  * not exist. A mutant that swaps a test's recorder for the real runner
@@ -818,7 +827,6 @@ describe('run schema-roots', () => {
   });
 });
 
-// ---- w1 ----
 /** Commits what is staged in `root`, as a fixture author. */
 const w1Commit = (root: string, message: string) => git(root, '-c', 'user.email=a@example.com', '-c', 'user.name=a', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', message);
 
@@ -1210,7 +1218,6 @@ describe('run doc-references', () => {
   });
 });
 
-// ---- w3 ----
 /** A commit in a fixture repository, by a fixed identity (the hermetic config has none). */
 const commitAll = (root: string, message: string): void => {
   git(root, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'commit', '-qm', message);
@@ -1558,7 +1565,6 @@ describe('run flaky-tests', () => {
   });
 });
 
-// ---- w2 ----
 // ── w2: shared by w2's commands ─────────────────────────────────────────────
 
 /** TypeScript, loaded once for the file; the checks that parse code get it through `Io`. */

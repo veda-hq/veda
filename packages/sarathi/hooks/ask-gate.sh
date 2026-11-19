@@ -31,6 +31,12 @@
 # <dir> is SARATHI_ASK_GATE_DIR, else $XDG_STATE_HOME/sarathi/ask-gate, else
 # ~/.local/state/sarathi/ask-gate.
 #
+# A declared owner-only kind passes the first time: a line Kind: <kind> in
+# each AskUserQuestion question (its text or header), in the wrap_up ask, or
+# in the closing paragraphs on Stop, naming preference, approval, private,
+# money, irreversible or ambiguity (README, "Declaring the kind"). Ambiguity
+# passes only after a look. A declared researchable kind stays held.
+#
 # Every gated ask is a line in the ask log (README, "The ask log"), and so is
 # the owner's answer to an AskUserQuestion, read on PostToolUse from
 # tool_response.answers.
@@ -159,6 +165,31 @@ ATTACHMENTS = {"image", "document"}
 # AskUserQuestion. It moves aside to <log>.1 past LOG_LIMIT bytes.
 LOG_OFF = {"0", "false", "off", "no"}
 LOG_LIMIT = 5 * 1024 * 1024
+# A declared kind: a field Kind: <kind> at the start of a line, after the end
+# of a sentence, or after an opening parenthesis (\x28), its value running to
+# the line end or a . ; or closing parenthesis (\x29). The whole value names
+# the kind: a word, or the row of the research-first table it comes from.
+DECLARED = re.compile(r"(?:^|(?<=[.?!])[ \t]+|\x28)[ \t>*_-]*kind:[ \t]*([^\n.;\x29]*)", re.I | re.M)
+OWNER_KINDS = {
+    "preference": "preference", "taste": "preference", "preference or taste": "preference",
+    "approval": "approval", "authority": "approval", "decision": "approval",
+    "authority or approval": "approval",
+    "private": "private", "private fact": "private", "undocumented fact": "private",
+    "private or undocumented fact": "private",
+    "money": "money", "credentials": "money", "spending": "money", "money or credentials": "money",
+    "irreversible": "irreversible", "irreversible step": "irreversible", "shared system": "irreversible",
+    "irreversible steps or shared systems": "irreversible",
+    "ambiguity": "ambiguity", "ambiguity left after research": "ambiguity",
+}
+# Kinds a source settles: declared, the ask stays held.
+RESEARCHABLE_KINDS = {
+    "api": "api", "api behaviour": "api", "api behavior": "api", "default": "default", "defaults": "default",
+    "version": "version", "version facts": "version", "limit": "limit", "limits": "limit",
+    "error": "error", "error meanings": "error", "convention": "convention", "conventions": "convention",
+    "repository conventions": "convention", "state": "state",
+}
+# Ambiguity is the kind left after research: it passes only after a look.
+NEEDS_LOOK = {"ambiguity"}
 
 def passes():
     sys.exit(0)
@@ -225,8 +256,23 @@ def asked(tool, given):
     labels = [a.get("label") for a in actions if isinstance(a, dict) and not a.get("action")] if isinstance(actions, list) else []
     return [{"question": given.get("ask"), "options": labels}]
 
+def kinds(text):
+    """The kinds a text declares, in order: the kind a known value names, or
+    the value as written, lowercase."""
+    found = []
+    for match in DECLARED.finditer(text or ""):
+        value = re.sub(r"[\s-]+", " ", match.group(1).strip(" \t*_").lower()).strip()
+        value = re.sub(r"^an? ", "", value)
+        if value:
+            found.append(OWNER_KINDS.get(value) or RESEARCHABLE_KINDS.get(value) or value[:40])
+    return found
+
+def owner_only(declared, looked):
+    """Whether a unit of an ask declares only owner-only kinds."""
+    return bool(declared) and all(k in OWNER_KINDS.values() and (k not in NEEDS_LOOK or looked) for k in declared)
+
 def names_alternatives(text, pairs):
-    words = URL.sub(" ", text)
+    words = URL.sub(" ", DECLARED.sub(" ", text))
     if ALTERNATIVES.search(words):
         return True
     return pairs and bool(PAIR.search(words))
@@ -248,13 +294,18 @@ def choice_shaped(wrap):
     go_ahead = bool(replies) and all(YES_NO.match(r) for r in replies)
     return names_alternatives(ask, not go_ahead)
 
+def closing_paragraphs(message):
+    """The last paragraphs of a closing message, fenced code and quoted lines
+    left out."""
+    paragraphs = [p for p in PARAGRAPH.split(QUOTED.sub("", FENCE.sub("", message))) if p.strip()]
+    return paragraphs[-CLOSING_PARAGRAPHS:]
+
 def closing(message):
     """The choice-shaped questions in the last paragraphs of a closing
-    message, fenced code and quoted lines left out, and the paragraphs that
-    hold them, code and URLs kept: the words read for repository state."""
-    paragraphs = [p for p in PARAGRAPH.split(QUOTED.sub("", FENCE.sub("", message))) if p.strip()]
+    message, and the paragraphs that hold them, code and URLs kept: the
+    words read for repository state."""
     found, holding = [], []
-    for paragraph in paragraphs[-CLOSING_PARAGRAPHS:]:
+    for paragraph in closing_paragraphs(message):
         here = []
         for sentence in SENTENCE.split(URL.sub(" ", INLINE_CODE.sub(" ", paragraph))):
             if "?" not in sentence:
@@ -285,6 +336,18 @@ def ask_words(tool, given):
             if isinstance(action, dict):
                 parts.append(action.get("label"))
     return "\n".join(p for p in parts if isinstance(p, str))
+
+def declared_units(tool, given):
+    """The kinds each unit of an ask declares: each AskUserQuestion question,
+    from its text and header; a wrap_up, from its ask."""
+    if tool != ASK:
+        return [kinds(given.get("ask") if isinstance(given.get("ask"), str) else "")]
+    units = []
+    for question in given.get("questions") or []:
+        if isinstance(question, dict):
+            text = "\n".join(p for p in (question.get("question"), question.get("header")) if isinstance(p, str))
+            units.append(kinds(text))
+    return units or [[]]
 
 try:
     data = json.loads(sys.stdin.read() or "{}")
@@ -319,6 +382,10 @@ try:
         words, choices = closing(message)
         if not choices:
             passes()
+        # A declaration is read from the same paragraphs, inline code left
+        # out: a Kind: line of its own after a blank line declares too, and
+        # prose that quotes the field in code does not.
+        units = [kinds("\n\n".join(INLINE_CODE.sub(" ", p) for p in closing_paragraphs(message)))]
     else:
         stop = False
         tool = data.get("tool_name")
@@ -329,8 +396,15 @@ try:
             passes()
         words = ask_words(tool, tool_input)
         questions = asked(tool, tool_input)
+        units = declared_units(tool, tool_input)
     if stop:
         questions = [{"question": choice, "options": []} for choice in choices]
+    if len(units) == len(questions):
+        for question, unit in zip(questions, units):
+            question["kind"] = ", ".join(unit) or None
+    else:
+        for question in questions:
+            question["kind"] = ", ".join(units[0]) or None
     with open(path) as handle:
         lines = handle.readlines()
 except Exception:
@@ -470,11 +544,17 @@ record = {
     "researched": researched,
     "looked": looked,
     "names_state": state_names,
-    # The kind an ask declares; #224 fills it.
-    "kind": None,
+    # The kinds an ask declares, each once, in order.
+    "kind": ", ".join(dict.fromkeys(k for unit in units for k in unit)) or None,
 }
 if researched or (looked and state_names):
     log(dict(record, outcome="passed: research" if researched else "passed: look"))
+    passes()
+# An owner-only question passes the first time when every unit of the ask
+# declares an owner-only kind. It spends nothing: a later undeclared ask in
+# the turn is still held once.
+if all(owner_only(unit, looked) for unit in units):
+    log(dict(record, outcome="passed: declared " + record["kind"]))
     passes()
 
 folder = state_dir()
@@ -515,6 +595,13 @@ RULE = (
     "fact, money or credentials, an irreversible step or a shared system, "
     "ambiguity left after research. "
 )
+DECLARE = (
+    "Next time, declare such a question on a line of its own, Kind: "
+    "preference (or approval, private, money, irreversible, ambiguity), and "
+    "it goes through the first time; ambiguity only after a look at the "
+    "sources. A declared researchable kind (api, default, version, limit, "
+    "error, convention, state) is held, and every declared kind is logged. "
+)
 if stop:
     reason = (
         "research before you ask. Your closing message asks the owner to "
@@ -522,7 +609,7 @@ if stop:
         "Research and end the turn again with what you found and your "
         "recommendation first. If the question is one of those kinds, end "
         "the turn again and it goes through: the owner already sees the "
-        "question, so do not repeat it."
+        "question, so do not repeat it. " + DECLARE
     )
     print(json.dumps({"hookSpecificOutput": {"hookEventName": STOP, "additionalContext": reason}}))
     sys.exit(0)
@@ -530,7 +617,7 @@ print(
     "BLOCKED: research before you ask. " + LOOKED + RULE +
     "Research and ask again with what you "
     "found and your recommendation first; if the question is one of those "
-    "kinds, ask it again unchanged and it goes through.",
+    "kinds, ask it again unchanged and it goes through. " + DECLARE,
     file=sys.stderr,
 )
 sys.exit(2)

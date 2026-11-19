@@ -163,8 +163,29 @@ settled a question, so it checks that a look happened, not what it found.
   state, and 352 stay held. On Stop, reading the question's own paragraph
   passes 50 of 166 held closing questions; reading the last three paragraphs
   would pass 102, since a closing summary names files and commits.
-- **Refused (PreToolUse):** exit 2, with the rule and the owner-only kinds on
-  stderr, which reaches the model.
+- **Declaring the kind:** an ask that declares an owner-only kind passes the
+  first time. The field is `Kind: <kind>` at the start of a line, after the
+  end of a sentence or after `(`, its value running to the line's end or a
+  `.`, `;` or `)`, case ignored. It is read from each `AskUserQuestion`
+  question's text or header, the `wrap_up` ask, or on Stop the last three
+  paragraphs, code and quoted lines left out; not from options or buttons.
+  The owner-only kinds are `preference`, `approval`, `private`, `money`,
+  `irreversible` and `ambiguity` (the Declare column of `research-first`;
+  the table's row names, such as `Money or credentials`, work too). Every
+  question of an `AskUserQuestion` must declare one, and every declaration
+  in a unit must be owner-only: `Kind: api` beside `Kind: preference` stays
+  held. `ambiguity` is what is left after research, so it passes only after
+  a look (any one above, for any ask). A researchable kind (`api`,
+  `default`, `version`, `limit`, `error`, `convention`, `state`) or an
+  unknown word stays held. A declared pass spends nothing: the turn's one
+  hold stays for the next undeclared ask. Holding a real owner-only
+  question costs most early: in arXiv 2605.07937 (read 2026-11-19), goal
+  clarification asked at 10% of the run raised pass@3 to 0.78 against 0.40
+  with none, and lost nearly all its value later, on 5 to 28 runs per
+  dimension, so a direction rather than a size. The log shows each kind it
+  reads, so a kind declared to skip research shows.
+- **Refused (PreToolUse):** exit 2, with the rule, the owner-only kinds and
+  how to declare one on stderr, which reaches the model.
 - **Held (Stop):** exit 0 with
   `{"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": "<the rule>"}}`,
   so the turn goes on with the rule as `Stop hook feedback`. The hooks
@@ -232,21 +253,23 @@ and a timeout of at least the longest Stop handler's:
 #### The ask log
 
 `ask-gate.sh` keeps a log of the asks it gates, so a project can see what
-its sessions ask the owner, whether they looked first, and, once asks
-declare their kind, whether a declared kind is being gamed. Each line is a
+its sessions ask the owner, whether they looked first, and whether a
+declared kind is being gamed. Each line is a
 JSON object:
 
 - **A gated ask** (an `AskUserQuestion`, a `wrap_up` ask that offers a
   choice, a closing question on Stop): `time` (UTC), `session`, `turn` (the
   owner's message it follows), `via` (`AskUserQuestion`,
   `mcp__ccd_turn__wrap_up` or `Stop`), `tool_use_id`, `questions` (each
-  question with its option labels; a `wrap_up`'s reply buttons, not its app
-  actions), `researched`, `looked`, `names_state`, `kind` (`null` until asks
-  declare one), and `outcome`: `held`, `passed: research`, `passed: look`,
+  question with its option labels, a `wrap_up`'s reply buttons, not its app
+  actions, and the `kind` it declares), `researched`, `looked`,
+  `names_state`, `kind` (the kinds the ask declares, each once, joined with
+  `, `, an unknown word as written; `null` for none), and `outcome`: `held`,
+  `passed: research`, `passed: look`, `passed: declared <kind>`,
   `passed: second ask`, or `passed: state unreadable` / `unwritable` (the
   gate passes what it cannot keep its once-per-turn state for). An ask the
   gate passes over (a go-ahead, a Stop with no choice, a Stop already
-  continuing) is not logged.
+  continuing) is not logged, nor is any kind it declares.
 - **An answer** to an `AskUserQuestion`: `time`, `session`, `via: "answer"`,
   `tool_use_id` (the ask's line has the same one), and `answers`, which maps
   each question's text to the answer: the chosen label, a list of labels, or

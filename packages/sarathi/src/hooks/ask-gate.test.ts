@@ -554,7 +554,7 @@ test('ask-gate log: every gated ask is a line, with what came first and what the
     turn,
     via: ASK,
     tool_use_id: 'toolu_1',
-    questions: [{ question: 'Which name?', options: ['a', 'b'] }],
+    questions: [{ question: 'Which name?', options: ['a', 'b'], kind: null }],
     researched: false,
     looked: false,
     names_state: false,
@@ -583,8 +583,8 @@ test('ask-gate log: a wrap_up ask and a closing question are logged too; asks th
   run({ ...stopEvent(t, 'Done, nothing to ask.'), session_id: 'st2' });
   run({ ...stopEvent(t, CLOSING), session_id: 'st3', stop_hook_active: true });
   const [wrap, stop, ...rest] = lines();
-  assert.deepEqual([wrap?.['via'], wrap?.['questions'], wrap?.['outcome']], [WRAP_UP, [{ question: 'Which fix first?', options: ['The parser', 'The lexer'] }], 'held']);
-  assert.deepEqual([stop?.['via'], stop?.['questions'], stop?.['tool_use_id'], stop?.['outcome']], ['Stop', [{ question: 'Fix the parser first or the lexer?', options: [] }], null, 'held']);
+  assert.deepEqual([wrap?.['via'], wrap?.['questions'], wrap?.['outcome']], [WRAP_UP, [{ question: 'Which fix first?', options: ['The parser', 'The lexer'], kind: null }], 'held']);
+  assert.deepEqual([stop?.['via'], stop?.['questions'], stop?.['tool_use_id'], stop?.['outcome']], ['Stop', [{ question: 'Fix the parser first or the lexer?', options: [], kind: null }], null, 'held']);
   assert.deepEqual(rest, [], 'a go-ahead, another tool, a closing message with no question and a Stop already continuing are not logged');
 });
 
@@ -635,7 +635,7 @@ test('ask-gate log: where it goes, how it is turned off, and that it never chang
   const c = logged();
   const rupee = { questions: [{ question: 'Pay ₹90k or ₹60k?', header: 'Pay', options: [{ label: '₹90k' }, { label: '₹60k' }], multiSelect: false }] };
   assert.equal(c.run({ tool_name: ASK, tool_input: rupee, transcript_path: t, session_id: 'c-locale' }, { LC_ALL: 'C', LANG: 'C' }).status, 2);
-  assert.deepEqual(c.lines()[0]?.['questions'], [{ question: 'Pay ₹90k or ₹60k?', options: ['₹90k', '₹60k'] }], 'UTF-8 under the C locale');
+  assert.deepEqual(c.lines()[0]?.['questions'], [{ question: 'Pay ₹90k or ₹60k?', options: ['₹90k', '₹60k'], kind: null }], 'UTF-8 under the C locale');
 
   const unreadable = join(TMP, 'log-unreadable');
   mkdirSync(join(unreadable, 'c-state'), { recursive: true });
@@ -682,4 +682,110 @@ test('ask-gate log: hooks running at once over a full log lose no line', async (
   assert.deepEqual(codes, Array(writers).fill(2));
   assert.equal(lines().length, writers, 'one line from each, in the fresh log');
   assert.equal(readFileSync(`${file}.1`, 'utf8').length, 5 * 1024 * 1024 + 2, 'the full log moved aside once, whole');
+});
+
+// --- a declared kind ------------------------------------------------------------
+/** An AskUserQuestion with these question texts (and headers). */
+const asking = (...questions: (string | [string, string])[]): Entry => ({
+  questions: questions.map((q) => ({
+    question: typeof q === 'string' ? q : q[0],
+    header: typeof q === 'string' ? 'Name' : q[1],
+    options: [{ label: 'a' }, { label: 'b' }],
+    multiSelect: false,
+  })),
+});
+const wrapAsking = (ask: string): Entry => ({ recap: 'r', ask, actions: [{ label: 'The parser' }, { label: 'The lexer' }] });
+
+test('ask-gate: an ask that declares an owner-only kind passes the first time', () => {
+  for (const question of [
+    'Which name?\nKind: preference',
+    'Which name? Kind: preference',
+    'Which name? (Kind: taste)',
+    'Merge now or wait?\n**Kind:** approval',
+    'Which deploy step?\n- kind: Private fact.',
+    'Which key?\nKind: money or credentials',
+    'Delete the old tag or keep it?\nKind: irreversible',
+    'Which name?\nKind: Preference or taste',
+    'Which name?\nKind: preference\nKind: approval',
+  ]) {
+    assert.equal(exit(transcript(owner()), ASK, asking(question)), 0, question);
+  }
+  assert.equal(exit(transcript(owner()), ASK, asking(['Which name?', 'Kind: money'])), 0, 'in the header');
+  assert.equal(exit(transcript(owner()), WRAP_UP, wrapAsking('Which fix first? Kind: preference.')), 0, 'a wrap_up ask');
+  assert.equal(exit(transcript(owner()), ASK, asking('Which name?\nKind: preference', ['Which tone?', 'Kind: taste'])), 0, 'every question declares');
+  assert.equal(holds(transcript(owner()), `${CLOSING}\n\nKind: preference`), false, 'on Stop, a Kind: line of its own');
+  assert.equal(holds(transcript(owner()), 'The parser and the lexer both fail.\n\nFix the parser first or the lexer? Kind: approval.'), false, 'on Stop, in the question');
+});
+
+test('ask-gate: a researchable, unknown, loose or partial declaration stays held', () => {
+  for (const question of [
+    'Which default?\nKind: default',
+    'Which version?\nKind: version',
+    'Which name?\nKind: urgent',
+    'Which name?\nKind: decision about API defaults',
+    'Which name?\nKind: preference\nKind: api',
+    'Which name is the right kind: preference or style?',
+    'Which name?\nKind:',
+  ]) {
+    assert.equal(exit(transcript(owner()), ASK, asking(question)), 2, question);
+  }
+  assert.equal(exit(transcript(owner()), ASK, asking('Which name?\nKind: preference', 'Which tone?')), 2, 'one question undeclared');
+  assert.equal(exit(transcript(owner()), ASK, asking(['Which name?', 'Name'], ['Which tone?', 'Name'])), 2, 'no question declares');
+  const options = { questions: [{ question: 'Which name?', header: 'Name', options: [{ label: 'a', description: 'Kind: preference' }, { label: 'b' }], multiSelect: false }] };
+  assert.equal(exit(transcript(owner()), ASK, options), 2, 'an option is no declaration');
+  assert.equal(holds(transcript(owner()), `${CLOSING}\n\nShould the field read \`Kind: preference\` or something else?`), true, 'on Stop, code is no declaration');
+  assert.equal(holds(transcript(owner()), `${CLOSING}\n\n> Kind: preference`), true, 'on Stop, a quoted line is no declaration');
+});
+
+test('ask-gate: ambiguity passes only after a look', () => {
+  const ambiguous = asking('Which fix?\nKind: ambiguity');
+  assert.equal(exit(transcript(owner()), ASK, ambiguous), 2, 'no look');
+  assert.equal(exit(transcript(owner(), toolUse('Read', { file_path: '/x' })), ASK, ambiguous), 0, 'after a Read');
+  assert.equal(exit(transcript(owner(), toolUse('Bash', { command: 'git log -1' })), ASK, asking('Which fix?\nKind: ambiguity left after research')), 0, 'after a git read, the row name');
+  assert.equal(exit(transcript(owner(), toolUse('Read', { file_path: '/x' })), ASK, asking('Which fix?\nKind: ambiguity\nKind: api')), 2, 'beside a researchable kind');
+});
+
+test('ask-gate: a declared pass spends nothing; the second-ask escape stays', () => {
+  const state = join(TMP, 'state-declared');
+  const t = transcript(owner());
+  const run = (toolInput: Entry): number | null => gate({ tool_name: ASK, tool_input: toolInput, transcript_path: t, session_id: 'declared' }, {}, state).status;
+  assert.equal(run(asking('Which name?\nKind: preference')), 0);
+  assert.equal(run(QUESTION), 2, 'an undeclared ask after it is still held once');
+  assert.equal(run(asking('Which version?\nKind: version')), 0, 'and the next ask goes through, declared or not');
+  assert.equal(exit(transcript(owner()), WRAP_UP, { recap: 'r', ask: 'Ship it? Kind: approval', actions: [{ label: 'Yes' }, { label: 'Not now' }] }), 0, 'a go-ahead still passes');
+});
+
+test('ask-gate: the refusal and the Stop feedback say how to declare', () => {
+  const refusal = gate({ tool_name: ASK, tool_input: QUESTION, transcript_path: transcript(owner()), session_id: 'how' }).stderr;
+  const feedback = gate(stopEvent(transcript(owner()), CLOSING)).stdout;
+  for (const text of [refusal, feedback]) {
+    assert.match(text, /Kind: preference \(or approval, private, money, irreversible, ambiguity\)/);
+    assert.match(text, /ambiguity only after a look/);
+  }
+});
+
+test('ask-gate log: the declared kind, per question and for the ask', () => {
+  const { run, lines } = logged();
+  const t = transcript(owner());
+  run({ tool_name: ASK, tool_input: asking('Which name?\nKind: taste', ['Which key?', 'Kind: money']), transcript_path: t, session_id: 'k1' });
+  run({ tool_name: ASK, tool_input: asking('Which default?\nKind: defaults'), transcript_path: t, session_id: 'k2' });
+  run({ tool_name: ASK, tool_input: asking('Which name?\nKind: Urgent'), transcript_path: t, session_id: 'k3' });
+  run({ ...stopEvent(t, `${CLOSING}\n\nKind: approval`), session_id: 'k4' });
+  const [owned, researchable, unknown, stop] = lines();
+  assert.deepEqual([owned?.['kind'], owned?.['outcome'], (owned?.['questions'] as Entry[]).map((q) => q['kind'])], ['preference, money', 'passed: declared preference, money', ['preference', 'money']]);
+  assert.deepEqual([researchable?.['kind'], researchable?.['outcome']], ['default', 'held']);
+  assert.deepEqual([unknown?.['kind'], unknown?.['outcome']], ['urgent', 'held']);
+  assert.deepEqual([stop?.['via'], stop?.['kind'], stop?.['outcome']], ['Stop', 'approval', 'passed: declared approval']);
+});
+
+test("ask-gate: every word and row in research-first's table declares", () => {
+  const skill = readFileSync(fileURLToPath(new URL('../../skills/research-first/SKILL.md', import.meta.url)), 'utf8');
+  const rows = skill.split('\n').filter((l) => /^\| [A-Z].* \| `[a-z]+` \|$/.test(l));
+  assert.equal(rows.length, 6, 'six owner-only kinds, each with the word to declare');
+  for (const row of rows) {
+    const [name, , , word] = row.split(' | ').map((c) => c.replace(/^\| |`| \|$/g, ''));
+    const look = toolUse('Read', { file_path: '/x' });
+    assert.equal(exit(transcript(owner(), look), ASK, asking(`Which one?\nKind: ${word}`)), 0, String(word));
+    assert.equal(exit(transcript(owner(), look), ASK, asking(`Which one?\nKind: ${name}`)), 0, String(name));
+  }
 });

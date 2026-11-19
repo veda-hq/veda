@@ -649,9 +649,11 @@ test('ask-gate log: where it goes, how it is turned off, and that it never chang
 
   const { file, run, lines } = logged();
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `${'x'.repeat(5 * 1024 * 1024 + 1)}\n`);
+  writeFileSync(file, `${'x'.repeat(5 * 1024 * 1024 + 1)}\n`, { mode: 0o644 });
+  chmodSync(file, 0o644);
   assert.equal(run(ask('rotate')).status, 2);
   assert.equal(existsSync(`${file}.1`), true, 'past 5 MB the log moves aside');
+  assert.equal(statSync(`${file}.1`).mode & 0o777, 0o600, 'the owner’s alone, even when it was opened up');
   assert.equal(lines().length, 1, 'and starts again');
 });
 

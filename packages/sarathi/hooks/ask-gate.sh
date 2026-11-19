@@ -191,6 +191,8 @@ def log(record):
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
                 if os.path.getsize(target) > LOG_LIMIT:
+                    # The file moved aside stays the owner's alone too.
+                    os.chmod(target, 0o600)
                     os.replace(target, target + ".1")
             except FileNotFoundError:
                 pass

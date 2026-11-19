@@ -79,11 +79,17 @@ export interface Io {
 const projectFile = new WeakMap<Map<string, string>, string>();
 const inlineText = new WeakMap<Map<string, string>, string>();
 
+/**
+ * No paths, and no arguments: one list for both, so a mutant that fills it
+ * shows as ESLint arguments nobody passed.
+ */
+const NONE: readonly string[] = [];
+
 /** The folder `--root` names, the working directory without one. */
 const rootOf = (f: Map<string, string>): string => resolve(f.get('--root') ?? process.cwd());
 
 /** The text of the settings `--config` names, or the inline entry's. */
-const configText = (f: Map<string, string>, root: string): string => inlineText.get(f) ?? readFileSync(resolve(root, f.get('--config') as string), 'utf8');
+const configText = (f: Map<string, string>, root: string): string => inlineText.get(f) ?? readFileSync(resolve(root, f.get('--config') as string)).toString();
 
 /**
  * What `body` returns; when it throws, undefined, with the reason on stderr
@@ -128,10 +134,9 @@ const listOf = (f: Map<string, string>, io: Io, root: string, widen = true): str
   // in `.pariksha.json` widens no other check's run.
   const configPath = f.get('--config');
   const settings = !widen ? undefined : inlineText.has(f) ? projectFile.get(f) : configPath === undefined ? undefined : resolve(root, configPath);
-  // An untracked settings file has package.json stand in for it; `--all`
-  // lists every file anyway.
+  // An untracked settings file has package.json stand in for it.
   const git = gitAt(top);
-  const inputs = settings === undefined || selection.kind === 'all' ? [] : settingsInputs(git, top, real(settings));
+  const inputs = [settings].filter((s) => s !== undefined).flatMap((s) => settingsInputs(git, top, real(s)));
   // Relative to the root, as a caller's list names them: a check's `include`
   // is matched against the path as listed, so `^docs/` must see `docs/a.md`.
   const base = real(root);
@@ -267,7 +272,8 @@ const maskedExitCodes = (f: Map<string, string>, io: Io): number => {
     const configPath = f.get('--config');
     const config = configPath === undefined ? DEFAULT_MASKED_CONFIG : parseMaskedConfig(configText(f, root));
     const files = shellFiles(root, config);
-    const problems = files.length === 0 ? [] : findMaskedExits(root, files, maskedReaderFor(f.has('--staged')), config);
+    // No files reads nothing, so finds nothing; formatMasked fails that run.
+    const problems = findMaskedExits(root, files, maskedReaderFor(f.has('--staged')), config);
     const result = formatMasked(problems, files.length, config.id);
     result.out.forEach(io.out);
     result.err.forEach(io.err);
@@ -419,7 +425,8 @@ const docReferences = (f: Map<string, string>, io: Io): number => {
   const configPath = f.get('--config');
   const base = f.get('--base');
   const all = f.has('--all');
-  const baseline = f.has('--update-baseline') ? 'update' : f.has('--write-baseline') ? 'write' : undefined;
+  // The baseline switch given, by the name runGate takes: --update-baseline or --write-baseline.
+  const baseline = (['update', 'write'] as const).find((kind) => f.has(`--${kind}-baseline`));
   const modes = [f.has('--staged'), all, base !== undefined].filter(Boolean).length;
   if (configPath === undefined || modes !== 1 || (f.has('--update-baseline') && f.has('--write-baseline')) || (baseline !== undefined && !all) || (f.has('--head') && base === undefined)) {
     io.err(USAGE);
@@ -632,9 +639,11 @@ const coverageExemptions = (f: Map<string, string>, io: Io): number => {
 
 const envGateSwitches = (f: Map<string, string>, io: Io): number => {
   const P = 'pariksha env-gate-switches:';
+  // One name for the working tree, the default and what staged mode also lists.
+  const TREE = 'tree';
   const configPath = f.get('--config');
-  const mode = f.get('--mode') ?? 'tree';
-  if (configPath === undefined || (mode !== 'staged' && mode !== 'tree')) {
+  const mode = f.get('--mode') ?? TREE;
+  if (configPath === undefined || (mode !== 'staged' && mode !== TREE)) {
     io.err(USAGE);
     return 2;
   }
@@ -660,7 +669,7 @@ const envGateSwitches = (f: Map<string, string>, io: Io): number => {
     const listed = listFiles(reads, mode).filter((l) => reader.isGateCode(l.file));
     // A tree with no gate code is a config whose gatePaths match nothing (a
     // typo): staged mode would pass every commit under it, so both refuse.
-    if (!(mode === 'tree' ? listed.length > 0 : listFiles(reads, 'tree').some((l) => reader.isGateCode(l.file)))) {
+    if (!(mode === TREE ? listed.length > 0 : listFiles(reads, TREE).some((l) => reader.isGateCode(l.file)))) {
       io.err(`${P} no tracked file is gate code under the config's gatePaths; nothing was checked, so this is not a pass`);
       return 2;
     }
@@ -668,7 +677,7 @@ const envGateSwitches = (f: Map<string, string>, io: Io): number => {
       const text = readGate(reads, mode, entry);
       return text === undefined ? [] : [{ file: entry.file, text }];
     });
-    if (mode === 'tree' && sources.length === 0) {
+    if (mode === TREE && sources.length === 0) {
       // Staged mode reads the index, which holds every file it lists.
       io.err(`${P} every tracked gate file (${listed.length}) is gone from the working tree; nothing was checked, so this is not a pass`);
       return 2;
@@ -789,7 +798,8 @@ const FAULT_INJECTION_REGISTRY: Ratchet<FaultConfig> = {
   roots: (config) => [...new Set(Object.values(config.discover).flatMap((g) => g.roots))],
   discover: (root, files, config) =>
     Object.fromEntries(Object.entries(config.discover).map(([name, group]) => [name, discoverGroup(root, files.filter((file) => group.roots.some((r) => file === r || file.startsWith(`${r}/`))), group)])),
-  kind: (list, config) => ({ noun: `${list} source`, roots: config.discover[list]?.roots ?? [] }),
+  // `list` is one of discovery's own lists, so a group of that name exists.
+  kind: (list, config) => ({ noun: `${list} source`, roots: (config.discover[list] as FaultConfig['discover'][string]).roots }),
   fileOf: wholeId,
   findings: (root, config, found, baseline, grown, ts) => faultFindings(ts(), root, config, found, baseline, grown),
   format: formatFaultFindings,
@@ -811,7 +821,8 @@ const requiredSettings = (f: Map<string, string>, io: Io): number => {
   const settingsPath = f.get('--settings') ?? DEFAULT_SETTINGS;
   const read = (path: string, what: string): string | undefined => {
     try {
-      return readFileSync(resolve(root, path), 'utf8');
+      // UTF-8, a Buffer's default: both files are JSON, which reads no other.
+      return readFileSync(resolve(root, path)).toString();
     } catch {
       io.err(`${P} cannot read the ${what} ${resolve(root, path)}; nothing was checked, so this is not a pass`);
       return undefined;
@@ -1076,21 +1087,21 @@ const schemaRoots = (rest: readonly string[], io: Io): number => {
 /** Every repo-rules rule, in the order a run reports them. */
 export const REPO_RULES: readonly RepoRule[] = [...WORKFLOW_RULES, ...FILE_RULES, ...CONFIG_RULES, turboInputsCoverReads];
 
-/** The old paths a selection deletes or renames away. */
-const removedPaths = (top: string, f: Map<string, string>): string[] => {
-  const selection = selectionOf(f);
-  if (selection === undefined || 'error' in selection || selection.kind === 'all') return [];
+/** A selection `listOf` has accepted: one, or none. */
+type Accepted = Exclude<ReturnType<typeof selectionOf>, { readonly error: string }>;
+
+/**
+ * The old paths a selection deletes or renames away. Renames are not paired
+ * (`PLAIN_DIFF`), so a rename's old path is listed as the deletion it is.
+ */
+const removedPaths = (top: string, selection: Accepted): readonly string[] => {
+  if (selection === undefined || selection.kind === 'all') return NONE;
   const git = gitAt(top);
-  const range = selection.kind === 'staged' ? ['--cached'] : [`${must(git, ['rev-parse', '--verify', '--end-of-options', `${selection.base}^{commit}`]).trim()}...${must(git, ['rev-parse', '--verify', '--end-of-options', `${selection.head}^{commit}`]).trim()}`];
-  const fields = must(git, ['diff', '--name-status', '-z', '-M', '--diff-filter=DR', ...PLAIN_DIFF.filter((o) => o !== '--no-renames'), ...range]).split('\0');
-  const out: string[] = [];
-  for (let i = 0; i < fields.length; ) {
-    const status = fields[i] ?? '';
-    if (status === '') break;
-    out.push(fields[i + 1] as string);
-    i += status.startsWith('R') ? 3 : 2;
-  }
-  return out;
+  const commit = (ref: string): string => must(git, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]).trim();
+  const range = selection.kind === 'staged' ? ['--cached'] : [`${commit(selection.base)}...${commit(selection.head)}`];
+  return must(git, ['diff', '--name-only', '-z', '--diff-filter=D', ...PLAIN_DIFF, ...range])
+    .split('\0')
+    .filter(Boolean);
 };
 
 /**
@@ -1114,9 +1125,10 @@ const repoRules = (f: Map<string, string>, io: Io): number => {
       for (const s of stale) io.err(`${P} ${s} names a file git does not track; drop the stale allowance`);
       return 'stale';
     }
-    const selection = selectionOf(f);
-    const side: Side = selection !== undefined && !('error' in selection) && selection.kind === 'staged' ? { kind: 'index' } : selection !== undefined && !('error' in selection) && selection.kind === 'range' ? { kind: 'commit', commit: selection.head } : { kind: 'tree' };
-    return runRules(diskRepo(top, files, tracked, () => removedPaths(top, f), git, side), REPO_RULES, config);
+    // listOf has refused flags that name no one selection, so these name one or none.
+    const selection = selectionOf(f) as Accepted;
+    const side: Side = selection?.kind === 'staged' ? { kind: 'index' } : selection?.kind === 'range' ? { kind: 'commit', commit: selection.head } : { kind: 'tree' };
+    return runRules(diskRepo(top, files, tracked, () => removedPaths(top, selection), git, side), REPO_RULES, config);
   });
   if (outcome === undefined) return 2;
   if (outcome === 'stale') return 1;
@@ -1238,7 +1250,7 @@ export const run = (args: readonly string[], io: Io, version: string = ownVersio
       return 2;
     }
     if (!projectApplied(command, f, io, env, version)) return 2;
-    return eslintByWorkspace(f, files, cut === -1 ? [] : rest.slice(cut + 1), io);
+    return eslintByWorkspace(f, files, cut === -1 ? NONE : rest.slice(cut + 1), io);
   }
   const entry = Object.entries(COMMANDS).find(([name]) => name === command);
   const f = entry && flags(rest, entry[1].allowed, entry[1].switches);

@@ -71,7 +71,7 @@ export const sideGrep =
   (git: Git, side: Side) =>
   (fixed: readonly string[], pathspecs: readonly string[]): GrepHit[] => {
     if (fixed.length === 0) return [];
-    const where = side.kind === 'index' ? ['--cached'] : side.kind === 'commit' ? [side.commit] : [];
+    const where = side.kind === 'tree' ? [] : side.kind === 'index' ? ['--cached'] : [side.commit];
     const out = git.run(['grep', '--no-color', '-n', '-I', '-F', ...fixed.flatMap((f) => ['-e', f]), ...where, '--', ...pathspecs]);
     return parseGrep(out ?? '', side.kind === 'commit' ? `${side.commit}:` : '');
   };

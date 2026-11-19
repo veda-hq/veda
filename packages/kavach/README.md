@@ -343,7 +343,10 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
   switching branches and installing are a worktree's daily work. `merge`,
   `pull`, `rebase`, `cherry-pick`, `stash`, `reset --hard`, a branch switch
   and the index plumbing (`update-index`, `checkout-index`) can still bring
-  a committed change to a listed path into the work tree, and `pnpm install`
+  a committed change to a listed path into the work tree. The plainest:
+  git runs no hook that is absent, so switching to a commit without the
+  hooks folder (`git switch --detach <commit>`) and pushing from there
+  skips every local check. `pnpm install`
   rewrites `node_modules` from the lockfile. Package scripts, tests and
   other repository code write what they like, and so does a
   `trustedCommands` script, which runs before these checks. Environment

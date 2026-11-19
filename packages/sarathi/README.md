@@ -280,9 +280,11 @@ Stop, before the research hold, the handler checks the closing message:
   with URLs, inline code and "quoted text" taken out. A question answered on
   its own line ("**Can it close?** Yes, once …") does not end that line.
 - **No `wrap_up` carried an ask** since the turn's prompt: the last
-  user-role entry that is not a tool result or meta text, whoever sent it
-  (the owner, another session, an app event), so a side session's turn
-  counts from the message that started it.
+  user-role entry from the owner, another session (meta or not) or an app
+  event, so a side session's turn counts from the message that started it.
+  A tool result, meta text, a row of system reminders alone and a
+  background task's report start no turn: a `wrap_up` ask before them
+  still stands.
 - **The session has `wrap_up`:** the desktop app names it in
   `CLAUDE_CODE_TERMINAL_MCP_TOOLS`, or the transcript shows a call to it. A
   terminal session's Stop is as before.
@@ -296,15 +298,13 @@ continuation carries `stop_hook_active`, so it fires at most once a turn.
 Each one is a line in the ask log, `outcome: "nudged: no wrap_up ask"`. Like
 the hold, it needs Claude Code 2.1.163 or later, which reads
 `additionalContext` on Stop; an older one ignores it and the turn ends, so
-there a `nudged` line records feedback the model never saw. A background
-task's report starts no new turn here: a `wrap_up` ask before it still
-stands.
+there a `nudged` line records feedback the model never saw.
 
-Replayed over this Mac's desktop transcripts (28,657 turn endings, read
-2026-11-20), the handler's own functions nudge 1,099 turns, most of them
-"Needs you:" endings. As a consistency check, with turns split the
-handler's own way, none of the 1,516 turns whose `wrap_up` carried an ask
-is nudged.
+Replayed over this Mac's desktop transcripts (read 2026-11-20), with turns
+split at every user row that is not a tool result or meta text, the
+handler's own functions nudge 810 of 26,627 turn endings, most of them
+"Needs you:" endings. Counting a task report as no prompt drops 11 nudges
+there, each a repeat of an ask already standing.
 
 A project lists it in `.claude/sarathi.json`, beside its other `PreToolUse`
 and `Stop` handlers:

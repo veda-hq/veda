@@ -62,10 +62,12 @@ Cubic trial is used up, and Alok said on 2026-11-14 he is OK with
 unreviewed pull requests. Cubic's check still reports, as skipped.
 
 One exception waits for a person: the ruleset requires code-owner review,
-so a pull request touching a path `.github/CODEOWNERS` gives Alok (the
-release rules: `release.yml`, `version-rule.yml`, `scripts/version-rule.mjs`,
-the README and CODEOWNERS itself) also waits for his approving review, then
-merges by itself. Until he approves, it is open, not done. Every other path,
+so a pull request touching any path `.github/CODEOWNERS` names for Alok
+also waits for his approving review, then merges by itself. Those paths are
+the release rules: `.github/workflows/release.yml`,
+`.github/workflows/version-rule.yml`, `scripts/version-rule.mjs`,
+`README.md` and `.github/CODEOWNERS` itself; a change to any one of them
+alone waits too. Until he approves, it is open, not done. Every other path,
 other workflows and niyam's files under `.github/` included, has no owner:
 his approval of the slice, state or work item is the review.
 

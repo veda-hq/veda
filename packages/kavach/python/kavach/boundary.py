@@ -5835,10 +5835,11 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
     if name == "yarn":
         # `dlx` anywhere before a `--` fails closed, since yarn takes a
         # command after `workspace <name>` and `workspaces foreach` too
-        # (yarn's documentation), except as the script `run` names
-        # (`yarn run dlx`, Cubic on #285).
+        # (yarn's documentation), except as the script a leading `run`
+        # names (`yarn run dlx`, Cubic on #285). A `run` later on the line
+        # may be an option's value (`yarn --cwd run dlx`).
         words = args[: args.index("--")] if "--" in args else args
-        if any(word == "dlx" and (at == 0 or words[at - 1] != "run") for at, word in enumerate(words)):
+        if any(word == "dlx" and not (at == 1 and words[0] == "run") for at, word in enumerate(words)):
             return None
         return False
     if name == "pnpm":

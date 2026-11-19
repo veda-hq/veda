@@ -158,6 +158,42 @@ class AdapterTest(BoundaryFixture):
                 self.assertEqual(result.returncode, expected, result.stderr)
                 self.assertIn(message, result.stderr)
 
+    def test_refusal_outside_an_owned_worktree_names_why(self) -> None:
+        """veda#6: from a checkout the session does not own, kavach 0.7.4
+        said only "use EnterWorktree" and named nothing it had found."""
+
+        prefix = "Claude mutations require this session's Claude-managed worktree; use EnterWorktree. "
+        main = self.main.resolve()  # the guard names targets resolved (/private/var on macOS)
+        for tool, tool_input, expected in (
+            ("Bash", {"command": "frobnicate --wide"},
+             "it uses `frobnicate`, a program whose writes the guard does not know"),
+            ("Bash", {"command": "echo x > out.txt"}, "an output redirection (`>` to out.txt)"),
+            ("Bash", {"command": "touch new.txt"},
+             f"The guard counts this call as writing `{main / 'new.txt'}`."),
+            ("Bash", {"command": "touch a b c d e"}, f"`{main / 'c'}` and 2 more."),
+            ("Write", {"file_path": str(self.main / "new.txt")},
+             f"The guard counts this call as writing `{main / 'new.txt'}`."),
+        ):
+            with self.subTest(tool=tool, tool_input=tool_input):
+                result = self.invoke(self.main, tool_name=tool, tool_input=tool_input)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(prefix, result.stderr)
+                self.assertIn(expected, result.stderr)
+        # The folder a command runs in, counted with the file it names, is
+        # not shown beside it.
+        result = self.invoke(self.main, tool_name="Bash", tool_input={"command": "touch new.txt"})
+        self.assertNotIn(f"`{main}`", result.stderr)
+        self.assertEqual(
+            ADAPTER.not_owned("Write", {}, self.main, None),
+            f"{prefix}The tool's file path cannot be read as one place.",
+        )
+        self.assertEqual(ADAPTER.not_owned("Write", {}, self.main, []), prefix.rstrip(" "))
+        with mock.patch.object(ADAPTER, "unreadable_constructs", side_effect=ValueError("x")):
+            self.assertEqual(
+                ADAPTER.not_owned("Bash", {"command": "x"}, self.main, None),
+                f"{prefix}The guard cannot read off this command what it writes.",
+            )
+
     def test_hook_rejects_malformed_and_non_object_payloads(self) -> None:
         for payload in ("{", "[]"):
             with self.subTest(payload=payload):

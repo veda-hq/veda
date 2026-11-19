@@ -127,6 +127,9 @@ class Config:
     shell_expansion_refuses_from: str = ""
     reviewed_clis: tuple[ReviewedCLI, ...] = ()
     own_checkout: OwnCheckout | None = None
+    # The hosts a push may go to (`worktree.pushHosts`); boundary.py's
+    # DEFAULT_PUSH_HOSTS, kept equal by test_config.py.
+    push_hosts: tuple[str, ...] = ("github.com",)
     # The mode of each rule in rules.py the settings name; one not named warns.
     rules: tuple[tuple[str, RuleMode], ...] = ()
     # Paths relative to the checkout's root that stay refused in every
@@ -161,7 +164,7 @@ SHAPE: dict[str, set[str]] = {
     "": {"worktree", "command", "rules"},
     "worktree": {
         "trustedCommands", "readOnlyCommands", "reviewedCLIs", "ownCheckout",
-        "protectedPaths", "protectedPathsReason",
+        "protectedPaths", "protectedPathsReason", "pushHosts",
     },
     "command": {
         "protectedVariables", "protectedVariablesReason", "pairedChanges",
@@ -383,10 +386,31 @@ def parse(data: Any) -> Config:
         protected_reason = _text(protected_reason, "worktree.protectedPathsReason")
     elif protected_reason != "":
         raise ConfigError("worktree.protectedPathsReason needs worktree.protectedPaths")
+    hosts = DEFAULT.push_hosts
+    if "pushHosts" in worktree:
+        hosts = tuple(
+            _push_host(item, at)
+            for at, item in enumerate(_list(worktree["pushHosts"], "worktree.pushHosts"))
+        )
     return Config(
         trusted, variables, reason, paired, read_only, mode, refuses_from, reviewed, own_checkout=own, rules=rules,
-        protected_paths=protected, protected_paths_reason=protected_reason,
+        protected_paths=protected, protected_paths_reason=protected_reason, push_hosts=hosts,
     )
+
+
+# A host as a push URL names it, with no user, port or scheme: a name or an
+# IPv4 address, each dot-separated label well formed. Matched exactly, in
+# lower case.
+PUSH_HOST_LABEL = r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+PUSH_HOST = re.compile(rf"{PUSH_HOST_LABEL}(?:\.{PUSH_HOST_LABEL})*")
+
+
+def _push_host(value: Any, index: int) -> str:
+    where = f"worktree.pushHosts[{index}]"
+    host = _text(value, where).lower()
+    if not PUSH_HOST.fullmatch(host):
+        raise ConfigError(f"{where} must be a host name, with no user, port or scheme: {value!r}")
+    return host
 
 
 def load(environ: Mapping[str, str] | None = None) -> Config:

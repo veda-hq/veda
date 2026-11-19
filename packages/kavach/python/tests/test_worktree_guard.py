@@ -129,6 +129,24 @@ class AdapterTest(BoundaryFixture):
         environment["KAVACH_CONFIG"] = str(path)
         return environment
 
+    def test_push_hosts_come_from_the_settings(self) -> None:
+        """`worktree.pushHosts` replaces the default `github.com`, at push
+        time and for a URL written into the config, and the refusal names
+        the hosts it reads (#243)."""
+        environment = self.settings_env({"worktree": {"pushHosts": ["gitlab.com"]}})
+        for command, refused in (
+            ("git push https://gitlab.com/o/r.git HEAD:x", False),
+            ("git remote add lab git@gitlab.com:o/r.git", False),
+            ("git push https://github.com/o/r.git HEAD:x", True),
+            ("git remote add gh https://github.com/o/r.git", True),
+            ("git push ssh://localtest.me/r HEAD:x", True),
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command, environment)
+                self.assertEqual(result.returncode, 2 if refused else 0, result.stderr)
+                if refused:
+                    self.assertIn("worktree.pushHosts lists, `gitlab.com`,", result.stderr)
+
     def test_adapter_reads_work_trees_from_files_first(self) -> None:
         cases = (
             (self.claude, True),
@@ -876,7 +894,7 @@ class OwnCheckoutTest(BoundaryFixture):
         one; a push into another local repository is unproven, as in a
         desktop worktree (#200)."""
         environment = self.hosted_env()
-        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
+        git(self.main, "remote", "add", "origin", "https://github.com/veda-hq/veda.git")
         for command, expected in (
             ("git push origin HEAD:x", ""),
             ("git push . HEAD:refs/heads/x", ""),
@@ -1207,7 +1225,7 @@ class OwnCheckoutTest(BoundaryFixture):
         environment = self.writers_fixture()
         (self.main / ".claude" / "hooks" / "guard.sh").write_text("guard\n", encoding="utf-8")
         # A push is placed through its remote's URL.
-        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
+        git(self.main, "remote", "add", "origin", "https://github.com/veda-hq/veda.git")
         for command in (
             "git add .",
             "git commit -qm x",

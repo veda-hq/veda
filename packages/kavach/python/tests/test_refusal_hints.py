@@ -76,8 +76,17 @@ class UnresolvedNamesTheConstruct(BoundaryFixture):
             (
                 "git push ../other HEAD:x",
                 "uses `git push` to a repository the guard cannot place "
-                "(only a remote URL, or this repository itself, is placed)",
+                "(only a URL on a host worktree.pushHosts lists, `github.com`, "
+                "or this repository itself, is placed)",
             ),
+            ("git push ssh://localtest.me/x HEAD:x", "uses `git push` to a repository the guard cannot place"),
+            (
+                "pnpm exec node -e 'require(1)'",
+                "uses `pnpm` handing an interpreter an inline program or its standard input "
+                "(`node -e`, `python3 -c`, or no script), or an option the guard does not "
+                "list for it, which the guard does not read",
+            ),
+            ("npx python3 -", "uses `npx` handing an interpreter an inline program"),
             ("git send-pack ../other main", "uses `git send-pack` to a repository the guard cannot place"),
             (
                 "git push $REPO HEAD:x",

@@ -1439,6 +1439,15 @@
     "text": "npx -c 'touch {P}/pwned'"
   },
   {
+    "id": "ow-runner-node-eval",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "runner",
+    "note": "A runner's node -e runs its program text, which the guard once let through as the set's standing contract; only a bare node -e was refused (#243).",
+    "text": "pnpm exec node -e 'require(\"fs\").writeFileSync(\"{P}/pwned\", \"\")'"
+  },
+  {
     "id": "ow-git-config-user",
     "intent": "outside-write",
     "role": "near-miss",

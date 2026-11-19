@@ -28,6 +28,7 @@ from .test_boundary import (
     BoundaryFixture,
     GuardFixture,
     git,
+    git_output,
     hermetic_git_env,
 )
 
@@ -1437,6 +1438,327 @@ class OwnCheckoutTest(BoundaryFixture):
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn(NOT_OWNED, result.stderr)
         result = self.write(self.claude, self.claude / "tracked.txt", self.hosted_env())
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+PROTECTED_REASON = "the repository's git hooks run them on commit and push; the owner changes them"
+PROTECTED_SETTINGS = {
+    "worktree": {
+        "protectedPaths": [".githooks/", "scripts/pins.mjs", "node_modules/"],
+        "protectedPathsReason": PROTECTED_REASON,
+    }
+}
+PROTECTED = "a path worktree.protectedPaths keeps from agent sessions"
+WORKTREE_WAY_OUT = "this session's own worktree does not open it"
+
+
+class ProtectedPathsTest(BoundaryFixture):
+    """`worktree.protectedPaths`: the files a repository's own git hooks run
+    stay refused inside a session's own worktree (veda#235), which holds its
+    own copy of them."""
+
+    settings_env = AdapterTest.settings_env
+
+    def setUp(self) -> None:
+        super().setUp()
+        hooks = self.claude / ".githooks"
+        hooks.mkdir()
+        (hooks / "pre-push").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        (self.claude / "scripts").mkdir()
+        (self.claude / "scripts" / "pins.mjs").write_text("// pins\n", encoding="utf-8")
+        (self.claude / "scripts" / "other.mjs").write_text("// other\n", encoding="utf-8")
+        git(self.claude, "add", ".githooks/pre-push", "scripts")
+        git(self.claude, "commit", "-qm", "hooks")
+        # As pnpm lays it out: the package a link into its store.
+        modules = self.claude / "node_modules"
+        (modules / ".bin").mkdir(parents=True)
+        store = modules / ".pnpm" / "@scope+pkg@1.0.0" / "node_modules" / "@scope" / "pkg"
+        store.mkdir(parents=True)
+        (store / "cli.js").write_text("// cli\n", encoding="utf-8")
+        (modules / "@scope").mkdir()
+        (modules / "@scope" / "pkg").symlink_to(Path("..") / ".pnpm" / "@scope+pkg@1.0.0" / "node_modules" / "@scope" / "pkg")
+        self.store = store
+        self.env = self.settings_env(PROTECTED_SETTINGS)
+
+    def refused(self, result: subprocess.CompletedProcess[str], *expected: str) -> None:
+        self.assertEqual(result.returncode, 2, result.stderr)
+        for text in expected or (PROTECTED, WORKTREE_WAY_OUT):
+            self.assertIn(text, result.stderr)
+
+    def bash(self, command: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        return self.claude_bash(self.claude if cwd is None else cwd, command, self.env)
+
+    def test_an_edit_of_the_hook_is_refused(self) -> None:
+        hook = self.claude / ".githooks" / "pre-push"
+        result = self.invoke(
+            self.claude,
+            tool_name="Edit",
+            tool_input={"file_path": str(hook), "old_string": "exit 1", "new_string": "exit 0"},
+            env=self.env,
+        )
+        self.refused(result, PROTECTED, "(.githooks/)", PROTECTED_REASON, WORKTREE_WAY_OUT)
+        self.assertNotIn("owned plain clone", result.stderr)
+
+    def test_a_write_of_the_hook_is_refused(self) -> None:
+        for label, target in (
+            ("the hook", self.claude / ".githooks" / "pre-push"),
+            ("a new hook", self.claude / ".githooks" / "pre-commit"),
+            ("a protected script", self.claude / "scripts" / "pins.mjs"),
+            ("an installed bin", self.claude / "node_modules" / ".bin" / "dvara"),
+            ("an installed package, through its link", self.claude / "node_modules" / "@scope" / "pkg" / "cli.js"),
+            ("an installed package, in the store", self.store / "cli.js"),
+            ("a relative spelling", self.claude / "scripts" / ".." / ".githooks" / "pre-push"),
+        ):
+            with self.subTest(label):
+                result = self.invoke(
+                    self.claude, tool_input={"file_path": str(target), "content": "exit 0\n"}, env=self.env
+                )
+                self.refused(result)
+        result = self.invoke(
+            self.claude,
+            tool_name="NotebookEdit",
+            tool_input={"notebook_path": str(self.claude / ".githooks" / "x.ipynb"), "new_source": "x"},
+            env=self.env,
+        )
+        self.refused(result)
+
+    def test_a_bash_write_of_the_hook_is_refused(self) -> None:
+        # A redirection into a file is refused wherever it points.
+        for command in ("printf 'exit 0\\n' > .githooks/pre-push", "echo 'exit 0' >> .githooks/pre-push"):
+            with self.subTest(command=command):
+                self.refused(self.bash(command), "output redirection")
+        for command in (
+            "sed -i '' 's/exit 1/exit 0/' .githooks/pre-push",
+            "cp tracked.txt .githooks/pre-push",
+            "touch .githooks/pre-commit",
+            "chmod -x .githooks/pre-push",
+            "rm .githooks/pre-push",
+            "rm -f scripts/pins.mjs",
+            "tee .githooks/pre-push < tracked.txt",
+            "ln -sf /bin/true node_modules/.bin/dvara",
+            "sed -i '' s/cli/x/ node_modules/@scope/pkg/cli.js",
+            # A target that holds a protected path removes or moves it whole.
+            "rm -rf .githooks",
+            "mv .githooks .githooks-off",
+            "rm -rf node_modules",
+            "rm -r scripts",
+            # Through a runner or a nested shell, the write is read the same.
+            "pnpm exec rm .githooks/pre-push",
+            "bash -c 'rm .githooks/pre-push'",
+        ):
+            with self.subTest(command=command):
+                self.refused(self.bash(command))
+        for command in ("env git rm .githooks/pre-push", "sh -c 'git rm .githooks/pre-push'"):
+            with self.subTest(command=command):
+                self.refused(self.bash(command), "`git rm` would write", WORKTREE_WAY_OUT)
+        # git under a runner is not read at all.
+        self.refused(self.bash("pnpm exec git rm .githooks/pre-push"), "mutation targets could not be resolved")
+        result = self.invoke(
+            self.claude,
+            tool_name="MultiEdit",
+            tool_input={"file_path": str(self.claude / ".githooks" / "pre-push"), "edits": []},
+            env=self.env,
+        )
+        self.refused(result, "unsupported mutation event")
+
+    def test_a_command_naming_the_root_is_refused(self) -> None:
+        """The root is exempt from holding a fence, since every command run
+        there counts it; one that names it as what it writes is not."""
+
+        for command in (
+            "rm -rf .",
+            "chmod -R a-x .",
+            "find . -name pre-push -delete",
+            "cp -R ../manual-task/. .",
+            "cp ../manual-task/tracked.txt .",
+            "ln -s tracked.txt .",
+            "sh -c 'chmod -R a-x .'",
+        ):
+            with self.subTest(command=command):
+                self.refused(self.bash(command), "the checkout's root", "(.githooks/)", WORKTREE_WAY_OUT)
+        for command in (
+            "cp ../manual-task/tracked.txt ./copy.txt",
+            "find .tmp -delete",
+            "git add .",
+            "chmod -R a-x docs",
+        ):
+            with self.subTest(command=command):
+                result = self.bash(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_link_reaches_the_same_hook(self) -> None:
+        (self.claude / "hooks-link").symlink_to(self.claude / ".githooks")
+        self.refused(self.bash("touch hooks-link/pre-push"))
+
+    def test_a_case_spelling_reaches_the_same_hook(self) -> None:
+        if not (self.claude / ".GITHOOKS").exists():
+            self.skipTest("a case-sensitive filesystem: another spelling is another file")
+        self.refused(self.bash("touch .GITHOOKS/pre-push"))
+        result = self.invoke(
+            self.claude,
+            tool_input={"file_path": str(self.claude / ".GitHooks" / "pre-push"), "content": "x"},
+            env=self.env,
+        )
+        self.refused(result)
+
+    def test_git_writes_of_a_named_protected_path_are_refused(self) -> None:
+        for command in (
+            "git checkout HEAD -- .githooks/pre-push",
+            "git checkout -- .githooks",
+            "git checkout HEAD~1 -- scripts/pins.mjs",
+            "git checkout .githooks/pre-push",
+            "git checkout HEAD .githooks/pre-push",
+            "git checkout -p",
+            "git restore .githooks/pre-push",
+            "git restore --source=HEAD~1 -- scripts/pins.mjs",
+            "git restore .",
+            "git rm .githooks/pre-push",
+            "git rm -r .githooks",
+            "git mv .githooks/pre-push .githooks/off",
+            "git -C .githooks rm pre-push",
+            # A switch-only option leaves the words that are paths judged.
+            "git checkout -m .githooks/pre-push",
+            "git checkout --recurse-submodules HEAD .githooks/pre-push",
+            # After the commit, every word is a path, a branch's name too.
+            "git checkout HEAD main",
+            # Abbreviations and options that hide paths are not read.
+            "git checkout --forc",
+            "git checkout --pathspec-from-file=.tmp/list",
+        ):
+            with self.subTest(command=command):
+                self.refused(self.bash(command), WORKTREE_WAY_OUT)
+
+    def test_a_forced_checkout_passes_only_where_the_hooks_match_head(self) -> None:
+        """`git checkout -f` rewrites the work tree to HEAD, so it is judged
+        as a switch to HEAD: open while the protected paths match it."""
+
+        result = self.bash("git checkout -f")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (self.claude / ".githooks" / "pre-push").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        for command in ("git checkout -f", "git checkout -f --recurse-submodules", "git checkout -fm"):
+            with self.subTest(command=command):
+                self.refused(self.bash(command), ".githooks/pre-push", WORKTREE_WAY_OUT)
+
+    def test_git_options_before_a_path_writer_are_not_read(self) -> None:
+        """An option before git's subcommand that `git_start` does not read
+        leaves the line open, unless a path writer follows it."""
+        from kavach import clone_writers
+
+        fences = ((self.claude / ".githooks", "a protected path"),)
+
+        def judge(*words: str) -> str | None:
+            return clone_writers.judge_named_paths(
+                [(words, self.claude, (), True)], self.claude, fences, ADAPTER.in_fence, ADAPTER.boundary, "way out"
+            )
+
+        self.assertIsNone(judge("git", "--literal-pathspecs", "log"))
+        reason = judge("git", "--literal-pathspecs", "rm", ".githooks/pre-push")
+        self.assertIsNotNone(reason)
+        self.assertIn("options before `rm`", str(reason))
+        self.assertTrue(str(reason).endswith("run `git rm` with none"))
+        self.assertIn("way out", str(judge("git", "rm", ".githooks/pre-push")))
+        self.assertIsNone(judge("ls", ".githooks"))
+        self.assertIsNone(judge("git"))
+
+    def test_a_patch_onto_the_hook_is_refused(self) -> None:
+        tmp = self.claude / ".tmp"
+        tmp.mkdir()
+        (self.claude / ".githooks" / "pre-push").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        patch = git_output(self.claude, "diff") + "\n"
+        git(self.claude, "checkout", "--", ".githooks/pre-push")
+        (tmp / "x.patch").write_text(patch, encoding="utf-8")
+        self.refused(self.bash("git apply .tmp/x.patch"), ".githooks/pre-push", WORKTREE_WAY_OUT)
+        self.assertEqual(self.bash("git apply --check .tmp/x.patch").returncode, 0)
+
+    def test_reads_of_the_hook_pass(self) -> None:
+        for command in (
+            "cat .githooks/pre-push",
+            "head -n 1 .githooks/pre-push",
+            "grep exit .githooks/pre-push",
+            "ls -la .githooks node_modules/.bin",
+            "git diff -- .githooks",
+            "git log -p -- .githooks/pre-push",
+            "git show HEAD:.githooks/pre-push",
+            "wc -l scripts/pins.mjs",
+        ):
+            with self.subTest(command=command):
+                result = self.bash(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_rest_of_the_worktree_stays_open(self) -> None:
+        """Beside the protected paths, writes go on as before, and git's
+        merges, branch switches and package installs stay open."""
+
+        for label, target in (
+            ("a tracked file", self.claude / "tracked.txt"),
+            ("a script beside a protected one", self.claude / "scripts" / "other.mjs"),
+            ("a name that only starts like the folder", self.claude / ".githooks-notes.md"),
+        ):
+            with self.subTest(label):
+                result = self.invoke(self.claude, tool_input={"file_path": str(target), "content": "x\n"}, env=self.env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        for command in (
+            "touch new.txt",
+            "rm scripts/other.mjs",
+            "git rm tracked.txt",
+            "git rm --cached .githooks/pre-push",
+            "git restore --staged .githooks/pre-push",
+            "git checkout -- tracked.txt",
+            "git checkout main",
+            "git checkout -m main",
+            "git checkout --recurse-submodules main",
+            "git checkout --conflict=diff3 -m main",
+            "git checkout --ignore-other-worktrees main",
+            "git checkout -b next origin/main",
+            "git switch -c next",
+            "git merge main",
+            "git rebase main",
+            "git stash",
+            "git reset --hard HEAD",
+            "pnpm install",
+        ):
+            with self.subTest(command=command):
+                result = self.bash(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_mutation_from_a_folder_holding_one_is_refused(self) -> None:
+        """A mutating command counts the folder it runs in among its targets,
+        and `scripts/` holds a protected path: run it from the root."""
+
+        self.refused(self.bash("touch other.mjs", cwd=self.claude / "scripts"))
+        result = self.bash("touch scripts/new.mjs")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_without_the_setting_the_hook_is_open(self) -> None:
+        result = self.invoke(
+            self.claude,
+            tool_input={"file_path": str(self.claude / ".githooks" / "pre-push"), "content": "x\n"},
+            env=self.settings_env({}, "empty.json"),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_an_owned_clone_keeps_them_too(self) -> None:
+        """In a hosted session's own clone, the paths join the clone's own
+        fences, and its refusal says so."""
+
+        (self.main / ".githooks").mkdir()
+        (self.main / ".githooks" / "pre-push").write_text("exit 1\n", encoding="utf-8")
+        environment = self.settings_env(
+            {"worktree": {**PROTECTED_SETTINGS["worktree"], "ownCheckout": OWN_CHECKOUT}}, "clone.json"
+        )
+        environment["CLAUDE_PROJECT_DIR"] = str(self.main)
+        environment["AGENT_REMOTE"] = "true"
+        result = self.invoke(
+            self.main,
+            tool_input={"file_path": str(self.main / ".githooks" / "pre-push"), "content": "exit 0\n"},
+            env=environment,
+        )
+        self.refused(result, PROTECTED, PROTECTED_REASON, "an owned plain clone does not open it")
+        result = self.claude_bash(self.main, "git restore .githooks/pre-push", environment)
+        self.refused(result, "an owned plain clone does not open it")
+        result = self.invoke(
+            self.main, tool_input={"file_path": str(self.main / "tracked.txt"), "content": "x\n"}, env=environment
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
 
 

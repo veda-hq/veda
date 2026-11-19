@@ -7,7 +7,7 @@ judged before it runs. Part of [Veda](https://github.com/veda-hq/veda).
 
 | Guard | Refuses | Entry point |
 | --- | --- | --- |
-| Worktree boundary | Any write outside the agent's own git worktree: a Bash command, an Edit or a Write; and, while a push runs, any write into it (below). Read-only commands pass from any checkout. | `python3 python/kavach/worktree_guard.py` |
+| Worktree boundary | Any write outside the agent's own git worktree: a Bash command, an Edit or a Write; any write to the paths the project protects inside it, such as its git hooks (`protectedPaths`, settings below); and, while a push runs, any write into it (below). Read-only commands pass from any checkout. | `python3 python/kavach/worktree_guard.py` |
 | Command guard | Git-hook bypasses (`--no-verify`, `core.hooksPath`…), history-destroying pushes, and the project's own command rules (settings below). It also runs the Bash rules that hold a lesson (below), and warns of a message the shell would change. | `python3 python/kavach/command_guard.py` |
 | Tool guard | The rules that hold a lesson for tools other than Bash: Write, Edit, RemoteTrigger, the desktop app's sync tool and Workflow (below). | `python3 python/kavach/tool_guard.py` |
 | Rule checks | The project's own checks, written in TypeScript, refusing or warning with the rule's reason. | `kavach-rule-checks` (`dist/rule-checks/cli.js`) |
@@ -215,7 +215,9 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
       "env": { "AGENT_REMOTE": ["true"] },
       "reason": "a hosted session clones the repository for itself, with no worktree",
       "protectedPaths": [".claude/hooks/", ".claude/settings.json", ".claude/settings.local.json", ".claude/kavach.json", "node_modules/"]
-    }
+    },
+    "protectedPaths": [".githooks/", "scripts/guards.sh", "node_modules/"],
+    "protectedPathsReason": "the git hooks run them on every commit and push; the owner changes them"
   },
   "command": {
     "protectedVariables": ["AGENT_REMOTE"],
@@ -327,6 +329,62 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
   fence through it. So can a `trustedCommands` script, which runs before
   these checks. A kavach older than this setting refuses every
   call on the unknown key, so add it only once the pinned kavach knows it.
+- `protectedPaths`: paths relative to the checkout's root (a folder covers
+  everything below it) that stay refused in every checkout an agent owns:
+  its Claude-managed worktree, and an owned plain clone, where they join
+  `ownCheckout.protectedPaths`. List the files your own git hooks run. Where
+  `core.hooksPath` points at a tracked folder, each worktree runs its own
+  copy of the hooks, of the scripts and settings they read, and of the
+  guards installed in its `node_modules`. A session that could edit them
+  could make its own commits and pushes skip their checks.
+  `protectedPathsReason` is required with the paths. It goes into every
+  refusal, so say there why the paths are protected and how they get
+  changed instead (the owner edits them, or allows one session by taking
+  the path off the list in the settings the hooks load; those settings are
+  every session's, so a path off the list is open to all of them until it
+  is back).
+
+  An Edit, Write or NotebookEdit of a listed path is refused, and so is a
+  Bash command whose targets land in one (`sed -i`, `cp`, `touch`, `chmod`,
+  `ln`, `rm`, through `sh -c` or `pnpm exec` too) or hold one (`rm -rf
+  .githooks`, `mv .githooks off`). A command that names the checkout's root
+  as what it writes (`rm -rf .`, `chmod -R a-x .`, `find . -delete`, `cp
+  file .`) is refused too, in an owned clone as well: name the paths
+  instead (`cp file ./file`). A mutating command run from a folder that
+  holds one (`scripts/`, when `scripts/guards.sh` is listed) counts that
+  folder as a target, so run it from the root. Paths compare as in an owned
+  clone: by file identity too, so another case spelling or a symlink
+  reaches nothing. A listed folder of links does not cover what they point
+  to: pnpm's `node_modules/<pkg>` is a link into `node_modules/.pnpm/`, so
+  list `node_modules/` whole. In a worktree, the
+  git subcommands that write the paths they name are judged by those paths,
+  as in an owned clone: `checkout [<ref>] -- <path>` (and
+  `checkout <path>`, where no commit has that name), `restore`, `rm`, `mv`
+  and `apply`. So `git rm .githooks/pre-push` and `git restore .` are
+  refused, and `git rm --cached` and `git restore --staged` run. Reads run
+  as before. Resolving a merge conflict in a listed file is the owner's
+  too: the session can write neither side into it.
+
+  The limit, beyond the owned clone's: in a worktree, every other git
+  subcommand and every package install stays open, since merging, rebasing,
+  switching branches and installing are a worktree's daily work. `merge`,
+  `pull`, `rebase`, `cherry-pick`, `stash`, `reset --hard`, a branch switch
+  and the index plumbing (`update-index`, `checkout-index`) can still bring
+  a committed change to a listed path into the work tree. The plainest:
+  git runs no hook that is absent, so switching to a commit without the
+  hooks folder (`git switch --detach <commit>`) and pushing from there
+  skips every local check. `pnpm install`
+  rewrites `node_modules` from the lockfile. Package scripts, tests and
+  other repository code write what they like, and so does a
+  `trustedCommands` script, which runs before these checks. Environment
+  variables a hook reads (one that tells it an agent is pushing) are
+  `command.protectedVariables`' job. The guard keeps a session
+  from editing the hooks; it does not stop a session set on getting around
+  them. Keep the required checks on the server. The settings file the
+  hooks load should live outside the session's worktree, as a desktop
+  session's main checkout is; otherwise a session can take a path off the
+  list. A kavach older than this setting refuses every call on the
+  unknown key, so add it only once the pinned kavach knows it.
 - `protectedVariables`: environment variables a command may not assign, declare or
   export.
 - `pairedChanges`: a commit that may record a path ending in `changes` must

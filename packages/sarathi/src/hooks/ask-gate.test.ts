@@ -1105,6 +1105,7 @@ test('ask-gate on Stop: a plain-text ask with no wrap_up ask goes on once, to ma
     ['a question that ends its line', 'The parser is fixed.\n\nShall I tag v0.7.11 now?'],
     ['a plain "Needs you:"', 'Needs you: add the approved label to #289.'],
     ['a bulleted question', 'Two open points:\n- Should old files go by age, by size, or both?'],
+    ['a question that ends on a URL', 'The page is published. Should we open https://example.com/page?'],
   ] as const) {
     assert.match(stopFeedbackOf(sideTurn(), message), /^file the ask\./, why);
   }
@@ -1139,6 +1140,13 @@ test('ask-gate on Stop: a wrap_up ask this turn, or no wrap_up at all, ends the 
     '',
     "a Stop hook's feedback starts no turn",
   );
+  for (const [why, report] of [['a marked task report', handBack()], ['an unmarked one', handBackUnmarked()]] as const) {
+    assert.equal(
+      stopFeedbackOf(transcript(peer(), wrapUp({ recap: 'r', ask: 'Approve #259?' }), toolResult(), report, toolUse('Read')), NEEDS_YOU_259),
+      '',
+      `${why} starts no new ask: the wrap_up ask before it stands`,
+    );
+  }
   // In a side session the answer comes relayed: another session's message, or an app event, starts the next turn.
   for (const [why, next] of [['a peer message', peer()], ['an app event', appEvent()]] as const) {
     assert.match(

@@ -391,6 +391,11 @@ ENDS_ASKING = re.compile(r"\?[\s*_\x29\]]*$")
 # The desktop app lists its wrap_up here for the session's hooks.
 APP_TOOLS = "CLAUDE_CODE_TERMINAL_MCP_TOOLS"
 
+def url_out(match):
+    """A URL taken out of a line, the question marks it ends in kept."""
+    url = match.group(0)
+    return " " + url[len(url.rstrip("?")):]
+
 def owner_ask(message):
     """The line of a closing message that asks the owner something, from its
     last paragraphs, or None: one opening "Needs you:", else the first that
@@ -400,7 +405,9 @@ def owner_ask(message):
         for line in paragraph.split("\n"):
             if NEEDS_YOU.search(line):
                 return line.strip()
-            text = QUOTES.sub(" ", URL.sub(" ", INLINE_CODE.sub(" ", line)))
+            # A URL goes, but a question mark that ends it stays: the
+            # sentence's own ("Should we open https://example.com?").
+            text = QUOTES.sub(" ", URL.sub(url_out, INLINE_CODE.sub(" ", line)))
             if asking is None and ENDS_ASKING.search(text):
                 asking = line.strip()
     return asking
@@ -437,6 +444,20 @@ def is_peer(entry):
     kind = origin.get("kind") if isinstance(origin, dict) else None
     return kind in ("peer", "peer-send-message") or entry.get("turnOrigin") == "peer"
 
+TASK_REPORT = re.compile(r"^\s*(<system-reminder>.*?</system-reminder>\s*)*<task-notification\b", re.S)
+
+def is_task_report(entry):
+    """A background task's notification, by its origin or its leading tag."""
+    origin = entry.get("origin")
+    if (origin.get("kind") if isinstance(origin, dict) else None) == "task-notification":
+        return True
+    if entry.get("turnOrigin") == "task_notification":
+        return True
+    content = (entry.get("message") or {}).get("content")
+    if isinstance(content, list):
+        content = "\n".join(item.get("text") for item in content if isinstance(item, dict) and isinstance(item.get("text"), str))
+    return isinstance(content, str) and bool(TASK_REPORT.match(content))
+
 def is_prompt(entry):
     """A user-role entry that starts a turn, whoever sent it: the owner,
     another session, an app event. Not a tool result, a Stop hook's feedback
@@ -449,6 +470,10 @@ def is_prompt(entry):
     if entry.get("isMeta") is True and not is_peer(entry):
         return False
     if entry.get("toolUseResult") is not None or entry.get("sourceToolUseID"):
+        return False
+    # A background task's report is no new ask of the owner: a wrap_up ask
+    # before it still stands, and repeating its question is no new ask.
+    if is_task_report(entry):
         return False
     content = (entry.get("message") or {}).get("content")
     if isinstance(content, str):

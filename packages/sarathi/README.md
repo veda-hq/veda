@@ -293,7 +293,12 @@ as `ask`, reply buttons, and `blocked: true` if the work stops; a turn that
 does not wait on the owner just ends again. The `wrap_up` it asks for then
 meets the research hold on PreToolUse, as any choice-shaped ask does. The
 continuation carries `stop_hook_active`, so it fires at most once a turn.
-Each one is a line in the ask log, `outcome: "nudged: no wrap_up ask"`.
+Each one is a line in the ask log, `outcome: "nudged: no wrap_up ask"`. Like
+the hold, it needs Claude Code 2.1.163 or later, which reads
+`additionalContext` on Stop; an older one ignores it and the turn ends, so
+there a `nudged` line records feedback the model never saw. A background
+task's report starts no new turn here: a `wrap_up` ask before it still
+stands.
 
 Replayed over this Mac's desktop transcripts (28,657 turn endings, read
 2026-11-20), the handler's own functions nudge 1,099 turns, most of them

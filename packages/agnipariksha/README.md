@@ -6,7 +6,7 @@ lane by lane, and blocks the push on a mutant no test kills. Part of
 [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/agnipariksha@0.7.2 [--base <ref>] [--files a,b] [--lane <name>]... [--tracked-only] [--no-reuse]
+npx @veda-hq/agnipariksha@0.7.9 [--base <ref>] [--files a,b] [--lane <name>]... [--tracked-only] [--no-reuse]
 ```
 
 Exit 0 when every judged mutant is caught, 1 on a blocking mutant, and 2 when
@@ -46,7 +46,24 @@ runs the repository's own `node_modules/.bin/stryker`.
   repeated or given a comma-separated list, and a name may hold spaces:
   `--lane apps/web`, `--lane "tooling vitest" --lane "tooling node:test"`. A
   name the config does not have refuses with exit 2 before any work. Without
-  `--lane`, every lane runs. One CI job per lane is the use.
+  `--lane`, every lane runs, less any over the cut-off. One CI job per lane is
+  the use.
+- **The cut-off.** A lane with a `maxLines` (its own, else the config's) is
+  left out of a run that names no lane when the files it would mutate hold
+  more lines than that: a lane at the limit is judged. The gate prints the
+  lane, its count and its limit, says CI judges it, and counts it in the total
+  line (`1 over the cut-off for CI`). A left-out lane does not fail the run:
+  a run with every lane left out exits 0, having judged nothing, so CI must
+  run each lane by name. A run that names a lane with `--lane` judges it
+  whatever its size. `--files` without `--lane` still applies the cut-off.
+  The count is checked before Stryker starts. It is over the targets whole,
+  since Stryker mutates them whole, not over the changed lines. Lines are
+  counted as `wc -l` counts them, plus a last line with no newline; blank and
+  comment lines count. A file that cannot be read counts 0, so a failed read
+  never leaves a lane out. Lines are a coarse measure of time: on one CI
+  runner, Stryker took 0.14 to 0.89 s a line across six samples. Give a lane
+  with slow tests its own, lower `maxLines`. A `reuse: true` lane can cost far
+  less than its count says.
 - **Blocking**: `Survived` and `NoCoverage`. Caught: `Killed`, `Timeout` (after
   a retry), `RuntimeError`, `CompileError`. `Ignored` is not counted, and any
   other status refuses.
@@ -94,6 +111,7 @@ lanes with one name.
 {
   "upstream": "origin/main",
   "ignore": ["\\.(test|spec)\\.[^/]*$", "\\.d\\.ts$"],
+  "maxLines": 1200,
   "lanes": [
     {
       "name": "lib",
@@ -130,13 +148,16 @@ lanes with one name.
   `GITHUB_STEP_SUMMARY` (with them set, Vitest's GitHub reporter writes a
   summary on every run). They are removed before the lane's `env`, which may
   set one again. Absent means none.
+- `maxLines`: the cut-off, a whole number of 1 or more. Absent means no
+  cut-off. A lane's own `maxLines` takes its place for that lane.
 - `lanes`, in the order they run. Each has a unique `name`, with no comma and
   not starting with `--`, so `--lane` can name it; `cwd`, the
   directory Stryker runs in (`""` is the root); `config`, its Stryker config
   relative to `cwd`; `reuse`; and `include`, the patterns of the files it
   mutates (one must match). Optional: `exclude` (none may match),
-  `extensions` (the file ends with one; absent means any), `env` and
-  `fallbackEnv`, the variables its Stryker config reads. In those two,
+  `extensions` (the file ends with one; absent means any), `maxLines` (its
+  own cut-off), `env` and `fallbackEnv`, the variables its Stryker config
+  reads. In those two,
   `{suites}` becomes the suites that own the lane's files, comma-joined.
 - `reuseKey`: what goes into a reuse key, as above.
 

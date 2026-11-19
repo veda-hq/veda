@@ -25,6 +25,31 @@ export interface Lane {
   ownSuites?: boolean;
   /** Whether its fallback rerun is narrowed to the owning suites (its `fallbackEnv` names them). */
   fallbackOwnSuites?: boolean;
+  /** The cut-off: a run that names no lane leaves this one out when its targets hold more lines. */
+  maxLines?: number;
+}
+
+/**
+ * A file's lines as `wc -l` counts them, plus a last line with no newline:
+ * '' is 0, 'a' and 'a\n' are 1, 'a\n\n' is 2. Blank and comment lines count.
+ */
+export function countLines(text: string): number {
+  if (text === '') return 0;
+  return text.split('\n').length - (text.endsWith('\n') ? 1 : 0);
+}
+
+/**
+ * Why a run that names no lane leaves this plan out, or null to judge it.
+ * The count is over the targets whole, since Stryker mutates them whole. A
+ * target that cannot be read counts 0, so a failed read never causes a skip:
+ * the lane is judged, and Stryker's own run says what is wrong.
+ */
+export function overCutoff(plan: Plan, read: (repoPath: string) => string | undefined): string | null {
+  const { maxLines, name } = plan.lane;
+  if (maxLines === undefined) return null;
+  const lines = plan.targets.reduce((sum, file) => sum + countLines(read(file) ?? ''), 0);
+  if (lines <= maxLines) return null;
+  return `${name}: ${lines} lines in ${plan.targets.length} file(s), over its cut-off of ${maxLines} - not judged in this run, CI judges it (--lane "${name}" judges it here)`;
 }
 
 /** Stryker's line when the initial test run outlives its cap: the machine is busy. */

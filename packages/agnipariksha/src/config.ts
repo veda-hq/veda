@@ -31,6 +31,8 @@ export interface LaneConfig {
   env: Record<string, string>;
   /** Variables for one rerun when the dry run fails on a fallback trigger; absent means no rerun. */
   fallbackEnv?: Record<string, string>;
+  /** The lane's own cut-off, over the config's `maxLines`. */
+  maxLines?: number;
 }
 
 export interface Config {
@@ -43,6 +45,11 @@ export interface Config {
    * a lane's `env` (which may set one again) and the run's temp variables.
    */
   unsetEnv: string[];
+  /**
+   * The cut-off: a run that names no lane (`--lane`) leaves out a lane whose
+   * files to judge hold more lines than this, for CI to judge. Absent means none.
+   */
+  maxLines?: number;
   lanes: LaneConfig[];
   reuseKey: KeyPolicy;
 }
@@ -97,8 +104,13 @@ function variables(value: unknown, where: string): Record<string, string> {
   return value as Record<string, string>;
 }
 
+function positiveInteger(value: unknown, where: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) throw new ConfigError(`${where} must be a whole number of 1 or more`);
+  return value as number;
+}
+
 function laneConfig(value: unknown, where: string): LaneConfig {
-  const raw = fields(value, where, ['name', 'cwd', 'config', 'reuse', 'include'], ['exclude', 'extensions', 'env', 'fallbackEnv']);
+  const raw = fields(value, where, ['name', 'cwd', 'config', 'reuse', 'include'], ['exclude', 'extensions', 'env', 'fallbackEnv', 'maxLines']);
   if (typeof raw.reuse !== 'boolean') throw new ConfigError(`${where}.reuse must be true or false`);
   const lane: LaneConfig = {
     name: text(raw.name, `${where}.name`),
@@ -114,6 +126,7 @@ function laneConfig(value: unknown, where: string): LaneConfig {
   if (lane.name.includes(',') || lane.name.startsWith('--')) throw new ConfigError(`${where}.name must not contain a comma or start with --`);
   if (lane.include.length === 0) throw new ConfigError(`${where}.include must name at least one pattern`);
   if (raw.fallbackEnv !== undefined) lane.fallbackEnv = variables(raw.fallbackEnv, `${where}.fallbackEnv`);
+  if (raw.maxLines !== undefined) lane.maxLines = positiveInteger(raw.maxLines, `${where}.maxLines`);
   return lane;
 }
 
@@ -137,7 +150,7 @@ export function parseConfig(source: string): Config | string {
     return `${CONFIG_FILE} is not JSON: ${(error as Error).message}`;
   }
   try {
-    const raw = fields(json, CONFIG_FILE, ['lanes', 'reuseKey'], ['upstream', 'ignore', 'unsetEnv']);
+    const raw = fields(json, CONFIG_FILE, ['lanes', 'reuseKey'], ['upstream', 'ignore', 'unsetEnv', 'maxLines']);
     if (!Array.isArray(raw.lanes) || raw.lanes.length === 0) throw new ConfigError(`${CONFIG_FILE}.lanes must be a non-empty array`);
     const lanes = raw.lanes.map((lane, i) => laneConfig(lane, `${CONFIG_FILE}.lanes[${i}]`));
     const names = new Set<string>();
@@ -145,13 +158,15 @@ export function parseConfig(source: string): Config | string {
       if (names.has(lane.name)) throw new ConfigError(`${CONFIG_FILE}.lanes names "${lane.name}" twice`);
       names.add(lane.name);
     }
-    return {
+    const config: Config = {
       upstream: raw.upstream === undefined ? DEFAULT_UPSTREAM : text(raw.upstream, `${CONFIG_FILE}.upstream`),
       ignore: raw.ignore === undefined ? [] : patterns(raw.ignore, `${CONFIG_FILE}.ignore`),
       unsetEnv: raw.unsetEnv === undefined ? [] : envNames(raw.unsetEnv, `${CONFIG_FILE}.unsetEnv`),
       lanes,
       reuseKey: keyPolicy(raw.reuseKey, `${CONFIG_FILE}.reuseKey`),
     };
+    if (raw.maxLines !== undefined) config.maxLines = positiveInteger(raw.maxLines, `${CONFIG_FILE}.maxLines`);
+    return config;
   } catch (error: unknown) {
     if (error instanceof ConfigError) return error.message;
     throw error;
@@ -188,6 +203,8 @@ export function lanesOf(config: Config): Lane[] {
       env: (suites) => fill(lane.env, suites),
     };
     const { fallbackEnv } = lane;
+    const maxLines = lane.maxLines ?? config.maxLines;
+    if (maxLines !== undefined) built.maxLines = maxLines;
     const namesSuites = (env: Record<string, string>): boolean => Object.values(env).some((value) => value.includes(SUITES_PLACEHOLDER));
     if (fallbackEnv !== undefined) built.fallback = (suites) => fill(fallbackEnv, suites);
     if (namesSuites(lane.env)) built.ownSuites = true;

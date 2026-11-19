@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 import { lanesOf, loadConfig, type Config } from './config.ts';
 import { changedFiles, commentOnly, type Changes, type Git } from './changed-files.ts';
-import { judgeLane, MARKERS, planLane, type Lane, type LaneDeps, type LaneResult, type Plan } from './lanes.ts';
+import { judgeLane, MARKERS, overCutoff, planLane, type Lane, type LaneDeps, type LaneResult, type Plan } from './lanes.ts';
 import { acquireLock, pidAlive, type LockDeps } from './machine-lock.ts';
 import { incrementalKey, keyInputPaths, type KeyPolicy } from './reuse-key.ts';
 import { failedTestReader } from './failed-tests.ts';
@@ -176,12 +176,19 @@ async function judgeAll(args: Args, deps: CliDeps): Promise<number> {
   const isCommentOnly = (file: string): boolean =>
     !changes.alwaysJudged.has(file) && commentOnly(deps.git(['diff', '-U0', '--no-color', changes.base, '--', file]));
 
-  const totals = { counted: 0, caught: 0, blocking: 0, refused: 0, lanes: 0 };
+  const totals = { counted: 0, caught: 0, blocking: 0, refused: 0, lanes: 0, cutOff: 0 };
   for (const lane of deps.lanes) {
     const plan = planLane(lane, changes.files, deps.exists, isCommentOnly);
     for (const line of plan.notJudged) deps.log(`  ${line}`);
     if (plan.targets.length === 0) {
       deps.log(`${lane.name}: nothing to judge - not run`);
+      continue;
+    }
+    // A run that names its lanes judges them whatever their size: each CI job names its own.
+    const over = args.lanes === undefined ? overCutoff(plan, (file) => deps.readFile(join(deps.root, file))) : null;
+    if (over !== null) {
+      deps.log(over);
+      totals.cutOff += 1;
       continue;
     }
     deps.log(`agnipariksha: ${lane.name}: stryker run --mutate ${plan.targets.join(',')}`);
@@ -206,8 +213,9 @@ async function judgeAll(args: Args, deps: CliDeps): Promise<number> {
     totals.refused += result.refusals.length > 0 ? 1 : 0;
   }
   const code = totals.blocking > 0 ? 1 : totals.refused > 0 ? 2 : 0;
+  const cutOff = totals.cutOff > 0 ? `, ${totals.cutOff} over the cut-off for CI` : '';
   deps.log(
-    `agnipariksha total: ${totals.caught} killed of ${totals.counted} in ${totals.lanes} lane(s), ${totals.blocking} blocking, ${totals.refused} refused - exit ${code}`,
+    `agnipariksha total: ${totals.caught} killed of ${totals.counted} in ${totals.lanes} lane(s), ${totals.blocking} blocking, ${totals.refused} refused${cutOff} - exit ${code}`,
   );
   return code;
 }

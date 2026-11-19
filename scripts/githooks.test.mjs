@@ -1,9 +1,10 @@
 // .githooks/, run by git in a throwaway repository laid out as veda is: the
 // hooks, released-pins.mjs, a root package.json pinning dvara, and that
 // dvara installed (linked to this checkout's install, which `pnpm install`
-// must have laid out, as in CI). `pnpm` on PATH is a stand-in that records
-// its arguments, so the pre-push hook's `pnpm guards` stage is seen to run
-// without installing the repository's guards in the throwaway copy.
+// must have laid out, as in CI). scripts/guards.sh is a stand-in that
+// records its runs, so the pre-push hook's guards stage is seen to run
+// without installing the repository's guards in the throwaway copy; `pnpm`
+// on PATH is one too, which the hook must never run.
 import { spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,6 +26,7 @@ after(() => rmSync(scratch, { recursive: true, force: true }));
 
 const bin = join(scratch, 'bin');
 const pnpmCalls = join(scratch, 'pnpm-calls');
+const guardsCalls = join(scratch, 'guards-calls');
 const niyamCalls = join(scratch, 'niyam-calls');
 const strayCalls = join(scratch, 'stray-niyam-calls');
 // HOME is the scratch folder. A stand-in for the pinned niyam sits in the test
@@ -35,12 +37,13 @@ const env = {
   HOME: scratch,
   PATH: `${bin}${delimiter}${process.env.PATH}`,
   PNPM_CALLS: pnpmCalls,
+  GUARDS_CALLS: guardsCalls,
   NIYAM_CALLS: niyamCalls,
   STRAY_CALLS: strayCalls,
   COPY_RUNS: join(scratch, 'copy-runs'),
 };
 for (const name of Object.keys(env)) {
-  if (name.startsWith('DVARA_') || name.startsWith('GIT_') || name === 'NIYAM_AGENT' || name === 'NIYAM_REFUSE' || name === 'CLAUDECODE') delete env[name];
+  if (name.startsWith('DVARA_') || name.startsWith('GIT_') || name === 'NIYAM_AGENT' || name === 'NIYAM_REFUSE' || name === 'GUARDS_REFUSE' || name === 'CLAUDECODE') delete env[name];
 }
 // No automatic maintenance: a commit's detached `git maintenance run --auto`
 // outlives it and can write into the scratch folder while it is removed.
@@ -95,6 +98,8 @@ before(() => {
   mkdirSync(join(repo, 'node_modules', '@veda-hq'), { recursive: true });
   cpSync(join(ROOT, '.githooks'), join(repo, '.githooks'), { recursive: true });
   cpSync(join(ROOT, 'scripts', 'released-pins.mjs'), join(repo, 'scripts', 'released-pins.mjs'));
+  // The guards' stand-in records its runs, and refuses when GUARDS_REFUSE is set.
+  writeFileSync(join(repo, 'scripts', 'guards.sh'), '#!/bin/sh\necho "guards $*" >> "$GUARDS_CALLS"\n[ -z "${GUARDS_REFUSE:-}" ]\n');
   symlinkSync(realpathSync(join(ROOT, 'node_modules', '@veda-hq', 'dvara')), join(repo, 'node_modules', '@veda-hq', 'dvara'));
   // The pinned niyam, installed: its package.json for released-pins, and a
   // stand-in for the bin pnpm links.
@@ -173,8 +178,19 @@ describe('pre-push', () => {
   test('passes a clean push, running the pinned guards; no niyam before onboarding', () => {
     const result = git(repo, 'push', '-q', 'origin', 'main');
     assert.equal(result.code, 0, result.out);
-    assert.match(readFileSync(pnpmCalls, 'utf8'), /--silent guards/);
+    assert.equal(readFileSync(guardsCalls, 'utf8'), 'guards \n');
+    assert.ok(!existsSync(pnpmCalls), 'the hook runs scripts/guards.sh itself, never a package.json script');
     assert.ok(!existsSync(niyamCalls), 'niyam runs only once .github/niyam.json is there');
+  });
+
+  test('refuses the push when the pinned guards refuse', () => {
+    commitFile(repo, 'guarded.md');
+    const result = spawnSync('git', ['push', '-q', 'origin', 'main'], { cwd: repo, env: { ...env, GUARDS_REFUSE: '1' }, encoding: 'utf8' });
+    assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+    // The guards ran on this push too (the first push recorded one run), so
+    // the refusal is theirs, not an earlier stage's.
+    assert.equal(readFileSync(guardsCalls, 'utf8'), 'guards \nguards \n');
+    assert.equal(git(remote, 'rev-parse', 'main').stdout, git(repo, 'rev-parse', 'HEAD~1').stdout);
   });
 
   test("once onboarded, an agent session's push goes through the pinned niyam's pre-push with git's ref lines", () => {

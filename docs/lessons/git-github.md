@@ -29,6 +29,15 @@ and PR state, and the GitHub API.
   value, and some tools (the Claude desktop app at worktree creation among them) write an
   absolute one. Diagnose with `git config --show-origin --get-all core.hooksPath` and clear it
   with `git config --worktree --unset core.hooksPath`.
+- **Tracked hooks are in an agent's reach.** With `core.hooksPath` set to a tracked folder, each
+  worktree runs its own copy of the hooks, of the scripts and settings they read, and of the
+  guards in its `node_modules`. An agent that edits any of them in its worktree skips the checks
+  on its own commits and pushes. An untracked hook in the main checkout's git directory was out
+  of its reach. List those files in kavach's `worktree.protectedPaths`, and have the hook run
+  its scripts directly, not through a `package.json` script, so that `package.json` can stay
+  editable. Keep the required checks on the server, too: the list stops an edit, not repository
+  code that a test or script runs.
+  <!-- held by: kavach worktree guard, worktree.protectedPaths (refuses Edit, Write and Bash writes to the listed paths in a session's own worktree) -->
 - **Every worktree fails with "must be run in a work tree".** If git fails in the primary
   checkout and every worktree at once with "this operation must be run in a work tree", check
   the shared `.git/config` for `core.bare = true`;

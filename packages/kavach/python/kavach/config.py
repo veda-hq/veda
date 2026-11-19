@@ -3,7 +3,7 @@ the environment variable KAVACH_CONFIG.
 
 kavach knows no product. What one product trusts or requires (a script its
 agents may run from any checkout, a command it reviewed as only reading and allows in one
-environment, a CLI whose writes it reviewed, the environment where a plain clone is a session's own checkout, environment variables an agent must leave alone, a file whose change needs another in the same commit) comes from this
+environment, a CLI whose writes it reviewed, the environment where a plain clone is a session's own checkout, files of its own checkout a session may not change, environment variables an agent must leave alone, a file whose change needs another in the same commit) comes from this
 file, and with no file every such rule is off. So does the mode of each rule
 that holds a lesson (`rules`, rules.py; the shell-expansion rule may also be
 set by `command.shellExpansion`), which warns until the file says "refuse".
@@ -132,6 +132,12 @@ class Config:
     push_hosts: tuple[str, ...] = ("github.com",)
     # The mode of each rule in rules.py the settings name; one not named warns.
     rules: tuple[tuple[str, RuleMode], ...] = ()
+    # Paths relative to the checkout's root that stay refused in every
+    # checkout a session owns, its worktree included (`worktree.protectedPaths`):
+    # the files the repository's own git hooks run, which a worktree holds a
+    # copy of. The reason says why, and how they get changed instead.
+    protected_paths: tuple[str, ...] = ()
+    protected_paths_reason: str = ""
 
 
 DEFAULT = Config()
@@ -156,7 +162,10 @@ RULE_IDS = (
 
 SHAPE: dict[str, set[str]] = {
     "": {"worktree", "command", "rules"},
-    "worktree": {"trustedCommands", "readOnlyCommands", "reviewedCLIs", "ownCheckout", "pushHosts"},
+    "worktree": {
+        "trustedCommands", "readOnlyCommands", "reviewedCLIs", "ownCheckout",
+        "protectedPaths", "protectedPathsReason", "pushHosts",
+    },
     "command": {
         "protectedVariables", "protectedVariablesReason", "pairedChanges",
         "shellExpansion", "shellExpansionRefusesFrom",
@@ -237,14 +246,17 @@ def _own_checkout(value: Any) -> OwnCheckout:
     # condition, every plain clone on every machine would count as owned.
     env = _env(entry.get("env"), where)
     reason = _text(entry.get("reason"), f"{where}.reason")
-    paths = tuple(
-        _text(item, f"{where}.protectedPaths[{at}]")
-        for at, item in enumerate(_list(entry.get("protectedPaths", []), f"{where}.protectedPaths"))
-    )
+    return OwnCheckout(env, reason, _paths(entry.get("protectedPaths", []), f"{where}.protectedPaths"))
+
+
+def _paths(value: Any, where: str) -> tuple[str, ...]:
+    """Paths inside the repository, relative to its root; the root itself is
+    none, since a fence on it would refuse every write."""
+    paths = tuple(_text(item, f"{where}[{at}]") for at, item in enumerate(_list(value, where)))
     for at, path in enumerate(paths):
         if path.startswith("/") or ".." in path.split("/") or path.strip("/") in ("", "."):
-            raise ConfigError(f"{where}.protectedPaths[{at}] must be a path inside the repository")
-    return OwnCheckout(env, reason, paths)
+            raise ConfigError(f"{where}[{at}] must be a path inside the repository")
+    return paths
 
 
 # A program is named bare, as the shell finds it on PATH: a path-qualified
@@ -366,6 +378,14 @@ def parse(data: Any) -> Config:
         for index, entry in enumerate(_list(worktree.get("reviewedCLIs", []), "worktree.reviewedCLIs"))
     )
     own = _own_checkout(worktree["ownCheckout"]) if "ownCheckout" in worktree else None
+    protected = _paths(worktree.get("protectedPaths", []), "worktree.protectedPaths")
+    # Required with the paths: it is what a refused session reads to learn how
+    # the file gets changed instead.
+    protected_reason = worktree.get("protectedPathsReason", "")
+    if protected:
+        protected_reason = _text(protected_reason, "worktree.protectedPathsReason")
+    elif protected_reason != "":
+        raise ConfigError("worktree.protectedPathsReason needs worktree.protectedPaths")
     hosts = DEFAULT.push_hosts
     if "pushHosts" in worktree:
         hosts = tuple(
@@ -373,8 +393,8 @@ def parse(data: Any) -> Config:
             for at, item in enumerate(_list(worktree["pushHosts"], "worktree.pushHosts"))
         )
     return Config(
-        trusted, variables, reason, paired, read_only, mode, refuses_from, reviewed,
-        own_checkout=own, rules=rules, push_hosts=hosts,
+        trusted, variables, reason, paired, read_only, mode, refuses_from, reviewed, own_checkout=own, rules=rules,
+        protected_paths=protected, protected_paths_reason=protected_reason, push_hosts=hosts,
     )
 
 

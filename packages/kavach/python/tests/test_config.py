@@ -233,6 +233,34 @@ class ParseTest(unittest.TestCase):
 
         self.assertEqual(config.DEFAULT.push_hosts, boundary.DEFAULT_PUSH_HOSTS)
 
+    def test_protected_paths(self) -> None:
+        def worktree(**values: object) -> dict[str, object]:
+            return {"worktree": values}
+
+        reason = "the git hooks run them; the owner changes them"
+        where = "worktree.protectedPaths"
+        self.refused(worktree(protectedPaths=".githooks/", protectedPathsReason=reason), f"{where} must be a JSON array")
+        self.refused(worktree(protectedPaths=[""], protectedPathsReason=reason), f"{where}[0] must be a non-empty string")
+        for path in ("/abs", "a/../b", "..", "/", ".", "./", "//"):
+            with self.subTest(path=path):
+                self.refused(
+                    worktree(protectedPaths=[".githooks/", path], protectedPathsReason=reason),
+                    f"{where}[1] must be a path inside the repository",
+                )
+        self.refused(worktree(protectedPaths=[".githooks/"]), "worktree.protectedPathsReason must be a non-empty string")
+        self.refused(
+            worktree(protectedPaths=[".githooks/"], protectedPathsReason=""),
+            "worktree.protectedPathsReason must be a non-empty string",
+        )
+        self.refused(worktree(protectedPathsReason=reason), "worktree.protectedPathsReason needs worktree.protectedPaths")
+        parsed = config.parse(worktree(protectedPaths=[".githooks/", "scripts/pins.mjs"], protectedPathsReason=reason))
+        self.assertEqual(
+            (parsed.protected_paths, parsed.protected_paths_reason), ((".githooks/", "scripts/pins.mjs"), reason)
+        )
+        # An empty list is the default, and needs no reason.
+        self.assertEqual(config.parse(worktree(protectedPaths=[])), config.DEFAULT)
+        self.assertEqual((config.DEFAULT.protected_paths, config.DEFAULT.protected_paths_reason), ((), ""))
+
     def test_protected_variables(self) -> None:
         def command(**values: object) -> dict[str, object]:
             return {"command": values}

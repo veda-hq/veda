@@ -55,8 +55,8 @@ checkout needs `pnpm install` after a pin bump: ask Alok.
 ## Git hooks
 
 git runs the tracked hooks in `.githooks/`: `pre-commit` (dvara's records
-and frozen gates) and `pre-push` (those gates, `pnpm guards`, then niyam's
-pre-push for an agent session). The main checkout's shared git config sets
+and frozen gates) and `pre-push` (those gates, `scripts/guards.sh`, then
+niyam's pre-push for an agent session). The main checkout's shared git config sets
 `core.hooksPath` to `.githooks`, set once by Alok. Worktrees share that
 config, and the path is relative, so each worktree runs its own branch's
 hooks under its own `node_modules`. When a hook says a pinned package is
@@ -74,6 +74,28 @@ line it prints. A `global` or `system` line comes first and loses to the
 `worktree` line, from that worktree's own `config.worktree`, comes last and
 wins there, and that worktree skips `.githooks`. For either, tell Alok,
 and leave the setting alone.
+
+**Agents do not change the hooks or what they run** (veda#235). That is
+`.githooks/`, `scripts/guards.sh`, `scripts/released-pins.mjs`,
+`.dvara.json`, `.veda/records-baseline.json`,
+`.veda/required-settings.json`, `.github/niyam.json`, and `node_modules/`
+(`pnpm install` still runs). A worktree runs its own
+copy of each, so an edit would let that session's own pushes skip the
+checks. Once veda's hooks run kavach 0.7.6, `worktree.protectedPaths` in
+`.claude/kavach.json` lists them, and kavach refuses a session's writes to
+them: Edit, Write, Bash, and the git commands that write the paths they
+name (`git restore .` and `git checkout .` included). A command that names
+the root as what it writes (`rm -rf .`, `cp file .`) is refused too: name
+the paths. Run mutating commands from the root, not from `scripts/`,
+`.github/`, `.veda/` or `node_modules/`. A hook change is Alok's. He makes
+it himself, or allows one session by taking the path off the list in the
+main checkout's `.claude/kavach.json` and putting it back after. That list
+is every session's: while the path is off it, any session may write it, so
+he does it with no other session working. A session that needs one
+says so in its pull request or brief and leaves the file alone, and so
+does one with a merge conflict in such a file. Pins in
+`package.json` stay agents' work: `released-pins.mjs` holds each one to an
+exact release.
 
 ## Merging
 

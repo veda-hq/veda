@@ -9,6 +9,7 @@ import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, r
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative } from 'node:path';
 import { after, before, beforeEach, describe, it } from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { hash } from './boundary.ts';
 import { CONFIGURABLE, consoleIo, DENY_FILE, flags, main, ownVersion, run, splitFiles, trackedFiles, type Io } from './cli.ts';
 import type { LinkRunner } from './doc-links.ts';
@@ -252,16 +253,6 @@ describe('main and the console', () => {
     assert.equal(await main([process.execPath], other.io), undefined);
     assert.deepEqual(other.out, []);
     assert.deepEqual(other.err, []);
-  });
-
-  it('leaves an importer’s exit code as it is', async () => {
-    process.exitCode = 7;
-    try {
-      await import(`./cli.ts?import=${Date.now()}`);
-      assert.equal(process.exitCode, 7);
-    } finally {
-      process.exitCode = undefined;
-    }
   });
 
   it('follows a link to this file, as node names a bin', async () => {
@@ -1181,7 +1172,8 @@ describe('run doc-references', () => {
 
   it('runs lychee from PATH when it is given no runner', () => {
     const bin = temp();
-    writeFileSync(join(bin, 'lychee'), '#!/bin/sh\nexit 3\n');
+    // It reads the list pariksha writes before it exits: one that exits first can close the pipe mid-write (EPIPE).
+    writeFileSync(join(bin, 'lychee'), '#!/bin/sh\ncat > /dev/null\nexit 3\n');
     chmodSync(join(bin, 'lychee'), 0o755);
     assert.deepEqual(w1WithPath(`${bin}${delimiter}${process.env['PATH'] ?? ''}`, () => docRefs('links.json', ['--all'])), {
       code: 2,
@@ -2805,6 +2797,13 @@ describe('the command', () => {
     const script = join(import.meta.dirname, 'cli.ts');
     assert.equal(execFileSync(process.execPath, [script, '--version'], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }), `${pkg.version}\n`);
     assert.throws(() => execFileSync(process.execPath, [script, 'nope'], { stdio: 'pipe', timeout: 30_000, killSignal: 'SIGKILL' }), { status: 2 });
+  });
+
+  // In a process of its own: a second instance of cli.ts in this one would
+  // stand in for the first in the coverage report.
+  it('leaves an importer’s exit code as it is', () => {
+    const importer = `process.exitCode = 7; await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, 'cli.ts')).href)});`;
+    assert.throws(() => execFileSync(process.execPath, ['--input-type=module', '-e', importer], { stdio: 'pipe', timeout: 30_000, killSignal: 'SIGKILL' }), { status: 7 });
   });
 });
 

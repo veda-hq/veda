@@ -203,9 +203,12 @@ Any other program a runner starts is judged as the same words would be
 without the runner, in the folder it runs them in: `pnpm exec touch .tmp/x`
 writes `.tmp/x`, and `pnpm exec deno eval …`, `pnpm exec osascript -e …`,
 `pnpm exec xargs …` or `mise exec -- fish -c …` are refused, as `deno eval …`
-is. That covers `pnpm exec`, `pnpm dlx` (whose `-c` is a shell mode too),
-pnpm's implicit form (`pnpm uname -s`, for a word that is neither a pnpm
-command nor a script of the package), `npx`, `npm exec`, and `mise exec`.
+is. That covers `pnpm exec`, pnpm's implicit form (`pnpm uname -s`, for a
+word that is neither a pnpm command nor a script of the package), and
+`mise exec`. `npx`, `npm exec` and `pnpm dlx` (whose `-c` is a shell mode
+too) run a program only from a bin folder or a package they fetch, so there
+any program that is not an installed bin, a shell or a listed interpreter is
+refused (`npx touch .tmp/x`).
 A program that is a package bin, installed in a `node_modules/.bin` the
 runner looks in first, is the repository's code and runs (`pnpm exec dvara`,
 `npx tsc`, with tsc installed): pnpm looks in the package's folder (the nearest package's
@@ -224,8 +227,9 @@ later run reads (`pnpm config set`, `pnpm set`, `npm config set`), npm's
 `init <x>`, `create <x>` and `explore`, a `--dir` the guard cannot place or
 two selectors, and a runner option the guard does not list, since it may
 take the next word. A listed interpreter on a script file that a runner
-fetches (`pnpm dlx tsx x.ts`) still runs, unless the line names another
-package (`npx -p <pkg> node x.js` runs one of that package's bins). Across
+fetches (`pnpm dlx tsx x.ts`) still runs, unless the line gives `--package`
+(`npx -p <pkg> node x.js` runs one of that package's bins, so even
+`npx -p tsx tsx x.ts` is refused). Across
 packages (`pnpm -r <word>`), a word that is a script of any selected package
 is a script, as pnpm 12.9 ran it only where it is one; the workspace root is
 not selected unless `--include-workspace-root` is given, and under a filter

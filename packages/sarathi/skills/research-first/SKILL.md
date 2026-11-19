@@ -86,7 +86,8 @@ Stop it keeps the turn going when the closing message asks the owner to
 choose ("A or B?", "Which one?"). A yes/no approval passes at once. For a
 question about the repository or its state (a path, a pull request, a
 branch, a commit, CI), reading that state counts as the look: `Read`,
-`Grep`, `Glob`, a read-only `git` or `gh`, or a test run. That is step 1
+`Grep`, `Glob`, the desktop app's pull request status
+(`mcp__ccd_pr__get_status`), a read-only `git` or `gh`, or a test run. That is step 1
 above. For other questions it does not count. The handler checks that a
 look happened, not what it found: asking again in the same turn goes
 through, so an owner-only question is asked again unchanged.

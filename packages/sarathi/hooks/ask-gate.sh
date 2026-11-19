@@ -57,9 +57,20 @@ GIT_READ = re.compile(
 GH_READ = re.compile(
     r"^gh\s+((pr|issue|run|workflow|release|repo|label|cache)\s+(view|list|checks|status|diff|watch)\b|search\b)"
 )
+# Forms of those verbs that write: git branch with a mutating flag or a
+# branch name to create; reflog expire and delete; an --output file.
+GIT_BRANCH_WRITE = {
+    "-d", "-D", "-m", "-M", "-c", "-C", "-f", "-u", "--delete", "--move", "--copy", "--force",
+    "--set-upstream-to", "--unset-upstream", "--edit-description", "--track", "--no-track", "--create-reflog",
+}
+GIT_BRANCH_VALUE = {"--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "--sort", "--format", "--color", "--column"}
+GIT_BRANCH_LIST = {"-l", "--list"}
+GIT_REFLOG_WRITE = re.compile(r"^(expire|delete)\b")
+GIT_OUTPUT = re.compile(r"(^|\s)--output\b")
 GH_API = re.compile(r"^gh\s+api\b")
-GH_API_WRITE_METHOD = re.compile(r"\s(-X|--method)[\s=]*(POST|PUT|PATCH|DELETE)\b", re.I)
-GH_API_GET = re.compile(r"\s(-X|--method)[\s=]*GET\b", re.I)
+# A gh api method counts only when it is a plain GET; a variable ("$METHOD")
+# could be anything.
+GH_API_METHOD = re.compile(r"\s(-X|--method)(\s+|=)?(\S+)")
 GH_API_FIELDS = re.compile(r"\s(-f|-F|--field|--raw-field|--input)\b")
 # A package manager's script runs after its flags only: "pnpm --filter x run
 # check" is a test run, "pnpm add -D vitest" is not.
@@ -68,7 +79,10 @@ TEST_RUN = re.compile(
     r"npx\s+(vitest|jest)\b|node\s+--test\b|"
     r"python3?\s+-m\s+pytest\b|pytest\b|go\s+test\b|cargo\s+test\b|make\s+(test|check)\b|vitest\b|jest\b)"
 )
-SEGMENT = re.compile(r"&&|\|\||[;|\n]")
+# Commands and the operators between them. A command after || may not run,
+# and neither does one after && that follows a command that cannot succeed.
+CHAIN = re.compile(r"(&&|\|\||[;|\n])")
+FAILS = re.compile(r"^(false|exit|return)\b")
 # What may lead a command: a subshell or group opener, a negation, variable
 # assignments, env, time. The openers are hex escapes (\x28 \x7b): bare and
 # unbalanced, they would break the shell's reading of this $(...) block.
@@ -274,15 +288,49 @@ def is_research(item):
         return isinstance(given, dict) and (given.get("subagent_type") or "general-purpose") in RESEARCH_AGENTS
     return False
 
+def git_reads(segment):
+    found = GIT_READ.match(segment)
+    if not found or GIT_OUTPUT.search(segment):
+        return False
+    verb, rest = found.group(3), segment[found.end():].split()
+    if verb == "reflog":
+        return not GIT_REFLOG_WRITE.match(" ".join(rest))
+    if verb != "branch":
+        return True
+    listing, takes_value = False, False
+    for word in rest:
+        if takes_value:
+            takes_value = False
+        elif word in GIT_BRANCH_WRITE or word.split("=")[0] in GIT_BRANCH_WRITE:
+            return False
+        elif word in GIT_BRANCH_LIST or word == "--show-current":
+            listing = True
+        elif word in GIT_BRANCH_VALUE:
+            takes_value = True
+        elif not word.startswith("-") and not listing:
+            return False
+    return True
+
+def gh_api_reads(segment):
+    if not GH_API.match(segment):
+        return False
+    method = GH_API_METHOD.search(segment)
+    if method:
+        return method.group(3).strip("\x22\x27").upper() == "GET"
+    return not GH_API_FIELDS.search(segment)
+
 def reads_state(command):
-    """Whether a shell command reads repository or session state."""
-    for segment in SEGMENT.split(command):
-        segment = LEAD.sub("", segment).strip()
-        if GIT_READ.match(segment) or GH_READ.match(segment) or TEST_RUN.match(segment):
+    """Whether a shell command reads repository or session state, in a
+    command that surely runs."""
+    parts = CHAIN.split(command)
+    dead = False
+    for index in range(0, len(parts), 2):
+        operator = parts[index - 1] if index else ";"
+        segment = LEAD.sub("", parts[index]).strip()
+        runs = operator != "||" and not (operator == "&&" and dead)
+        dead = (dead and operator == "&&") or bool(FAILS.match(segment))
+        if runs and (git_reads(segment) or GH_READ.match(segment) or TEST_RUN.match(segment) or gh_api_reads(segment)):
             return True
-        if GH_API.match(segment) and not GH_API_WRITE_METHOD.search(segment):
-            if GH_API_GET.search(segment) or not GH_API_FIELDS.search(segment):
-                return True
     return False
 
 def is_look(item):

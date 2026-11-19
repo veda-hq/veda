@@ -126,8 +126,8 @@ settled a question, so it checks that a look happened, not what it found.
   fenced code, inline code, quoted lines and URLs. A question is held when it
   names alternatives ("which", "or", "how should", "either"). "… or not?" and
   a bare "A/B" do not count, since no buttons tell a pair from a path. A
-  yes/no question ("Force-push to main?", "Delete the branch?") lets the turn
-  end at once. An irreversible step asked as a choice ("Delete the branch or
+  yes/no question that names no alternative ("Force-push to main?", "Delete
+  the branch?") lets the turn end at once. An irreversible step asked as a choice ("Delete the branch or
   keep it?") is held once, as a `wrap_up` ask is.
 - **Research:** since the owner's last message, a `WebSearch`, a `WebFetch`,
   a browser page read (`…Claude_Browser__get_page_text`, `read_page`,
@@ -145,10 +145,13 @@ settled a question, so it checks that a look happened, not what it found.
   state counts too: `Read`, `Grep`, `Glob`, `mcp__ccd_pr__get_status`, or a
   Bash call running a read-only `git` verb (`status`, `log`, `diff`, `show`,
   `branch`, `blame` …), a read-only `gh` (`pr`/`issue`/`run` `view`,
-  `list`, `checks`; `gh search`; `gh api` without a write method or fields),
-  or a test run (`pnpm test`, `pnpm check`, `node --test`, `vitest`,
-  `pytest`, `go test` …). A `git commit`, a `gh pr create` or a
-  `pnpm install` is no look. A look does not count for other asks. In 2,333
+  `list`, `checks`; `gh search`; `gh api` with no fields, or a literal
+  `GET`), or a test run (`pnpm test`, `pnpm check`, `node --test`, `vitest`,
+  `pytest`, `go test` …). A `git commit`, a `git branch -D` or a new branch
+  name, a `git reflog expire`, an `--output` file, a `gh pr create`, a
+  `gh api --method "$METHOD"` or a `pnpm install` is no look. Neither is a
+  command that may not run: one after `||`, or after `&&` behind a `false`,
+  `exit` or `return`. A look does not count for other asks. In 2,333
   local session transcripts (2026-11-19, the script on veda-hq/veda#218),
   732 asks the gate covers had no web research before them. 629 of them
   (86%) came after a repo read, so counting a read for every ask would have

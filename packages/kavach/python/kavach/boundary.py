@@ -5714,9 +5714,22 @@ PNPM_COMMANDS = frozenset({
 })
 # The options of `pnpm dlx`'s own slot that take the next word.
 PNPM_DLX_VALUES = frozenset({"--package", "--allow-build", "--cpu", "--os", "--libc"})
-NPM_GLOBAL_VALUES = frozenset({"--prefix", "--loglevel", "-w", "--workspace", "--userconfig"})
+# Not `--userconfig`: npm reads node-options from the file it names (#277).
+NPM_GLOBAL_VALUES = frozenset({"--prefix", "--loglevel", "-w", "--workspace"})
 NPM_GLOBAL_FLAGS = frozenset({
     "-s", "--silent", "-q", "--quiet", "-y", "--yes", "--workspaces", "--ws", "-v", "--version", "-h", "--help",
+})
+
+# `mise exec`'s own options before its tool arguments, from mise's `--help`:
+# those that take the next word, and the rest.
+MISE_EXEC_VALUES = frozenset({
+    "-c", "--command", "-j", "--jobs", "--allow-env", "--allow-net", "--allow-read", "--allow-write",
+    "--secrets", "-C", "--cd", "-E", "--env",
+})
+MISE_EXEC_FLAGS = frozenset({
+    "--deny-all", "--deny-env", "--deny-net", "--deny-read", "--deny-write", "--fresh-env", "--no-deps",
+    "--raw", "--secrets-all", "-h", "--help", "-q", "--quiet", "--verbose", "-y", "--yes", "--locked",
+    "--silent",
 })
 
 
@@ -5794,9 +5807,13 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
     is neither a pnpm command nor a script of the package), after its global
     options, and through `recursive` and `-r`. `pnpm with <version>` and
     `pnpm create` fail closed. npm: `exec` and `x`; npx. mise: `exec` and
-    `x`, the program after `--`. yarn's and bun's are not read here
-    (unprobed: neither is installed); their `exec` already fails closed.
+    `x`, the program after `--`; a tool argument fails closed. yarn's and
+    bun's are not read here (unprobed: neither is installed); their `exec`
+    already fails closed, and so does `yarn dlx`, which fetches the package
+    it runs (yarn's documentation).
     """
+    if name == "yarn":
+        return None if "dlx" in args else False
     if name == "pnpm":
         _subcommands, _modes, flags, values = RUNNER_SHELL_MODES["pnpm"]
         recursive, index = False, 0
@@ -6003,18 +6020,30 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
         if index >= len(args) or args[index] not in {"exec", "x"}:
             return False
         rest = args[index + 1 :]
+        before = rest[: rest.index("--")] if "--" in rest else rest
+        at = 0
+        while at < len(before):
+            option, attached, value = before[at].partition("=")
+            if option in MISE_EXEC_VALUES:
+                if not attached:
+                    value = before[at + 1] if at + 1 < len(before) else ""
+                if option in {"-C", "--cd"}:
+                    place = resolve_shell_path(value, folder)
+                    if place is None:
+                        return None
+                    folder = place
+                at += 1 if attached else 2
+            elif option in MISE_EXEC_FLAGS or re.fullmatch(r"-v+", option):
+                at += 1
+            else:
+                # A tool argument (`node@24`, `npm:cowsay`) puts that tool's
+                # bins ahead of `PATH` (`mise exec node@24.21.0 -- which
+                # node` printed mise's node), so the program's name, or a
+                # `-c` command's, proves nothing, as under `npx -p <pkg>`. An
+                # option the table does not list may take the next word.
+                return None
         if "--" not in rest:
             return False
-        before = rest[: rest.index("--")]
-        for at, word in enumerate(before):
-            option = word.partition("=")[0]
-            if option in {"-C", "--cd"}:
-                place = resolve_shell_path(
-                    word.partition("=")[2] or (before[at + 1] if at + 1 < len(before) else ""), folder
-                )
-                if place is None:
-                    return None
-                folder = place
         start = index + 1 + rest.index("--") + 1
         return RunnerProgram(start, folder, ()) if start < len(args) else False
     return False

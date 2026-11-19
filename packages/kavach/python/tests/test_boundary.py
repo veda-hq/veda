@@ -1539,7 +1539,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm --reporter silent exec tsx .tmp/x.ts",
             "npx -y tsx .tmp/x.ts",
             "npx --yes tsc -p .",
-            "mise exec node@24 -- node --version",
+            "mise exec -- node --version",
             "git remote -v",
             "git remote -v add o https://github.com/veda-hq/veda.git",
             "git pull --set-upstream origin main",
@@ -1792,6 +1792,21 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "mise -q exec -- deno eval 1",
             "mise --cd nested exec -- deno eval 1",
             "mise --no-such-option exec -- tsc",
+            # #277: a tool argument puts that tool's bins ahead of `PATH`,
+            # so the program's name proves nothing; and an option of
+            # `exec`'s the table does not list.
+            "mise exec node@24 -- node --version",
+            "mise exec npm:cowsay -- touch .tmp/x",
+            "mise x node@24 -- pnpm check",
+            "mise exec --jobs 2 node@24 -- touch .tmp/x",
+            "mise x npm:cowsay -c 'touch .tmp/x'",
+            "mise exec --no-such-option -- touch .tmp/x",
+            # #277: `yarn dlx` fetches the package it runs.
+            "yarn dlx cowsay",
+            "yarn dlx --package cowsay touch .tmp/x",
+            # #277: npm reads node-options from the file `--userconfig` names.
+            "npm --userconfig .tmp/rc run check",
+            "npm --userconfig=.tmp/rc exec -- fixturetool",
             # A setting every later run reads, and a package npm downloads
             # or a command it runs elsewhere.
             "pnpm config set node-options --import=x",
@@ -1826,8 +1841,10 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "npm run check",
             "pnpm dlx tsx .tmp/x.ts",
             "mise exec -- go test ./...",
-            "mise exec node@24 -- node --version",
             "mise -q exec -- go test ./...",
+            "mise exec --deny-net -vv -- go test ./...",
+            "mise exec -E ci --jobs 2 -- go test ./...",
+            "mise exec --cd nested -- touch .tmp/x",
             "mise run lint",
             "pnpm config get registry",
             "npm init -y",

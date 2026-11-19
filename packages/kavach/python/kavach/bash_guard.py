@@ -129,19 +129,48 @@ bare = re.sub(r"[\\'\"]", "", bare)
 # (`pnpm --config.node-options=…`, `npm --node-options=…`), `PERL5OPT=-M…;code`,
 # `BASH_ENV`, and `DYLD_INSERT_LIBRARIES`, which Homebrew's `jq`, a command
 # read as only reading, loaded. `LD_PRELOAD` (Linux) and `BUN_OPTIONS` are
-# from their documentation, unprobed here. Not listed: `RUBYOPT` and
-# `NODE_OPTIONS=--eval` (both refuse inline text), `PYTHONSTARTUP` (read only
-# when interactive). Searching for a name, without `=`, passes.
-PROGRAM_VARIABLES = ("NODE_OPTIONS", "PERL5OPT", "BASH_ENV", "BUN_OPTIONS", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD")
-PROGRAM_VAR = r"(?:" + "|".join(PROGRAM_VARIABLES) + r"|(?i:p?npm_config_node[-_]options))\b"
-PROGRAM_OPTION = r"(?i)(?<![\w-])--(?:config\.)?node[-_]options\b"
+# from their documentation, unprobed here. `NODE_OPTIONS=--eval` and
+# `RUBYOPT=-e` refuse inline text, and `PYTHONSTARTUP` is read only when
+# interactive, so they ran nothing.
+#
+# Variables that make a program run a file the guard does not read (#277),
+# each probed live: `SHELLOPTS=xtrace` with `PS4='$(…)'` (every bash, every
+# package script; `PS4` alone under `bash -x` or `set -x`), `ZDOTDIR` and
+# `HOME` (zsh sources their `.zshenv`; npm reads `$HOME/.npmrc`),
+# `PYTHONPATH` and `PYTHONUSERBASE` (a `sitecustomize.py` or
+# `usercustomize.py` there runs in every python), `RUBYOPT=-r<file>` and
+# `RUBYLIB`. Searching for a name, without `=`, passes.
+#
+# npm's and pnpm's settings are refused as a class (#277): node-options,
+# script-shell, userconfig/globalconfig (a file holding node-options) and
+# pnpmfile/global-pnpmfile each ran code in one pass, and pnpm reads a
+# camelCase key too (`--config.nodeOptions`). Only the listed settings, which
+# run nothing, pass, in any spelling.
+PROGRAM_VARIABLES = (
+    "NODE_OPTIONS", "PERL5OPT", "BASH_ENV", "BUN_OPTIONS", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD",
+    "SHELLOPTS", "PS4", "ZDOTDIR", "HOME", "PYTHONPATH", "PYTHONUSERBASE", "RUBYOPT", "RUBYLIB",
+)
+INERT_SETTINGS = (
+    r"(?:manage[-_]?package[-_]?manager[-_]?versions|loglevel|color|update[-_]?notifier|fund|audit|progress)"
+    r"(?![\w-])"
+)
+PROGRAM_VAR = (
+    r"(?:(?:" + "|".join(PROGRAM_VARIABLES) + r")\b"
+    r"|(?i:p?npm_config_(?!" + INERT_SETTINGS + r")[\w-]+))"
+)
+PROGRAM_OPTION = (
+    r"(?i)(?<![\w-])--(?:config\.(?!" + INERT_SETTINGS + r")"
+    r"|node[-_]?options\b|userconfig\b|globalconfig\b|script[-_]?shell\b|(?:global[-_]?)?pnpmfile\b)"
+)
 if sets_variable(PROGRAM_VAR, bare) or re.search(PROGRAM_OPTION, bare):
     print(
-        "BLOCKED: this command sets a variable or option that hands a program text or a library to run "
-        f"({', '.join(PROGRAM_VARIABLES)}, or npm's and pnpm's node-options), which the guard does not "
-        "read: `NODE_OPTIONS=--import=data:…` runs the text it holds whatever command follows. Run the "
-        "program without it; for a setting such as `--max-old-space-size`, put it in a package script the "
-        "repository reviews. To search for a name, leave out the `=` (and an option's leading `--`).",
+        "BLOCKED: this command sets a variable or option that makes a program run text, a library or a "
+        f"file the guard does not read ({', '.join(PROGRAM_VARIABLES)}, any `npm_config_*` or "
+        "`pnpm_config_*`, pnpm's `--config.*`, or npm's `--node-options`, `--userconfig`, "
+        "`--globalconfig` or `--script-shell`): `NODE_OPTIONS=--import=data:…` runs the text it holds "
+        "whatever command follows. Run the program without it; for a setting such as "
+        "`--max-old-space-size` or a module path, put it in a package script the repository reviews. To "
+        "search for a name, leave out the `=` (and an option's leading `--`).",
         file=sys.stderr,
     )
     sys.exit(2)

@@ -61,6 +61,10 @@ machine, so the session that unfiles last need not be the one that filed
 first. A filed session that is archived without an answer stops holding its
 top session the next time another session under it unfiles. Each app call
 gives up after 20 seconds, as one the app holds for an approval card would.
+Giving up cancels nothing, so where the top session goes back to is kept
+before it moves, and only a refused move takes that off again. A top
+session whose sidebar group the app has not reported yet is not moved, since
+its way back would be lost; it still gets its dot.
 A failure is logged once, as `needs-you: the sidebar was not updated (…)`;
 in a session without the app's tools (a terminal) nothing is filed and
 nothing is logged.

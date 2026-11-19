@@ -121,8 +121,13 @@ export const lycheeRunner =
       maxBuffer: 256 * 1024 * 1024,
     });
     if (result.error !== undefined) {
-      if ((result.error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`${command} is not installed; the link check needs lychee (https://lychee.cli.rs)`);
-      throw result.error;
+      const code = (result.error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') throw new Error(`${command} is not installed; the link check needs lychee (https://lychee.cli.rs)`);
+      // EPIPE: lychee exited before it read the whole list. Its status and
+      // stderr say why, so they are reported, not the pipe. A status that
+      // would pass is no pass: lychee did not see every file.
+      if (code !== 'EPIPE') throw result.error;
+      if (result.status === 0 || result.status === 2) throw new Error(`lychee exited ${String(result.status)} before it read its file list, so not every file was checked: ${result.stderr}`);
     }
     // 0: every link resolves; 2: some do not, listed in the report.
     if (result.status !== 0 && result.status !== 2) throw new Error(`lychee exited ${String(result.status)}: ${result.stderr}`);

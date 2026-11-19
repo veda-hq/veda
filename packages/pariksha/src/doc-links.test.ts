@@ -68,11 +68,12 @@ interface Stub {
   cwd(): string;
 }
 
-const stub = ({ report = '{"error_map":{}}', status = 0, stderr = '', mode = 0o755 }: { report?: string; status?: number; stderr?: string; mode?: number } = {}): Stub => {
+/** `reads: false` leaves stdin unread, as a lychee that exits at once does. */
+const stub = ({ report = '{"error_map":{}}', status = 0, stderr = '', mode = 0o755, reads = true }: { report?: string; status?: number; stderr?: string; mode?: number; reads?: boolean } = {}): Stub => {
   const dir = mkdtempSync(join(tmpdir(), 'lychee-stub-'));
   stubDirs.push(dir);
   const command = join(dir, 'lychee');
-  writeFileSync(command, SCRIPT);
+  writeFileSync(command, reads ? SCRIPT : SCRIPT.replace('cat > "$here/stdin"\n', ''));
   chmodSync(command, mode);
   const put = (name: string, text: string): void => writeFileSync(join(dir, name), text);
   put('report', report);
@@ -467,6 +468,27 @@ describe('lycheeRunner, on a stand-in executable', () => {
     const lychee = stub({ status: 1, report: '', stderr: 'Error: Cannot read input docs/absent.md\n' });
     assert.throws(() => lycheeRunner(lychee.command)(repo.root, ['docs/absent.md']), { message: 'lychee exited 1: Error: Cannot read input docs/absent.md\n' });
   });
+
+  // A list past any pipe's buffer: a lychee that never reads it closes the
+  // pipe mid-write, so every run hits EPIPE.
+  const longList = Array.from({ length: 20_000 }, (_, i) => `docs/${String(i).padStart(50, '0')}.md`);
+
+  it('reports why lychee exited, not the pipe, when it exits before reading its list', () => {
+    const repo = createTestRepo({});
+    const lychee = stub({ status: 1, stderr: 'Error: bad config\n', reads: false });
+    assert.throws(() => lycheeRunner(lychee.command)(repo.root, longList), { message: 'lychee exited 1: Error: bad config\n' });
+    assert.equal(lychee.ran(), true);
+  });
+
+  for (const status of [0, 2]) {
+    it(`fails when lychee exits ${String(status)} before reading its list: it did not see every file`, () => {
+      const repo = createTestRepo({});
+      const lychee = stub({ status, stderr: 'partial\n', reads: false });
+      assert.throws(() => lycheeRunner(lychee.command)(repo.root, longList), {
+        message: `lychee exited ${String(status)} before it read its file list, so not every file was checked: partial\n`,
+      });
+    });
+  }
 
   it('fails loudly when lychee is not installed', () => {
     const repo = createTestRepo({ 'docs/a.md': '# A\n' });

@@ -212,22 +212,26 @@ export const afterFilingFailure = (error: unknown, logged: string | null): { las
 }
 
 /**
- * Queues a filing step behind the ones before it; never thrown. Only a filing
- * that went through clears the failure logged last: the no-op unfiling every
- * prompt queues says nothing about whether the sidebar can be written.
+ * Queues a filing step behind the ones before it; never thrown. It starts
+ * from a timer, not in the hook that asked for it: a timer's work outlives
+ * the hook's dispatch, which a filing held by the app for up to 20 s per
+ * call would otherwise run past. Only a filing that went through clears the
+ * failure logged last: the no-op unfiling every prompt queues says nothing
+ * about whether the sidebar can be written.
  */
-function enqueue($: Engine, step: () => Promise<void>, clears = false): Promise<void> {
-  filing = filing.then(step).then(
-    () => {
-      if (clears) lastFilingLogged = null
-    },
-    (error: unknown) => {
-      const after = afterFilingFailure(error, lastFilingLogged)
-      lastFilingLogged = after.lastLogged
-      if (after.line !== null) $.ui.log(after.line)
-    },
-  )
-  return filing
+function enqueue($: Engine, step: () => Promise<void>, clears = false): void {
+  $.clock.after(0, () => {
+    filing = filing.then(step).then(
+      () => {
+        if (clears) lastFilingLogged = null
+      },
+      (error: unknown) => {
+        const after = afterFilingFailure(error, lastFilingLogged)
+        lastFilingLogged = after.lastLogged
+        if (after.line !== null) $.ui.log(after.line)
+      },
+    )
+  })
 }
 
 /** This session's id: the one the side-session read found, or read now. */
@@ -238,7 +242,7 @@ async function ownId($: Engine): Promise<string | null> {
 /** Sends a reply button's label as the person's reply and takes the ask off. */
 async function answer($: Engine, ask: Ask, label: string): Promise<void> {
   await update($, asks, current => current.filter(old => old.id !== ask.id))
-  void enqueue($, async () => {
+  enqueue($, async () => {
     const id = await ownId($)
     if (id !== null) await unfile($, id)
   })
@@ -311,7 +315,7 @@ export const register: Register = on => {
     const completed = await next(e)
     if (e.agentId === undefined) {
       // A turn that ended on a question to the person files the session; an interrupted one does not.
-      if (askedThisTurn && e.reason === 'answer') void enqueue($, () => file($), true)
+      if (askedThisTurn && e.reason === 'answer') enqueue($, () => file($), true)
       askedThisTurn = false
     }
     const added = addedThisTurn
@@ -333,7 +337,7 @@ export const register: Register = on => {
       await update($, asks, current => current.filter(ask => ask.from !== 'chat'))
     }
     if (unfilesOn(e)) {
-      void enqueue($, async () => {
+      enqueue($, async () => {
         const id = await ownId($)
         if (id !== null) await unfile($, id)
       })

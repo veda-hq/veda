@@ -1,0 +1,12 @@
+{
+  "testRunner": "command",
+  "commandRunner": { "command": "node --test src/cli.test.ts" },
+  "coverageAnalysis": "off",
+  "mutate": ["src/cli.ts"],
+  "checkers": [],
+  "reporters": ["json"],
+  "jsonReporter": { "fileName": "stryker-report.json" },
+  "tempDirName": ".stryker-tmp",
+  "cleanTempDir": true,
+  "incremental": false
+}

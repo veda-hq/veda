@@ -1,0 +1,12 @@
+{
+  "testRunner": "command",
+  "commandRunner": { "command": "node --test src/semver-range.test.ts src/codec-registry.test.ts" },
+  "coverageAnalysis": "off",
+  "mutate": ["src/semver-range.ts", "src/codec-registry.ts"],
+  "checkers": [],
+  "reporters": ["json"],
+  "jsonReporter": { "fileName": "stryker-report.json" },
+  "tempDirName": ".stryker-tmp",
+  "cleanTempDir": true,
+  "incremental": false
+}

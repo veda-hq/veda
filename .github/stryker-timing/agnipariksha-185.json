@@ -1,0 +1,23 @@
+{
+  "testRunner": "tap",
+  "plugins": ["@stryker-mutator/tap-runner"],
+  "tap": {
+    "testFiles": [
+      "src/cli.test.ts",
+      "src/config.test.ts",
+      "src/failed-tests.test.ts",
+      "src/lanes.test.ts",
+      "src/suite-owner.test.ts"
+    ],
+    "nodeArgs": ["--test-reporter=tap", "-r", "{{hookFile}}", "{{testFile}}"],
+    "forceBail": true
+  },
+  "coverageAnalysis": "perTest",
+  "mutate": ["src/cli.ts", "src/config.ts", "src/failed-tests.ts", "src/lanes.ts", "src/suite-owner.ts"],
+  "checkers": [],
+  "reporters": ["json"],
+  "jsonReporter": { "fileName": "stryker-report.json" },
+  "tempDirName": ".stryker-tmp",
+  "cleanTempDir": true,
+  "incremental": false
+}

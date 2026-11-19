@@ -44,6 +44,9 @@ jobs:
       # kavach's own command (`pnpm test:python`) with -f: the first failing
       # test ends the run, which kills the mutant all the same.
       TEST_COMMAND: python3 -B -m unittest discover -f -s python/tests -t python
+      # Minutes before exec is stopped. The first run is a short smoke run
+      # for every module's mutant count; the long run raises it.
+      EXEC_MINUTES: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -98,7 +101,24 @@ jobs:
           worker-urls = [${urls}]
           EOF
           cat "$RUNNER_TEMP/cr.toml"
-          sleep 5
+          for i in $(seq 1 "$(nproc)"); do
+            port=$(( 9875 + i ))
+            for _ in $(seq 1 60); do
+              curl -s -o /dev/null "http://localhost:$port/" && break
+              sleep 1
+            done
+            curl -s -o /dev/null "http://localhost:$port/" || { cat "$RUNNER_TEMP/w$i.log"; exit 1; }
+          done
+      - name: The suite in a worker's copy
+        # A test that fails only in the copy would kill every mutant at once.
+        working-directory: ${{ runner.temp }}/w1/kavach
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          # shellcheck disable=SC2086
+          $TEST_COMMAND
+          end=$(date +%s)
+          echo "- Suite in a worker's copy: $(( end - start )) s" >> "$GITHUB_STEP_SUMMARY"
       - name: Plan the mutants
         working-directory: packages/kavach
         run: |
@@ -108,19 +128,22 @@ jobs:
           end=$(date +%s)
           planned=$(cosmic-ray dump "$RUNNER_TEMP/${MODULE}.sqlite" | wc -l)
           echo "- Planned: ${planned} mutants (init $(( end - start )) s)" >> "$GITHUB_STEP_SUMMARY"
+      - name: cosmic-ray baseline
+        working-directory: packages/kavach
+        run: cosmic-ray --verbosity=INFO baseline "$RUNNER_TEMP/cr.toml"
       - name: cosmic-ray exec
         working-directory: packages/kavach
         run: |
           set -uo pipefail
           start=$(date +%s)
-          # Stopped well below the job's cap, so a module that cannot finish
-          # still reports how far it got. Each result is saved as it lands.
-          timeout 315m cosmic-ray exec "$RUNNER_TEMP/cr.toml" "$RUNNER_TEMP/${MODULE}.sqlite"
+          # Stopped below the job's cap, so a module that cannot finish still
+          # reports how far it got. Each result is saved as it lands.
+          timeout -k 2m "${EXEC_MINUTES}m" cosmic-ray exec "$RUNNER_TEMP/cr.toml" "$RUNNER_TEMP/${MODULE}.sqlite"
           status=$?
           end=$(date +%s)
           secs=$(( end - start ))
-          if [ "$status" -eq 124 ]; then
-            echo "- exec: stopped at the 315 min limit, unfinished" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+            echo "- exec: stopped at the ${EXEC_MINUTES} min limit, unfinished" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- exec: exit ${status}" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -156,7 +179,11 @@ jobs:
             echo '```'
             echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"
-          cr-report "$db" --show-output > "$RUNNER_TEMP/${MODULE}-report.txt" || true
+          head -n 1 "$RUNNER_TEMP/${MODULE}.jsonl" > "$RUNNER_TEMP/${MODULE}-first-line.txt"
+          jq -c 'select(.[1] != null and .[1].test_outcome == "survived") | {item: .[0], diff: .[1].diff}' \
+            "$RUNNER_TEMP/${MODULE}.jsonl" > "$RUNNER_TEMP/${MODULE}-survivors.jsonl" || true
+          cr-report --help > "$RUNNER_TEMP/cr-report-help.txt" || true
+          cr-report "$db" > "$RUNNER_TEMP/${MODULE}-report.txt" || true
           cr-html "$db" > "$RUNNER_TEMP/${MODULE}.html" || true
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()

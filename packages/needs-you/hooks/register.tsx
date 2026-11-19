@@ -10,8 +10,15 @@ const isExpanded = atom({ plugin: 'needs-you', key: 'isExpanded' } as const, fal
 
 /** A published page an ask links. */
 const PAGE = /https:\/\/claude\.ai\/artifact\/[A-Za-z0-9_-]+/
-/** App events delivered as a prompt: not the person replying. */
-const NOT_PERSON = /^\s*<(side-sessions-event|cross-session-message|ci-monitor-event)\b/
+/**
+ * App events delivered as a prompt: not the person replying. The desktop app
+ * often puts a system reminder ahead of one, so leading reminders are read past.
+ */
+const NOT_PERSON = /^\s*<(side-sessions-event|cross-session-message|ci-monitor-event|task-notification|scheduled-task)\b/
+/** System reminders at a prompt's start. */
+const LEADING_REMINDERS = /^(\s*<system-reminder>[\s\S]*?<\/system-reminder>)+/
+/** A prompt's text with the reminders ahead of it taken off. */
+export const promptText = (text: string): string => text.replace(LEADING_REMINDERS, '')
 /** Prompts the person typed or sent from the phone or the desktop app. */
 const PERSON_KINDS: readonly string[] = ['composer', 'bridge', 'sdk']
 /** Another session's message: it relays an answer as often as not, so it unfiles too. */
@@ -177,7 +184,7 @@ function poll($: Engine): void {
 
 /** A prompt the person sent, from any of their surfaces. */
 export const isPersonPrompt = (e: { text: string; isMeta?: true; origin: { kind: string } }): boolean =>
-  e.isMeta !== true && PERSON_KINDS.includes(e.origin.kind) && !NOT_PERSON.test(e.text)
+  e.isMeta !== true && PERSON_KINDS.includes(e.origin.kind) && !NOT_PERSON.test(promptText(e.text))
 
 /**
  * A prompt that answers a filed session: the person's own, or another
@@ -185,7 +192,7 @@ export const isPersonPrompt = (e: { text: string; isMeta?: true; origin: { kind:
  * or side-session note, a task's report) leave the session filed: it still waits.
  */
 export const unfilesOn = (e: { text: string; isMeta?: true; origin: { kind: string } }): boolean =>
-  isPersonPrompt(e) || (e.isMeta !== true && (RELAYED_KINDS.includes(e.origin.kind) || RELAYED.test(e.text)))
+  isPersonPrompt(e) || (e.isMeta !== true && (RELAYED_KINDS.includes(e.origin.kind) || RELAYED.test(promptText(e.text))))
 
 /** Whether the main loop's turn now running called a wrap_up with a question. */
 let askedThisTurn = false
@@ -201,11 +208,15 @@ export const afterFilingFailure = (error: unknown, logged: string | null): { las
   return { lastLogged: text, line: `needs-you: the sidebar was not updated (${text})` }
 }
 
-/** Queues a filing step behind the ones before it; never thrown. */
-function enqueue($: Engine, step: () => Promise<void>): Promise<void> {
+/**
+ * Queues a filing step behind the ones before it; never thrown. Only a filing
+ * that went through clears the failure logged last: the no-op unfiling every
+ * prompt queues says nothing about whether the sidebar can be written.
+ */
+function enqueue($: Engine, step: () => Promise<void>, clears = false): Promise<void> {
   filing = filing.then(step).then(
     () => {
-      lastFilingLogged = null
+      if (clears) lastFilingLogged = null
     },
     (error: unknown) => {
       const after = afterFilingFailure(error, lastFilingLogged)
@@ -299,7 +310,7 @@ export const register: Register = on => {
     const completed = await next(e)
     if (e.agentId === undefined) {
       // A turn that ended on a question to the person files the session; an interrupted one does not.
-      if (askedThisTurn && e.reason === 'answer') void enqueue($, () => file($))
+      if (askedThisTurn && e.reason === 'answer') void enqueue($, () => file($), true)
       askedThisTurn = false
     }
     const added = addedThisTurn

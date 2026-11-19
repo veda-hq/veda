@@ -115,15 +115,38 @@ async function sessionRow($: Engine, sessionId: string): Promise<Row | null> {
   return rowOf(parsed(await call($, 'ccd_session_mgmt', 'get_session', { session_id: sessionId })))
 }
 
-/** The top session of a session's family: the first ancestor with no parent, or one moved to top level. */
+/** Why the last walk up stopped short, when it did: reported with the filing's other failures. */
+let lastWalkError: string | null = null
+
+/**
+ * The top session of a session's family: the first ancestor with no parent,
+ * or one moved to top level. The walk stops at the last row it could read,
+ * so an ancestor the app cannot find (deleted) leaves the highest one found.
+ */
 export async function rootOf($: Engine, self: Row): Promise<Row> {
   let row = self
   for (let depth = 0; depth < MAX_DEPTH && row.parentSessionId !== null && !row.detached; depth += 1) {
-    const parent = await sessionRow($, row.parentSessionId)
+    const parent = await sessionRow($, row.parentSessionId).catch((error: unknown) => {
+      // fail-open: an unreadable ancestor ends the walk; filing goes on from the highest row read, and the error is logged with the move it spoils.
+      lastWalkError = String(error)
+      return null
+    })
     if (parent === null) break
     row = parent
   }
   return row
+}
+
+/** Runs each step, whatever the ones before did, and fails at the end with the first failure. */
+async function each(steps: readonly (() => Promise<void>)[]): Promise<void> {
+  const failures: unknown[] = []
+  for (const step of steps) {
+    await step().catch((error: unknown) => {
+      // fail-open: kept and rethrown below once every step has had its turn.
+      failures.push(error)
+    })
+  }
+  if (failures.length > 0) throw failures[0]
 }
 
 /** The "Needs you" section's id, made when the sidebar has none. */
@@ -138,23 +161,45 @@ async function needsYou($: Engine): Promise<string> {
 /** How a call names a session: "self" for this one, which the app lets a session change without asking. */
 const ref = (sessionId: string, self: Row): string => (sessionId === self.sessionId ? 'self' : sessionId)
 
-/** Files this session: ✋ title, its top session under "Needs you", that row unread. */
+/**
+ * Files this session: ✋ title, its top session under "Needs you", and an
+ * unread dot. The record goes first, so the answer can undo whatever lands.
+ * Each part runs whatever the others did: the app may refuse a change to
+ * another session's row, and the title and the session's own dot still say
+ * it waits.
+ */
 export async function file($: Engine): Promise<void> {
   const self = await sessionRow($, 'self')
   if (self === null) return
-  if (!marked(self.title)) {
-    await call($, 'ccd_session_mgmt', 'set_session_title', { session_id: 'self', title: withMark(self.title) })
-  }
+  lastWalkError = null
   const root = await rootOf($, self)
   await $.store.set(filedKey(self.sessionId), { root: root.sessionId } satisfies Filed)
-  const section = await needsYou($)
-  if (root.group !== section) {
-    if (movedOf(await $.store.get(movedKey(root.sessionId))) === null) {
-      await $.store.set(movedKey(root.sessionId), { group: root.group ?? null, pinned: root.pinned } satisfies Moved)
-    }
-    await call($, 'ccd_sidebar', 'move_sessions', { session_ids: [ref(root.sessionId, self)], section_id: section })
-  }
-  await call($, 'ccd_sidebar', 'set_unread', { session_id: ref(root.sessionId, self), unread: true })
+  const isTop = root.sessionId === self.sessionId
+  await each([
+    async () => {
+      if (!marked(self.title)) {
+        await call($, 'ccd_session_mgmt', 'set_session_title', { session_id: 'self', title: withMark(self.title) })
+      }
+    },
+    async () => {
+      if (!isTop) await call($, 'ccd_sidebar', 'set_unread', { session_id: 'self', unread: true })
+    },
+    async () => {
+      const section = await needsYou($)
+      if (root.group !== section) {
+        await call($, 'ccd_sidebar', 'move_sessions', { session_ids: [ref(root.sessionId, self)], section_id: section })
+        // Kept only once the move is done, and only the first time: it is where the row goes back to.
+        if (movedOf(await $.store.get(movedKey(root.sessionId))) === null) {
+          await $.store.set(movedKey(root.sessionId), { group: root.group ?? null, pinned: root.pinned } satisfies Moved)
+        }
+      }
+    },
+    // A dot on the top session's row shows even where the move was refused.
+    () => call($, 'ccd_sidebar', 'set_unread', { session_id: ref(root.sessionId, self), unread: true }).then(() => undefined),
+    async () => {
+      if (lastWalkError !== null) throw new Error(`the top session was not found (${lastWalkError})`)
+    },
+  ])
 }
 
 /**
@@ -177,22 +222,27 @@ async function stillWaiting($: Engine, rootId: string, selfId: string): Promise<
   return false
 }
 
-/** Unfiles this session, if it filed itself: the ✋ goes, and its top session goes back once nothing under it waits. */
+/**
+ * Unfiles this session, if it filed itself: the ✋ goes, and its top session
+ * goes back once nothing under it waits. The record goes last, so a step
+ * that fails is tried again on the next answer.
+ */
 export async function unfile($: Engine, selfId: string): Promise<void> {
   const filed = filedOf(await $.store.get(filedKey(selfId)))
   if (filed === null) return
-  await $.store.delete(filedKey(selfId))
   const self = await sessionRow($, 'self')
   if (self === null) return
   if (marked(self.title)) {
     await call($, 'ccd_session_mgmt', 'set_session_title', { session_id: 'self', title: withoutMark(self.title) })
   }
   const moved = movedOf(await $.store.get(movedKey(filed.root)))
-  if (moved === null || (await stillWaiting($, filed.root, selfId))) return
-  await $.store.delete(movedKey(filed.root))
-  await call($, 'ccd_sidebar', 'move_sessions', {
-    session_ids: [ref(filed.root, self)],
-    section_id: moved.group ?? 'sessions',
-  })
-  if (moved.pinned) await call($, 'ccd_sidebar', 'set_pinned', { session_id: ref(filed.root, self), pinned: true })
+  if (moved !== null && !(await stillWaiting($, filed.root, selfId))) {
+    await call($, 'ccd_sidebar', 'move_sessions', {
+      session_ids: [ref(filed.root, self)],
+      section_id: moved.group ?? 'sessions',
+    })
+    if (moved.pinned) await call($, 'ccd_sidebar', 'set_pinned', { session_id: ref(filed.root, self), pinned: true })
+    await $.store.delete(movedKey(filed.root))
+  }
+  await $.store.delete(filedKey(selfId))
 }

@@ -1,7 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { MockClock, TestBody } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { SECTION, filedKey, rowOf, sectionOf, withMark, withoutMark } from '../hooks/filing'
+import { SECTION, filedKey, marked, rowOf, sectionOf, withMark, withoutMark } from '../hooks/filing'
 import { afterFilingFailure, unfilesOn, waitingSessions } from '../hooks/register'
 
 type Session = {
@@ -21,7 +22,14 @@ type Section = { id: string; kind: string; name: string }
  * The desktop app's session and sidebar tools, as far as filing uses them.
  * A nested session refuses to move alone, as the app does.
  */
-function app(on: On, selfId: string, sessions: Session[], sections: Section[] = [{ id: 'cg-needs', kind: 'manual', name: SECTION }]) {
+function app(
+  on: On,
+  selfId: string,
+  sessions: Session[],
+  sections: Section[] = [{ id: 'cg-needs', kind: 'manual', name: SECTION }],
+  /** Tools the app refuses when they name another session than this one. */
+  refused: readonly string[] = [],
+) {
   const byId = new Map(sessions.map(session => [session.sessionId, session]))
   const calls: { tool: string; args: Record<string, unknown> }[] = []
   const id = (ref: unknown) => (ref === 'self' ? selfId : String(ref))
@@ -32,6 +40,8 @@ function app(on: On, selfId: string, sessions: Session[], sections: Section[] = 
   on('mcp.call', (_, e) => {
     const args = (e.args ?? {}) as Record<string, unknown>
     calls.push({ tool: e.tool, args })
+    const named = [args.session_id, ...(Array.isArray(args.session_ids) ? args.session_ids : [])].filter(ref => ref !== undefined)
+    if (refused.includes(e.tool) && named.some(ref => id(ref) !== selfId)) return text('Changing another session needs the user’s approval.', true)
     switch (e.tool) {
       case 'get_session': {
         const found = byId.get(id(args.session_id))
@@ -144,6 +154,76 @@ test('only the person and a relayed message unfile; app events do not', () => {
   expect(unfilesOn({ text: '<ci-monitor-event>failed</ci-monitor-event>', origin: { kind: 'sdk' } })).toBe(false)
   expect(unfilesOn({ text: 'report', origin: { kind: 'task-notification' } })).toBe(false)
   expect(unfilesOn({ text: 'yes', isMeta: true, origin: { kind: 'composer' } })).toBe(false)
+  // The desktop app often puts a system reminder ahead of an event or a message.
+  const reminder = '<system-reminder>Linked sessions now: …</system-reminder>\n'
+  expect(unfilesOn({ text: `${reminder}<side-sessions-event>done</side-sessions-event>`, origin: { kind: 'sdk' } })).toBe(false)
+  expect(unfilesOn({ text: `${reminder}<ci-monitor-event>failed</ci-monitor-event>`, origin: { kind: 'sdk' } })).toBe(false)
+  expect(unfilesOn({ text: `${reminder}<task-notification>done</task-notification>`, origin: { kind: 'sdk' } })).toBe(false)
+  expect(unfilesOn({ text: `${reminder}<cross-session-message from="x">go</cross-session-message>`, origin: { kind: 'unclassified' } })).toBe(true)
+  expect(unfilesOn({ text: `${reminder}Approved, go`, origin: { kind: 'sdk' } })).toBe(true)
+})
+
+/** Files on a wrap-up question, then answers it from the band; resolves once both have settled. */
+async function askThenAnswer(
+  $: Parameters<TestBody>[0],
+  clock: MockClock,
+  calls: { tool: string }[],
+  turnId: string,
+) {
+  const settle = async (done: () => boolean) => {
+    for (let tick = 0; tick < 50 && !done(); tick += 1) await clock.settle()
+  }
+  const before = calls.length
+  await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'r', ask: 'Approve #289?', actions: [{ label: 'Approved' }] })
+  await $.turn.complete({ answer: 'a', durationMs: 1, isAborted: false, turnId, reason: 'answer' })
+  await settle(() => calls.slice(before).some(c => c.tool === 'set_unread'))
+  for (let tick = 0; tick < 5; tick += 1) await clock.settle()
+  const filed = calls.length
+  const ui = await $.ui.mount(BAND)
+  const button = await ui.find({ type: 'Button', text: /^Approved$/ })
+  await ui.press({ key: String(button?.key) })
+  await ui.unmount()
+  await settle(() => calls.slice(filed).some(c => c.tool === 'set_session_title'))
+  for (let tick = 0; tick < 5; tick += 1) await clock.settle()
+}
+
+test('when the app refuses to move the top session, the title and the session’s own dot still file it', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const { logged } = turns(on)
+  const fake = app(on, 'self', family(), undefined, ['move_sessions', 'set_unread'])
+
+  await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'r', ask: 'Approve #289?', actions: [{ label: 'Approved' }] })
+  await $.turn.complete({ answer: 'a', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  for (let tick = 0; tick < 50 && logged.length === 0; tick += 1) await clock.settle()
+
+  expect(fake.byId.get('self')?.title).toBe('✋ Approve veda#259')
+  expect(fake.calls.filter(c => c.tool === 'set_unread').map(c => c.args.session_id)).toEqual(['self', 'top'])
+  expect(fake.byId.get('top')?.group?.id).toBe('cg-work')
+  expect(logged).toEqual(['needs-you: the sidebar was not updated (Error: move_sessions: Changing another session needs the user’s approval.)'])
+
+  // The answer takes the mark off, and moves nothing back, since nothing moved.
+  const ui = await $.ui.mount(BAND)
+  const button = await ui.find({ type: 'Button', text: /^Approved$/ })
+  await ui.press({ key: String(button?.key) })
+  await ui.unmount()
+  for (let tick = 0; tick < 50 && marked(fake.byId.get('self')?.title ?? ''); tick += 1) await clock.settle()
+  expect(fake.byId.get('self')?.title).toBe('Approve veda#259')
+  expect(fake.calls.filter(c => c.tool === 'move_sessions')).toHaveLength(1)
+})
+
+test('an ancestor the app cannot find stops the walk, and the answer still takes the mark off', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const { logged } = turns(on)
+  // The archived middle session is gone: the walk stops at the parent.
+  const fake = app(on, 'self', family().filter(s => s.sessionId !== 'middle'))
+
+  await askThenAnswer($, clock, fake.calls, 't1')
+
+  expect(fake.calls.filter(c => c.tool === 'move_sessions').map(c => c.args.session_ids)).toEqual([['parent']])
+  expect(logged.some(line => line.includes('the top session was not found') || line.includes('nested sessions move with their parent'))).toBe(true)
+  expect(fake.byId.get('self')?.title).toBe('Approve veda#259')
 })
 
 test('a failure to file is logged once, and never in a session with no sidebar', () => {
@@ -190,7 +270,10 @@ test('a nested session filed on its question moves its top session, and the answ
   expect(fake.byId.get('self')?.title).toBe('✋ Approve veda#259')
   expect(fake.byId.get('top')?.group?.id).toBe('cg-needs')
   expect(fake.calls.filter(c => c.tool === 'move_sessions').map(c => c.args.session_ids)).toEqual([['top']])
-  expect(fake.calls.filter(c => c.tool === 'set_unread').map(c => c.args)).toEqual([{ session_id: 'top', unread: true }])
+  expect(fake.calls.filter(c => c.tool === 'set_unread').map(c => c.args)).toEqual([
+    { session_id: 'self', unread: true },
+    { session_id: 'top', unread: true },
+  ])
 
   // The person answers from the band.
   const ui = await $.ui.mount(BAND)

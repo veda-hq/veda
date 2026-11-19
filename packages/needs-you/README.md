@@ -42,7 +42,11 @@ itself, through the app's session tools; the model makes none.
   session the top session moves, found by walking up from the session's
   parent, archived ones included. The whole family then shows under "Needs
   you", and the top session's band lists the waiting session, however deep.
-- That row is marked unread.
+- That row is marked unread, and so is a nested session's own row.
+
+Each of these runs whatever the others did. If the app refuses to move or
+mark another session's row, the ✋ title and the session's own dot still
+show that it waits.
 
 Your answer unfiles it: a prompt you send the session (typed, from the
 phone, or a band button), or another session's message, which usually

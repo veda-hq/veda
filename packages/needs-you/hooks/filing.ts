@@ -218,15 +218,19 @@ export async function file($: Engine): Promise<void> {
       if (!isTop) await call($, 'ccd_sidebar', 'set_unread', { session_id: 'self', unread: true })
     },
     async () => {
+      // The top session's row is read again now that this session's record is in the store: a
+      // sibling's unfiling that moved it back either did so before this read, so the row moves
+      // again here, or its second look sees this record and files the row again itself.
+      const top = (await sessionRow($, root.sessionId)) ?? root
       // A group the app has not reported is unknown: moving the row would lose where it goes back to.
-      if (root.group === undefined) throw new Error('the top session was not moved: the app has not reported its sidebar group')
+      if (top.group === undefined) throw new Error('the top session was not moved: the app has not reported its sidebar group')
       const section = await needsYou($)
-      if (root.group === section) return
+      if (top.group === section) return
       // Where the row goes back to is kept before the move, and only the first time. A
       // refused move takes it off again; a move that timed out keeps it, since the app
       // may still make the move after the call gave up.
       const journaled = movedOf(await $.store.get(movedKey(root.sessionId))) === null
-      if (journaled) await $.store.set(movedKey(root.sessionId), { group: root.group, pinned: root.pinned } satisfies Moved)
+      if (journaled) await $.store.set(movedKey(root.sessionId), { group: top.group, pinned: top.pinned } satisfies Moved)
       try {
         await call($, 'ccd_sidebar', 'move_sessions', { session_ids: [ref(root.sessionId, self)], section_id: section })
       } catch (error) {

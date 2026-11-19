@@ -35,8 +35,10 @@ Reply in this shape:
 
 - **Verdict:** `Settled`, `Conflicting` or `Not settled`, then the answer in
   one or two sentences.
-- **Claims:** one line each: the claim, its URL, the version it holds for,
-  the date read.
+- **Claims:** one line each: the claim, its URL (for the repository, the
+  path, with a line where it helps), the version it holds for, the date read
+  as `YYYY-MM-DD`. sarathi's `researcher-report.sh` sends back a report with
+  no Verdict line or a claim without its source and date.
 - **Next:** for `Settled`, say so plainly: the caller acts on it within the
   scope it was given and cites it, and does not ask the owner the question
   the source answered. A settled fact authorizes nothing: an approval,

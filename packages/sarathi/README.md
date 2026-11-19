@@ -89,7 +89,7 @@ folder, which holds handlers any TypeScript repository can list:
 | `code-quality-guard.sh` | PostToolUse, `Edit\|Write` | Refuses `@ts-ignore`, `@ts-nocheck`, `eslint-disable`, `any` and skipped tests in a `.ts`/`.tsx` edit. `.claude/`, `.agent/` and `docs/` are exempt. |
 | `arch-guard.sh` | PostToolUse, `Edit\|Write` | Runs the repository's `.dependency-cruiser.js` on a `.ts`/`.tsx` edit that touches imports; refuses what it refuses, and refuses when it cannot run. `scripts/` is exempt too. |
 | `session-dedupe-guard.sh` | PreToolUse, session starts | Refuses starting a session unless the conversation called `list_sessions` successfully in the last 15 minutes. |
-| `ask-gate.sh` | PreToolUse `AskUserQuestion\|mcp__ccd_turn__wrap_up`; Stop | Holds, once per turn, a question to the owner when the session has done no research since the owner's last message: refuses the ask, or on Stop keeps the turn going when the closing message asks the owner to choose ("Research before you ask"). |
+| `ask-gate.sh` | PreToolUse `AskUserQuestion\|mcp__ccd_turn__wrap_up`; Stop; PostToolUse `AskUserQuestion` (the log) | Holds, once per turn, a question to the owner when the session has done no research since the owner's last message: refuses the ask, or on Stop keeps the turn going when the closing message asks the owner to choose ("Research before you ask"). Logs each gated ask and each answer ("The ask log"). |
 | `researcher-report.sh` | PreToolUse `SubagentHandback`; SubagentStop `^sarathi:researcher$` | Sends the plugin's `sarathi:researcher` report back when it has no Verdict line, a Settled or Conflicting verdict with no claims, or a claim without its source and read date ("The researcher's report"). |
 | `lessons.sh` | PreToolUse `Bash\|Edit\|Write\|Agent\|Task\|mcp__ccd_session__start_session`; PostToolUseFailure | Shows a lesson whose `when` line matches the call ("Lessons at their moment"). Never blocks. |
 | `autofix-watch.sh` | PostToolUse `Bash\|mcp__ccd_pr__set_monitor\|mcp__ccd_pr__get_status\|mcp__ccd_turn__wrap_up`; PostToolUseFailure `mcp__ccd_pr__set_monitor` | Lists every pull request the session opens and tells the model, in its context, about each open one that Auto-fix is not on for ("Auto-fix for every pull request"). Never blocks. |
@@ -228,6 +228,53 @@ and a timeout of at least the longest Stop handler's:
 ```
 
 `sarathi check` says when either entry is missing or too narrow.
+
+#### The ask log
+
+`ask-gate.sh` keeps a log of the asks it gates, so a project can see what
+its sessions ask the owner, whether they looked first, and, once asks
+declare their kind, whether a declared kind is being gamed. Each line is a
+JSON object:
+
+- **A gated ask** (an `AskUserQuestion`, a `wrap_up` ask that offers a
+  choice, a closing question on Stop): `time` (UTC), `session`, `turn` (the
+  owner's message it follows), `via` (`AskUserQuestion`,
+  `mcp__ccd_turn__wrap_up` or `Stop`), `tool_use_id`, `questions` (each
+  question with its option labels; a `wrap_up`'s reply buttons, not its app
+  actions), `researched`, `looked`, `names_state`, `kind` (`null` until asks
+  declare one), and `outcome`: `held`, `passed: research`, `passed: look` or
+  `passed: second ask`. An ask the gate passes over (a go-ahead, a Stop with
+  no choice, a Stop already continuing) is not logged.
+- **An answer** to an `AskUserQuestion`: `time`, `session`, `via: "answer"`,
+  `tool_use_id` (the ask's line has the same one), and `answers`, which maps
+  each question's text to the chosen label (labels joined by commas for a
+  multi-select). It comes from the `PostToolUse` input's `tool_response`. The
+  hooks reference says that is the tool's structured output, and
+  `AskUserQuestion`'s holds `questions` and `answers`: all 17 object-shaped
+  results in one machine's transcripts did. A declined question's result is
+  a string, and logs nothing. A `wrap_up` or Stop answer comes as the owner's
+  next message, so the log has none.
+
+The log is `ask-log.jsonl` beside the state folder
+(`~/.local/state/sarathi/ask-log.jsonl` by default), or the file
+`SARATHI_ASK_LOG` names. `SARATHI_ASK_LOG=0` (or `false`, `off`, `no`) turns
+it off. Past 5 MB it moves aside to `ask-log.jsonl.1` and starts again. It
+holds the questions' text, so it stays on the machine: nothing sends it
+anywhere. A log it cannot write changes nothing about the gate.
+
+To log answers, a project lists the handler on `PostToolUse` too:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      { "matcher": "AskUserQuestion", "command": "bash \"$SARATHI_HOOKS\"/ask-gate.sh", "timeout": 10 }
+    ]
+  }
+}
+```
+
+and widens its settings' `PostToolUse` matcher to include `AskUserQuestion`.
 
 ### The researcher's report
 

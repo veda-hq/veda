@@ -31,6 +31,10 @@
 # <dir> is SARATHI_ASK_GATE_DIR, else $XDG_STATE_HOME/sarathi/ask-gate, else
 # ~/.local/state/sarathi/ask-gate.
 #
+# Every gated ask is a line in the ask log (README, "The ask log"), and so is
+# the owner's answer to an AskUserQuestion, read on PostToolUse from
+# tool_response.answers.
+#
 # A pass is a silent exit 0, never an "allow" answer (an allow on
 # AskUserQuestion would need updatedInput). Anything it cannot read (input,
 # transcript, state) passes. The input is read from stdin, so no size limit
@@ -38,7 +42,7 @@
 # one.
 
 PY_SRC=$(cat <<'PYEOF'
-import json, os, re, sys
+import datetime, json, os, re, sys
 
 ASK = "AskUserQuestion"
 WRAP_UP = "mcp__ccd_turn__wrap_up"
@@ -151,9 +155,50 @@ SENTENCE = re.compile(r"(?<=[.!?])\s+|\n")
 CLOSING_PARAGRAPHS = 3
 # Content a person attaches in place of words.
 ATTACHMENTS = {"image", "document"}
+# The ask log: one JSON line per gated ask, and one per answer to an
+# AskUserQuestion. It moves aside to <log>.1 past LOG_LIMIT bytes.
+LOG_OFF = {"0", "false", "off", "no"}
+LOG_LIMIT = 5 * 1024 * 1024
 
 def passes():
     sys.exit(0)
+
+def state_dir():
+    return os.environ.get("SARATHI_ASK_GATE_DIR") or os.path.join(
+        os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state"),
+        "sarathi", "ask-gate",
+    )
+
+def log(record):
+    """Append a line to the ask log. SARATHI_ASK_LOG names the file, or turns
+    the log off (0, false, off, no); unset, the log sits beside the state
+    folder, as ask-log.jsonl. A log it cannot write changes nothing."""
+    setting = os.environ.get("SARATHI_ASK_LOG", "").strip()
+    if setting.lower() in LOG_OFF:
+        return
+    try:
+        target = setting or os.path.join(os.path.dirname(state_dir().rstrip(os.sep)), "ask-log.jsonl")
+        os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+        if os.path.exists(target) and os.path.getsize(target) > LOG_LIMIT:
+            os.replace(target, target + ".1")
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with open(target, "a") as handle:
+            handle.write(json.dumps(dict({"time": stamp}, **record), ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+def asked(tool, given):
+    """The questions an ask puts, each with its options."""
+    if tool == ASK:
+        found = []
+        for question in given.get("questions") or []:
+            if isinstance(question, dict):
+                options = [o.get("label") for o in question.get("options") or [] if isinstance(o, dict)]
+                found.append({"question": question.get("question"), "options": options})
+        return found
+    actions = given.get("actions")
+    labels = [a.get("label") for a in actions if isinstance(a, dict) and not a.get("action")] if isinstance(actions, list) else []
+    return [{"question": given.get("ask"), "options": labels}]
 
 def names_alternatives(text, pairs):
     words = URL.sub(" ", text)
@@ -219,6 +264,19 @@ def ask_words(tool, given):
 try:
     data = json.loads(sys.stdin.read() or "{}")
     path = data.get("transcript_path")
+    if data.get("hook_event_name") == "PostToolUse":
+        # The owner's answer: AskUserQuestion's result maps each question's
+        # text to the chosen label.
+        response = data.get("tool_response")
+        answers = response.get("answers") if isinstance(response, dict) else None
+        if data.get("tool_name") == ASK and isinstance(answers, dict):
+            log({
+                "session": str(data.get("session_id") or os.path.basename(path or "")),
+                "via": "answer",
+                "tool_use_id": data.get("tool_use_id"),
+                "answers": answers,
+            })
+        passes()
     if not path:
         passes()
     if data.get("hook_event_name") == STOP:
@@ -241,6 +299,9 @@ try:
         if tool == WRAP_UP and not choice_shaped(tool_input):
             passes()
         words = ask_words(tool, tool_input)
+        questions = asked(tool, tool_input)
+    if stop:
+        questions = [{"question": choice, "options": []} for choice in choices]
     with open(path) as handle:
         lines = handle.readlines()
 except Exception:
@@ -369,29 +430,42 @@ def window(lines):
     return turn, researched, looked
 
 turn, researched, looked = window(lines)
-if researched or (looked and names_state(words)):
+session = str(data.get("session_id") or os.path.basename(path))
+state_names = bool(names_state(words))
+record = {
+    "session": session,
+    "turn": turn,
+    "via": STOP if stop else tool,
+    "tool_use_id": None if stop else data.get("tool_use_id"),
+    "questions": questions,
+    "researched": researched,
+    "looked": looked,
+    "names_state": state_names,
+    # The kind an ask declares; #224 fills it.
+    "kind": None,
+}
+if researched or (looked and state_names):
+    log(dict(record, outcome="passed: research" if researched else "passed: look"))
     passes()
 
-session = str(data.get("session_id") or os.path.basename(path))
-state_dir = os.environ.get("SARATHI_ASK_GATE_DIR") or os.path.join(
-    os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state"),
-    "sarathi", "ask-gate",
-)
-state = os.path.join(state_dir, re.sub(r"[^A-Za-z0-9._-]", "_", session))
+folder = state_dir()
+state = os.path.join(folder, re.sub(r"[^A-Za-z0-9._-]", "_", session))
 try:
     with open(state) as handle:
         if handle.read().strip() == turn:
+            log(dict(record, outcome="passed: second ask"))
             passes()
 except FileNotFoundError:
     pass
 except Exception:
     passes()
 try:
-    os.makedirs(state_dir, exist_ok=True)
+    os.makedirs(folder, exist_ok=True)
     with open(state, "w") as handle:
         handle.write(turn + "\n")
 except Exception:
     passes()
+log(dict(record, outcome="held"))
 
 LOOKED = (
     "Since the owner's last message there has been no WebSearch, WebFetch, "

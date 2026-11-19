@@ -3,7 +3,7 @@
 कवच, armour. Guards for coding agents: each tool call an agent makes is
 judged before it runs. Part of [Veda](https://github.com/veda-hq/veda).
 
-## v0.5: three guards and a rule-check engine
+## Three guards and a rule-check engine
 
 | Guard | Refuses | Entry point |
 | --- | --- | --- |

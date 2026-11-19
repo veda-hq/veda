@@ -114,8 +114,8 @@ goes unreviewed: tell Alok rather than assume that is fine.
 
 One exception waits for a person: once the ruleset requires code-owner
 review, a pull request touching a path `.github/CODEOWNERS` gives Alok
-(workflows, the version rule, the README) also waits for his approving
-review, then merges by itself. Until he approves, it is open, not done.
+(workflows, the version rule, the README, the lint rules and their
+suppressions) also waits for his approving review, then merges by itself. Until he approves, it is open, not done.
 
 Leave auto-merge off only to hold a pull request on purpose (say why in it),
 or for a change that needs Alok's yes first, such as a major release

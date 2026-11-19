@@ -59,13 +59,15 @@ jobs:
           node-version-file: .nvmrc
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
-      # pnpm check builds each package's dist/ and tests it; what is published is that build.
-      # Its provenance step reads niyam's v<version> tag from GitHub's API; the token keeps
-      # that call off the anonymous limit of 60 an hour per address, which a shared runner
-      # can exhaust and so refuse the release.
-      - run: pnpm check
+      # pnpm check, split in two so only the provenance script sees the job's token.
+      # pnpm provenance reads niyam's v<version> tag from GitHub's API; the token keeps that
+      # call off the anonymous limit of 60 an hour per address, which a shared runner can
+      # exhaust and so refuse the release.
+      - run: pnpm provenance
         env:
           GH_TOKEN: ${{ github.token }}
+      # The rest builds each package's dist/ and tests it; what is published is that build.
+      - run: pnpm check:offline
       - name: Publish the packages at this version
         env:
           TAG: ${{ github.ref_name }}

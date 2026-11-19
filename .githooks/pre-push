@@ -32,10 +32,12 @@ dvara_stage guards
 
 # niyam's own hook, as `niyam onboard` writes it, once veda is onboarded
 # (.github/niyam.json): anyone else's push goes ahead; an agent session's
-# push is refused without the CLI. onboard, and a cloud session's start,
-# find this file through core.hooksPath, read the "$cli" pre-push line as
-# their own and leave it, and the git directory, alone (scripts/githooks.test.mjs
-# asks the pinned niyam). The CLI is the release package.json
+# push is refused without the CLI. Where core.hooksPath is set, onboard and
+# a cloud session's start find this file through it, read the "$cli"
+# pre-push line as their own and leave it, and the git directory, alone
+# (scripts/githooks.test.mjs asks the pinned niyam). A cloud session's fresh
+# clone has no core.hooksPath, so its start writes niyam's own pre-push into
+# that clone's git directory instead. The CLI is the release package.json
 # pins (released-pins checked it above), never a copy on PATH or in
 # ~/.config, so every machine runs the same niyam.
 [ -f "$root/.github/niyam.json" ] || exit 0

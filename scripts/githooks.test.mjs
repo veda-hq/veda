@@ -40,7 +40,7 @@ const env = {
   COPY_RUNS: join(scratch, 'copy-runs'),
 };
 for (const name of Object.keys(env)) {
-  if (name.startsWith('DVARA_') || name.startsWith('GIT_') || name === 'NIYAM_AGENT' || name === 'CLAUDECODE') delete env[name];
+  if (name.startsWith('DVARA_') || name.startsWith('GIT_') || name === 'NIYAM_AGENT' || name === 'NIYAM_REFUSE' || name === 'CLAUDECODE') delete env[name];
 }
 // No automatic maintenance: a commit's detached `git maintenance run --auto`
 // outlives it and can write into the scratch folder while it is removed.

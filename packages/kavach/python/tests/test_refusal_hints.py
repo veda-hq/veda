@@ -83,7 +83,8 @@ class UnresolvedNamesTheConstruct(BoundaryFixture):
             (
                 "pnpm exec node -e 'require(1)'",
                 "uses `pnpm` handing an interpreter an inline program or its standard input "
-                "(`node -e`, `python3 -c`, or no script), which the guard does not read",
+                "(`node -e`, `python3 -c`, or no script), or an option the guard does not "
+                "list for it, which the guard does not read",
             ),
             ("npx python3 -", "uses `npx` handing an interpreter an inline program"),
             ("git send-pack ../other main", "uses `git send-pack` to a repository the guard cannot place"),

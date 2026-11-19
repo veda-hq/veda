@@ -888,10 +888,11 @@ def unreadable_constructs(
                     f"`{head}` handing a shell a program (`sh -c`, or its own shell mode), "
                     "which the guard does not read"
                 )
-            elif head in boundary.GIT_RUNNERS and boundary.runner_runs_inline_program(texts[1:]):
+            elif head in boundary.GIT_RUNNERS and boundary.runner_runs_inline_program(head, texts[1:]):
                 add(
                     f"`{head}` handing an interpreter an inline program or its standard input "
-                    "(`node -e`, `python3 -c`, or no script), which the guard does not read"
+                    "(`node -e`, `python3 -c`, or no script), or an option the guard does not "
+                    "list for it, which the guard does not read"
                 )
             else:
                 add(f"`{head}`, a program whose writes the guard does not know")

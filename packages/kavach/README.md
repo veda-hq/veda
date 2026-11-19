@@ -145,7 +145,12 @@ here through sshd, `git daemon` or a local web server; the guard asks neither
 DNS nor ssh. A host that is this machine stays refused even when listed:
 `localhost` or a `.localhost` name, this machine's hostname, or a loopback or
 unspecified address in any spelling (`127.1`, `[::1]`). The host is matched
-exactly, in lower case, without its user or port. The limit: an ssh config
+exactly, in lower case, without its user or port. A URL is read as written
+and after each rewrite that matches it, so an alias that `insteadOf` turns
+into a listed host (`gh:o/r`) is refused until the alias is listed too, and a
+`git push` with no repository, which reads every remote, is refused while any
+remote names a host the list does not; `git push origin <branch>` reads only
+`origin`. The limit: an ssh config
 that already points a listed host at this machine is not read. A session
 cannot write `~/.ssh/config`, which is outside its worktree.
 
@@ -179,17 +184,25 @@ moves the folder the shell runs in.
 So is a runner that passes program text to an interpreter, as the bare
 spelling is: `pnpm exec node -e '…'`, `npx node -p '…'`,
 `mise exec -- python3 -c '…'`, and the inline options of `perl`, `ruby`,
-`lua`, `php`, `bun`, `tsx` and `ts-node`. An interpreter with no script reads
-its standard input (`printf … | pnpm exec node`, `python3 -`), so it is
-refused too. Each interpreter's options are read against the ones the guard
-lists for it; any other option is refused, since it may take the next word
-(`node -r ./x -e …`). The interpreter's name is read wherever it sits on the
-runner's line, so `pnpm add node` is refused as well.
+`lua`, `php`, `bun`, `tsx` and `ts-node`, with or without a version
+(`npx node@20 -e`). So is a `data:` URL given to `--import`, `--loader` or
+`-r`, and `python3 -m`, since a module may run text (`-m timeit '<code>'`).
+An interpreter with no script reads its standard input
+(`printf … | pnpm exec node`, `python3 -`, `bun run -`), so it is refused
+too. Each interpreter's options are read against the ones the guard lists
+for it; any other option is refused unless it carries its value after `=`,
+since it may take the next word (`node -r ./x -e …`). The interpreter's name
+is read wherever it sits on the runner's line, except after a subcommand
+that names packages, first on the line (`pnpm add -D tsx`,
+`mise install node`).
 
 A script file a runner runs (`pnpm exec bash .tmp/x.sh`,
 `pnpm exec tsx .tmp/x.ts`, `pnpm exec node .tmp/x.js`) still runs. What it
 writes is out of the guard's sight, as for any repository code. So these
-refusals stop one way of writing a program, not the program itself.
+refusals stop one way of writing a program, not the program itself. Also
+unread: an interpreter the guard does not list (`pnpm exec deno eval`), and
+an environment variable that hands one a program (`NODE_OPTIONS`,
+`PYTHONSTARTUP`).
 
 ## What a refusal says
 

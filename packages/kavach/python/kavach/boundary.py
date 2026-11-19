@@ -5475,12 +5475,14 @@ class InterpreterOptions(NamedTuple):
     # Options that take nothing; letters may be clustered (`-IB`).
     flags: frozenset[str]
     flag_letters: frozenset[str]
-    # Options that take the next word, unless given `=`.
+    # Options that take the next word, unless given `=`. A value that is a
+    # `data:` URL is program text (`--import data:text/javascript,…`).
     values: frozenset[str]
-    # Options that print and exit, reading no program.
-    exits: frozenset[str]
-    # Options whose value is what runs, from a file (`python3 -m mod`).
-    runs: frozenset[str]
+    # Options after which no program is read from standard input: they
+    # print and exit (`--version`), or find their own files (`node --test`).
+    no_stdin: frozenset[str]
+    # Words that come before the script (`bun run <script>`).
+    subcommands: frozenset[str]
 
 
 NODE_OPTIONS = InterpreterOptions(
@@ -5492,7 +5494,7 @@ NODE_OPTIONS = InterpreterOptions(
         "--no-warnings", "--no-deprecation", "--throw-deprecation",
         "--pending-deprecation", "--trace-warnings", "--trace-uncaught",
         "--trace-deprecation", "--enable-source-maps", "--expose-gc",
-        "--preserve-symlinks", "--test", "--watch", "--inspect", "--inspect-brk",
+        "--preserve-symlinks", "--watch", "--inspect", "--inspect-brk",
         # tsx's own, and ts-node's `--transpile-only`.
         "--no-cache", "--transpile-only", "-T",
     }),
@@ -5501,9 +5503,10 @@ NODE_OPTIONS = InterpreterOptions(
         "-r", "--require", "--import", "--loader", "--experimental-loader",
         "-C", "--conditions", "--input-type", "--env-file", "--tsconfig",
     }),
-    frozenset({"-v", "--version", "-h", "--help"}),
-    frozenset(),
+    frozenset({"-v", "--version", "-h", "--help", "--test"}),
+    frozenset({"run"}),
 )
+# `-m` is not listed: `python3 -m timeit '<code>'` and `-m code` run text.
 PYTHON_OPTIONS = InterpreterOptions(
     frozenset("c"),
     frozenset(),
@@ -5511,7 +5514,7 @@ PYTHON_OPTIONS = InterpreterOptions(
     frozenset("IBEOqsSuvVbdPRx"),
     frozenset({"-W", "-X", "--check-hash-based-pycs"}),
     frozenset({"-V", "--version", "-h", "--help", "-?"}),
-    frozenset({"-m"}),
+    frozenset(),
 )
 RUNNER_INTERPRETERS: dict[str, InterpreterOptions] = {
     "node": NODE_OPTIONS,
@@ -5539,28 +5542,59 @@ RUNNER_INTERPRETERS: dict[str, InterpreterOptions] = {
 
 
 def runner_interpreter(word: str) -> InterpreterOptions | None:
-    """The option table of an interpreter word on a runner's line."""
+    """The option table of an interpreter word on a runner's line, with a
+    package version dropped (`npx node@20`, `pnpm dlx tsx@4`)."""
     name = os.path.basename(word)
+    if "@" in name[1:]:
+        name = name[0] + name[1:].partition("@")[0]
     if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", name):
         return PYTHON_OPTIONS
     return RUNNER_INTERPRETERS.get(name)
 
 
-def runner_runs_inline_program(args: list[str]) -> bool:
+# Each runner's subcommands whose operands name packages or tools, not a
+# program to run, when the subcommand comes first (`pnpm add -D tsx`,
+# `mise install node`); from each runner's `--help`.
+RUNNER_PACKAGE_VERBS: dict[str, frozenset[str]] = {
+    "pnpm": frozenset({
+        "add", "install", "i", "remove", "rm", "uninstall", "un", "update", "up",
+        "upgrade", "ls", "list", "ll", "la", "why", "outdated", "view", "info",
+        "link", "unlink", "audit", "licenses",
+    }),
+    "npm": frozenset({
+        "install", "i", "in", "ins", "add", "uninstall", "remove", "rm", "un", "r",
+        "update", "up", "upgrade", "ls", "list", "ll", "la", "view", "info", "show",
+        "v", "outdated", "why", "explain", "audit", "link", "ln",
+    }),
+    "yarn": frozenset({"add", "remove", "install", "up", "upgrade", "why", "info", "list", "outdated"}),
+    "bun": frozenset({"add", "a", "install", "i", "remove", "rm", "update", "outdated", "pm", "link"}),
+    "mise": frozenset({
+        "install", "i", "uninstall", "use", "u", "unuse", "ls", "list", "ls-remote",
+        "latest", "where", "which", "outdated", "upgrade", "up", "prune", "current",
+    }),
+}
+
+
+def runner_runs_inline_program(name: str, args: list[str]) -> bool:
     """Whether a runner's line may hand an interpreter program text, not a
     script file: an interpreter word anywhere on it (`pnpm exec node`,
     `npx -p node node`, `pnpm exec env python3`) given an inline program
-    (`-e`, `--eval=…`, `-pe`, `python3 -Ic`), or no script at all, when it
-    reads its standard input (`printf … | pnpm exec node`, `node -`).
+    (`-e`, `--eval=…`, `-pe`, `python3 -Ic`, `--import data:…`), or no
+    script at all, when it reads its standard input
+    (`printf … | pnpm exec node`, `node -`).
 
     Each interpreter's options are read against its table: an option the
-    table does not list fails closed, since it may take the next word
-    (`node -r ./x -e …`) or read standard input (`node -i`). The first word
-    that is not an option is the script, and what follows it is the
-    script's (`pnpm exec node x.js -e 1` runs `x.js`). Like a shell word
-    (`runner_runs_shell_program`), the word is read wherever it sits, so
-    `pnpm add node` is refused too.
+    table does not list fails closed, unless it carries its value after `=`,
+    since it may take the next word (`node -r ./x -e …`) or read standard
+    input (`node -i`). The first word that is not an option is the script,
+    and what follows it is the script's (`pnpm exec node x.js -e 1` runs
+    `x.js`). Like a shell word (`runner_runs_shell_program`), the word is
+    read wherever it sits, except after a subcommand that names packages,
+    first on the line (`pnpm add -D tsx`, `mise install node`); behind a
+    runner option (`pnpm --filter x add node`) it is still read.
     """
+    if args and args[0] in RUNNER_PACKAGE_VERBS.get(name, frozenset()):
+        return False
     return any(
         (table := runner_interpreter(word)) is not None
         and interpreter_reads_program_text(table, args[index + 1 :])
@@ -5571,7 +5605,8 @@ def runner_runs_inline_program(args: list[str]) -> bool:
 def interpreter_reads_program_text(table: InterpreterOptions, args: list[str]) -> bool:
     """Whether an interpreter given ``args`` runs program text (see
     `runner_runs_inline_program`)."""
-    exits = False
+    no_stdin = False
+    subcommand = False
     index = 0
     while index < len(args):
         word = args[index]
@@ -5581,41 +5616,51 @@ def interpreter_reads_program_text(table: InterpreterOptions, args: list[str]) -
         if word == "-":
             return True
         if not word.startswith("-"):
+            if not subcommand and word in table.subcommands:
+                # `bun run -` reads standard input; `bun run x.ts` runs x.ts.
+                subcommand = True
+                continue
             return False
-        option, attached, _ = word.partition("=")
+        option, attached, value = word.partition("=")
         if option in table.inline_long:
             return True
         if option.startswith("--"):
-            if option in table.exits:
-                exits = True
+            if option in table.no_stdin:
+                no_stdin = True
             elif option in table.values:
-                index += 0 if attached else 1
-            elif option not in table.flags:
+                if not attached:
+                    value = args[index] if index < len(args) else ""
+                    index += 1
+                if value.startswith("data:"):
+                    return True
+            elif option not in table.flags and not attached:
+                # `--max-old-space-size=4096` cannot take the next word.
                 return True
             continue
-        if attached:
-            return True
-        if word in table.exits:
-            exits = True
+        if word in table.no_stdin:
+            no_stdin = True
             continue
-        if word in table.runs:
-            # `python3 -m <module>` runs a module from a file.
-            return index >= len(args)
         if word in table.values:
+            if index < len(args) and args[index].startswith("data:"):
+                return True
             index += 1
             continue
         if word in table.flags:
             continue
         letters = word[1:]
-        if letters and f"-{letters[0]}" in table.values:
+        if len(letters) > 1 and f"-{letters[0]}" in table.values:
             # `-Wignore::DeprecationWarning`, `-r./x`: the value is attached.
+            if letters[1:].startswith("data:"):
+                return True
             continue
+        if attached:
+            return True
         if any(letter in table.inline_letters for letter in letters):
             return True
         if letters and all(letter in table.flag_letters for letter in letters):
             continue
         return True
-    return not exits
+    return not no_stdin
 
 
 def shell_reads_program_text(args: list[str]) -> bool:
@@ -6730,7 +6775,7 @@ def mutation_path_operands(
         return None
     if name in GIT_RUNNERS and runner_runs_shell_program(name, words[1:]):
         return None
-    if name in GIT_RUNNERS and runner_runs_inline_program(words[1:]):
+    if name in GIT_RUNNERS and runner_runs_inline_program(name, words[1:]):
         return None
     if name in ALL_OPERAND_MUTATORS:
         value_options = {

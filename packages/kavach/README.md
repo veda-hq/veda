@@ -206,9 +206,9 @@ writes `.tmp/x`, and `pnpm exec deno eval …`, `pnpm exec osascript -e …`,
 is. That covers `pnpm exec`, pnpm's implicit form (`pnpm uname -s`, for a
 word that is neither a pnpm command nor a script of the package), and
 `mise exec`. `npx`, `npm exec` and `pnpm dlx` (whose `-c` is a shell mode
-too) run a program only from a bin folder or a package they fetch, so there
-any program that is not an installed bin, a shell or a listed interpreter is
-refused (`npx touch .tmp/x`).
+too) run a program only from a bin folder or a package they fetch, so under
+them any program that is not an installed bin, a shell or a listed
+interpreter is refused (`npx touch .tmp/x`).
 A program that is a package bin, installed in a `node_modules/.bin` the
 runner looks in first, is the repository's code and runs (`pnpm exec dvara`,
 `npx tsc`, with tsc installed): pnpm looks in the package's folder (the nearest package's

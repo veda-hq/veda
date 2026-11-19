@@ -351,6 +351,10 @@ function layout(root: string): Layout {
     CORPUS_PRIMARY: primary,
     CLAUDE_CODE_TMPDIR: join(root, 'tmp'),
     CLAUDE_CODE_HOST_SESSION_ID: HOST_SESSION,
+    // npm's CLI turns on Node's compile cache, which it keeps in
+    // os.tmpdir()/node-compile-cache: a row that runs the real npx would
+    // leave it in the test run's TMPDIR (veda#270).
+    NODE_DISABLE_COMPILE_CACHE: '1',
     GIT_AUTHOR_NAME: 'Corpus',
     GIT_AUTHOR_EMAIL: 'corpus@example.invalid',
     GIT_COMMITTER_NAME: 'Corpus',

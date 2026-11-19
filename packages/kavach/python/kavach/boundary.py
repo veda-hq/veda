@@ -2375,7 +2375,8 @@ def git_url_local_path(url: str) -> str | None:
     if not url or GIT_HELPER_URL.match(url):
         return None
     if GIT_REMOTE_SCHEMES.match(url):
-        authority = url.split("://", 1)[1].split("/", 1)[0]
+        # `/`, `?` and `#` each end the authority (`http://localhost#x/r`).
+        authority = re.split(r"[/?#]", url.split("://", 1)[1], maxsplit=1)[0]
         return None if git_host_is_this_machine(authority) else ""
     if url.startswith("file://"):
         rest = url[len("file://"):]
@@ -5419,18 +5420,35 @@ def runner_runs_shell_program(name: str, args: list[str]) -> bool:
 def shell_reads_program_text(args: list[str]) -> bool:
     """Whether a shell given ``args`` runs program text, not a script file:
     `-c`, `-s` (alone or in a cluster), or no script at all, when it reads
-    its standard input. Only `--version` and `--help` run nothing."""
-    for index, item in enumerate(args):
+    its standard input. Only `--version` and `--help` run nothing. An
+    option that takes the next word (`-o posix`, `-O extglob`,
+    `--rcfile <f>`) skips it, so `bash -o posix -c …` is read to its `-c`;
+    an option this reader does not know cannot hide one, since the `-c`
+    after it is still read."""
+    index = 0
+    while index < len(args):
+        item = args[index]
+        index += 1
         if item == "--":
-            return index + 1 >= len(args)
+            return index >= len(args)
         if item in {"--version", "--help"}:
+            continue
+        if item in SHELL_VALUE_OPTIONS:
+            index += 1
             continue
         if item.startswith(("-", "+")):
             if re.fullmatch(r"[-+][A-Za-z]*[cs][A-Za-z]*", item):
                 return True
+            if re.fullmatch(r"[-+][A-Za-z]*[oO]", item):
+                index += 1
             continue
         return False
     return not args or not all(item in {"--version", "--help"} for item in args)
+
+
+# Shell options that take the next word: `-o`/`+o` and bash's `-O`/`+O`
+# name an option, `--rcfile` and `--init-file` a file.
+SHELL_VALUE_OPTIONS = frozenset({"-o", "+o", "-O", "+O", "--rcfile", "--init-file"})
 
 
 def nested_shell_program(args: list[str]) -> str | None:

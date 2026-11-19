@@ -1453,7 +1453,16 @@ class WorktreeBoundaryTest(BoundaryFixture):
             f"npx --frobnicate x -c 'touch {outside}/x'",
             f"npx -yc 'touch {outside}/x'",
             f"timeout 5 pnpm exec sh -c 'touch {outside}/x'",
+            # A shell option's value does not end the read (review, #245).
+            f"pnpm exec bash -o posix -c 'touch {outside}/x'",
+            f"pnpm exec bash -O extglob -c 'touch {outside}/x'",
+            f"pnpm exec bash --rcfile .tmp/rc -c 'touch {outside}/x'",
+            "pnpm exec bash +o posix -s",
             "git push ssh://%6cocalhost/repo HEAD:x",
+            # `?` and `#` end a URL's authority too (review, #245).
+            "git push 'http://localhost#x/repo' HEAD:x",
+            "git push 'http://localhost?x/repo' HEAD:x",
+            "git push 'ssh://127.0.0.1#x/repo' HEAD:x",
             f"git remote -v add o {outside}",
             f"git remote --verbose set-url origin {outside}",
             f"git remote --frobnicate add o {outside}",

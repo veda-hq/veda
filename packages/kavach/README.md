@@ -150,15 +150,16 @@ A remote's URLs are read from git's config, with every `insteadOf` and
 remote. Every worktree shares the main checkout's config, so writing a push
 destination into it is judged as the push would be: `git remote add` and
 `set-url`, `git config` of a remote's `url` or `pushurl` or a branch's
-`remote` or `pushRemote`, and `git fetch --set-upstream`. A remote URL, a
-remote's name, or this repository runs; a local path is refused. The config is
+`remote` or `pushRemote`, and `git fetch` or `git pull --set-upstream`.
+Writing a remote URL, a remote's name, or this repository runs; writing a
+local path, or a host that is this machine, is refused. The config is
 read before the line runs, so a push after another write on its line, other
 than `git add`, `commit`, `push` or `tag`, is refused, and so is a push beside
 any write on a line with `&` or `|`: push in a call of its own.
 
 ## Runners
 
-A package runner that hands a shell program text is refused as unproven:
+A package runner that passes program text to a shell is refused as unproven:
 `pnpm exec sh -c '…'`, `npx bash -c '…'`, `mise exec -- sh -c '…'`, a shell
 under a runner reading its standard input (`printf … | pnpm exec sh`), and
 each runner's own shell mode (`pnpm exec -c` or `--shell-mode`, `npm exec` and

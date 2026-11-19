@@ -1930,6 +1930,24 @@
     "text": "git log -1 \"$(echo --output={P}/pwned)\""
   },
   {
+    "id": "ow-git-log-pickaxe-output",
+    "note": "An attached pickaxe reads only, and kavach passes it (veda#6); the --output beside it still writes.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "--output",
+    "text": "git log -1 -Scorpus --output={P}/pwned"
+  },
+  {
+    "id": "ow-git-log-pickaxe-spells-output",
+    "note": "git reads the rest of an attached -S word as the string to search for, so this --output names no file (veda#6).",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "option value",
+    "text": "git log -1 -S--output={P}/pwned"
+  },
+  {
     "id": "ow-sed-program-in-variable",
     "note": "The parser read \"$x ...\" as the sed address $ and the command x. An earlier parser allowed it.",
     "intent": "outside-write",

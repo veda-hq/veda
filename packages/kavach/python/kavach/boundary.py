@@ -90,7 +90,11 @@ READ_GIT = {
     "show-ref",
     "status",
 }
-SHELL_OPERATORS = {";", "&&", "||", "|", "|&", "&", "(", ")"}
+# The READ_GIT verbs (and `stash show`) whose -S and -G are the diff pickaxe,
+# a value git takes attached (`-Sneedle`). Elsewhere -S is not that: blame's
+# names a file, and the others have none.
+GIT_PICKAXE_VERBS = frozenset({"diff", "diff-tree", "log", "rev-list", "show"})
+SHELL_OPERATORS ={";", "&&", "||", "|", "|&", "&", "(", ")"}
 SHELL_COMMAND_WRAPPERS = {
     "builtin",
     "command",
@@ -1390,6 +1394,8 @@ def git_inspection_outputs(words: list[str], command_index: int) -> list[str] | 
         # `git status` display options; none names an output.
         "--branch", "--ahead-behind", "--no-ahead-behind", "--show-stash",
         "--untracked-files",
+        # Pickaxe switches: which matches -S and -G count, and what is shown.
+        "--pickaxe-all", "--pickaxe-regex",
     }
     values = {
         "--abbrev", "--author", "--before", "--after", "--since", "--until",
@@ -1422,6 +1428,11 @@ def git_inspection_outputs(words: list[str], command_index: int) -> list[str] | 
             if index >= len(words) or words[index].startswith("-"):
                 return None
         elif "=" in option and option.split("=", 1)[0] in values | flags:
+            pass
+        elif option[:2] in {"-S", "-G"} and len(option) > 2 and words[command_index] in GIT_PICKAXE_VERBS:
+            # `-S<string>`, `-G<regex>`: git reads the rest of the word as
+            # the pickaxe, whatever it spells (`-S--output=x` searches for
+            # that text), so nothing after the letter is an option.
             pass
         elif re.fullmatch(r"-(?:[0-9]+|[purszabw]+|[UMCBn][0-9]+)", option):
             pass
@@ -3086,6 +3097,58 @@ def node_is_read_only(args: list[str]) -> bool:
     )
 
 
+# Claude Code 2.1.326 prints its version and returns before it loads anything
+# when its arguments are exactly one of these, alone or followed by
+# `--verbose` (which adds the commit). Any other word, `--help` or a second
+# `-v` included, starts the full CLI, which writes its config and logs.
+CLAUDE_VERSION_FLAGS = frozenset({"--version", "-v", "-V"})
+
+
+def claude_runtime_is_moved() -> bool:
+    """Whether the hook's environment may load a program into `claude`.
+
+    The hook's environment stands for the Bash tool's. The native build is a
+    Bun executable, and `BUN_OPTIONS=--preload <file>` runs that file before
+    the version prints (seen on 2.1.326); an npm install runs under node,
+    where `NODE_OPTIONS=--require` does the same. Every `BUN_` variable
+    counts, set to anything, refusing too much rather than too little.
+    """
+
+    return any(
+        value and (key.startswith("BUN_") or key == "NODE_OPTIONS")
+        for key, value in os.environ.items()
+    )
+
+
+CLAUDE_WORD = re.compile(r"(?<![\w-])claude(?![\w-])")
+CLAUDE_RUNTIME_ASSIGNMENT = re.compile(r"(?<![\w-])(?:BUN_\w*|NODE_OPTIONS)\+?=")
+
+
+def claude_environment_is_moved(command: str) -> bool:
+    """Whether ``command`` runs claude and assigns a `BUN_` variable or
+    `NODE_OPTIONS`, read off the whole text as `curl_environment_is_moved`
+    is: an assignment the segment parser strips (`BUN_OPTIONS=x claude -v`)
+    or one outside a `$(...)` or `bash -c` still meets the claude in it."""
+
+    return bool(CLAUDE_WORD.search(command) and CLAUDE_RUNTIME_ASSIGNMENT.search(command))
+
+
+def claude_is_read_only(args: list[str]) -> bool:
+    """`claude` asked for its version, in the one form that loads nothing.
+
+    With HOME, CLAUDE_CONFIG_DIR, TMPDIR, the XDG folders and the working
+    directory empty, these forms left all of them empty (2.1.326). A
+    variable set on the same line already leaves the line unproven.
+    """
+
+    return (
+        len(args) in (1, 2)
+        and args[0] in CLAUDE_VERSION_FLAGS
+        and args[1:] in ([], ["--verbose"])
+        and not claude_runtime_is_moved()
+    )
+
+
 def shell_interpreter_is_read_only(args: list[str]) -> bool:
     """A shell that reports itself, or parses a program without running it.
 
@@ -3506,6 +3569,8 @@ def segment_is_read_only(words: list[str]) -> bool:
         return date_is_read_only(words[1:])
     if name in {"node", "nodejs"}:
         return node_is_read_only(words[1:])
+    if name == "claude":
+        return claude_is_read_only(words[1:])
     if name == "adb":
         return adb_is_read_only(words[1:])
     if name in SHELL_INTERPRETERS:
@@ -4344,7 +4409,7 @@ def shell_is_read_only(command: str, depth: int = 0) -> bool:
     each of their values (``bound_variants``).
     """
 
-    if curl_environment_is_moved(command):
+    if curl_environment_is_moved(command) or claude_environment_is_moved(command):
         return False
     segments = split_commands(command, depth)
     if segments is None or curl_config_is_unproven(segments):
@@ -6223,6 +6288,9 @@ def mutation_directories(
     if curl_environment_is_moved(command) or curl_config_is_unproven(segments):
         # A config, a format or a variable decides what curl writes, out of
         # the command line's sight.
+        return None
+    if claude_environment_is_moved(command):
+        # A program BUN_OPTIONS or NODE_OPTIONS loads runs inside claude.
         return None
     alone = alone and len(segments) == 1
     # A loop body runs once per iteration while this model applies each `cd`

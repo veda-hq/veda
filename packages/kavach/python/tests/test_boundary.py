@@ -1726,6 +1726,47 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 self.assertIn("`curl` with a config", result.stderr)
                 self.assertNotIn("a program whose writes the guard does not know", result.stderr)
 
+    def test_brief_6_reads_pass_from_each_checkout(self) -> None:
+        """veda#6. kavach 0.7.3 refused `claude --version` and an attached
+        `git log -S'…'` everywhere, naming `claude` and `git log`."""
+
+        clean = {
+            key: value for key, value in hermetic_git_env().items()
+            if not key.startswith("BUN_") and key != "NODE_OPTIONS"
+        }
+        for cwd in (self.claude, self.main):
+            for command in (
+                "claude --version",
+                "claude -v",
+                "ls -A . 2>/dev/null",
+                "git log -S'base' --oneline",
+                "git log -G'ba.e' --oneline -- tracked.txt",
+            ):
+                with self.subTest(cwd=cwd, command=command):
+                    result = self.claude_bash(cwd, command, env=clean)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+        for command in ("claude -p hi", "claude --help"):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.main, command, env=clean)
+                self.assertEqual(result.returncode, 2, result.stderr)
+        result = self.claude_bash(self.claude, f"git log -Sbase --output={self.external}/x")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("outside this session's Claude worktree", result.stderr)
+        # The hook's environment stands for the Bash tool's: a program
+        # BUN_OPTIONS or NODE_OPTIONS loads runs before the version prints.
+        for name in ("BUN_OPTIONS", "NODE_OPTIONS"):
+            with self.subTest(name=name):
+                moved = {**clean, name: f"--preload {self.external}/p.js"}
+                result = self.claude_bash(self.main, "claude --version", env=moved)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                result = self.claude_bash(self.claude, "claude --version", env=moved)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("`claude` with a `BUN_` variable or `NODE_OPTIONS` set", result.stderr)
+                self.assertNotIn("a program whose writes the guard does not know", result.stderr)
+        result = self.claude_bash(self.claude, "BUN_OPTIONS=--preload=./p.js claude --version", env=clean)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("`claude` with a `BUN_` variable or `NODE_OPTIONS` set", result.stderr)
+
     def test_git_c_own_worktree_keeps_every_other_refusal(self) -> None:
         commands = (
             # cd under control flow or a wrapper still fails closed, so a
@@ -3483,7 +3524,8 @@ class ReadOnlyFormsTest(unittest.TestCase):
         environment = mock.patch.dict(
             os.environ,
             {key: value for key, value in os.environ.items()
-             if key.upper() not in {"SSLKEYLOGFILE", "QLOGDIR"}},
+             if key.upper() not in {"SSLKEYLOGFILE", "QLOGDIR", "NODE_OPTIONS"}
+             and not key.startswith("BUN_")},
             clear=True,
         )
         environment.start()
@@ -3601,6 +3643,23 @@ class ReadOnlyFormsTest(unittest.TestCase):
         "curl -u user:pass -r 0-99 --url https://x.example FILE:///etc/hosts",
         'curl -s "https://x.example/$r"',
         "curl -q -s file:///etc/hosts",
+        # veda#6: Claude Code's version, and git's attached pickaxe.
+        "claude --version",
+        "claude -v",
+        "claude -V",
+        "claude --version --verbose",
+        "claude -v | head -1",
+        "git log -S'segment_is_read_only' --oneline",
+        "git log --oneline -S\"two words\" -- src",
+        "git log -G'read_.*only' --pickaxe-regex --pickaxe-all -p",
+        "git diff -Sneedle HEAD~1",
+        "git diff-tree -r -Gx HEAD",
+        "git show -Sx HEAD",
+        "git rev-list -Sx HEAD",
+        "git stash show -p -Sx",
+        # The rest of the word is the pickaxe, whatever it spells.
+        "git log -S--output=out",
+        "git log -S'x --output=out'",
     )
 
     WRITES = (
@@ -3774,6 +3833,40 @@ class ReadOnlyFormsTest(unittest.TestCase):
         "xargs curl -s < urls",
         # veda#195: gh writes sigstore's TUF metadata to its cache on every run.
         "gh attestation trusted-root",
+        # veda#6: any other claude starts the full CLI, which writes its
+        # config; BUN_OPTIONS or NODE_OPTIONS can load a program first.
+        "claude",
+        "claude -p hi",
+        "claude --help",
+        "claude -v -v",
+        "claude --verbose -v",
+        "claude --version x",
+        "claude --versio",
+        "claude update",
+        "./claude --version",
+        "$c --version",
+        "BUN_OPTIONS=--preload=./p.js claude --version",
+        "NODE_OPTIONS=--require=./p.js claude --version",
+        "export BUN_OPTIONS=--preload=./p.js; claude --version",
+        "env BUN_OPTIONS=--preload=./p.js claude --version",
+        "BUN_OPTIONS=--preload=./p.js; echo $(claude --version)",
+        "bash -c 'BUN_OPTIONS=--preload=./p.js claude --version'",
+        "claude --version > out",
+        # Setters with no `=` for the whole-text check to see stay
+        # unproven themselves.
+        "export BUN_OPTIONS; read -r BUN_OPTIONS < f; claude --version",
+        "printf -v BUN_OPTIONS %s '--preload ./p.js'; export BUN_OPTIONS; claude -v",
+        "for BUN_OPTIONS in '--preload ./p.js'; do export BUN_OPTIONS; claude -v; done",
+        "declare -x BUN_OPTIONS; claude -v",
+        "PATH=.tmp:$PATH claude --version",
+        # veda#6: an attached pickaxe hides nothing, but an expansion or
+        # another option still may.
+        "git log -S",
+        "git log -S$X",
+        "git log -S\"$X\"",
+        "git log -Sx --output=out",
+        "git log -Sx --outp=out",
+        "git log -Sx -O$X",
     )
 
     def test_read_only_forms_are_read_only(self) -> None:
@@ -3783,6 +3876,30 @@ class ReadOnlyFormsTest(unittest.TestCase):
 
     def test_writing_forms_are_not(self) -> None:
         for command in self.WRITES:
+            with self.subTest(command=command):
+                self.assertFalse(MODULE.shell_is_read_only(command))
+
+    def test_claude_version_reads_only_where_nothing_loads_a_program(self) -> None:
+        """veda#6: `BUN_OPTIONS=--preload` ran a file before Claude Code
+        2.1.326 printed its version; under node, `NODE_OPTIONS` does."""
+
+        self.assertTrue(MODULE.shell_is_read_only("claude --version"))
+        for name, value in (
+            ("BUN_OPTIONS", "--preload ./p.js"),
+            ("BUN_INSTALL", "/h/.bun"),
+            ("NODE_OPTIONS", "--require ./p.js"),
+        ):
+            with self.subTest(name=name), mock.patch.dict(os.environ, {name: value}):
+                self.assertFalse(MODULE.shell_is_read_only("claude --version"))
+                self.assertTrue(MODULE.shell_is_read_only("node --version"))
+        with mock.patch.dict(os.environ, {"BUN_OPTIONS": "", "NODE_OPTIONS": ""}):
+            self.assertTrue(MODULE.shell_is_read_only("claude --version"))
+
+    def test_attached_pickaxe_only_where_s_is_the_pickaxe(self) -> None:
+        """blame's -S names a revisions file, and the other READ_GIT verbs
+        have none: an attached -S or -G there stays unproven."""
+
+        for command in ("git blame -Srevs f", "git status -Sx", "git ls-files -Gx"):
             with self.subTest(command=command):
                 self.assertFalse(MODULE.shell_is_read_only(command))
 

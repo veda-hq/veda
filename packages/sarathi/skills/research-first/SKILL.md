@@ -10,10 +10,14 @@ asks the owner, and asks only what no source can answer. In a sample of 30
 asks taken from 40 agent sessions of 2026-11 (method and counts in
 veda-hq/veda#176), 12 were settled or narrowed by research the agent could
 have done first; the common miss was offering options before checking which
-of them work, with research only after the owner pushed back. Anthropic
-counts why Claude Code stops itself: 35% of those stops present a choice
-between proposed approaches, and 21% gather diagnostic information or test
-results [13].
+of them work, with research only after the owner pushed back.
+
+For context, Anthropic counts why Claude Code stops itself, across a
+different population and with a different measure: 35% of those stops
+present a choice between proposed approaches, and 21% gather diagnostic
+information or test results [13]. The study does not say whether those
+questions were researchable; it shows where asks happen, not which could
+have been settled.
 
 ## Who can answer
 

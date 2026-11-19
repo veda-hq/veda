@@ -1,13 +1,22 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { run } from './cli.ts';
 import { affectedTargets, configInputs, DEFAULT_CONFIG, lintPackagesMoved, lintTargets, parseConfig } from './eslint-targets.ts';
 
-const temp = (): string => realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-lint-')));
+const temps: string[] = [];
+/** A fresh temporary directory, by its real path, removed when this file's tests end. */
+const temp = (): string => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-lint-')));
+  temps.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 const put = (root: string, file: string, text = '') => {
   mkdirSync(dirname(join(root, file)), { recursive: true });
   writeFileSync(join(root, file), text);
@@ -110,7 +119,9 @@ describe('lintPackagesMoved', () => {
 });
 
 describe('pariksha eslint-targets', () => {
-  const git = (root: string, ...args: string[]) => execFileSync('git', ['-c', 'user.email=a@example.com', '-c', 'user.name=a', '-c', 'commit.gpgsign=false', ...args], { cwd: root, stdio: 'pipe' });
+  // No detached auto-maintenance after a commit: it could write into a fixture as it is removed.
+  const git = (root: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0', '-c', 'user.email=a@example.com', '-c', 'user.name=a', '-c', 'commit.gpgsign=false', ...args], { cwd: root, stdio: 'pipe' });
   const commit = (root: string, message: string) => {
     git(root, 'add', '-A');
     git(root, 'commit', '-q', '-m', message);

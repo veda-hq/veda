@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { DEFAULT_SETTINGS, run } from './cli.ts';
 import { findMissing, formatFindings, parseRequirements } from './required-settings.ts';
 
@@ -15,9 +15,15 @@ const capture = () => {
   return { io: { out: (l: string) => out.push(l), err: (l: string) => err.push(l) }, out, err };
 };
 
-/** A folder holding these files. */
+const temps: string[] = [];
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
+
+/** A folder holding these files, removed when this file's tests end. */
 const tree = (files: Record<string, string>): string => {
   const root = mkdtempSync(join(tmpdir(), 'pariksha-required-'));
+  temps.push(root);
   for (const [path, body] of Object.entries(files)) {
     mkdirSync(join(root, path, '..'), { recursive: true });
     writeFileSync(join(root, path), body);

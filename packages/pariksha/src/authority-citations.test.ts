@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import {
   addedLines,
   adrDirOf,
@@ -41,12 +41,25 @@ const ENV: NodeJS.ProcessEnv = Object.fromEntries(
     ([k]) => !k.startsWith('GITHEAD_') && !k.startsWith('GIT_DIR') && k !== 'GIT_INDEX_FILE' && k !== 'GIT_WORK_TREE',
   ),
 );
-const git = (root: string, ...args: string[]): string => execFileSync('git', args, { cwd: root, env: ENV, encoding: 'utf8', timeout: 30_000 });
+/** No detached auto-maintenance after a commit or merge: it could write into a fixture as it is removed. */
+const NO_MAINTENANCE = ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0'];
+const git = (root: string, ...args: string[]): string => execFileSync('git', [...NO_MAINTENANCE, ...args], { cwd: root, env: ENV, encoding: 'utf8', timeout: 30_000 });
 const gitMayFail = (root: string, ...args: string[]) => {
-  const r = spawnSync('git', args, { cwd: root, env: ENV, encoding: 'utf8', timeout: 60_000 });
+  const r = spawnSync('git', [...NO_MAINTENANCE, ...args], { cwd: root, env: ENV, encoding: 'utf8', timeout: 60_000 });
   return { status: r.status ?? -1, output: `${r.stdout}${r.stderr}` };
 };
 const write = (root: string, path: string, lines: string[]) => writeFileSync(join(root, path), `${lines.join('\n')}\n`);
+
+const temps: string[] = [];
+/** A fresh temporary directory, removed when this file's tests end. */
+const temp = (prefix: string): string => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  temps.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 
 const validate = (root: string, extra: NodeJS.ProcessEnv = {}, mode = 'staged', more: string[] = []) => {
   const lines: string[] = [];
@@ -63,7 +76,7 @@ const commitThroughGate = (root: string, message: string) => {
 };
 
 const init = (): string => {
-  const root = mkdtempSync(join(tmpdir(), 'pariksha-authority-'));
+  const root = temp('pariksha-authority-');
   git(root, 'init', '--quiet', '--initial-branch=main');
   git(root, 'config', 'user.name', 't');
   git(root, 'config', 'user.email', 't@example.com');
@@ -431,7 +444,7 @@ describe('authority-citations, usage and failures', () => {
 
   it('exits 2 outside a repository', () => {
     const c = capture();
-    const dir = mkdtempSync(join(tmpdir(), 'pariksha-no-repo-'));
+    const dir = temp('pariksha-no-repo-');
     assert.equal(run(['authority-citations', '--root', dir], c.io, '0', ENV), 2);
     assert.ok(c.lines.join('\n').includes('is not in a git repository'));
   });
@@ -484,7 +497,7 @@ describe('citations', () => {
   });
 
   it('lists the ADR directory, or nothing when there is none', () => {
-    const root = mkdtempSync(join(tmpdir(), 'pariksha-adrs-'));
+    const root = temp('pariksha-adrs-');
     assert.deepEqual(listAdrs(root, 'docs/adr'), []);
     mkdirSync(join(root, 'docs', 'adr'), { recursive: true });
     writeFileSync(join(root, 'docs', 'adr', '0001-a.md'), '');

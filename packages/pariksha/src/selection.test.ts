@@ -3,12 +3,25 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { run } from './cli.ts';
 import { gitAt } from './git.ts';
 import { changedPaths, selectedList, selectionOf, settingsInputs } from './selection.ts';
 
-const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.email=a@example.com', '-c', 'user.name=a', '-c', 'commit.gpgsign=false', ...args], { cwd, stdio: 'pipe' }).toString();
+// No detached auto-maintenance after a commit: it could write into a fixture as it is removed.
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync('git', ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0', '-c', 'user.email=a@example.com', '-c', 'user.name=a', '-c', 'commit.gpgsign=false', ...args], { cwd, stdio: 'pipe' }).toString();
+
+const temps: string[] = [];
+/** A fresh temporary directory, by its real path, removed when this file's tests end. */
+const temp = (prefix: string): string => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  temps.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 
 const write = (root: string, files: Record<string, string>) => {
   for (const [path, body] of Object.entries(files)) {
@@ -19,7 +32,7 @@ const write = (root: string, files: Record<string, string>) => {
 
 /** A repository whose main holds `files`, committed. */
 const repo = (files: Record<string, string>): string => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-sel-')));
+  const root = temp('pariksha-sel-');
   git(root, 'init', '-q', '-b', 'main');
   write(root, files);
   git(root, 'add', '-A');
@@ -95,7 +108,7 @@ describe('changedPaths and selectedList', () => {
   it('has package.json stand in for settings git does not track', () => {
     const root = repo({ '.gitignore': 'node_modules/\n', 'cfg.json': '{}', 'package.json': '{}' });
     write(root, { 'node_modules/rules/cfg.json': '{}', 'untracked.json': '{}' });
-    const outside = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-cfg-')));
+    const outside = temp('pariksha-cfg-');
     const inputs = (settings: string) => settingsInputs(gitAt(root), root, settings);
     assert.deepEqual(inputs(join(root, 'cfg.json')), [join(root, 'cfg.json')]);
     assert.deepEqual(inputs(join(root, 'node_modules/rules/cfg.json')), [join(root, 'node_modules/rules/cfg.json'), join(root, 'package.json')]);
@@ -106,7 +119,7 @@ describe('changedPaths and selectedList', () => {
     assert.deepEqual(inputs(dirname(root)), [dirname(root), join(root, 'package.json')]);  });
 
   it('fails, never lists nothing, when git fails', () => {
-    const outside = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-nogit-')));
+    const outside = temp('pariksha-nogit-');
     assert.throws(() => changedPaths(gitAt(outside), { kind: 'staged' }), /git diff --cached .* failed/);
   });
 });
@@ -182,7 +195,7 @@ describe('the selection, run by the checks that judge files', () => {
     const two = capture(root);
     assert.equal(run(['absolute-paths', '--root', root, '--staged', '--all'], two.io, '1.0.0', {}), 2);
     assert.match(two.err[0] ?? '', /choose one of --staged, --base, --all, --files-from/);
-    const outside = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-nogit-')));
+    const outside = temp('pariksha-nogit-');
     const none = capture(outside);
     assert.equal(run(['absolute-paths', '--root', outside, '--staged'], none.io, '1.0.0', {}), 2);
     assert.match(none.err[0] ?? '', /is not in a git repository, so --staged, --base and --all have nothing to list/);

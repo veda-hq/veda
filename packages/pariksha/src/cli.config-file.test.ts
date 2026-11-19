@@ -2,17 +2,29 @@
 // from the working directory and never from --root.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { CONFIGURABLE, run } from './cli.ts';
 import { formatReport } from './doc-references-gate.ts';
 
-const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+// No detached auto-maintenance: it could write into a fixture as it is removed.
+const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0', ...args], { cwd, stdio: 'pipe' });
+
+const temps: string[] = [];
+/** A fresh temporary directory, by its real path, removed when this file's tests end. */
+const temp = (prefix: string): string => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  temps.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 
 const repo = (files: Record<string, string>): string => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-cfg-')));
+  const root = temp('pariksha-cfg-');
   git(root, 'init', '-q');
   for (const [path, body] of Object.entries(files)) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
@@ -53,7 +65,7 @@ describe('.pariksha.json', () => {
   it('is found from the working directory, never from --root (an index snapshot)', () => {
     const root = repo({ ...NOTE, '.pariksha.json': JSON.stringify({ checks: { 'absolute-paths': ONLY_DOCS } }) });
     // The snapshot holds the same documents and no config file: the checkout's settings still apply.
-    const snapshot = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-snap-')));
+    const snapshot = temp('pariksha-snap-');
     cpSync(join(root, 'notes'), join(snapshot, 'notes'), { recursive: true });
     cpSync(join(root, 'docs'), join(snapshot, 'docs'), { recursive: true });
     const files = 'notes/a.md\ndocs/b.md\n';
@@ -163,7 +175,7 @@ describe('.pariksha.json for flag-only checks', () => {
   it('reads doc-budgets’ table from the config file’s folder, not from --root', () => {
     const root = repo({ 'rule.md': RULE, '.pariksha.json': JSON.stringify({ checks: { 'doc-budgets': { table: 'rule.md', section: 'Sizes' } } }) });
     // A snapshot of the documents alone: the table stays the checkout's.
-    const snapshot = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-snap-')));
+    const snapshot = temp('pariksha-snap-');
     writeFileSync(join(snapshot, 'a.md'), 'abcdefgh');
     writeFileSync(join(snapshot, 'rule.md'), '');
     const c = capture(root);

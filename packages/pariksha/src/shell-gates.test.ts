@@ -164,7 +164,9 @@ describe('shell-gates: in a repository', () => {
 
   let repo = '';
   let configFile = '';
-  const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, env, encoding: 'utf8' });
+  // A commit spawns a detached `git maintenance run --auto`, which can write
+  // into the fixture while afterEach removes it (ENOTEMPTY); these turn it off.
+  const git = (...args: string[]) => execFileSync('git', ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0', ...args], { cwd: repo, env, encoding: 'utf8' });
   const write = (path: string, text: string) => {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), text);

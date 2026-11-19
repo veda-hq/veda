@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { hash } from './boundary.ts';
 import { DENY_FILE, ownVersion, run, trackedFiles, type Io } from './cli.ts';
 import { diskReads, type Reads } from './env-gate-switches.ts';
@@ -15,11 +15,23 @@ const capture = () => {
   return { io: { out: (l: string) => out.push(l), err: (l: string) => err.push(l) }, out, err };
 };
 
-const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+// No detached auto-maintenance: it could write into a fixture as it is removed.
+const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0', ...args], { cwd, stdio: 'pipe' });
+
+const temps: string[] = [];
+/** A fresh temporary directory, removed when this file's tests end. */
+const temp = (prefix: string): string => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  temps.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 
 /** A git repository with these files tracked. */
 const repo = (files: Record<string, string | Uint8Array>): string => {
-  const root = mkdtempSync(join(tmpdir(), 'pariksha-'));
+  const root = temp('pariksha-');
   git(root, 'init', '-q');
   for (const [path, body] of Object.entries(files)) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
@@ -167,7 +179,7 @@ describe('run coverage-by-type', () => {
   });
 
   it('exits 2 outside a repository, without TypeScript, or on a bad config', () => {
-    const outside = mkdtempSync(join(tmpdir(), 'pariksha-none-'));
+    const outside = temp('pariksha-none-');
     const a = capture();
     assert.equal(run(['coverage-by-type', '--root', outside], a.io, '0'), 2);
     assert.match(a.err[0] ?? '', /is not in a git repository$/);
@@ -222,7 +234,7 @@ describe('run coverage-exemptions', () => {
     assert.equal(run(['coverage-exemptions'], usage.io, '0'), 2);
     assert.match(usage.err[0] ?? '', /^usage:/);
     const outside = capture();
-    assert.equal(run(['coverage-exemptions', '--root', mkdtempSync(join(tmpdir(), 'pariksha-none-')), '--config', 'cov.json'], outside.io, '0'), 2);
+    assert.equal(run(['coverage-exemptions', '--root', temp('pariksha-none-'), '--config', 'cov.json'], outside.io, '0'), 2);
     assert.match(outside.err[0] ?? '', /is not in a git repository$/);
     const root = repo(files);
     const pkg = capture();
@@ -329,7 +341,7 @@ describe('run export-deletions', () => {
 
   it('stops outside a repository, and when git cannot read the branch', () => {
     const outside = capture();
-    const dir = mkdtempSync(join(tmpdir(), 'pariksha-norepo-'));
+    const dir = temp('pariksha-norepo-');
     assert.equal(run(['export-deletions', '--root', dir], outside.io, '0'), 2);
     assert.match(outside.err[0] ?? '', /is not in a git repository$/);
     const root = work();
@@ -461,7 +473,7 @@ describe('run env-gate-switches', () => {
       assert.equal(run(['env-gate-switches', ...args], c.io, '0'), 2);
       assert.match(c.err[0] ?? '', /^usage: pariksha authority-citations/);
     }
-    const outside = check(mkdtempSync(join(tmpdir(), 'pariksha-none-')));
+    const outside = check(temp('pariksha-none-'));
     assert.equal(outside.code, 2);
     assert.match(outside.err[0] ?? '', /^pariksha env-gate-switches: .* is not in a git repository$/);
     const missing = check(repo({ 'scripts/a.sh': '' }));

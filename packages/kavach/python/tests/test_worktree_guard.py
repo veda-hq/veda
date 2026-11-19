@@ -1164,6 +1164,8 @@ class OwnCheckoutTest(BoundaryFixture):
     def test_git_that_misses_the_fences_runs(self) -> None:
         environment = self.writers_fixture()
         (self.main / ".claude" / "hooks" / "guard.sh").write_text("guard\n", encoding="utf-8")
+        # A push is placed through its remote's URL.
+        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
         for command in (
             "git add .",
             "git commit -qm x",

@@ -657,6 +657,8 @@ class WorktreeBoundaryTest(BoundaryFixture):
         nested = self.claude / "nested"
         nested.mkdir()
         relative = os.path.relpath(outside, nested)
+        # A push is placed through its remote's URL.
+        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
         for command in (
             f"git format-patch -1 -o {outside}",
             f"git format-patch -1 -o{outside}",

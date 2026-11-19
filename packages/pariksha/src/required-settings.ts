@@ -105,14 +105,15 @@ export function parseRequirements(text: string): Requirement[] {
     const extra = Object.keys(spec).filter((k) => k !== 'value' && k !== 'includes' && k !== 'why');
     if (extra.length > 0) throw new Error(`"${key}": unknown key ${extra.map((k) => `"${k}"`).join(', ')}`);
     if (typeof spec.why !== 'string' || spec.why.trim() === '') throw new Error(`"${key}" needs a "why"`);
+    const rules: unknown = hasIncludes ? spec.includes : spec.value;
+    const bad = PERMISSION_LISTS.includes(key) && Array.isArray(rules) ? ruleFindings(key, rules) : [];
+    if (bad.length > 0) throw new Error(bad.map(describe).join('; '));
     if (!hasIncludes) {
       out.push({ key, kind: 'value', expected: spec.value, why: spec.why });
       continue;
     }
     const includes: unknown = spec.includes;
     if (!Array.isArray(includes) || includes.length === 0) throw new Error(`"${key}": "includes" must list at least one entry`);
-    const bad = PERMISSION_LISTS.includes(key) ? ruleFindings(key, includes) : [];
-    if (bad.length > 0) throw new Error(bad.map(describe).join('; '));
     out.push({ key, kind: 'includes', expected: includes, why: spec.why });
   }
   if (out.length === 0) throw new Error('the requirements list no key');

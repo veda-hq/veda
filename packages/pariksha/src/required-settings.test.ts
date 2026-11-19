@@ -154,6 +154,11 @@ describe('permission rules Claude Code does not match as written', () => {
     assert.throws(() => parseRequirements(JSON.stringify({ 'permissions.ask': { includes: ['Bash(*git push* :*)'], why: 'a' } })), /"permissions\.ask" lists "Bash\(\*git push\* :\*\)"/);
   });
 
+  it('refuses them in a permission list required by value, and passes a value that is no list', () => {
+    assert.throws(() => parseRequirements(JSON.stringify({ 'permissions.allow': { value: ['Edit(./**)', 'Write(x)'], why: 'w' } })), /"permissions\.allow" lists "Write\(x\)"/);
+    assert.equal(parseRequirements(JSON.stringify({ 'permissions.allow': { value: 'Write(x)', why: 'w' } })).length, 1);
+  });
+
   it('leaves the same strings alone in a list that is not a permission list', () => {
     assert.equal(parseRequirements(JSON.stringify({ 'other.allow': { includes: ['Write(x)', 'Bash(*a*:*)'], why: 'w' } })).length, 1);
   });

@@ -35,7 +35,7 @@ import sys
 import tempfile
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Mapping, NoReturn
+from typing import Any, Mapping, NoReturn, Sequence
 
 
 HERE = Path(__file__).resolve().parent
@@ -541,11 +541,13 @@ def mutation_targets(
     cwd: Path,
     read_namespaces: tuple[Path, ...] = (),
     collected: list[Any] | None = None,
+    push_hosts: Sequence[str] = boundary.DEFAULT_PUSH_HOSTS,
 ) -> list[Path] | None:
     """Paths a mutation event would write, or ``None`` when unprovable.
 
     ``collected`` receives a Bash call's mutating segments
-    (`boundary.mutation_directories`)."""
+    (`boundary.mutation_directories`); ``push_hosts`` are the settings'
+    ``worktree.pushHosts``."""
 
     if tool in {"Edit", "Write", "NotebookEdit"}:
         raw = values.get("file_path") or values.get("notebook_path")
@@ -559,7 +561,11 @@ def mutation_targets(
         command = boundary.tool_command(values)
         return (
             boundary.mutation_directories(
-                command, cwd, read_namespaces=read_namespaces, collected=collected
+                command,
+                cwd,
+                read_namespaces=read_namespaces,
+                collected=collected,
+                push_hosts=push_hosts,
             )
             if command
             else None
@@ -752,7 +758,9 @@ def shown(text: str) -> str:
     return text if len(text) <= SHOWN else text[: SHOWN - 3] + "..."
 
 
-def unreadable_constructs(command: str, cwd: Path) -> list[str]:
+def unreadable_constructs(
+    command: str, cwd: Path, push_hosts: Sequence[str] = boundary.DEFAULT_PUSH_HOSTS
+) -> list[str]:
     """What in ``command`` keeps its writes from being read, most specific
     first: a heredoc, a redirection into a file, a substitution, an
     interpreter, a program the guard does not know, then a pipeline or a
@@ -842,23 +850,27 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
             verb, _ = boundary.git_command(texts, None)
             if verb is not None and verb < len(texts) and texts[verb] in {"push", "send-pack"}:
                 add(f"`git {texts[verb]}` with an expansion on its line, whose destination the guard cannot place")
-        if not own and boundary.mutation_directories(shlex.join(word.text for word in words), cwd) is None:
+        if not own and boundary.mutation_directories(
+            shlex.join(word.text for word in words), cwd, push_hosts=push_hosts
+        ) is None:
             texts = [word.text for word in words]
             verb, _ = boundary.git_command(texts, None) if head == "git" else (None, None)
             if verb is not None and verb < len(texts) and texts[verb] in {"push", "send-pack"}:
                 add(
                     f"`git {texts[verb]}` to a repository the guard cannot place "
-                    "(only a remote URL, or this repository itself, is placed)"
+                    f"(only a URL on a host worktree.pushHosts lists, {listed(push_hosts)}, "
+                    "or this repository itself, is placed)"
                 )
             elif (
                 verb is not None
                 and verb < len(texts)
                 and texts[verb] in {"remote", "config", "fetch", "pull"}
-                and boundary.git_remote_url_writes(texts[verb], texts[verb + 1 :]) not in (None, ([], []))
+                and boundary.git_remote_url_writes(texts[verb], texts[verb + 1 :]) not in (None, ([], [], []))
             ):
                 add(
                     f"`git {texts[verb]}` writing a push destination into the shared config "
-                    "that the guard cannot place (only a remote URL, or this repository itself)"
+                    "that the guard cannot place (only a URL on a host worktree.pushHosts lists, "
+                    f"{listed(push_hosts)}, or this repository itself)"
                 )
             elif verb is not None and verb < len(texts):
                 # An alias, a verb git does not list, or a form of a known
@@ -876,6 +888,11 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
                     f"`{head}` handing a shell a program (`sh -c`, or its own shell mode), "
                     "which the guard does not read"
                 )
+            elif head in boundary.GIT_RUNNERS and boundary.runner_runs_inline_program(texts[1:]):
+                add(
+                    f"`{head}` handing an interpreter an inline program or its standard input "
+                    "(`node -e`, `python3 -c`, or no script), which the guard does not read"
+                )
             else:
                 add(f"`{head}`, a program whose writes the guard does not know")
     if any(each.piped_from is not None for each in commands):
@@ -885,21 +902,33 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
     return found
 
 
-def unreadable_found(command: str, cwd: Path) -> list[str]:
+def unreadable_found(
+    command: str, cwd: Path, push_hosts: Sequence[str] = boundary.DEFAULT_PUSH_HOSTS
+) -> list[str]:
     """`unreadable_constructs`, or nothing when it cannot read the command:
     a refusal's wording never turns into a crash."""
 
     try:
-        return unreadable_constructs(command, cwd) if command else []
+        return unreadable_constructs(command, cwd, push_hosts) if command else []
     except Exception:
         return []
+
+
+def listed(hosts: Sequence[str]) -> str:
+    """The hosts a refusal names, in backticks."""
+    return ", ".join(f"`{host}`" for host in hosts) if hosts else "none"
 
 
 def joined(items: list[str]) -> str:
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
-def unresolved(tool: object, values: dict[str, object], cwd: Path) -> str:
+def unresolved(
+    tool: object,
+    values: dict[str, object],
+    cwd: Path,
+    push_hosts: Sequence[str] = boundary.DEFAULT_PUSH_HOSTS,
+) -> str:
     """The refusal for a call whose writes could not be read, naming what in
     it could not be read and the way out. The leading words stay as they
     were, so earlier logs and searches still match."""
@@ -910,7 +939,7 @@ def unresolved(tool: object, values: dict[str, object], cwd: Path) -> str:
             "Give the tool an absolute path inside this worktree."
         )
     command = boundary.tool_command(values)
-    found = unreadable_found(command, cwd)
+    found = unreadable_found(command, cwd, push_hosts)
     if not found:
         return f"{UNRESOLVED}: the guard cannot read off this command what it writes. {WAY_OUT}"
     named = joined(found)
@@ -1381,7 +1410,7 @@ def main() -> None:
     # finding them costs git starts, so an Edit or Write does not pay for them.
     read_namespaces = harness_state_roots(root, primary) if tool == "Bash" else ()
     segments: list[Any] = []
-    targets = mutation_targets(tool, values, cwd, read_namespaces, segments)
+    targets = mutation_targets(tool, values, cwd, read_namespaces, segments, loaded.push_hosts)
     memory = claude_memory_root(primary)
 
     def in_memory(target: Path) -> bool:
@@ -1418,7 +1447,7 @@ def main() -> None:
     ):
         return
     if targets is None:
-        boundary.deny(unresolved(tool, values, cwd))
+        boundary.deny(unresolved(tool, values, cwd, loaded.push_hosts))
     folders = SessionFolders(data.get("session_id"), os.environ)
     for target in targets:
         # From inside an owned worktree the allowances compose, so

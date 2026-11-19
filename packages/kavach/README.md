@@ -132,18 +132,22 @@ the path resolves to where it leads.
 ## Pushes
 
 A push writes the refs and objects of the repository it names, and runs that
-repository's hooks. So `git push` and `git send-pack` run only to a remote URL
-(`https://`, `http://`, `ssh://`, `git://`, or scp-like `host:path`), or to
+repository's hooks. So `git push` and `git send-pack` run only to a URL on a
+host the settings list (`https://`, `http://`, `ssh://`, `git://`, or
+scp-like `host:path`; `worktree.pushHosts`, by default `github.com`), or to
 this repository itself: `.`, the worktree, the main checkout or its `.git`.
 Any other destination is refused as unproven: a local path or a `file` URL
-(read from the top of the work tree, as git reads it), a remote helper, or a
-path inside the worktree, where git follows a `.git` file anywhere. So is a
-URL whose host is this machine, which reaches a repository here through sshd,
-`git daemon` or a local web server: `localhost` or a `.localhost` name, this
-machine's hostname, or a loopback or unspecified address in any spelling
-(`127.1`, `[::1]`). The host is read from the text alone. The limit: a name
-that reaches this machine only through DNS, `/etc/hosts` or ssh config, or an
-address of this machine other than loopback, counts as remote.
+(read from the top of the work tree, as git reads it), a remote helper, a
+path inside the worktree, where git follows a `.git` file anywhere, or a host
+the list does not name. A name may reach this machine through DNS
+(`localtest.me`), `/etc/hosts` or an ssh config alias, and so a repository
+here through sshd, `git daemon` or a local web server; the guard asks neither
+DNS nor ssh. A host that is this machine stays refused even when listed:
+`localhost` or a `.localhost` name, this machine's hostname, or a loopback or
+unspecified address in any spelling (`127.1`, `[::1]`). The host is matched
+exactly, in lower case, without its user or port. The limit: an ssh config
+that already points a listed host at this machine is not read. A session
+cannot write `~/.ssh/config`, which is outside its worktree.
 
 A remote's URLs are read from git's config, with every `insteadOf` and
 `pushInsteadOf` rewrite, and a `git push` with no repository reads every
@@ -151,9 +155,10 @@ remote. Every worktree shares the main checkout's config, so writing a push
 destination into it is judged as the push would be: `git remote add` and
 `set-url`, `git config` of a remote's `url` or `pushurl` or a branch's
 `remote` or `pushRemote`, `git fetch --set-upstream` and
-`git pull --set-upstream`.
-Writing a remote URL, a remote's name, or this repository runs; writing a
-local path, or a host that is this machine, is refused. The config is
+`git pull --set-upstream`, and `git remote rename`, which moves the renamed
+remote's URLs to its new name.
+Writing a URL on a listed host, a remote's name, or this repository runs;
+writing a local path, or a host the list does not name, is refused. The config is
 read before the line runs, so a push after another write on its line, other
 than `git add`, `commit`, `push` or `tag`, is refused, and so is a push beside
 any write on a line with `&` or `|`: push in a call of its own.
@@ -169,9 +174,22 @@ each runner's own shell mode (`pnpm exec -c` or `--shell-mode`, `npm exec` and
 too, since it may take the next word. The guard does not read that program as
 a line of its own: the
 runner puts its own bin folders first on `PATH`, and `--dir` or `--filter`
-moves the folder the shell runs in. A script file a runner runs
-(`pnpm exec bash .tmp/x.sh`, `pnpm exec tsx .tmp/x.ts`) still runs, and what
-it writes is out of the guard's sight, as for any repository code.
+moves the folder the shell runs in.
+
+So is a runner that passes program text to an interpreter, as the bare
+spelling is: `pnpm exec node -e '…'`, `npx node -p '…'`,
+`mise exec -- python3 -c '…'`, and the inline options of `perl`, `ruby`,
+`lua`, `php`, `bun`, `tsx` and `ts-node`. An interpreter with no script reads
+its standard input (`printf … | pnpm exec node`, `python3 -`), so it is
+refused too. Each interpreter's options are read against the ones the guard
+lists for it; any other option is refused, since it may take the next word
+(`node -r ./x -e …`). The interpreter's name is read wherever it sits on the
+runner's line, so `pnpm add node` is refused as well.
+
+A script file a runner runs (`pnpm exec bash .tmp/x.sh`,
+`pnpm exec tsx .tmp/x.ts`, `pnpm exec node .tmp/x.js`) still runs. What it
+writes is out of the guard's sight, as for any repository code. So these
+refusals stop one way of writing a program, not the program itself.
 
 ## What a refusal says
 
@@ -215,7 +233,8 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
       "env": { "AGENT_REMOTE": ["true"] },
       "reason": "a hosted session clones the repository for itself, with no worktree",
       "protectedPaths": [".claude/hooks/", ".claude/settings.json", ".claude/settings.local.json", ".claude/kavach.json", "node_modules/"]
-    }
+    },
+    "pushHosts": ["github.com", "gitlab.com"]
   },
   "command": {
     "protectedVariables": ["AGENT_REMOTE"],
@@ -327,6 +346,13 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
   fence through it. So can a `trustedCommands` script, which runs before
   these checks. A kavach older than this setting refuses every
   call on the unknown key, so add it only once the pinned kavach knows it.
+- `pushHosts`: the hosts a push, or a URL written into git's config for one,
+  may name (Pushes, above). Each is a bare host name or IPv4 address, with no
+  user, port or scheme, matched exactly in lower case. The list replaces the
+  default, `["github.com"]`, so name `github.com` too if you push there, and
+  each ssh alias you push through (`github.com-work`). An empty list refuses
+  every network push. A kavach older than this setting refuses every call on
+  the unknown key, so add it only once the pinned kavach knows it.
 - `protectedVariables`: environment variables a command may not assign, declare or
   export.
 - `pairedChanges`: a commit that may record a path ending in `changes` must

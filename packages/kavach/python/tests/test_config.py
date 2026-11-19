@@ -214,6 +214,25 @@ class ParseTest(unittest.TestCase):
         self.assertIsNone(config.parse({"worktree": {}}).own_checkout)
         self.assertIsNone(config.DEFAULT.own_checkout)
 
+    def test_push_hosts(self) -> None:
+        def hosts(value: object) -> dict[str, object]:
+            return {"worktree": {"pushHosts": value}}
+
+        where = "worktree.pushHosts"
+        self.refused(hosts("github.com"), f"{where} must be a JSON array")
+        self.refused(hosts([""]), f"{where}[0] must be a non-empty string")
+        self.refused(hosts([1]), f"{where}[0] must be a non-empty string")
+        for host in ("git@github.com", "github.com:22", "https://github.com", "github.com/", "-x", "[::1]", "a b"):
+            with self.subTest(host=host):
+                self.refused(hosts(["github.com", host]), f"{where}[1] must be a host name")
+        self.assertEqual(config.parse(hosts(["GitLab.com", "github.com"])).push_hosts, ("gitlab.com", "github.com"))
+        self.assertEqual(config.parse(hosts([])).push_hosts, ())
+        self.assertEqual(config.parse({"worktree": {}}).push_hosts, ("github.com",))
+        # The default is boundary.py's, which reads no settings of its own.
+        from kavach import boundary
+
+        self.assertEqual(config.DEFAULT.push_hosts, boundary.DEFAULT_PUSH_HOSTS)
+
     def test_protected_variables(self) -> None:
         def command(**values: object) -> dict[str, object]:
             return {"command": values}

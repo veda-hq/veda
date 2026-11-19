@@ -127,6 +127,9 @@ class Config:
     shell_expansion_refuses_from: str = ""
     reviewed_clis: tuple[ReviewedCLI, ...] = ()
     own_checkout: OwnCheckout | None = None
+    # The hosts a push may go to (`worktree.pushHosts`); boundary.py's
+    # DEFAULT_PUSH_HOSTS, kept equal by test_config.py.
+    push_hosts: tuple[str, ...] = ("github.com",)
     # The mode of each rule in rules.py the settings name; one not named warns.
     rules: tuple[tuple[str, RuleMode], ...] = ()
 
@@ -153,7 +156,7 @@ RULE_IDS = (
 
 SHAPE: dict[str, set[str]] = {
     "": {"worktree", "command", "rules"},
-    "worktree": {"trustedCommands", "readOnlyCommands", "reviewedCLIs", "ownCheckout"},
+    "worktree": {"trustedCommands", "readOnlyCommands", "reviewedCLIs", "ownCheckout", "pushHosts"},
     "command": {
         "protectedVariables", "protectedVariablesReason", "pairedChanges",
         "shellExpansion", "shellExpansionRefusesFrom",
@@ -363,9 +366,29 @@ def parse(data: Any) -> Config:
         for index, entry in enumerate(_list(worktree.get("reviewedCLIs", []), "worktree.reviewedCLIs"))
     )
     own = _own_checkout(worktree["ownCheckout"]) if "ownCheckout" in worktree else None
+    hosts = DEFAULT.push_hosts
+    if "pushHosts" in worktree:
+        hosts = tuple(
+            _push_host(item, at)
+            for at, item in enumerate(_list(worktree["pushHosts"], "worktree.pushHosts"))
+        )
     return Config(
-        trusted, variables, reason, paired, read_only, mode, refuses_from, reviewed, own_checkout=own, rules=rules
+        trusted, variables, reason, paired, read_only, mode, refuses_from, reviewed,
+        own_checkout=own, rules=rules, push_hosts=hosts,
     )
+
+
+# A host as a push URL names it, with no user, port or scheme: a name or an
+# IPv4 address. Matched exactly, in lower case.
+PUSH_HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?")
+
+
+def _push_host(value: Any, index: int) -> str:
+    where = f"worktree.pushHosts[{index}]"
+    host = _text(value, where).lower()
+    if not PUSH_HOST.fullmatch(host):
+        raise ConfigError(f"{where} must be a host name, with no user, port or scheme: {value!r}")
+    return host
 
 
 def load(environ: Mapping[str, str] | None = None) -> Config:

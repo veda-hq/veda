@@ -172,16 +172,13 @@ GENERIC_SCOPED_COMMANDS = {
 #
 # State the limit of this set out loud, because it is easy to read the
 # inline-interpreter refusals below as stronger than they are. A reviewed
-# runner can invoke an interpreter as its OWN argument -- `pnpm exec node -e`,
-# `npx node -e`, `npm exec node -e`, or a `make` recipe -- and this hook does
-# not see through it. Those predate the toolchain entries above and behave the
-# same with or without them. `mise exec -- node -e` must not be described that
-# way: before `mise` was listed it was REFUSED, as an unknown executable, and
-# listing `mise` is precisely what admits it. What listing it does not do is
-# widen the shape -- it puts `mise` in the same class as the runners already
-# here, where only the BARE `node -e` is refused. The refusals in
-# NON_SHELL_INLINE_INTERPRETERS therefore constrain the direct spelling, not
-# the capability; what bounds the capability is the worktree gate, which still
+# runner can invoke an interpreter as its OWN argument. Since #243 an inline
+# program it hands one (`pnpm exec node -e`, `npx node -p`,
+# `mise exec -- python3 -c`, or no script, read from standard input) is
+# refused (`runner_runs_inline_program`), as the bare spelling is. A script
+# file it runs (`pnpm exec node x.js`), or a `make` recipe, is not seen
+# through. The refusals therefore constrain the inline spellings, not the
+# capability; what bounds the capability is the worktree gate, which still
 # applies to every command here.
 READ_ONLY_COMMANDS = {"cat", "echo", "printf"}
 READ_COMMANDS |= READ_ONLY_COMMANDS - {"printf"}
@@ -2362,7 +2359,12 @@ GIT_HELPER_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*::")
 GIT_SCHEME_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
 
 
-def git_url_local_path(url: str) -> str | None:
+# The hosts a push may go to when the settings list none
+# (`worktree.pushHosts`).
+DEFAULT_PUSH_HOSTS: tuple[str, ...] = ("github.com",)
+
+
+def git_url_local_path(url: str, hosts: Sequence[str] = DEFAULT_PUSH_HOSTS) -> str | None:
     """The local path a push URL names: ``""`` for a remote URL, None where
     git's reading of it is not placed here.
 
@@ -2371,13 +2373,18 @@ def git_url_local_path(url: str) -> str | None:
     slash before its first colon, is a path, and `host:path` is ssh. A `%`
     in a `file://` URL is decoded by git, and a leading `~` is expanded by
     the receiving side, so both fail closed.
+
+    A network URL is remote only when its host is one of ``hosts``
+    (`git_url_host`, matched exactly) and is not this machine: a name may
+    reach this machine through DNS (`localtest.me`), `/etc/hosts` or an ssh
+    config alias, none of which is read here.
     """
     if not url or GIT_HELPER_URL.match(url):
         return None
     if GIT_REMOTE_SCHEMES.match(url):
         # `/`, `?` and `#` each end the authority (`http://localhost#x/r`).
         authority = re.split(r"[/?#]", url.split("://", 1)[1], maxsplit=1)[0]
-        return None if git_host_is_this_machine(authority) else ""
+        return "" if git_host_is_listed(authority, hosts) else None
     if url.startswith("file://"):
         rest = url[len("file://"):]
         slash = rest.find("/")
@@ -2392,8 +2399,31 @@ def git_url_local_path(url: str) -> str | None:
             authority = url[: closing + 1] if closing >= 0 else url
         else:
             authority = url[:colon]
-        return None if git_host_is_this_machine(authority) else ""
+        return "" if git_host_is_listed(authority, hosts) else None
     return None if url.startswith("~") else url
+
+
+def git_url_host(authority: str) -> str | None:
+    """The host of a URL's ``[user@]host[:port]``, lower case and without a
+    trailing dot or IPv6 brackets; None when it is empty or holds a `%`,
+    which git decodes (`%6cocalhost`)."""
+    host = authority.rpartition("@")[2]
+    if "%" in host:
+        return None
+    if host.startswith("["):
+        host = host[1:].partition("]")[0]
+    elif host.count(":") == 1:
+        host = host.partition(":")[0]
+    host = host.rstrip(".").lower()
+    return host or None
+
+
+def git_host_is_listed(authority: str, hosts: Sequence[str]) -> bool:
+    """Whether a push to ``authority`` goes to one of ``hosts``, and not to
+    this machine: a listed `localhost` is still this machine."""
+    host = git_url_host(authority)
+    listed = {each.rstrip(".").lower() for each in hosts}
+    return host is not None and host in listed and not git_host_is_this_machine(authority)
 
 
 def git_host_is_this_machine(authority: str) -> bool:
@@ -2405,16 +2435,8 @@ def git_host_is_this_machine(authority: str) -> bool:
     writes a repository on this machine through sshd, `git daemon` or a
     local web server. No DNS is asked and no ssh config is read, so a name
     that reaches this machine only through either is not seen."""
-    host = authority.rpartition("@")[2]
-    if "%" in host:
-        # git decodes `%XX` in a URL's host (`%6cocalhost`), so it is not read.
-        return True
-    if host.startswith("["):
-        host = host[1:].partition("]")[0]
-    elif host.count(":") == 1:
-        host = host.partition(":")[0]
-    host = host.rstrip(".").lower()
-    if not host:
+    host = git_url_host(authority)
+    if host is None:
         return True
     if host == "localhost" or host.endswith(".localhost"):
         return True
@@ -2537,12 +2559,24 @@ GIT_REMOTE_ADD_FLAGS = frozenset({"-f", "--fetch", "--no-fetch", "--tags", "--no
 GIT_REMOTE_ADD_VALUES = frozenset({"-t", "--track", "-m", "--master"})
 
 
-def git_remote_url_writes(verb: str, args: list[str]) -> tuple[list[str], list[str]] | None:
+class GitConfigWrites(NamedTuple):
+    """What a git command writes into the config that a push reads
+    (`git_remote_url_writes`)."""
+
+    # URLs written as a remote's `url` or `pushurl`.
+    urls: list[str]
+    # Repositories written as a branch's remote, each maybe a remote's name.
+    repositories: list[str]
+    # Remotes whose URLs move to another name (`git remote rename`).
+    renamed: list[str]
+
+
+def git_remote_url_writes(verb: str, args: list[str]) -> GitConfigWrites | None:
     """What a git command writes into the config that a later push may go
-    to, as (URLs, repositories that may be a remote's name): `remote add`
-    and `remote set-url` (not `--delete`), a value `git config` sets for a
-    remote's `url`/`pushurl` or a branch's `remote`/`pushRemote`, and the
-    repository `fetch --set-upstream` makes the branch's remote. Another
+    to: `remote add` and `remote set-url` (not `--delete`), a value
+    `git config` sets for a remote's `url`/`pushurl` or a branch's
+    `remote`/`pushRemote`, the repository `fetch --set-upstream` makes the
+    branch's remote, and the remote `remote rename` moves. Another
     session shares the main checkout's config, so a local URL written there
     could take its push between its check and its run. An option the reader
     does not know fails closed. For fetch, every word that is not an option
@@ -2552,30 +2586,39 @@ def git_remote_url_writes(verb: str, args: list[str]) -> tuple[list[str], list[s
         if git_config_file_outputs(args, settings) is None:
             return None
         branch = [value for key, value in settings if key.partition(".")[0].lower() == "branch"]
-        return [value for key, value in settings if key.partition(".")[0].lower() != "branch"], branch
+        urls = [value for key, value in settings if key.partition(".")[0].lower() != "branch"]
+        return GitConfigWrites(urls, branch, [])
     if verb in {"fetch", "pull"}:
         upstream = [
             word for word in args
             if git_long_prefix(word, "--set-upstream") and len(word.partition("=")[0]) >= len("--set")
         ]
         if not upstream:
-            return [], []
+            return GitConfigWrites([], [], [])
         # With `--set-upstream`, any other option fails closed: one that
         # takes the next word would move which word is the repository.
         if any(word.startswith("-") and word not in upstream for word in args):
             return None
         first = next((word for word in args if not word.startswith("-")), None)
-        return [], [] if first is None else [first]
+        return GitConfigWrites([], [] if first is None else [first], [])
     if verb != "remote":
-        return [], []
+        return GitConfigWrites([], [], [])
     # `git remote -v add`: only `-v`/`--verbose` may come before the
     # subcommand (git 2.54); any other option there is not read.
     while args and args[0] in {"-v", "--verbose"}:
         args = args[1:]
     if args and args[0].startswith("-"):
         return None
+    if args and args[0] == "rename":
+        # `git remote rename [--[no-]progress] <old> <new>` moves <old>'s
+        # URLs to <new> (git 2.54 moved `../backup` into `remote.origin.url`),
+        # so another session's `git push <new>` goes where <old> did.
+        names = [word for word in args[1:] if word not in {"--progress", "--no-progress"}]
+        if any(word.startswith("-") for word in names):
+            return None
+        return GitConfigWrites([], [], names[:1])
     if not args or args[0] not in {"add", "set-url"}:
-        return [], []
+        return GitConfigWrites([], [], [])
     operands: list[str] = []
     index = 1
     while index < len(args):
@@ -2589,7 +2632,7 @@ def git_remote_url_writes(verb: str, args: list[str]) -> tuple[list[str], list[s
         elif args[0] == "set-url" and word in {"--push", "--add"}:
             continue
         elif args[0] == "set-url" and word == "--delete":
-            return [], []
+            return GitConfigWrites([], [], [])
         elif args[0] == "add" and (word in GIT_REMOTE_ADD_FLAGS or word.startswith("--mirror=")):
             continue
         elif args[0] == "add" and word in GIT_REMOTE_ADD_VALUES:
@@ -2599,24 +2642,30 @@ def git_remote_url_writes(verb: str, args: list[str]) -> tuple[list[str], list[s
         else:
             return None
     if len(operands) < 2:
-        return [], []
-    return [operands[1]], []
+        return GitConfigWrites([], [], [])
+    return GitConfigWrites([operands[1]], [], [])
 
 
 def git_destination_is_placed(
-    url: str, top: Path, primary: Path, remotes: dict[str, list[str]] | None = None
+    url: str,
+    top: Path,
+    primary: Path,
+    remotes: dict[str, list[str]] | None = None,
+    hosts: Sequence[str] = DEFAULT_PUSH_HOSTS,
 ) -> bool:
     """Whether a push to ``url`` stays off every other repository on this
-    machine: a remote URL, or this repository itself. With ``remotes``, a
-    configured remote's name counts as placed too: its own URLs are read
-    when it is pushed to."""
+    machine: a URL on a listed host, or this repository itself. With
+    ``remotes``, a configured remote's name counts as placed too: its own
+    URLs are read when it is pushed to."""
     if remotes is not None and git_remote_nick(url) and url in remotes:
         return True
-    path = git_url_local_path(url)
+    path = git_url_local_path(url, hosts)
     return path is not None and (not path or git_is_this_repository(path, top, primary))
 
 
-def git_push_destinations(verb: str, args: list[str], cwd: Path) -> list[Path] | None:
+def git_push_destinations(
+    verb: str, args: list[str], cwd: Path, hosts: Sequence[str] = DEFAULT_PUSH_HOSTS
+) -> list[Path] | None:
     """What ``git push`` and ``git send-pack`` write besides the repository
     they run in: nothing, or None where the destination may be another
     repository on this machine.
@@ -2631,7 +2680,8 @@ def git_push_destinations(verb: str, args: list[str], cwd: Path) -> list[Path] |
     every configured remote and each of those names is read. send-pack
     reads no config. A path is read from the top of the work tree, after
     `git -C sub` too (git 2.54), and placed only when it is this repository
-    (`git_is_this_repository`).
+    (`git_is_this_repository`); a network URL only when its host is one of
+    ``hosts`` (`git_destination_is_placed`).
     """
     table = GIT_PUSH_OPTIONS if verb == "push" else GIT_SEND_PACK_OPTIONS
     parsed = git_transport_operands(args, table)
@@ -2673,10 +2723,8 @@ def git_push_destinations(verb: str, args: list[str], cwd: Path) -> list[Path] |
         else:
             urls = [str(repository)]
         urls = [each for url in urls for each in git_rewritten_urls(url, config.rewrites)]
-    for url in urls:
-        path = git_url_local_path(url)
-        if path is None or (path and not git_is_this_repository(path, top, primary)):
-            return None
+    if not all(git_destination_is_placed(url, top, primary, hosts=hosts) for url in urls):
+        return None
     return []
 
 
@@ -5417,6 +5465,159 @@ def runner_runs_shell_program(name: str, args: list[str]) -> bool:
     return False
 
 
+class InterpreterOptions(NamedTuple):
+    """How a runner's interpreter reads its options (`runner_runs_inline_program`)."""
+
+    # Inline program options: a short letter (`-e`, also last in `-pe`) or a
+    # long name (`--eval`, `--eval=…`).
+    inline_letters: frozenset[str]
+    inline_long: frozenset[str]
+    # Options that take nothing; letters may be clustered (`-IB`).
+    flags: frozenset[str]
+    flag_letters: frozenset[str]
+    # Options that take the next word, unless given `=`.
+    values: frozenset[str]
+    # Options that print and exit, reading no program.
+    exits: frozenset[str]
+    # Options whose value is what runs, from a file (`python3 -m mod`).
+    runs: frozenset[str]
+
+
+NODE_OPTIONS = InterpreterOptions(
+    frozenset("ep"),
+    frozenset({"--eval", "--print"}),
+    frozenset({
+        "--experimental-strip-types", "--no-experimental-strip-types",
+        "--experimental-transform-types", "--experimental-vm-modules",
+        "--no-warnings", "--no-deprecation", "--throw-deprecation",
+        "--pending-deprecation", "--trace-warnings", "--trace-uncaught",
+        "--trace-deprecation", "--enable-source-maps", "--expose-gc",
+        "--preserve-symlinks", "--test", "--watch", "--inspect", "--inspect-brk",
+        # tsx's own, and ts-node's `--transpile-only`.
+        "--no-cache", "--transpile-only", "-T",
+    }),
+    frozenset(),
+    frozenset({
+        "-r", "--require", "--import", "--loader", "--experimental-loader",
+        "-C", "--conditions", "--input-type", "--env-file", "--tsconfig",
+    }),
+    frozenset({"-v", "--version", "-h", "--help"}),
+    frozenset(),
+)
+PYTHON_OPTIONS = InterpreterOptions(
+    frozenset("c"),
+    frozenset(),
+    frozenset({"--version", "--help", "-h", "-?"}),
+    frozenset("IBEOqsSuvVbdPRx"),
+    frozenset({"-W", "-X", "--check-hash-based-pycs"}),
+    frozenset({"-V", "--version", "-h", "--help", "-?"}),
+    frozenset({"-m"}),
+)
+RUNNER_INTERPRETERS: dict[str, InterpreterOptions] = {
+    "node": NODE_OPTIONS,
+    "nodejs": NODE_OPTIONS,
+    "bun": NODE_OPTIONS,
+    "tsx": NODE_OPTIONS,
+    "ts-node": NODE_OPTIONS,
+    "perl": InterpreterOptions(
+        frozenset("eE"), frozenset(), frozenset({"-w"}), frozenset("w"),
+        frozenset(), frozenset({"-v", "-V", "-h"}), frozenset(),
+    ),
+    "ruby": InterpreterOptions(
+        frozenset("e"), frozenset(), frozenset({"-w"}), frozenset("w"),
+        frozenset(), frozenset({"-v", "--version", "-h", "--help"}), frozenset(),
+    ),
+    "lua": InterpreterOptions(
+        frozenset("e"), frozenset(), frozenset(), frozenset(),
+        frozenset(), frozenset({"-v"}), frozenset(),
+    ),
+    "php": InterpreterOptions(
+        frozenset("r"), frozenset(), frozenset(), frozenset(),
+        frozenset(), frozenset({"-v", "--version", "-h", "--help"}), frozenset(),
+    ),
+}
+
+
+def runner_interpreter(word: str) -> InterpreterOptions | None:
+    """The option table of an interpreter word on a runner's line."""
+    name = os.path.basename(word)
+    if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", name):
+        return PYTHON_OPTIONS
+    return RUNNER_INTERPRETERS.get(name)
+
+
+def runner_runs_inline_program(args: list[str]) -> bool:
+    """Whether a runner's line may hand an interpreter program text, not a
+    script file: an interpreter word anywhere on it (`pnpm exec node`,
+    `npx -p node node`, `pnpm exec env python3`) given an inline program
+    (`-e`, `--eval=…`, `-pe`, `python3 -Ic`), or no script at all, when it
+    reads its standard input (`printf … | pnpm exec node`, `node -`).
+
+    Each interpreter's options are read against its table: an option the
+    table does not list fails closed, since it may take the next word
+    (`node -r ./x -e …`) or read standard input (`node -i`). The first word
+    that is not an option is the script, and what follows it is the
+    script's (`pnpm exec node x.js -e 1` runs `x.js`). Like a shell word
+    (`runner_runs_shell_program`), the word is read wherever it sits, so
+    `pnpm add node` is refused too.
+    """
+    return any(
+        (table := runner_interpreter(word)) is not None
+        and interpreter_reads_program_text(table, args[index + 1 :])
+        for index, word in enumerate(args)
+    )
+
+
+def interpreter_reads_program_text(table: InterpreterOptions, args: list[str]) -> bool:
+    """Whether an interpreter given ``args`` runs program text (see
+    `runner_runs_inline_program`)."""
+    exits = False
+    index = 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        if word == "--":
+            return index >= len(args)
+        if word == "-":
+            return True
+        if not word.startswith("-"):
+            return False
+        option, attached, _ = word.partition("=")
+        if option in table.inline_long:
+            return True
+        if option.startswith("--"):
+            if option in table.exits:
+                exits = True
+            elif option in table.values:
+                index += 0 if attached else 1
+            elif option not in table.flags:
+                return True
+            continue
+        if attached:
+            return True
+        if word in table.exits:
+            exits = True
+            continue
+        if word in table.runs:
+            # `python3 -m <module>` runs a module from a file.
+            return index >= len(args)
+        if word in table.values:
+            index += 1
+            continue
+        if word in table.flags:
+            continue
+        letters = word[1:]
+        if letters and f"-{letters[0]}" in table.values:
+            # `-Wignore::DeprecationWarning`, `-r./x`: the value is attached.
+            continue
+        if any(letter in table.inline_letters for letter in letters):
+            return True
+        if letters and all(letter in table.flag_letters for letter in letters):
+            continue
+        return True
+    return not exits
+
+
 def shell_reads_program_text(args: list[str]) -> bool:
     """Whether a shell given ``args`` runs program text, not a script file:
     `-c`, `-s` (alone or in a cluster), or no script at all, when it reads
@@ -6344,8 +6545,12 @@ def mutation_path_operands(
     *,
     lookup_modified: bool = False,
     read_namespaces: tuple[Path, ...] = (),
+    push_hosts: Sequence[str] = DEFAULT_PUSH_HOSTS,
 ) -> list[Path] | None:
-    """Resolve filesystem operands mutated by a simple command."""
+    """Resolve filesystem operands mutated by a simple command.
+
+    ``push_hosts`` are the hosts a push, or a URL written for one, may name
+    (the settings' ``worktree.pushHosts``)."""
 
     name = os.path.basename(words[0])
     if name in GENERIC_SCOPED_COMMANDS | READ_ONLY_COMMANDS and words[0] != name:
@@ -6389,28 +6594,43 @@ def mutation_path_operands(
             return git_checkout_index_paths(words[command_index + 1 :], git_cwd)
         if words[command_index] in {"push", "send-pack"}:
             return git_push_destinations(
-                words[command_index], words[command_index + 1 :], git_cwd
+                words[command_index], words[command_index + 1 :], git_cwd, push_hosts
             )
         if words[command_index] in {"remote", "config", "fetch", "pull"}:
             written = git_remote_url_writes(words[command_index], words[command_index + 1 :])
             if written is None:
                 return None
-            urls, repositories = written
-            if urls or repositories:
+            urls, repositories, renamed = written
+            if urls or repositories or renamed:
                 state = checkout_state(git_cwd)
-                config = git_push_config(git_cwd) if repositories else GitPushConfig({}, [], [])
+                config = (
+                    git_push_config(git_cwd)
+                    if repositories or renamed
+                    else GitPushConfig({}, [], [])
+                )
                 if state is None or config is None:
                     return None
+                if renamed and git_legacy_remotes(state[2]):
+                    return None
+                for name in renamed:
+                    # The renamed remote's URLs, as a push to it reads them.
+                    urls = urls + [
+                        each
+                        for url in config.remotes.get(name, [])
+                        for each in git_rewritten_urls(url, config.rewrites)
+                    ]
                 remotes = config.remotes if words[command_index] in {"fetch", "pull"} else None
                 for url in urls:
-                    if not git_destination_is_placed(url, state[0], state[2]):
+                    if not git_destination_is_placed(url, state[0], state[2], hosts=push_hosts):
                         return None
                 for name in repositories:
                     if remotes is None and git_remote_nick(name):
                         # A branch's `remote` set to a name: that remote's
                         # URLs are read when the branch is pushed.
                         continue
-                    if not git_destination_is_placed(name, state[0], state[2], remotes):
+                    if not git_destination_is_placed(
+                        name, state[0], state[2], remotes, hosts=push_hosts
+                    ):
                         return None
         if words[command_index] in GIT_UNPLACED_RUNNERS or (
             words[command_index] == "submodule"
@@ -6510,6 +6730,8 @@ def mutation_path_operands(
         return None
     if name in GIT_RUNNERS and runner_runs_shell_program(name, words[1:]):
         return None
+    if name in GIT_RUNNERS and runner_runs_inline_program(words[1:]):
+        return None
     if name in ALL_OPERAND_MUTATORS:
         value_options = {
             "mkdir": {"-m", "--mode"},
@@ -6556,8 +6778,11 @@ def mutation_directories(
     collected: list[tuple[tuple[str, ...], Path, tuple[str, ...], bool]] | None = None,
     alone: bool = True,
     push_order: dict[str, bool] | None = None,
+    push_hosts: Sequence[str] = DEFAULT_PUSH_HOSTS,
 ) -> list[Path] | None:
     """Resolve the directory in which each mutating segment would run.
+
+    ``push_hosts`` reaches `mutation_path_operands`, nested programs too.
 
     ``relinked`` holds the entries earlier segments may have made into links
     (`relinked_locations`), shared with a nested shell's program: a later
@@ -6716,6 +6941,7 @@ def mutation_directories(
                 collected=collected,
                 alone=alone,
                 push_order=push_order,
+                push_hosts=push_hosts,
             )
             if nested is None:
                 return None
@@ -6773,6 +6999,7 @@ def mutation_directories(
                         collected=collected,
                         alone=False,
                         push_order=push_order,
+                        push_hosts=push_hosts,
                     )
                     if nested is None:
                         return None
@@ -6802,6 +7029,7 @@ def mutation_directories(
                 words, current if name == "git" else target,
                 lookup_modified=lookup_modified,
                 read_namespaces=read_namespaces,
+                push_hosts=push_hosts,
             )
             if operand_targets is None:
                 return None

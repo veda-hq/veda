@@ -659,7 +659,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
         nested.mkdir()
         relative = os.path.relpath(outside, nested)
         # A push is placed through its remote's URL.
-        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
+        git(self.main, "remote", "add", "origin", "https://github.com/veda-hq/veda.git")
         for command in (
             f"git format-patch -1 -o {outside}",
             f"git format-patch -1 -o{outside}",
@@ -1106,7 +1106,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
         nested.mkdir()
         relative = os.path.relpath(outside, nested)
         # A push is placed through its remote's URL.
-        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
+        git(self.main, "remote", "add", "origin", "https://github.com/veda-hq/veda.git")
         # interpret-trailers and the object-dir writers resolve from the top
         # of the work tree.
         top_relative = os.path.relpath(outside, self.claude)
@@ -1290,7 +1290,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
         nested.mkdir()
         # From the top, as git reads it; `git -C nested` does not move it.
         from_top = os.path.relpath(outside, self.claude)
-        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
+        git(self.main, "remote", "add", "origin", "https://github.com/veda-hq/veda.git")
         for command in (
             f"git push {outside} HEAD:refs/heads/x",
             f"git push {from_top} HEAD:x",
@@ -1413,7 +1413,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
         folder its shell runs in (pnpm 12.9), so the program is not read;
         a script file it runs stays the runner limit (#116)."""
         outside = self.external / "repo"
-        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
+        git(self.main, "remote", "add", "origin", "https://github.com/veda-hq/veda.git")
         host = socket.gethostname()
         for command in (
             f"pnpm exec sh -c 'git push {outside} HEAD:x'",
@@ -1514,7 +1514,6 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm exec tsx .tmp/x.ts",
             "pnpm exec node --experimental-strip-types .tmp/x.ts",
             "pnpm exec node --version",
-            "pnpm exec node -e '1'",
             "pnpm --dir nested test:python -k x",
             "pnpm --filter @veda-hq/kavach check",
             "pnpm install --frozen-lockfile",
@@ -1537,7 +1536,6 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "git push git@github.com:veda-hq/veda.git HEAD:x",
             "git push ssh://git@github.com/veda-hq/veda.git HEAD:x",
             "git push https://github.com:443/veda-hq/veda.git HEAD:x",
-            "git push ssh://192.0.2.1/repo HEAD:x",
             "git remote add o https://github.com/veda-hq/veda.git",
             "git remote add -f o git@github.com:veda-hq/veda.git",
             "git remote set-url origin https://github.com/veda-hq/veda.git",
@@ -1558,12 +1556,146 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 result = self.claude_bash(self.claude, command)
                 self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_runner_inline_programs_unlisted_hosts_and_renames_are_unproven(self) -> None:
+        """#243: an interpreter a runner hands program text (an inline
+        option, or no script, when it reads standard input); a push to, or
+        a URL written for, a host `worktree.pushHosts` does not list (a name
+        may reach this machine through DNS, `localtest.me`); and
+        `git remote rename` of a remote whose URL is not placed, which
+        moves that URL to another name (git 2.54)."""
+        outside = self.external / "repo"
+        git(self.main, "remote", "add", "origin", "https://github.com/veda-hq/veda.git")
+        git(self.main, "remote", "add", "backup", str(outside))
+        git(self.main, "remote", "add", "lab", "https://gitlab.com/veda-hq/veda.git")
+        for command in (
+            f"pnpm exec node -e 'require(\"fs\").writeFileSync(\"{outside}/x\", \"\")'",
+            "pnpm exec node -e '1'",
+            "pnpm exec node --eval='1'",
+            "pnpm exec node --print 1",
+            "pnpm exec node -pe 1",
+            "pnpm exec node -",
+            "pnpm exec node",
+            "pnpm exec node -i",
+            "pnpm exec node -r ./x -e 1",
+            "pnpm exec node --frobnicate x.js",
+            f"printf 'require(\"fs\").writeFileSync(\"{outside}/x\", \"\")' | pnpm exec node",
+            "pnpm exec env node -e 1",
+            "pnpm exec /usr/bin/node -e 1",
+            "pnpm node -e 1",
+            "npx node -p 1",
+            "npx -p node node -e 1",
+            "npm exec node -e 1",
+            "npm exec -- node -e 1",
+            "mise exec -- node -e '1'",
+            "mise exec node@24 -- node -e 1",
+            "yarn node -e 1",
+            "pnpm exec tsx -e 1",
+            "pnpm exec ts-node -p 1",
+            "pnpm exec bun -e 1",
+            "pnpm exec python3 -c 1",
+            "pnpm exec python3 -Ic 1",
+            "pnpm exec python3 -W error -c 1",
+            "pnpm exec python3 -",
+            "pnpm exec python3",
+            "pnpm exec python3 -v",
+            "pnpm exec python3 -i x.py",
+            "pnpm exec python3.14 -c 1",
+            "pnpm exec python3 -m",
+            "pnpm exec perl -e 1",
+            "pnpm exec perl -E 1",
+            "pnpm exec ruby -e 1",
+            "pnpm exec lua -e 1",
+            "pnpm exec php -r 1",
+            # The word is read wherever it sits, as `git` is (#198).
+            "pnpm add node",
+            # A host the settings do not list, or none at all.
+            "git push ssh://localtest.me/repo HEAD:x",
+            "git push https://gitlab.com/veda-hq/veda.git HEAD:x",
+            "git push git@gitlab.com:veda-hq/veda.git HEAD:x",
+            "git push ssh://git@github.com.example/x HEAD:x",
+            "git push git://192.0.2.1/repo HEAD:x",
+            "git push ssh://192.0.2.1/repo HEAD:x",
+            "git push lab HEAD:x",
+            "git push",
+            "git send-pack ssh://localtest.me/repo main",
+            "git remote add o https://gitlab.com/veda-hq/veda.git",
+            "git remote set-url origin ssh://localtest.me/repo",
+            "git config remote.o.url git@gitlab.com:veda-hq/veda.git",
+            "git fetch --set-upstream https://gitlab.com/veda-hq/veda.git main",
+            # A rename that moves a URL a push could not go to.
+            "git remote rename backup origin2",
+            "git remote -v rename backup origin2",
+            "git remote rename --no-progress backup origin2",
+            "git remote rename --progress lab origin2",
+            "git remote rename --prog origin origin2",
+            "git remote rename --frobnicate origin origin2",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("mutation targets could not be resolved", result.stderr)
+        for command in (
+            "pnpm exec tsx .tmp/x.ts",
+            "pnpm exec tsx watch .tmp/x.ts",
+            "pnpm exec node --experimental-strip-types .tmp/x.ts",
+            "pnpm exec node --import tsx .tmp/x.ts",
+            "pnpm exec node --env-file=.env .tmp/x.js",
+            "pnpm exec node -- .tmp/x.js",
+            "pnpm exec node .tmp/x.js -e 1",
+            "pnpm exec node --version",
+            "pnpm exec node -v",
+            "npx node --version",
+            "pnpm exec python3 --version",
+            "pnpm exec python3 -V",
+            "pnpm exec python3 -I .tmp/x.py",
+            "pnpm exec python3 -IB .tmp/x.py",
+            "pnpm exec python3 -m json.tool",
+            "pnpm exec python3 -Wignore::DeprecationWarning .tmp/x.py",
+            "pnpm exec vitest run",
+            "pnpm --dir nested test:python -k x",
+            "git push origin main",
+            "git push https://github.com/veda-hq/veda.git HEAD:x",
+            "git push ssh://git@GitHub.com:22/veda-hq/veda.git HEAD:x",
+            "git remote add o https://github.com/veda-hq/veda.git",
+            "git remote rename origin gh",
+            "git remote rename nosuch gh",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_listed_host_that_is_this_machine_is_still_unproven(self) -> None:
+        """`worktree.pushHosts` widens which hosts are remote, never this
+        machine: a listed `localhost` or loopback address is still read as
+        a repository here. A listed host matches exactly, in any case."""
+        listed = ("localhost", "127.0.0.1", "gitlab.com", "github.com")
+        for url in (
+            "ssh://localhost/repo",
+            "git@localhost:repo",
+            "ssh://127.0.0.1/repo",
+            "ssh://%67itlab.com/repo",
+            "https://sub.gitlab.com/repo",
+            "https://gitlab.com.evil/repo",
+        ):
+            with self.subTest(url=url):
+                self.assertIsNone(MODULE.git_url_local_path(url, listed))
+        for url in (
+            "https://gitlab.com/veda-hq/veda.git",
+            "git@GitLab.com:veda-hq/veda.git",
+            "ssh://git@gitlab.com:2222/veda-hq/veda.git",
+            "https://github.com./veda-hq/veda.git",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(MODULE.git_url_local_path(url, listed), "")
+        self.assertIsNone(MODULE.git_url_local_path("https://github.com/x/y", ()))
+        self.assertEqual(MODULE.DEFAULT_PUSH_HOSTS, ("github.com",))
+
     def test_git_push_through_a_local_remote_is_unproven(self) -> None:
         """A remote's URL, push URL, and each `url.<base>.insteadOf` or
         `pushInsteadOf` rewrite of a URL are read from the config; a bare
         `git push` reads every remote and each name it may pick (#200)."""
         outside = self.external / "repo"
-        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
+        git(self.main, "remote", "add", "origin", "https://github.com/veda-hq/veda.git")
         git(self.main, "config", "branch.claude-task.pushRemote", str(outside))
         for command, expected in (
             ("git push", 2),
@@ -1579,11 +1711,11 @@ class WorktreeBoundaryTest(BoundaryFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         git(self.main, "remote", "add", "loc", str(outside))
         git(self.main, "remote", "add", "rel", "../../../../external/repo")
-        git(self.main, "remote", "add", "pu", "https://example.invalid/pu.git")
+        git(self.main, "remote", "add", "pu", "https://github.com/veda-hq/pu.git")
         git(self.main, "config", "remote.pu.pushurl", f"file://{outside}")
         git(self.main, "remote", "add", "gh", "https://mirror.invalid/gh.git")
         git(self.main, "config", f"url.{self.external}/.pushInsteadOf", "https://mirror.invalid/")
-        git(self.main, "remote", "add", "Up", "https://example.invalid/up.git")
+        git(self.main, "remote", "add", "Up", "https://github.com/veda-hq/up.git")
         for command in (
             "git push loc HEAD:x",
             "git push rel HEAD:x",
@@ -2490,17 +2622,11 @@ class WorktreeBoundaryTest(BoundaryFixture):
         assumed: `--version` refreshes a cache and the first config read
         records the file under mise's state directory.
 
-        `mise exec -- node -e` is in the allowed list deliberately, and it is
-        the case worth being explicit about: a reviewed runner may invoke an
-        interpreter as its own argument, and this hook does not see through
-        that. Listing `mise` is what newly admits it -- it was refused before,
-        as an unknown executable -- but it does not widen the shape: the
-        equivalence assertion below pins identical behaviour on `pnpm exec`,
-        `npx` and `npm exec`, which all predate this change, so a reader can
-        see that the inline-interpreter refusals in
-        test_version_queries_and_noexec_run_from_any_checkout constrain the
-        BARE spelling rather than the capability. What bounds the capability is
-        the worktree gate, which every command here still faces.
+        A reviewed runner may invoke an interpreter as its own argument. An
+        inline program it hands one (`mise exec -- node -e`) is refused as
+        the bare spelling is (#243), on `pnpm exec`, `npx` and `npm exec` too,
+        pinned below; a script file it runs (`mise exec -- node x.js`) is the
+        runner limit, bounded by the worktree gate every command here faces.
         """
 
         for command in (
@@ -2508,7 +2634,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "mise --version",
             "mise ls",
             "mise install",
-            "mise exec -- node -e '1'",
+            "mise exec -- node .tmp/x.js",
             "pod install",
             "bundle exec fastlane",
             "gem list",
@@ -2537,22 +2663,20 @@ class WorktreeBoundaryTest(BoundaryFixture):
         )
         self.assertEqual(escape.returncode, 2, escape.stderr)
         self.assertIn("outside this session's Claude worktree", escape.stderr)
-        # The equivalence that makes `mise exec -- node -e` unremarkable. Every
-        # one of these predates `mise`'s admission, so the runner-invokes-an-
-        # interpreter shape is the set's standing contract and not a hole this
-        # change opened. Asserted rather than asserted-in-prose because the
-        # claim is exactly what a reviewer would otherwise have to take on
-        # trust.
+        # The same for every runner: these ran until #243, as the set's
+        # standing contract, and are refused as unproven since.
         for command in (
+            "mise exec -- node -e '1'",
             "pnpm exec node -e '1'",
             "npx node -e '1'",
             "npm exec node -e '1'",
         ):
-            with self.subTest(predates=command):
+            with self.subTest(inline=command):
                 result = self.invoke(
                     self.claude, tool_name="Bash", tool_input={"command": command}
                 )
-                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("mutation targets could not be resolved", result.stderr)
 
     def test_retired_fnm_is_an_unknown_executable(self) -> None:
         """fnm was replaced by mise, so the guard no longer reviews it.
@@ -2589,12 +2713,11 @@ class WorktreeBoundaryTest(BoundaryFixture):
         the interpreter contract for `node` survives for the BARE spelling,
         and `bash`'s `-v` is verbose mode rather than a version query.
 
-        "For the bare spelling" is the honest scope, and it is narrower than
-        it looks. A reviewed runner can still invoke `node -e` as its own
-        argument, which predates this change and is pinned in
+        A runner's `node -e` is refused too since #243, pinned in
         test_toolchain_managers_stay_behind_the_worktree_gate. These negatives
-        say the direct spelling is refused; they do not claim the capability is
-        unreachable.
+        say the inline spellings are refused; they do not claim the
+        capability is unreachable, since a script file a runner runs is the
+        runner limit.
         """
 
         for command in (
@@ -3524,7 +3647,7 @@ class ShellPolicyTest(unittest.TestCase):
             "git -c core.pager='touch changed.txt' log -1",
             "git branch new-branch",
             "git branch -D old-branch",
-            "git remote add upstream https://example.invalid/repo.git",
+            "git remote add upstream https://github.com/veda-hq/repo.git",
             "git remote remove origin",
             "git tag v1.0.0",
             "git tag -d v1.0.0",

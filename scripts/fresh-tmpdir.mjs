@@ -86,10 +86,13 @@ export function exitCode(code, signal) {
  * The signal handlers go on before the directory is made, so a signal never
  * takes Node's default exit between the two and leaves the directory behind.
  * @param {readonly string[]} command
- * @param {{ env?: NodeJS.ProcessEnv, base?: string, stderr?: { write(text: string): unknown }, signals?: NodeJS.EventEmitter, read?: (dir: string) => string[] }} [options]
+ * @param {{ env?: NodeJS.ProcessEnv, base?: string, stderr?: { write(text: string): unknown }, signals?: NodeJS.EventEmitter, read?: (dir: string) => string[], remove?: (dir: string) => void }} [options]
  * @returns {Promise<number>}
  */
-export function run(command, { env = process.env, base = tmpdir(), stderr = process.stderr, signals = process, read = readdirSync } = {}) {
+export function run(
+  command,
+  { env = process.env, base = tmpdir(), stderr = process.stderr, signals = process, read = readdirSync, remove = dir => rmSync(dir, { recursive: true, force: true }) } = {},
+) {
   /** @type {import('node:child_process').ChildProcess | undefined} */
   let child;
   // A handler runs from the event loop, never between these lines and the
@@ -115,7 +118,7 @@ export function run(command, { env = process.env, base = tmpdir(), stderr = proc
   } catch (error) {
     // spawn refuses some arguments before it starts anything, by throwing.
     unlisten();
-    rmSync(dir, { recursive: true, force: true });
+    remove(dir);
     throw error;
   }
   child = started;
@@ -126,18 +129,23 @@ export function run(command, { env = process.env, base = tmpdir(), stderr = proc
       if (done) return;
       done = true;
       unlisten();
-      /** @type {{ code: number, message: string | undefined }} */
-      let result;
+      // What was left is printed before the removal is tried, so a folder
+      // that cannot be removed is still named; a failure to read or remove
+      // the directory rejects the run.
       try {
-        result = verdict(code, leftovers(dir, read), dir);
+        /** @type {number} */
+        let exit;
+        try {
+          const result = verdict(code, leftovers(dir, read), dir);
+          if (result.message) stderr.write(`${result.message}\n`);
+          exit = result.code;
+        } finally {
+          remove(dir);
+        }
+        resolve(exit);
       } catch (error) {
-        reject(new Error(`fresh-tmpdir: cannot read the run's TMPDIR ${dir}`, { cause: error }));
-        return;
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
+        reject(new Error(`fresh-tmpdir: cannot read or remove the run's TMPDIR ${dir}`, { cause: error }));
       }
-      if (result.message) stderr.write(`${result.message}\n`);
-      resolve(result.code);
     };
     started.on('error', error => {
       stderr.write(`fresh-tmpdir: ${command[0]}: ${error.message}\n`);

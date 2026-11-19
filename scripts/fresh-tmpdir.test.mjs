@@ -151,11 +151,31 @@ describe('run', () => {
       throw denied;
     };
     await assert.rejects(run([process.execPath, '-e', ''], { base, stderr: sink(), signals: new EventEmitter(), read }), error => {
-      assert.match(error.message, /^fresh-tmpdir: cannot read the run's TMPDIR /);
+      assert.match(error.message, /^fresh-tmpdir: cannot read or remove the run's TMPDIR /);
       assert.equal(error.cause, denied);
       return true;
     });
     assert.deepEqual(readdirSync(base), []);
+  });
+
+  test('a directory it cannot remove fails the run, after naming what was left', async () => {
+    const base = scratch();
+    const stderr = sink();
+    const busy = Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' });
+    const tried = [];
+    const remove = dir => {
+      tried.push(dir);
+      throw busy;
+    };
+    const program = `require('node:fs').writeFileSync(require('node:path').join(require('node:os').tmpdir(), 'stuck'), '')`;
+    await assert.rejects(run([process.execPath, '-e', program], { base, stderr, signals: new EventEmitter(), remove }), error => {
+      assert.match(error.message, /^fresh-tmpdir: cannot read or remove the run's TMPDIR /);
+      assert.equal(error.cause, busy);
+      return true;
+    });
+    assert.match(stderr.lines.join(''), leftOne(base, 'stuck'));
+    assert.equal(tried.length, 1);
+    rmSync(tried[0], { recursive: true, force: true });
   });
 
   test('when spawn refuses the command, it throws and leaves no directory or handler behind', () => {

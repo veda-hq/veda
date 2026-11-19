@@ -5817,7 +5817,7 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
         # the workspace root; a filter that names several packages runs the
         # program in each. A `--dir` the guard cannot place, or two
         # selectors, fail closed.
-        folder, moved = cwd, False
+        folder, moved, unplaced = cwd, False, False
         if selectors in (["-w"], ["--workspace-root"]):
             root = nearest_holding(cwd, "pnpm-workspace.yaml")
             if root is None:
@@ -5832,7 +5832,7 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
             ) > 1:
                 return None
             else:
-                recursive = True
+                recursive, unplaced = True, True
         verb = args[index]
         if verb in {"with", "create"}:
             return None
@@ -5842,12 +5842,20 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
             return None
         if verb in {"exec", "dlx"}:
             slot_values = values | (PNPM_DLX_VALUES if verb == "dlx" else frozenset())
+            unbinned = verb == "dlx"
             index += 1
             while index < len(args) and args[index].startswith("-"):
                 option, attached, value = args[index].partition("=")
                 if args[index] == "--":
                     index += 1
                     break
+                if option in {"-F", "--filter", "--filter-prod", "-r", "--recursive", "-w", "--workspace-root"}:
+                    # pnpm 12.9 applies a selector in the slot too
+                    # (`pnpm exec --filter <pkg> tsc` ran the package's), so
+                    # which bin folders it looks in is not read: the program
+                    # is read as the bare line, from here, where a path up
+                    # and out is reached sooner than from a package below.
+                    unbinned = True
                 if option in slot_values:
                     if not attached:
                         index += 1
@@ -5862,22 +5870,33 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
                 index += 1
             if index >= len(args):
                 return False
-            bins = () if verb == "dlx" else pnpm_bins(folder, recursive, moved)
+            bins = () if unbinned else pnpm_bins(folder, recursive, moved)
             return RunnerProgram(index, folder, bins)
         if verb in PNPM_COMMANDS:
             return False
         scripts = package_scripts(folder, moved)
         if recursive:
-            # Across packages, pnpm 12.9 ran the script in each package that
-            # has it and skipped the others (`pnpm -r uname`, with `uname` a
-            # script of one); a word that is a script of none runs as a
-            # program in each.
+            # Across packages, pnpm 12.9 ran the script in each selected
+            # package that has it and skipped the others (`pnpm -r uname`,
+            # with `uname` a script of one); a word that is a script of no
+            # selected package ran as a program (`--filter 'b...' uname`, the
+            # script only in `a`, printed `Darwin`). So across every package
+            # a script of any is a script; under a filter the guard cannot
+            # resolve, only a script of every package is, and any other
+            # word fails closed.
             root = nearest_holding(folder, "pnpm-workspace.yaml")
             packages = workspace_packages(root) if root is not None else []
             if packages is None:
                 return None
-            for package, _name in packages:
-                scripts |= package_scripts(package, True)
+            each = [package_scripts(package, True) for package, _name in packages]
+            if unplaced and root is not None:
+                # Outside a workspace, a filter has only this package to
+                # select, read below as any line's is.
+                if each and all(verb in found for found in each):
+                    return False
+                return None
+            for found in each:
+                scripts |= found
         if verb in scripts:
             return False
         return RunnerProgram(index, folder, pnpm_bins(folder, recursive, moved))

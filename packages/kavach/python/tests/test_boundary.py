@@ -1832,7 +1832,31 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm -r exec fixturetool",
             "pnpm -w exec fixturetool",
             "pnpm -r deno eval 1",
+            # Every package has `deno`, so any selection runs the script.
+            "pnpm --filter 'nested...' deno eval 1",
         ):
+            with self.subTest(command=command):
+                self.assertEqual(self.claude_bash(self.claude, command).returncode, 0)
+        # A filter the guard cannot resolve may select a package without the
+        # script, where pnpm runs the word as a program (pnpm 12.9 printed
+        # `Darwin` for `--filter 'b...' uname`, the script only in `a`); and
+        # a selector in the exec slot moves it, as pnpm applies one there.
+        other = self.claude / "other"
+        other.mkdir()
+        (other / "package.json").write_text('{"name": "other"}', encoding="utf-8")
+        (self.claude / "pnpm-workspace.yaml").write_text(
+            "packages:\n  - nested\n  - other\n", encoding="utf-8"
+        )
+        for command in (
+            "pnpm --filter 'other...' deno eval 1",
+            "pnpm exec --filter nested fixturetool",
+            "pnpm exec -r fixturetool",
+            "pnpm exec -w fixturetool",
+            "pnpm dlx --filter nested fixturetool",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.claude_bash(self.claude, command).returncode, 2)
+        for command in ("pnpm -r deno eval 1", "pnpm exec -r -- tsx .tmp/x.ts", "pnpm exec --filter nested tsc"):
             with self.subTest(command=command):
                 self.assertEqual(self.claude_bash(self.claude, command).returncode, 0)
 

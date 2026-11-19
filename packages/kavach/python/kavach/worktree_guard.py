@@ -850,6 +850,16 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
                     f"`git {texts[verb]}` to a repository the guard cannot place "
                     "(only a remote URL, or this repository itself, is placed)"
                 )
+            elif (
+                verb is not None
+                and verb < len(texts)
+                and texts[verb] in {"remote", "config", "fetch"}
+                and boundary.git_remote_url_writes(texts[verb], texts[verb + 1 :]) not in (None, ([], []))
+            ):
+                add(
+                    f"`git {texts[verb]}` writing a push destination into the shared config "
+                    "that the guard cannot place (only a remote URL, or this repository itself)"
+                )
             elif verb is not None and verb < len(texts):
                 # An alias, a verb git does not list, or a form of a known
                 # verb the guard does not place (`config core.fsmonitor`).
@@ -860,6 +870,11 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
                 add(
                     f"`{head}` with `git` on its line, which the guard reads only "
                     "when `git` is the command itself"
+                )
+            elif head in boundary.GIT_RUNNERS and boundary.runner_runs_shell_program(head, texts[1:]):
+                add(
+                    f"`{head}` handing a shell a program (`sh -c`, or its own shell mode), "
+                    "which the guard does not read"
                 )
             else:
                 add(f"`{head}`, a program whose writes the guard does not know")

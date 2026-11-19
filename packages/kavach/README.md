@@ -137,16 +137,36 @@ repository's hooks. So `git push` and `git send-pack` run only to a remote URL
 this repository itself: `.`, the worktree, the main checkout or its `.git`.
 Any other destination is refused as unproven: a local path or a `file` URL
 (read from the top of the work tree, as git reads it), a remote helper, or a
-path inside the worktree, where git follows a `.git` file anywhere. The limit:
-`ssh://localhost/…`, `localhost:/path` and `git://localhost/…` count as
-remote, and reach a repository on this machine when sshd or `git daemon` runs
-here (#226). A remote's
-URLs are read from git's config, with every `insteadOf` and `pushInsteadOf`
-rewrite, and a `git push` with no repository reads every remote. Adding or
-changing a remote still runs; the push to it is what is judged. The config is
+path inside the worktree, where git follows a `.git` file anywhere. So is a
+URL whose host is this machine, which reaches a repository here through sshd,
+`git daemon` or a local web server: `localhost` or a `.localhost` name, this
+machine's hostname, or a loopback or unspecified address in any spelling
+(`127.1`, `[::1]`). The host is read from the text alone. The limit: a name
+that reaches this machine only through DNS, `/etc/hosts` or ssh config, or an
+address of this machine other than loopback, counts as remote.
+
+A remote's URLs are read from git's config, with every `insteadOf` and
+`pushInsteadOf` rewrite, and a `git push` with no repository reads every
+remote. Every worktree shares the main checkout's config, so writing a push
+destination into it is judged as the push would be: `git remote add` and
+`set-url`, `git config` of a remote's `url` or `pushurl` or a branch's
+`remote` or `pushRemote`, and `git fetch --set-upstream`. A remote URL, a
+remote's name, or this repository runs; a local path is refused. The config is
 read before the line runs, so a push after another write on its line, other
 than `git add`, `commit`, `push` or `tag`, is refused, and so is a push beside
 any write on a line with `&` or `|`: push in a call of its own.
+
+## Runners
+
+A package runner that hands a shell a program is refused as unproven:
+`pnpm exec sh -c '…'`, `npx bash -c '…'`, `mise exec -- sh -c '…'`, and each
+runner's own shell mode (`pnpm exec -c` or `--shell-mode`, `npm exec` and
+`npx` `-c` or `--call`, `mise exec -c` or `--command`, `yarn exec`,
+`bun exec`). The guard does not read that program as a line of its own: the
+runner puts its own bin folders first on `PATH`, and `--dir` or `--filter`
+moves the folder the shell runs in. A script file a runner runs
+(`pnpm exec bash .tmp/x.sh`, `pnpm exec tsx .tmp/x.ts`) still runs, and what
+it writes is out of the guard's sight, as for any repository code.
 
 ## What a refusal says
 

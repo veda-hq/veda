@@ -16,6 +16,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -1394,12 +1395,128 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "git push origin HEAD; touch .tmp/after",
             "git push origin HEAD | cat",
             "git push origin HEAD & git push origin --tags",
-            # Config alone writes no other repository; the push is read.
-            f"git remote add o {outside}",
-            f"git remote set-url origin {outside}",
-            f"git config remote.o.url {outside}",
+            # A remote URL written into the config (#226 refuses a local one).
+            "git remote add o https://github.com/veda-hq/veda.git",
+            "git remote set-url origin git@github.com:veda-hq/veda.git",
+            "git config remote.o.url https://github.com/veda-hq/veda.git",
             f"git fetch {outside}",
             f"git pull {outside} main",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_runner_shells_local_hosts_and_local_remotes_are_unproven(self) -> None:
+        """#226: a runner's shell program, a push to this machine named by
+        its host, and a local URL written into the shared remote config.
+        A runner puts its bin folders first on PATH and `--dir` moves the
+        folder its shell runs in (pnpm 12.9), so the program is not read;
+        a script file it runs stays the runner limit (#116)."""
+        outside = self.external / "repo"
+        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
+        host = socket.gethostname()
+        for command in (
+            f"pnpm exec sh -c 'git push {outside} HEAD:x'",
+            f"pnpm exec sh -c 'touch {outside}/x'",
+            "pnpm exec sh -c 'touch .tmp/x'",
+            f"pnpm exec bash -c 'touch {outside}/x'",
+            f"pnpm exec -- sh -c 'touch {outside}/x'",
+            f"pnpm exec /bin/sh -ec 'touch {outside}/x'",
+            f"pnpm exec env sh -c 'touch {outside}/x'",
+            f"pnpm --dir nested exec sh -c 'touch {outside}/x'",
+            f"pnpm exec -c 'touch {outside}/x'",
+            f"pnpm exec --shell-mode 'touch {outside}/x'",
+            f"pnpm --dir nested exec -c 'touch {outside}/x'",
+            f"npx sh -c 'touch {outside}/x'",
+            f"npx -c 'touch {outside}/x'",
+            f"npx --call 'touch {outside}/x'",
+            f"npx -y -c 'touch {outside}/x'",
+            f"npm exec -c 'touch {outside}/x'",
+            f"npm exec --call='touch {outside}/x'",
+            f"npm x -c 'touch {outside}/x'",
+            f"npm exec -- sh -c 'touch {outside}/x'",
+            f"mise exec -- sh -c 'touch {outside}/x'",
+            f"mise exec -c 'touch {outside}/x'",
+            f"mise exec node@20 --command 'touch {outside}/x'",
+            f"yarn exec 'touch {outside}/x'",
+            f"bun exec 'touch {outside}/x'",
+            # This machine, named by its host.
+            "git push ssh://localhost/repo HEAD:x",
+            "git push ssh://git@localhost:2222/repo HEAD:x",
+            "git push localhost:/repo HEAD:x",
+            "git push git@localhost:repo HEAD:x",
+            "git push git://127.0.0.1/repo HEAD:x",
+            "git push http://localhost:8080/repo HEAD:x",
+            "git push https://LOCALHOST./repo HEAD:x",
+            "git push ssh://repo.localhost/x HEAD:x",
+            "git push ssh://127.1/repo HEAD:x",
+            "git push ssh://0x7f.0.0.1/repo HEAD:x",
+            "git push ssh://2130706433/repo HEAD:x",
+            "git push ssh://0.0.0.0/repo HEAD:x",
+            "git push 'ssh://[::1]/repo' HEAD:x",
+            "git push 'git@[::1]:repo' HEAD:x",
+            "git push 'ssh://[::ffff:127.0.0.1]/repo' HEAD:x",
+            f"git push ssh://{host}/repo HEAD:x",
+            f"git push {host}:repo HEAD:x",
+            "git send-pack localhost:/repo main",
+            # A local URL written into the config every worktree shares.
+            f"git remote add o {outside}",
+            f"git remote add -f --tags o {outside}",
+            f"git remote add o file://{outside}",
+            "git remote add o ssh://localhost/repo",
+            "git remote add o ../other",
+            f"git remote set-url origin {outside}",
+            f"git remote set-url --push origin {outside}",
+            f"git remote set-url --add origin {outside}",
+            "git remote add --frobnicate o https://github.com/o/r.git",
+            f"git config remote.o.url {outside}",
+            f"git config --add remote.origin.pushurl {outside}",
+            f"git config set remote.origin.url {outside}",
+            f"git config branch.claude-task.pushRemote {outside}",
+            "git config branch.claude-task.remote ../other",
+            f"git fetch --set-upstream {outside} main",
+            "git fetch --set-u ../other main",
+            "git fetch --set-upstream nosuch main",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("mutation targets could not be resolved", result.stderr)
+        for command in (
+            "pnpm exec tsx .tmp/x.ts",
+            "pnpm exec node --experimental-strip-types .tmp/x.ts",
+            "pnpm exec node --version",
+            "pnpm exec node -e '1'",
+            "pnpm --dir nested test:python -k x",
+            "pnpm --filter @veda-hq/kavach check",
+            "pnpm install --frozen-lockfile",
+            "pnpm exec bash run.sh",
+            "pnpm exec /bin/bash .tmp/x.sh",
+            "pnpm exec sh --version",
+            "npx vitest run -c vitest.config.ts",
+            "npx tsc -p .",
+            "npm exec -- vitest run -c vitest.config.ts",
+            "pnpm exec vitest run -c vitest.config.ts",
+            "git push origin main",
+            "git push git@github.com:veda-hq/veda.git HEAD:x",
+            "git push ssh://git@github.com/veda-hq/veda.git HEAD:x",
+            "git push https://github.com:443/veda-hq/veda.git HEAD:x",
+            "git push ssh://192.0.2.1/repo HEAD:x",
+            "git remote add o https://github.com/veda-hq/veda.git",
+            "git remote add -f o git@github.com:veda-hq/veda.git",
+            "git remote set-url origin https://github.com/veda-hq/veda.git",
+            "git remote set-url --delete origin x",
+            f"git remote add self {self.main}",
+            "git config remote.o.url https://github.com/veda-hq/veda.git",
+            "git config branch.claude-task.remote origin",
+            "git config branch.claude-task.pushRemote origin",
+            "git config branch.claude-task.remote .",
+            "git config --unset remote.origin.pushurl",
+            "git config --get remote.origin.url",
+            "git config remote.o.url",
+            "git fetch --set-upstream origin main",
+            "git fetch --set-upstream . main",
+            "git fetch origin main",
         ):
             with self.subTest(command=command):
                 result = self.claude_bash(self.claude, command)
@@ -2927,7 +3044,6 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm -C . exec /bin/bash run.sh",
             "pnpm --filter app exec /bin/bash run.sh",
             "pnpm exec -r /bin/bash run.sh",
-            "pnpm exec -c /bin/bash run.sh",
         ):
             with self.subTest(command=command):
                 result = self.invoke(
@@ -2938,6 +3054,11 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 # Resolved, so `/usr/bin/bash` where `/bin` is a link to it.
                 self.assertRegex(result.stderr, r"mutation target \S*/bash is outside")
+        # `pnpm exec -c` runs its words through a shell, so it is unproven
+        # before its program word is read (#226).
+        result = self.claude_bash(self.claude, "pnpm exec -c /bin/bash run.sh")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("mutation targets could not be resolved", result.stderr)
         # A program word the guard cannot expand stays unresolvable. Negative
         # control, with the program skipped before the dynamic-marker check:
         # AssertionError: 0 != 2

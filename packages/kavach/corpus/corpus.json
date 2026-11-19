@@ -1430,6 +1430,15 @@
     "text": "git push -q {P} HEAD:refs/heads/corpus-primary"
   },
   {
+    "id": "ow-runner-npx-call",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "runner",
+    "note": "npx -c runs its string through a shell, which the guard once read as one word inside the worktree (#226).",
+    "text": "npx -c 'touch {P}/pwned'"
+  },
+  {
     "id": "ow-git-config-user",
     "intent": "outside-write",
     "role": "near-miss",

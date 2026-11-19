@@ -5,9 +5,9 @@
 // first, and the ones that build git histories last.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { after, beforeEach, describe, it } from 'node:test';
 import { hash } from './boundary.ts';
 import { CONFIGURABLE, consoleIo, DENY_FILE, flags, main, ownVersion, run, splitFiles, trackedFiles, type Io } from './cli.ts';
@@ -258,6 +258,344 @@ describe('main and the console', () => {
     consoleIo.err('err');
     assert.deepEqual(info.mock.calls.at(-1)?.arguments, ['out']);
     assert.deepEqual(error.mock.calls.at(-1)?.arguments, ['err']);
+  });
+});
+
+describe('run: the flags each command takes', () => {
+  // Every flag and switch a command takes, each in a run that gets past the
+  // flags: what follows fails fast (nothing at --root, no such file), and
+  // is anything but the usage.
+  const ACCEPTED: ReadonlyArray<readonly string[]> = [
+    ['absolute-paths', '--config', 'x', '--files-from', 'x', '--base', 'b', '--head', 'h', '--root', NOWHERE, '--staged', '--all'],
+    ['aggregate-gate-needs', '--config', 'x', '--root', NOWHERE],
+    ['authority-citations', '--mode', 'tree', '--authority', 'a', '--issue-prefix', 'A', '--adr-dir', 'd', '--root', NOWHERE],
+    ['boundary', '--root', NOWHERE, '--deny', 'x'],
+    ['codec-registry', '--config', 'x', '--base', 'b', '--root', NOWHERE],
+    ['codec-registry', '--config', 'x', '--no-base', '--root', NOWHERE],
+    ['coverage-by-type', '--config', 'x', '--files-from', 'x', '--base', 'b', '--head', 'h', '--root', NOWHERE, '--staged', '--all'],
+    ['coverage-exemptions', '--config', 'x', '--package', 'p', '--root', NOWHERE],
+    ['doc-budgets', '--table', 'x', '--section', 's', '--root', NOWHERE],
+    ['doc-references', '--config', 'x', '--base', 'b', '--head', 'h', '--checks', '01', '--root', NOWHERE],
+    ['doc-references', '--config', 'x', '--staged', '--root', NOWHERE],
+    ['doc-references', '--config', 'x', '--all', '--update-baseline', '--root', NOWHERE],
+    ['doc-references', '--config', 'x', '--all', '--write-baseline', '--root', NOWHERE],
+    ['duplicate-tests', '--config', 'x', '--files-from', 'x', '--base', 'b', '--head', 'h', '--root', NOWHERE, '--staged', '--all'],
+    ['enforcement-claims', '--config', 'x', '--root', NOWHERE],
+    ['env-gate-switches', '--config', 'x', '--mode', 'tree', '--root', NOWHERE],
+    ['eslint-targets', '--range', 'a..b', '--config', 'x', '--root', NOWHERE],
+    ['export-deletions', '--base', 'b', '--root', NOWHERE],
+    ['fault-injection-registry', '--config', 'x', '--base', 'b', '--root', NOWHERE],
+    ['fault-injection-registry', '--config', 'x', '--no-base', '--root', NOWHERE],
+    ['flaky-tests', '--config', 'x', '--files-from', 'x', '--base', 'b', '--head', 'h', '--runs', '2', '--root', NOWHERE, '--staged', '--all'],
+    ['masked-exit-codes', '--config', 'x', '--root', NOWHERE, '--staged'],
+    ['non-synced-resources', '--config', 'x', '--files-from', 'x', '--base', 'b', '--head', 'h', '--root', NOWHERE, '--staged', '--all'],
+    ['pnpm-settings', '--config', 'x', '--root', NOWHERE],
+    ['python-floor', '--python', 'p', '--floor-file', 'f', '--exclude', 'e', '--selector', 's', '--root', NOWHERE],
+    ['regression-controls', '--config', 'x', '--root', NOWHERE, '--staged'],
+    ['repo-rules', '--config', 'x', '--files-from', 'x', '--base', 'b', '--head', 'h', '--root', NOWHERE, '--staged', '--all'],
+    ['required-settings', '--require', 'x', '--settings', 's', '--root', NOWHERE],
+    ['shell-gates', '--config', 'x', '--base', 'b', '--files-from', 'x', '--only', 'o', '--root', NOWHERE, '--staged', '--all'],
+  ];
+  const stubs: Partial<Io> = {
+    typescript: () => 'no typescript in this test',
+    eslint: () => Promise.resolve('no eslint in this test'),
+    python: () => ({ status: null, signal: null, error: new Error('no python in this test') }),
+  };
+
+  it('gets past the flags with every flag and switch a command takes', async () => {
+    for (const args of ACCEPTED) {
+      const r = await cliAsync(args, stubs);
+      assert.notDeepEqual(r.err, [USAGE], args.join(' '));
+      assert.equal(r.code, 2, args.join(' '));
+    }
+  });
+
+  it('refuses a flag another command takes', () => {
+    for (const args of [
+      ['aggregate-gate-needs', '--staged'],
+      ['boundary', '--config', 'x'],
+      ['codec-registry', '--config', 'x', '--staged'],
+      ['coverage-exemptions', '--config', 'x', '--base', 'b'],
+      ['export-deletions', '--config', 'x'],
+      ['masked-exit-codes', '--all'],
+      ['regression-controls', '--config', 'x', '--all'],
+      ['required-settings', '--require', 'x', '--config', 'x'],
+      ['schema-roots', '--config', 'x'],
+      ['eslint-by-workspace', '--staged', 'x'],
+    ]) {
+      assertUsage(cli(args, stubs));
+    }
+  });
+});
+
+describe('run absolute-paths and non-synced-resources', () => {
+  const DIRTY = 'Read /Users/fixture/private.txt for details.\n';
+  let folder: string | undefined;
+  /** Documents in a folder outside git, read through a list. */
+  const docs = (): string =>
+    (folder ??= tree(
+      {
+        'a.md': DIRTY,
+        'b.md': 'Plain.\n',
+        'c.rst': DIRTY,
+        'cfg/rst.json': JSON.stringify({ include: '\\.rst$', guidance: ['See the guide.'] }),
+        'bad.json': '{"nope": 1}',
+        'list.txt': 'b.md\n',
+      },
+      false,
+    ));
+  const HEAD = '→ Checking for absolute paths in documentation...';
+
+  it('passes the listed clean document, and refuses a listed dirty one with the default guidance', () => {
+    const clean = cli(['absolute-paths', '--root', docs(), '--files-from', '-'], { stdin: () => 'b.md\n' });
+    assert.deepEqual(clean, { code: 0, out: [HEAD, '   Checking 1 documentation file(s)...', '✅ No absolute paths found in documentation'], err: [] });
+    const dirty = cli(['absolute-paths', '--root', docs(), '--files-from', '-'], { stdin: () => 'a.md\0b.md\0' });
+    assert.deepEqual(dirty, {
+      code: 1,
+      out: [HEAD, '   Checking 2 documentation file(s)...', '', '❌ Error: Absolute paths or local file references found:', '', 'a.md:1:Read /Users/fixture/private.txt for details.', '', 'Please use relative paths only.'],
+      err: [],
+    });
+  });
+
+  it('reads a list from a file, and the config relative to the root', () => {
+    const listed = cli(['absolute-paths', '--root', docs(), '--files-from', join(docs(), 'list.txt')]);
+    assert.deepEqual(listed.out, [HEAD, '   Checking 1 documentation file(s)...', '✅ No absolute paths found in documentation']);
+    const rst = cli(['absolute-paths', '--root', docs(), '--config', 'cfg/rst.json', '--files-from', '-'], { stdin: () => 'a.md\nc.rst\n' });
+    assert.deepEqual(rst, {
+      code: 1,
+      out: [HEAD, '   Checking 1 documentation file(s)...', '', '❌ Error: Absolute paths or local file references found:', '', 'c.rst:1:Read /Users/fixture/private.txt for details.', '', 'See the guide.'],
+      err: [],
+    });
+  });
+
+  it('exits 2, printing nothing on stdout, on a bad config, two selections, or a selection outside git', () => {
+    const NOT = 'nothing was checked, so this is not a pass';
+    const bad = cli(['absolute-paths', '--root', docs(), '--config', 'bad.json', '--files-from', '-'], { stdin: () => 'b.md\n' });
+    assert.deepEqual(bad, { code: 2, out: [], err: [`pariksha absolute-paths: unknown key "nope"; ${NOT}`] });
+    const two = cli(['absolute-paths', '--root', docs(), '--staged', '--all']);
+    assert.deepEqual(two, { code: 2, out: [], err: [`pariksha absolute-paths: choose one of --staged, --base, --all, --files-from (got --staged, --all); ${NOT}`] });
+    for (const selection of [['--staged'], ['--all'], ['--base', 'main']]) {
+      const outside = cli(['non-synced-resources', '--root', docs(), ...selection]);
+      assert.deepEqual(outside, { code: 2, out: [], err: [`pariksha non-synced-resources: ${docs()} is not in a git repository, so --staged, --base and --all have nothing to list; ${NOT}`] });
+    }
+    const unread = cli(['absolute-paths', '--root', docs(), '--files-from', join(docs(), 'absent.txt')]);
+    assert.equal(unread.code, 2);
+    assert.match(unread.err[0] ?? '', /^pariksha absolute-paths: ENOENT: .*absent\.txt'; nothing was checked, so this is not a pass$/);
+  });
+
+  it('checks links only inside a repository, whose top it finds from the root', () => {
+    const outside = cli(['non-synced-resources', '--root', docs(), '--files-from', '-'], { stdin: () => 'b.md\n' });
+    assert.deepEqual(outside, { code: 2, out: [], err: [`pariksha non-synced-resources: ${docs()} is not in a git repository; nothing was checked, so this is not a pass`] });
+    const root = tree({ 'docs/a.md': 'See [b](b.md).\n', 'docs/b.md': '', 'docs/c.md': 'See [g](ghost.md).\n' });
+    const linked = cli(['non-synced-resources', '--root', root, '--files-from', '-'], { stdin: () => 'docs/a.md\n' });
+    assert.deepEqual(linked, { code: 0, out: ['→ Checking for non-synced resource references...', '   Checking 1 documentation file(s)...', '✅ All resource references are valid'], err: [] });
+    const ghost = cli(['non-synced-resources', '--root', root, '--files-from', '-'], { stdin: () => 'docs/c.md\n' });
+    assert.equal(ghost.code, 1);
+    assert.deepEqual(ghost.out.slice(-2), ['', 'Please ensure all referenced files exist in the repository.']);
+    assert.ok(ghost.out.some((line) => line.includes('ghost.md')));
+  });
+});
+
+describe('.pariksha.json', () => {
+  const NOT = 'nothing was checked, so this is not a pass';
+  /** A `.pariksha.json` with these checks, in a folder of its own; PARIKSHA_CONFIG names it. */
+  const project = (checks: unknown, files: Record<string, string> = {}): { readonly env: NodeJS.ProcessEnv; readonly folder: string } => {
+    const folder = tree({ ...files, 'p.json': JSON.stringify({ checks }) }, false);
+    return { env: { PARIKSHA_CONFIG: join(folder, 'p.json') }, folder };
+  };
+  const DIRTY = 'Read /Users/fixture/private.txt for details.\n';
+  let docsFolder: string | undefined;
+  const docs = (): string => (docsFolder ??= tree({ 'a.md': DIRTY, 'b.rst': DIRTY }, false));
+  const absolute = (env: NodeJS.ProcessEnv, more: readonly string[] = []) => cli(['absolute-paths', '--root', docs(), '--files-from', '-', ...more], { stdin: () => 'a.md\nb.rst\n' }, env);
+
+  it('applies an inline entry, and a file entry read from the config file’s folder', () => {
+    const inline = absolute(project({ 'absolute-paths': { include: '\\.rst$', guidance: ['inline'] } }).env);
+    assert.deepEqual([inline.code, inline.out[1], inline.out.at(-1)], [1, '   Checking 1 documentation file(s)...', 'inline']);
+    const file = absolute(project({ 'absolute-paths': 'cfg/a.json' }, { 'cfg/a.json': JSON.stringify({ include: '\\.rst$', guidance: ['file'] }) }).env);
+    assert.deepEqual([file.code, file.out.at(-1)], [1, 'file']);
+  });
+
+  it('gives way to --config on the command line, and leaves other checks alone', () => {
+    const { env } = project({ 'absolute-paths': { include: '\\.rst$', guidance: ['inline'] } }, { 'mine.json': JSON.stringify({ guidance: ['mine'] }) });
+    const mine = absolute(env, ['--config', join(env.PARIKSHA_CONFIG as string, '..', 'mine.json')]);
+    assert.deepEqual([mine.out[1], mine.out.at(-1)], ['   Checking 1 documentation file(s)...', 'mine']);
+    const other = cli(['non-synced-resources', '--root', docs(), '--files-from', '-'], { stdin: () => '' }, env);
+    assert.deepEqual(other, { code: 0, out: ['→ Checking for non-synced resource references...', '✅ No documentation files to check.'], err: [] });
+  });
+
+  it('is found from the working directory by default, and only by the checks that take settings', () => {
+    const { folder } = project({ 'absolute-paths': { include: '\\.rst$', guidance: ['found'] } });
+    const before = process.cwd();
+    process.chdir(folder);
+    try {
+      const c = capture();
+      assert.equal(run(['absolute-paths', '--root', docs(), '--files-from', '-'], { ...c.io, stdin: () => 'a.md\nb.rst\n' }, '0', { PARIKSHA_CONFIG: 'p.json' }), 1);
+      assert.equal(c.out.at(-1), 'found');
+    } finally {
+      process.chdir(before);
+    }
+    const broken = { PARIKSHA_CONFIG: join(tree({ 'p.json': '{' }, false), 'p.json') };
+    assert.deepEqual(cli(['hash', 'x'], {}, broken).code, 0);
+    const deny = tree({ [DENY_FILE]: DENY, 'a.md': 'clean\n' });
+    assert.equal(cli(['boundary', '--root', deny], {}, broken).code, 0);
+  });
+
+  it('refuses settings it cannot read, naming the file and the version, before running the check', () => {
+    const { env } = project(undefined, {});
+    writeFileSync(env.PARIKSHA_CONFIG as string, '{"check": {}}');
+    assert.deepEqual(absolute(env), { code: 2, out: [], err: [`pariksha absolute-paths: ${env.PARIKSHA_CONFIG} (pariksha 0): unknown key "check"; this version reads "checks"; ${NOT}`] });
+    const unknown = absolute(project({ boundary: {} }).env);
+    assert.equal(unknown.code, 2);
+    assert.match(
+      unknown.err[0] ?? '',
+      / \(pariksha 0\): unknown check "boundary" in "checks"; this version reads settings for absolute-paths, aggregate-gate-needs, authority-citations, codec-registry, coverage-by-type, coverage-exemptions, doc-budgets, doc-references, duplicate-tests, enforcement-claims, env-gate-switches, eslint-by-workspace, eslint-targets, fault-injection-registry, flaky-tests, masked-exit-codes, non-synced-resources, pnpm-settings, regression-controls, repo-rules, shell-gates; nothing was checked, so this is not a pass$/,
+    );
+    const gone = absolute(project({ 'absolute-paths': 'gone.json' }).env);
+    assert.equal(gone.code, 2);
+    assert.match(gone.err[0] ?? '', /^pariksha absolute-paths: ENOENT: .*gone\.json'; nothing was checked, so this is not a pass$/);
+  });
+
+  describe('for a check of flags alone', () => {
+    const RULE = '# r\n\n## Sizes\n\n| Doc | Budget |\n| --- | --: |\n| `a.md` | 5 |\n';
+    let sized: string | undefined;
+    /** A document of 3 bytes, budgeted at 5 by a table under the section Sizes. */
+    const sizes = (): string => (sized ??= tree({ 'a.md': 'abc', 'rule.md': RULE, 'tight.md': RULE.replace('| 5 |', '| 1 |') }, false));
+    let last = '';
+    const budgets = (entry: unknown, more: readonly string[] = []) => {
+      const p = project({ 'doc-budgets': entry }, { 'rules/rule.md': RULE });
+      last = relative(sizes(), join(p.folder, 'rules/rule.md'));
+      return cli(['doc-budgets', '--root', sizes(), ...more], {}, p.env);
+    };
+
+    it('sets doc-budgets’ table, read from the config file’s folder, and its section', () => {
+      const r = budgets({ table: 'rules/rule.md', section: 'Sizes' });
+      assert.deepEqual(r, { code: 1, out: ['pariksha doc-budgets: a.md 3 / 5 bytes'], err: [`pariksha doc-budgets: ${last} sets budgets but has no row for itself; add "| \`${last}\` | <bytes> |"`] });
+    });
+
+    it('lets a flag on the command line win', () => {
+      const r = budgets({ table: 'rules/rule.md', section: 'Sizes' }, ['--table', 'tight.md']);
+      assert.deepEqual(r.err, ['pariksha doc-budgets: tight.md sets budgets but has no row for itself; add "| `tight.md` | <bytes> |"', 'pariksha doc-budgets: a.md is 3 bytes, over its budget of 1; cut it']);
+      const section = budgets({ table: 'rules/rule.md', section: 'Budgets' }, ['--section', 'Sizes']);
+      assert.deepEqual(section.out, ['pariksha doc-budgets: a.md 3 / 5 bytes']);
+    });
+
+    it('refuses an unknown field or a wrongly typed one, naming the version', () => {
+      for (const [entry, message] of [
+        [{ tabel: 'x' }, 'checks.doc-budgets: unknown field "tabel" (pariksha 0); doc-budgets reads table, section'],
+        [{ toString: 'x' }, 'checks.doc-budgets: unknown field "toString" (pariksha 0); doc-budgets reads table, section'],
+        [{ table: ['x'] }, 'checks.doc-budgets.table must be a string (pariksha 0)'],
+        [{ table: '' }, 'checks.doc-budgets.table must be a string (pariksha 0)'],
+        [{ section: 5 }, 'checks.doc-budgets.section must be a string (pariksha 0)'],
+      ] as const) {
+        assert.deepEqual(budgets(entry), { code: 2, out: [], err: [`pariksha doc-budgets: ${message}; ${NOT}`] });
+      }
+    });
+
+    it('joins a list for authority-citations, and refuses a list of anything but strings', () => {
+      const authority = (entry: unknown) => cli(['authority-citations', '--root', NOWHERE], {}, project({ 'authority-citations': entry }).env);
+      for (const [entry, message] of [
+        [{ authority: [1] }, 'checks.authority-citations.authority must be a string or a list of strings (pariksha 0)'],
+        [{ authority: [] }, 'checks.authority-citations.authority must be a string or a list of strings (pariksha 0)'],
+        [{ authority: {} }, 'checks.authority-citations.authority must be a string or a list of strings (pariksha 0)'],
+        [{ adrDir: ['docs'] }, 'checks.authority-citations.adrDir must be a string (pariksha 0)'],
+        [{ nope: 'x' }, 'checks.authority-citations: unknown field "nope" (pariksha 0); authority-citations reads authority, issuePrefix, adrDir'],
+      ] as const) {
+        assert.deepEqual(authority(entry), { code: 2, out: [], err: [`pariksha authority-citations: ${message}; ${NOT}`] });
+      }
+      const root = tree({ 'docs/a.md': 'Offers are read from the website, approved by Lee.\n' });
+      const claims = cli(['authority-citations', '--mode', 'tree', '--root', root], {}, project({ 'authority-citations': { authority: ['Dana', 'Lee'], issuePrefix: ['ATH'], adrDir: 'records/adr' } }).env);
+      assert.equal(claims.code, 1);
+      const said = [...claims.out, ...claims.err].join('\n');
+      assert.match(said, /uncited authority claim\(s\) in docs\/a\.md:\n {2}1: \[approved by Lee\]/);
+      assert.match(said, /ADR-0040, in records\/adr\//);
+      assert.match(said, /ATH-447/);
+    });
+  });
+});
+
+describe('run absolute-paths: what --staged, --base and --all select', () => {
+  const DIRTY = 'Read /Users/fixture/private.txt for details.\n';
+  const commitAll = (root: string, message: string) => git(root, '-c', 'user.email=a@example.com', '-c', 'user.name=a', '-c', 'commit.gpgsign=false', 'commit', '-qam', message);
+  const HEAD = '→ Checking for absolute paths in documentation...';
+  const NONE = [HEAD, '✅ No documentation files to check.'];
+  const checking = (n: number) => `   Checking ${n} documentation file(s)...`;
+  const FOUND = ['', '❌ Error: Absolute paths or local file references found:', ''];
+
+  let history: string | undefined;
+  /** main: a dirty a.md and a clean b.md; work: b.md edited, a dirty c.md added; b.md edited again and staged. */
+  const histories = (): string => {
+    if (history !== undefined) return history;
+    const root = tree({ 'docs/a.md': DIRTY, 'docs/b.md': 'One.\n', 'cfg.json': '{}' });
+    commitAll(root, 'base');
+    git(root, 'branch', '-M', 'main');
+    git(root, 'checkout', '-q', '-b', 'work');
+    writeFileSync(join(root, 'docs/b.md'), 'Two.\n');
+    writeFileSync(join(root, 'docs/c.md'), DIRTY);
+    git(root, 'add', '-A');
+    commitAll(root, 'work');
+    writeFileSync(join(root, 'docs/b.md'), 'Three.\n');
+    git(root, 'add', 'docs/b.md');
+    history = root;
+    return root;
+  };
+  const absolute = (root: string, ...more: string[]) => cli(['absolute-paths', '--root', root, ...more]);
+
+  it('selects the staged files, a branch’s changes, or every tracked file', () => {
+    assert.deepEqual(absolute(histories(), '--staged', '--config', 'cfg.json'), { code: 0, out: [HEAD, checking(1), '✅ No absolute paths found in documentation'], err: [] });
+    assert.deepEqual(absolute(histories(), '--base', 'main', '--config', 'cfg.json'), {
+      code: 1,
+      out: [HEAD, checking(2), ...FOUND, 'docs/c.md:1:Read /Users/fixture/private.txt for details.', '', 'Please use relative paths only.'],
+      err: [],
+    });
+    assert.deepEqual(absolute(histories(), '--base', 'main', '--head', 'main'), { code: 0, out: NONE, err: [] });
+    const all = absolute(histories(), '--all');
+    assert.deepEqual([all.code, all.out[1], all.out.filter((line) => line.includes(':1:'))], [1, checking(3), ['docs/a.md:1:Read /Users/fixture/private.txt for details.', 'docs/c.md:1:Read /Users/fixture/private.txt for details.']]);
+  });
+
+  it('names the selected files relative to the root, read through its links', () => {
+    const docs = absolute(join(histories(), 'docs'), '--all');
+    assert.deepEqual(docs.out.filter((line) => line.includes(':1:')), ['a.md:1:Read /Users/fixture/private.txt for details.', 'c.md:1:Read /Users/fixture/private.txt for details.']);
+    const link = join(temp(), 'link');
+    symlinkSync(histories(), link);
+    const linked = absolute(link, '--base', 'main');
+    assert.deepEqual(linked.out.filter((line) => line.includes(':1:')), ['docs/c.md:1:Read /Users/fixture/private.txt for details.']);
+  });
+
+  it('selects every tracked file when the selection changes the check’s own settings', () => {
+    const root = tree({ 'docs/a.md': DIRTY, 'docs/b.md': 'One.\n', 'cfg.json': '{}', 'package.json': '{}' });
+    commitAll(root, 'base');
+    writeFileSync(join(root, 'docs/b.md'), 'Two.\n');
+    git(root, 'add', 'docs/b.md');
+    assert.deepEqual(absolute(root, '--staged', '--config', 'cfg.json').out[1], checking(1));
+    writeFileSync(join(root, 'cfg.json'), '{ }');
+    git(root, 'add', 'cfg.json');
+    const widened = absolute(root, '--staged', '--config', 'cfg.json');
+    assert.deepEqual([widened.code, widened.out[1]], [1, checking(2)]);
+    // Settings git does not track have package.json, which a pin bump edits, stand in for them.
+    const outside = join(temp(), 'cfg.json');
+    writeFileSync(outside, '{}');
+    commitAll(root, 'cfg');
+    writeFileSync(join(root, 'docs/b.md'), 'Three.\n');
+    git(root, 'add', 'docs/b.md');
+    assert.deepEqual(absolute(root, '--staged', '--config', outside).out[1], checking(1));
+    writeFileSync(join(root, 'package.json'), '{ }');
+    git(root, 'add', 'package.json');
+    assert.deepEqual(absolute(root, '--staged', '--config', outside).out[1], checking(2));
+    assert.deepEqual(absolute(root, '--staged').out[1], checking(1));
+  });
+
+  it('takes an inline entry’s settings to be .pariksha.json itself', () => {
+    const entry = (include: string) => JSON.stringify({ checks: { 'absolute-paths': { include } } });
+    const root = tree({ 'docs/a.md': DIRTY, 'docs/b.md': 'One.\n', '.pariksha.json': entry('\\.md$') });
+    commitAll(root, 'base');
+    writeFileSync(join(root, 'docs/b.md'), 'Two.\n');
+    git(root, 'add', 'docs/b.md');
+    const env = { PARIKSHA_CONFIG: join(root, '.pariksha.json') };
+    assert.deepEqual(cli(['absolute-paths', '--root', root, '--staged'], {}, env).out[1], checking(1));
+    writeFileSync(join(root, '.pariksha.json'), entry('\\.mdx?$'));
+    git(root, 'add', '.pariksha.json');
+    const widened = cli(['absolute-paths', '--root', root, '--staged'], {}, env);
+    assert.deepEqual([widened.code, widened.out[1]], [1, checking(2)]);
   });
 });
 
@@ -840,5 +1178,19 @@ describe('the command', () => {
     const script = join(import.meta.dirname, 'cli.ts');
     assert.equal(execFileSync(process.execPath, [script, '--version'], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }), `${pkg.version}\n`);
     assert.throws(() => execFileSync(process.execPath, [script, 'nope'], { stdio: 'pipe', timeout: 30_000, killSignal: 'SIGKILL' }), { status: 2 });
+  });
+});
+
+// Very last: it gives this process a standard input that ends, a list file
+// opened on descriptor 0 (the lowest free one), so the default reader of
+// `--files-from -` is read in-process and never waits on a pipe.
+describe('standard input', () => {
+  it('is read whole for --files-from - when the run is given no reader', () => {
+    const root = tree({ 'a.md': 'Plain.\n', 'list.txt': 'a.md\n' }, false);
+    closeSync(0);
+    assert.equal(openSync(join(root, 'list.txt'), 'r'), 0, 'the list holds standard input’s descriptor');
+    const c = capture();
+    const code = run(['absolute-paths', '--root', root, '--files-from', '-'], { ...c.io, cwd: () => NOWHERE }, '0', { PARIKSHA_CONFIG: NO_PROJECT });
+    assert.deepEqual({ code, out: c.out }, { code: 0, out: ['→ Checking for absolute paths in documentation...', '   Checking 1 documentation file(s)...', '✅ No absolute paths found in documentation'] });
   });
 });

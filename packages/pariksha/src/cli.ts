@@ -72,20 +72,18 @@ export interface Io {
 }
 
 /**
- * Flags the config file sets that no user can type: the settings text of an
- * inline entry, and that the settings came from the config file at all.
+ * What `.pariksha.json` gave a run's flags, kept beside them since no user
+ * can type it: the config file, when the settings came from it at all, and
+ * an inline entry's settings text.
  */
-const INLINE = '\0inline-config';
-const FROM_PROJECT = '\0from-config-file';
-
-/** The config file the settings came from, when they did. */
-const PROJECT_FILE = '\0config-file';
+const projectFile = new WeakMap<Map<string, string>, string>();
+const inlineText = new WeakMap<Map<string, string>, string>();
 
 /** The folder `--root` names, the working directory without one. */
 const rootOf = (f: Map<string, string>): string => resolve(f.get('--root') ?? process.cwd());
 
 /** The text of the settings `--config` names, or the inline entry's. */
-const configText = (f: Map<string, string>, root: string): string => f.get(INLINE) ?? readFileSync(resolve(root, f.get('--config') as string), 'utf8');
+const configText = (f: Map<string, string>, root: string): string => inlineText.get(f) ?? readFileSync(resolve(root, f.get('--config') as string), 'utf8');
 
 /**
  * What `body` returns; when it throws, undefined, with the reason on stderr
@@ -129,7 +127,7 @@ const listOf = (f: Map<string, string>, io: Io, root: string, widen = true): str
   // file itself, any other the file named. So an edit to one check's entry
   // in `.pariksha.json` widens no other check's run.
   const configPath = f.get('--config');
-  const settings = !widen ? undefined : f.has(INLINE) ? f.get(PROJECT_FILE) : configPath === undefined ? undefined : resolve(root, configPath);
+  const settings = !widen ? undefined : inlineText.has(f) ? projectFile.get(f) : configPath === undefined ? undefined : resolve(root, configPath);
   // An untracked settings file has package.json stand in for it; `--all`
   // lists every file anyway.
   const git = gitAt(top);
@@ -451,7 +449,7 @@ const docReferences = (f: Map<string, string>, io: Io): number => {
     io.err(`${P} ${(e as Error).message}; nothing was checked, so this is not a pass`);
     return 2;
   }
-  const result = formatDocReferences(report, { config, mode, checks }, f.has(FROM_PROJECT) ? undefined : configPath);
+  const result = formatDocReferences(report, { config, mode, checks }, projectFile.has(f) ? undefined : configPath);
   result.out.forEach(io.out);
   result.err.forEach(io.err);
   return result.ok ? 0 : 1;
@@ -932,7 +930,7 @@ const eslintByWorkspace = (f: Map<string, string>, named: readonly string[], esl
   }
   // Paths are relative to the checkout's top level, wherever it is run from;
   // `--root` names another folder, and outside git the folder it runs in.
-  const here = (io.cwd ?? (() => process.cwd()))();
+  const here = io.cwd?.() ?? process.cwd();
   const root = resolve(f.get('--root') ?? topOf(here) ?? here);
   const read = unchecked(P, io, () => ({
     config: f.has('--config') ? parseEslintByWorkspaceConfig(configText(f, root)) : DEFAULT_ESLINT_BY_WORKSPACE,
@@ -964,22 +962,14 @@ const eslintTargets = (f: Map<string, string>, io: Io): number => {
 
 /** python-floor: the packaged script under the `--python` the caller names, its output and exit code passed through. */
 const pythonFloor = (f: Map<string, string>, io: Io): number => {
-  const python = f.get('--python');
-  const floorFile = f.get('--floor-file');
-  if (python === undefined || floorFile === undefined) {
+  if (!f.has('--python') || !f.has('--floor-file')) {
     io.err(USAGE);
     return 2;
   }
-  const root = f.get('--root');
-  const exclude = f.get('--exclude');
-  const selector = f.get('--selector');
-  const options: PythonFloorOptions = {
-    python,
-    floorFile,
-    ...(root === undefined ? {} : { root }),
-    ...(exclude === undefined ? {} : { exclude }),
-    ...(selector === undefined ? {} : { selector }),
-  };
+  // Each flag given, as the option it sets: one not given sets none, so the
+  // script's own default holds.
+  const option: Readonly<Record<string, keyof PythonFloorOptions>> = { '--python': 'python', '--floor-file': 'floorFile', '--root': 'root', '--exclude': 'exclude', '--selector': 'selector' };
+  const options = Object.fromEntries([...f].map(([flag, value]) => [option[flag], value])) as unknown as PythonFloorOptions;
   return runPythonFloor(options, io.python ?? inheritRunner, io.err);
 };
 
@@ -989,7 +979,7 @@ const pythonFloor = (f: Map<string, string>, io: Io): number => {
  * it records; otherwise as `--config`, or the inline entry, gives it.
  */
 const registryText = (f: Map<string, string>, root: string, read: Reader, staged: boolean): string => {
-  if (staged && !f.has(INLINE)) {
+  if (staged && !inlineText.has(f)) {
     const under = relative(real(root), real(resolve(root, f.get('--config') as string)))
       .split(sep)
       .join('/');
@@ -1070,7 +1060,7 @@ const schemaRoots = (rest: readonly string[], io: Io): number => {
   const from = f.get('--files-from');
   let documents: ReturnType<typeof readDocuments>;
   try {
-    const listed = [...named, ...(from === undefined ? [] : entries(listFrom(from, io)))];
+    const listed = from === undefined ? named : [...named, ...entries(listFrom(from, io))];
     const files = [...new Set(jsonFiles(listed).map((p) => relative(root, resolve(root, p))))];
     documents = readDocuments(files, (file) => readFileSync(resolve(root, file), 'utf8'));
   } catch (e) {
@@ -1202,20 +1192,21 @@ const applyFlags = (command: string, entry: Entry, folder: string, f: Map<string
 const applyProject = (command: string, f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv, version: string): void => {
   const project = loadProjectConfig((io.cwd ?? (() => process.cwd()))(), env, CONFIGURABLE, version);
   const entry = project.checks.get(command);
-  if (entry === undefined || project.file === undefined) return;
+  if (entry === undefined) return;
+  // A config with an entry was read from a file.
+  const file = project.file as string;
   if (Object.hasOwn(FLAG_FIELDS, command)) {
-    applyFlags(command, entry, dirname(project.file), f, version);
+    applyFlags(command, entry, dirname(file), f, version);
     return;
   }
   if (f.has('--config')) return;
-  f.set(FROM_PROJECT, '');
-  f.set(PROJECT_FILE, project.file);
+  projectFile.set(f, file);
   if (entry.kind === 'file') {
     f.set('--config', entry.path);
     return;
   }
   f.set('--config', `${CONFIG_FILE} (checks.${command})`);
-  f.set(INLINE, entryText(entry));
+  inlineText.set(f, entryText(entry));
 };
 
 /** Whether `.pariksha.json`'s settings for `command` were read into `f`; why not is on stderr. */

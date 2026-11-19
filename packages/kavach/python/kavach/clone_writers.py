@@ -645,6 +645,18 @@ GIT_HANDLERS: dict[str, Callable[[list[str], Path, Segment, Context], None]] = {
 }
 
 
+# `git checkout` in a worktree: the clone's table and the options that only
+# shape a branch switch, which stays open there. Every other option is
+# still refused, so `-f`, `-p` and the paths stay judged.
+WORKTREE_CHECKOUT = (
+    CHECKOUT[0] | frozenset(
+        "-m --merge --recurse-submodules --no-recurse-submodules "
+        "--ignore-other-worktrees --overwrite-ignore --no-overwrite-ignore".split()
+    ),
+    CHECKOUT[1] | frozenset({"--conflict"}),
+)
+
+
 def worktree_checkout(args: list[str], cwd: Path, segment: Segment, context: Context) -> None:
     """`git checkout` in a worktree: a path it names is judged as in a
     clone; a branch switch stays open, as a merge does."""
@@ -653,16 +665,7 @@ def worktree_checkout(args: list[str], cwd: Path, segment: Segment, context: Con
         git_checkout(args, cwd, segment, context)
         return
     command = "git checkout"
-    try:
-        options, before, _after = parse_options(args, CHECKOUT, command)
-    except Refused:
-        # An option the clone's table lacks (`-m`, `--recurse-submodules`):
-        # a branch switch stays open, so judge only the words that are not
-        # options, each a commit or else a path.
-        for word in args:
-            if not word.startswith("-") and not is_commit(word, cwd, context):
-                check_paths([word], cwd, command, context)
-        return
+    options, before, _after = parse_options(args, WORKTREE_CHECKOUT, command)
     if any(name in options for name in ("-p", "--patch")):
         check_paths(["."], cwd, command, context)
     if any(name in options for name in ("-b", "-B", "--orphan")):

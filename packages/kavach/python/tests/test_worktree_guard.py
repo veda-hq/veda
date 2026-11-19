@@ -1616,9 +1616,14 @@ class ProtectedPathsTest(BoundaryFixture):
             "git rm -r .githooks",
             "git mv .githooks/pre-push .githooks/off",
             "git -C .githooks rm pre-push",
-            # An option the table lacks leaves the words that are paths judged.
+            # A switch-only option leaves the words that are paths judged.
             "git checkout -m .githooks/pre-push",
             "git checkout --recurse-submodules HEAD .githooks/pre-push",
+            # After the commit, every word is a path, a branch's name too.
+            "git checkout HEAD main",
+            # Abbreviations and options that hide paths are not read.
+            "git checkout --forc",
+            "git checkout --pathspec-from-file=.tmp/list",
         ):
             with self.subTest(command=command):
                 self.refused(self.bash(command), WORKTREE_WAY_OUT)
@@ -1630,7 +1635,9 @@ class ProtectedPathsTest(BoundaryFixture):
         result = self.bash("git checkout -f")
         self.assertEqual(result.returncode, 0, result.stderr)
         (self.claude / ".githooks" / "pre-push").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        self.refused(self.bash("git checkout -f"), ".githooks/pre-push", WORKTREE_WAY_OUT)
+        for command in ("git checkout -f", "git checkout -f --recurse-submodules", "git checkout -fm"):
+            with self.subTest(command=command):
+                self.refused(self.bash(command), ".githooks/pre-push", WORKTREE_WAY_OUT)
 
     def test_git_options_before_a_path_writer_are_not_read(self) -> None:
         """An option before git's subcommand that `git_start` does not read
@@ -1700,6 +1707,8 @@ class ProtectedPathsTest(BoundaryFixture):
             "git checkout main",
             "git checkout -m main",
             "git checkout --recurse-submodules main",
+            "git checkout --conflict=diff3 -m main",
+            "git checkout --ignore-other-worktrees main",
             "git checkout -b next origin/main",
             "git switch -c next",
             "git merge main",

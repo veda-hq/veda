@@ -98,6 +98,17 @@ describe('skills/research-first/SKILL.md', () => {
     assert.match(flat, /authorizes nothing/);
   });
 
+  it('names the researcher by both the names ask-gate counts, so it holds without the plugin', () => {
+    // The npm package ships no agents: `sarathi:researcher` exists only under the plugin.
+    assert.match(flat, /`sarathi:researcher` where the sarathi plugin is installed, else a project's own `researcher`/);
+    assert.match(flat, /With neither listed, do the research yourself/);
+    const gate = read('hooks/ask-gate.sh');
+    const agents = /^RESEARCH_AGENTS = \{(.*)\}$/m.exec(gate)?.[1] ?? '';
+    for (const name of ['researcher', 'sarathi:researcher']) {
+      assert.ok(agents.includes(`"${name}"`), `ask-gate's RESEARCH_AGENTS lists ${name}`);
+    }
+  });
+
   it('cites each source by URL in its Sources list, with the date read', () => {
     const at = text.indexOf('\n## Sources\n');
     assert.ok(at > 0, 'a ## Sources section');

@@ -185,8 +185,8 @@ importers:
         specifier: 0.7.5
         version: 0.7.5
       '@veda-hq/pariksha':
-        specifier: 0.5.20
-        version: 0.5.20(eslint@9.39.1(supports-color@7.2.0))(typescript@5.9.3)
+        specifier: 0.7.10
+        version: 0.7.10(eslint@9.39.1(supports-color@7.2.0))(typescript@5.9.3)
       '@veda-hq/sarathi':
         specifier: 0.7.8
         version: 0.7.8
@@ -593,8 +593,8 @@ packages:
     engines: {node: '>=24.15'}
     hasBin: true
 
-  '@veda-hq/pariksha@0.5.20':
-    resolution: {integrity: sha512-QyHkXK9YJv/Ur+O9yLtljb1NcqXxZCQCXSu2wjhoM26+1ZIRNz/XOyDo/VJyddBVXl9cnMlx2H4OO7Cyly/x1w==}
+  '@veda-hq/pariksha@0.7.10':
+    resolution: {integrity: sha512-afSy23xax5nmvbSeylcd6tVOGft6pnISBPym1YAQCzyT+yFeZOfnrbQjWpwdLGWdirApiQOKBC4sR+5OPT45rw==}
     engines: {node: '>=24.15'}
     hasBin: true
     peerDependencies:
@@ -1356,7 +1356,7 @@ snapshots:
       libsodium-wrappers: 0.8.4
       yaml: 2.9.1
 
-  '@veda-hq/pariksha@0.5.20(eslint@9.39.1(supports-color@7.2.0))(typescript@5.9.3)':
+  '@veda-hq/pariksha@0.7.10(eslint@9.39.1(supports-color@7.2.0))(typescript@5.9.3)':
     dependencies:
       js-yaml: 4.3.2
     optionalDependencies:

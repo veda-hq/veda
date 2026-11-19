@@ -4,8 +4,6 @@
   "permissions": {
     "allow": [
       "Edit(./**)",
-      "Write(./**)",
-      "NotebookEdit(./**)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
@@ -44,7 +42,7 @@
       "Bash(*git push*--pru*)",
       "Bash(*git push* -d *)",
       "Bash(*git push* +*)",
-      "Bash(*git push* :*)",
+      "Bash(*git push* :**)",
       "Bash(*git branch* -D*)",
       "Bash(*git branch*-d*-f*)",
       "Bash(*git branch*-f*-d*)",

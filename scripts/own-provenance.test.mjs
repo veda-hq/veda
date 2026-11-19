@@ -255,11 +255,14 @@ describe('niyam, released from main', () => {
     assert.deepEqual(policies, [signingPolicy('0.6.0')]);
   });
 
-  test('signingPolicy on main names the workflow on main and the commit as a DER UTF8String', () => {
+  test('signingPolicy on main names the workflow on main, and the commit and exactly main as DER UTF8Strings', () => {
     const policy = signingPolicy('0.7.1', NIYAM_REPO, TAGGED);
     assert.equal(policy.subjectAlternativeName, 'https://github.com/veda-hq/niyam/.github/workflows/release.yml@refs/heads/main');
     assert.deepEqual(policy.extensions, { issuer: ISSUER });
-    assert.deepEqual(policy.oids, [{ oid: { id: [1, 3, 6, 1, 4, 1, 57264, 1, 13] }, value: Buffer.from(`\x0c\x28${TAGGED}`, 'latin1') }]);
+    assert.deepEqual(policy.oids, [
+      { oid: { id: [1, 3, 6, 1, 4, 1, 57264, 1, 13] }, value: Buffer.from(`\x0c\x28${TAGGED}`, 'latin1') },
+      { oid: { id: [1, 3, 6, 1, 4, 1, 57264, 1, 14] }, value: Buffer.from('\x0c\x0frefs/heads/main', 'latin1') },
+    ]);
   });
 });
 
@@ -387,6 +390,13 @@ describe('the Sigstore bundle, on real attestations', () => {
       `@veda-hq/niyam@0.7.1: its provenance is not signed by veda-hq/niyam's release of ${OTHER}, the commit its tag v0.7.1 names (invalid certificate extension - missing OID 1.3.6.1.4.1.57264.1.13)`,
       `@veda-hq/niyam@0.7.1: built from commit "${TAGGED}", not ${OTHER}, the commit veda-hq/niyam's tag v0.7.1 names`,
     ]);
+  });
+
+  test("niyam 0.7.1's certificate is held to exactly main as its source ref, not only by the SAN pattern", () => {
+    const policy = signingPolicy('0.7.1', NIYAM_REPOSITORY, TAGGED);
+    assert.doesNotThrow(() => verifyBundle(NIYAM_071.attestations.find(a => a.predicateType === SLSA).bundle, policy));
+    const otherRef = { ...policy, oids: [policy.oids[0], { ...policy.oids[1], value: Buffer.from('\x0c\x10refs/heads/main2', 'latin1') }] };
+    assert.throws(() => verifyBundle(NIYAM_071.attestations.find(a => a.predicateType === SLSA).bundle, otherRef), /missing OID 1\.3\.6\.1\.4\.1\.57264\.1\.14/);
   });
 
   test("niyam's signed release from main offered as a veda package fails on the certificate, the repository and the ref", () => {

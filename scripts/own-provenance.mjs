@@ -65,6 +65,12 @@ export const SLSA = 'https://slsa.dev/provenance/v1';
 export const ISSUER = 'https://token.actions.githubusercontent.com';
 /** Fulcio's Source Repository Digest extension: the commit the run built. */
 export const SOURCE_COMMIT_OID = Object.freeze([1, 3, 6, 1, 4, 1, 57264, 1, 13]);
+/**
+ * Fulcio's Source Repository Ref extension: the ref the run built. The SAN
+ * alone does not pin it, since @sigstore/verify matches the SAN as an
+ * unanchored pattern (refs/heads/main-other would pass).
+ */
+export const SOURCE_REF_OID = Object.freeze([1, 3, 6, 1, 4, 1, 57264, 1, 14]);
 export const GITHUB_API = 'https://api.github.com';
 export const TRUSTED_ROOT = fileURLToPath(new URL('sigstore-trusted-root.json', import.meta.url));
 
@@ -74,11 +80,15 @@ const slugOf = repository => repository.replace('https://github.com/', '');
 /** A full git commit id. */
 const COMMIT = /^[0-9a-f]{40}$/;
 
+/** The DER UTF8String of a short ASCII `text`, as Fulcio writes its v2 extensions. @param {string} text */
+const utf8String = text => Buffer.concat([Buffer.from([0x0c, text.length]), Buffer.from(text, 'ascii')]);
+
 /**
  * Who must have signed the provenance of `version`: the release workflow of
  * `repository` at its tag, or, given `commit`, the same workflow on main with
  * `commit` (the one the version's tag names) as the certificate's source
- * commit. Fulcio writes that extension as a DER UTF8String.
+ * commit and exactly main as its source ref. Fulcio writes those extensions
+ * as DER UTF8Strings.
  * @param {string} version
  * @param {string} [repository]
  * @param {string} [commit]
@@ -89,7 +99,10 @@ export const signingPolicy = (version, repository = REPOSITORY, commit = undefin
     : {
         subjectAlternativeName: `${repository}/${WORKFLOW}@${MAIN}`,
         extensions: { issuer: ISSUER },
-        oids: [{ oid: { id: [...SOURCE_COMMIT_OID] }, value: Buffer.concat([Buffer.from([0x0c, commit.length]), Buffer.from(commit, 'ascii')]) }],
+        oids: [
+          { oid: { id: [...SOURCE_COMMIT_OID] }, value: utf8String(commit) },
+          { oid: { id: [...SOURCE_REF_OID] }, value: utf8String(MAIN) },
+        ],
       };
 
 /** Where GitHub serves `repository`'s tag v`version`. @param {string} repository @param {string} version */

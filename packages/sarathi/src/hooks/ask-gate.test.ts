@@ -8,7 +8,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
@@ -59,6 +59,9 @@ const meta = (): string => line({ type: 'user', uuid: next(), isMeta: true, mess
 const compacted = (): string => line({ type: 'user', uuid: next(), isCompactSummary: true, message: { role: 'user', content: 'This session is being continued' } });
 const sidechain = (text: string): string => line({ type: 'user', uuid: next(), isSidechain: true, message: { role: 'user', content: text } });
 const interrupted = (): string => line({ type: 'user', uuid: next(), message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] } });
+/** A Stop hook's feedback, as Claude Code writes it: a meta user-role entry. */
+const stopFeedback = (): string =>
+  line({ type: 'user', uuid: next(), isMeta: true, isSidechain: false, message: { role: 'user', content: 'Stop hook feedback:\n[command hook 1]: research before you ask.' } });
 
 let files = 0;
 function transcript(...lines: string[]): string {
@@ -147,6 +150,7 @@ test("ask-gate: a hand-back, a peer's message or an app event does not reset the
     ["a subagent's prompt", sidechain('search the web')],
     ['an interruption', interrupted()],
     ['a tool result', toolResult()],
+    ["a Stop hook's feedback", stopFeedback()],
   ] as const) {
     assert.equal(exit(transcript(owner(), toolUse('Agent', { subagent_type: 'researcher', run_in_background: true }), toolResult(), entry)), 0, name);
   }
@@ -269,4 +273,255 @@ test('ask-gate: runs the launcher interpreter when it names one', () => {
   const python = join(TMP, 'python-stub');
   writeFileSync(python, '#!/bin/bash\nexit 7\n', { mode: 0o755 });
   assert.equal(gate('{}', { HOOK_PYTHON: python }).status, 7);
+});
+
+// --- Stop: questions written as plain text ---------------------------------------
+const CLOSING = 'The parser and the lexer both fail on the new input.\n\nFix the parser first or the lexer?';
+
+/** The Stop event, as Claude Code sends it. */
+const stopEvent = (path: string, message: unknown, extra: Entry = {}): Entry => ({
+  hook_event_name: 'Stop',
+  stop_hook_active: false,
+  last_assistant_message: message,
+  transcript_path: path,
+  session_id: `s${sessions++}`,
+  ...extra,
+});
+/** Whether a Stop on this message and transcript holds the turn (true) or lets it end silently (false). */
+function holds(path: string, message: unknown, extra: Entry = {}): boolean {
+  const run = gate(stopEvent(path, message, extra));
+  assert.equal(run.status, 0, 'Stop never exits 2');
+  assert.equal(run.stderr, '');
+  if (run.stdout === '') return false;
+  const answer = JSON.parse(run.stdout) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+  assert.equal(answer.hookSpecificOutput.hookEventName, 'Stop');
+  assert.match(answer.hookSpecificOutput.additionalContext, /^research before you ask\. Your closing message asks the owner to choose/);
+  return true;
+}
+
+test('ask-gate on Stop: a choice in the closing message, with no research, goes back as feedback', () => {
+  const run = gate(stopEvent(transcript(owner()), CLOSING));
+  assert.equal(run.status, 0);
+  assert.equal(run.stderr, '');
+  const answer = JSON.parse(run.stdout) as Entry;
+  assert.deepEqual(Object.keys(answer), ['hookSpecificOutput'], 'context, not a block decision');
+  const context = (answer['hookSpecificOutput'] as Entry)['additionalContext'] as string;
+  assert.match(context, /\(Fix the parser first or the lexer\?\)/, 'it quotes the question');
+  for (const part of [/official docs at the version in use/, /a preference/, /an approval/, /irreversible/, /end the turn again and it goes through: the owner already sees the question, so do not repeat it/]) {
+    assert.match(context, part);
+  }
+  assert.equal(holds(transcript(owner(), toolUse('WebSearch'), toolResult()), CLOSING), false, 'research since the owner spoke');
+  assert.equal(holds(transcript(owner(), toolUse('WebSearch'), owner('now the other one')), CLOSING), true, 'research before the owner last spoke');
+});
+
+test('ask-gate on Stop: only a choice-shaped question near the end counts', () => {
+  const t = transcript(owner());
+  for (const [why, message] of [
+    ['which', 'Done.\n\nWhich one should go first?'],
+    ['how should', 'How should the flag be named?'],
+    ['either', 'Either works for me; pick one?'],
+    ['a question in a list', 'Two ways:\n\n- Which do you want, the cache or none?'],
+    ['dots inside words', 'Fix src/foo.ts or src/bar.ts?'],
+    ['a question before the options', 'Which approach?\n\n1. Rewrite the parser\n2. Patch the lexer'],
+    ['the last of three paragraphs back', 'Which one?\n\nOne.\n\nTwo.'],
+  ] as const) {
+    assert.equal(holds(t, message), true, why);
+  }
+  for (const [why, message] of [
+    ['no question', 'Done. The parser and the lexer both pass.'],
+    ['a yes/no approval', 'The branch is ready.\n\nForce-push to main?'],
+    ['an irreversible step, asked yes/no', 'Delete the branch?'],
+    ['"or not"', 'Ship it now or not?'],
+    ['a bare A/B with no buttons', 'Keep the cache/drop it?'],
+    ['a statement with "or", no question', 'I fixed the parser or the lexer, whichever failed.'],
+    ['a choice four paragraphs back', 'Which one?\n\nOne.\n\nTwo.\n\nThree.'],
+    ['a choice in fenced code', 'Done.\n\n```\nwhich = a or b?\n```'],
+    ['a choice in an unclosed fence', 'Done.\n\n~~~\nwhich?'],
+    ['a choice in inline code', 'Run `a or b?` next.'],
+    ['a quoted choice', 'You asked:\n> Which one first?\n\nThe parser, done.'],
+    ['a URL with a question in it', 'See https://example.com/which?or=either for the details.'],
+    ['an empty message', ''],
+  ] as const) {
+    assert.equal(holds(t, message), false, why);
+  }
+});
+
+test('ask-gate on Stop: anything it cannot read lets the turn end', () => {
+  const t = transcript(owner());
+  for (const [why, input] of [
+    ['a message that is not a string', stopEvent(t, ['Which one?'])],
+    ['no message', { hook_event_name: 'Stop', transcript_path: t, session_id: 'nomessage' }],
+    ['no transcript path', { hook_event_name: 'Stop', last_assistant_message: CLOSING, session_id: 'nopath' }],
+    ['an unreadable transcript', stopEvent(join(TMP, 'missing.jsonl'), CLOSING)],
+  ] as const) {
+    assert.deepEqual(gate(input), { status: 0, stdout: '', stderr: '' }, why);
+  }
+});
+
+test('ask-gate on Stop: once per turn, shared with the PreToolUse path', () => {
+  const state = join(TMP, 'state-stop');
+  const t = transcript(owner());
+  const stop = (extra: Entry = {}): string => gate({ ...stopEvent(t, CLOSING), session_id: 'stop', ...extra }, {}, state).stdout;
+  const ask = (): number | null => gate({ tool_name: ASK, tool_input: QUESTION, transcript_path: t, session_id: 'stop' }, {}, state).status;
+
+  assert.equal(stop({ stop_hook_active: true }), '', 'stop_hook_active passes');
+  assert.equal(existsSync(state), false, '... and spends nothing');
+  assert.notEqual(stop(), '', 'held');
+  assert.equal(stop(), '', 'the second Stop in the turn ends it');
+  assert.equal(ask(), 0, 'an ask in the turn the Stop held passes too');
+
+  writeFileSync(t, `${readFileSync(t, 'utf8')}${owner('next task')}\n`);
+  assert.equal(ask(), 2, 'a new turn');
+  assert.equal(stop(), '', 'a Stop in the turn an ask was held in ends it');
+});
+
+test('ask-gate on Stop: through sarathi hook Stop, alone and beside a handler that blocks', () => {
+  const bin = fileURLToPath(new URL('../bin.ts', import.meta.url));
+  const through = (handlers: Entry[]): Run => {
+    const dir = join(TMP, `project-${files++}`);
+    mkdirSync(join(dir, '.claude'), { recursive: true });
+    writeFileSync(join(dir, '.claude', 'sarathi.json'), JSON.stringify({ hooks: { Stop: handlers } }));
+    const result = spawnSync(process.execPath, [bin, 'hook', 'Stop'], {
+      input: JSON.stringify({ ...stopEvent(transcript(owner()), CLOSING), cwd: dir }),
+      env: { PATH: process.env['PATH'] ?? '', HOME: TMP, CLAUDE_PROJECT_DIR: dir, SARATHI_ASK_GATE_DIR: join(TMP, 'state-through') },
+      cwd: dir,
+      encoding: 'utf8',
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
+    });
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  };
+  const gateEntry = { command: 'bash "$SARATHI_HOOKS"/ask-gate.sh', timeout: 10 };
+
+  const alone = through([gateEntry]);
+  assert.equal(alone.status, 0, alone.stderr);
+  const answer = JSON.parse(alone.stdout) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+  assert.equal(answer.hookSpecificOutput.hookEventName, 'Stop');
+  assert.match(answer.hookSpecificOutput.additionalContext, /^research before you ask\./);
+
+  // A handler that exits 2 wins, and sarathi answers with its reason alone
+  // (README, "Research before you ask"): the held question's feedback is not shown.
+  const beside = through([gateEntry, { command: 'cat >/dev/null; echo "keep going" >&2; exit 2' }]);
+  assert.deepEqual(beside, { status: 2, stdout: '', stderr: 'keep going\n' });
+});
+
+// --- repo and state research, for repo and state questions ---------------------------
+const STATE_ASK = { questions: [{ question: 'Which branch should this land on?', header: 'Branch', options: [{ label: 'main' }, { label: 'next' }], multiSelect: false }] };
+
+test('ask-gate: a look at the repository counts for an ask that names its state', () => {
+  assert.equal(exit(transcript(owner()), ASK, STATE_ASK), 2, 'no look');
+  for (const [name, input] of [
+    ['Read', { file_path: '/x' }],
+    ['Grep', { pattern: 'x' }],
+    ['Glob', { pattern: '*.ts' }],
+    ['mcp__ccd_pr__get_status', {}],
+    ['Bash', { command: 'git status' }],
+    ['Bash', { command: 'git -C /x log --oneline -5' }],
+    ['Bash', { command: 'git --no-pager diff main...HEAD' }],
+    ['Bash', { command: 'cd /x && git branch -a' }],
+    ['Bash', { command: 'GIT_PAGER=cat git show HEAD' }],
+    ['Bash', { command: 'gh pr view 12 --json state' }],
+    ['Bash', { command: 'gh pr checks 12' }],
+    ['Bash', { command: 'gh run list --limit 5' }],
+    ['Bash', { command: 'gh search issues ask-gate' }],
+    ['Bash', { command: 'gh api repos/o/r/pulls/12' }],
+    ['Bash', { command: 'gh api -X GET repos/o/r/issues -f state=open' }],
+    ['Bash', { command: 'pnpm test' }],
+    ['Bash', { command: 'pnpm --filter x run check' }],
+    ['Bash', { command: 'npx vitest run src/a.test.ts' }],
+    ['Bash', { command: 'node --test src/a.test.ts' }],
+    ['Bash', { command: 'pytest -q' }],
+    ['Bash', { command: 'go test ./...' }],
+    ['Bash', { command: 'git branch --list "feat*"' }],
+    ['Bash', { command: 'git branch --contains abc123 -r' }],
+    ['Bash', { command: 'git branch --show-current' }],
+    ['Bash', { command: 'git reflog -5' }],
+    ['Bash', { command: 'gh api --method=get repos/o/r/pulls' }],
+    ['Bash', { command: 'pnpm test || true' }],
+    ['Bash', { command: 'false; git status' }],
+    ['Bash', { command: 'git grep -o needle' }],
+    ['Bash', { command: 'git ls-files -o --exclude-standard' }],
+    ['Bash', { command: 'git diff --output-indicator-new=+ HEAD' }],
+  ] as const) {
+    assert.equal(exit(transcript(owner(), toolUse(name, input), toolResult()), ASK, STATE_ASK), 0, `${name} ${JSON.stringify(input)}`);
+  }
+});
+
+test('ask-gate: a write is no look, and a look before the owner spoke does not count', () => {
+  for (const command of [
+    'git commit -m x',
+    'git push origin HEAD',
+    'gh pr create --fill',
+    'gh pr merge 12 --auto',
+    'gh api -X POST repos/o/r/issues',
+    'gh api --method=PATCH repos/o/r/issues/1',
+    'gh api repos/o/r/issues -f title=x',
+    'echo git status is clean',
+    'pnpm install',
+    'pnpm add -D vitest',
+    'npm install jest',
+    'pnpm --filter x add jest',
+    'git branch -D old',
+    'git branch new-feature',
+    'git branch --set-upstream-to=origin/x',
+    'git reflog expire --all',
+    'git diff --output=x.patch',
+    'git diff --out=x.patch',
+    'git log -p --output x.patch',
+    'METHOD=DELETE gh api --method "$METHOD" repos/o/r/x',
+    'false && pnpm test',
+    'true || pnpm test',
+    'exit 1 && git status',
+    'false && echo x && git log',
+  ]) {
+    assert.equal(exit(transcript(owner(), toolUse('Bash', { command }), toolResult()), ASK, STATE_ASK), 2, command);
+  }
+  assert.equal(exit(transcript(owner(), toolUse('Bash', {}), toolResult()), ASK, STATE_ASK), 2, 'a Bash with no command');
+  assert.equal(exit(transcript(owner(), toolUse('Read'), owner('now this')), ASK, STATE_ASK), 2, 'a look before the owner last spoke');
+  const subagentOwn = line({ type: 'assistant', isSidechain: true, message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Read', input: {} }] } });
+  assert.equal(exit(transcript(owner(), subagentOwn), ASK, STATE_ASK), 2, "a subagent's own read, in its sidechain");
+});
+
+test('ask-gate: a look counts only when the ask names repository or session state', () => {
+  const looked = transcript(owner(), toolUse('Read'), toolResult());
+  const asking = (question: string, options: readonly string[] = ['a', 'b']): Entry => ({
+    questions: [{ question, header: 'Q', options: options.map((label) => ({ label })), multiSelect: false }],
+  });
+  for (const [why, input] of [
+    ['#N', asking('Close #12 or keep it?')],
+    ['owner/repo#N', asking('Which of acme/widgets#12 and #13 first?')],
+    ['PR', asking('Which PR goes first?')],
+    ['pull request', asking('Rebase the pull request or merge main in?')],
+    ['branch', asking('Which branch?')],
+    ['commit', asking('Squash the commits or keep them?')],
+    ['CI', asking('CI is red: retry or revert?')],
+    ['workflow', asking('Which workflow should run it?')],
+    ['a path', asking('Edit src/hooks/ask-gate.sh or the test?')],
+    ['a file name', asking('Edit README.md or SKILL.md?')],
+    ['a pull request URL', asking('Merge https://github.com/o/r/pull/12 or wait?')],
+    ['an option', asking('Where should it go?', ['packages/sarathi/README.md', 'docs/lessons/testing.md'])],
+  ] as const) {
+    assert.equal(exit(looked, ASK, input), 0, why);
+  }
+  for (const [why, input] of [
+    ['a name', QUESTION],
+    ['a version fact', asking('Which Node.js version supports type stripping?')],
+    ['a design choice', asking('Should the flag be named --dry or --check?')],
+    ['"process" is not a PR', asking('Which process should own it?')],
+    ['#hashtag', asking('Tag it #urgent or #later?')],
+  ] as const) {
+    assert.equal(exit(looked, ASK, input), 2, why);
+  }
+  const wrapUp = { recap: 'r', ask: 'PR #12 failed CI: retry it or revert?', actions: [{ label: 'Retry' }, { label: 'Revert' }] };
+  assert.equal(exit(looked, WRAP_UP, wrapUp), 0, 'a wrap_up ask');
+  assert.equal(exit(looked, WRAP_UP, { ...wrapUp, ask: 'Which one first?', actions: [{ label: 'The PR' }, { label: 'The issue' }] }), 0, 'a wrap_up button');
+  assert.equal(holds(looked, 'Done.\n\nPR #12 failed CI. Retry it or revert?'), false, "a closing question whose paragraph names the state");
+  assert.equal(holds(looked, 'Edited `src/a.ts`.\n\nRetry it or revert?'), true, 'the state named only in another paragraph');
+  assert.equal(holds(looked, 'Retry it or revert?'), true, 'a closing message that names none');
+  for (const [why, input] of [
+    ['a docs URL', asking('Which API does https://docs.example.com/api/v2.html describe?')],
+    ['a version pair', asking('Target 1.2/1.3 or 2.0?')],
+  ] as const) {
+    assert.equal(exit(looked, ASK, input), 2, why);
+  }
 });

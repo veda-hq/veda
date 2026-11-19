@@ -19,6 +19,12 @@ are judged here as well, by what they can write:
 - either, run through another program (`xargs git …`, `pnpm exec git …`):
   refused, since what that program passes on is not read here.
 
+In a session's linked worktree, only the consumer's `worktree.protectedPaths`
+are fences, and only git's subcommands that write the paths they name
+(`checkout`, `restore`, `rm`, `mv`, `apply`) are judged here
+(`judge_named_paths`); merges, rebases, branch switches and installs stay
+open there.
+
 What a package script or other repository code writes stays out of reach:
 the README names that limit.
 """
@@ -637,6 +643,100 @@ GIT_HANDLERS: dict[str, Callable[[list[str], Path, Segment, Context], None]] = {
     "config": git_config,
     "apply": git_apply,
 }
+
+
+def worktree_checkout(args: list[str], cwd: Path, segment: Segment, context: Context) -> None:
+    """`git checkout` in a worktree: a path it names is judged as in a
+    clone; a branch switch stays open, as a merge does."""
+
+    if "--" in args:
+        git_checkout(args, cwd, segment, context)
+        return
+    command = "git checkout"
+    options, before, _after = parse_options(args, CHECKOUT, command)
+    if any(name in options for name in ("-p", "--patch")):
+        check_paths(["."], cwd, command, context)
+    if any(name in options for name in ("-b", "-B", "--orphan")):
+        # A new branch's name, then the commit it starts from.
+        return
+    if len(before) > 1:
+        raise Refused(
+            f"`{command} {' '.join(before)}` may name paths, and {WAY_OUT}: "
+            "write `git checkout [<ref>] -- <path>…`"
+        )
+    if not before:
+        return
+    rev = "@{-1}" if before[0] == "-" else before[0]
+    found = context.git(cwd, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{rev}^{{commit}}")
+    if found.returncode != 0 or not found.stdout.strip():
+        # No commit by that name: git reads it as a path.
+        check_paths(before, cwd, command, context)
+
+
+# git's subcommands that write the paths they name, judged in a worktree.
+NAMED_PATH_WRITERS: dict[str, Callable[[list[str], Path, Segment, Context], None]] = {
+    "checkout": worktree_checkout,
+    "restore": git_restore,
+    "rm": git_rm,
+    "mv": git_mv,
+    "apply": git_apply,
+}
+
+
+def judge_named_paths(
+    collected: Sequence[tuple[tuple[str, ...], Path, tuple[str, ...], bool]],
+    root: Path,
+    fences: tuple[Fence, ...],
+    in_fence: Callable[[Path, Path], bool],
+    boundary: Any,
+    way_out: str,
+) -> str | None:
+    """In a session's worktree: the reason to refuse the first git segment
+    that would write a fence through a path it names, or None.
+
+    A worktree holds the consumer's `protectedPaths` (its own copy of the
+    files its git hooks run), and `git checkout -- <path>`, `restore`, `rm`,
+    `mv` and `apply` write paths that no target counts. Every other git
+    subcommand, and every package manager, stays open there: merging,
+    rebasing, switching branches and installing are a worktree's daily work.
+    The refusal ends with ``way_out`` in place of the clone's."""
+
+    context = Context(root.resolve(), fences, in_fence, boundary)
+    for words, cwd, _prefix, alone in collected:
+        try:
+            judge_named_segment(Segment(tuple(words), cwd, (), alone), context)
+        except Refused as refusal:
+            return str(refusal).replace(WAY_OUT, way_out)
+    return None
+
+
+def judge_named_segment(segment: Segment, context: Context) -> None:
+    words = list(segment.words)
+    if os.path.basename(words[0]) != "git":
+        return
+    try:
+        index, cwd = git_start(words, segment.cwd, context)
+    except Refused:
+        # An option before the subcommand that this guard does not read
+        # (`git -c x=y log`): open, unless a path writer follows it.
+        named = next((word for word in words[1:] if word in NAMED_PATH_WRITERS), None)
+        if named is None:
+            return
+        raise Refused(
+            f"`git … {named}` with options before `{named}` that this guard does not read "
+            f"may write a protected path, and {WAY_OUT}: run `git {named}` with none"
+        ) from None
+    if index >= len(words):
+        return
+    sub, args = words[index], words[index + 1 :]
+    if not context.literal(sub):
+        raise Refused(f"a git subcommand spelled with an expansion cannot be read here, and {WAY_OUT}")
+    handler = NAMED_PATH_WRITERS.get(sub)
+    if handler is None:
+        return
+    if any(not context.literal(word) for word in args):
+        raise Refused(f"`git {sub}` with an expansion in it cannot be read here, and {WAY_OUT}")
+    handler(args, cwd, segment, context)
 
 
 def judge_package_manager(name: str, words: list[str], segment: Segment) -> None:

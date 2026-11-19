@@ -1145,6 +1145,29 @@ def clone_fences(root: Path, own: Any, environ: Mapping[str, str]) -> tuple[Fenc
     return tuple(fences)
 
 
+# How a refusal on a fence ends, by the checkout it is in.
+CLONE_WAY_OUT = clone_writers.WAY_OUT
+WORKTREE_WAY_OUT = "this session's own worktree does not open it"
+
+
+def protected_fences(root: Path, loaded: Any) -> tuple[Fence, ...]:
+    """The consumer's `worktree.protectedPaths`, refused in every checkout a
+    session owns, its worktree included.
+
+    A worktree holds its own copy of the files the repository's git hooks
+    run (`core.hooksPath` set to a tracked folder, the scripts and settings
+    those hooks read, the guards installed in its `node_modules`), and git
+    runs that copy on the session's own commits and pushes. Each refusal
+    carries the consumer's reason, which says how such a file is changed.
+    """
+
+    reason = loaded.protected_paths_reason.rstrip(".")
+    return tuple(
+        (root / path, f"a path worktree.protectedPaths keeps from agent sessions ({path}): {reason}")
+        for path in loaded.protected_paths
+    )
+
+
 def in_fence(target: Path, fence: Path) -> bool:
     """Whether ``target`` is ``fence`` or lies under it.
 
@@ -1213,20 +1236,24 @@ def refuse_target(
     primary: Path,
     fences: tuple[Fence, ...],
     folders: SessionFolders | None = None,
+    way_out: str = CLONE_WAY_OUT,
 ) -> None:
     fenced = fence_of(target, root, fences)
     if fenced is not None:
         (place, what), how = fenced
         where = "is inside" if how == "inside" else "holds"
-        boundary.deny(
-            f"mutation target {target} {where} {place}, {what}; "
-            "an owned plain clone does not open it"
-        )
+        boundary.deny(f"mutation target {target} {where} {place}, {what}; {way_out}")
     boundary.deny(denial(target, root, primary, folders))
 
 
 def reviewed(
-    command: str, cwd: Path, root: Path, primary: Path, entries: Any, fences: tuple[Fence, ...] = ()
+    command: str,
+    cwd: Path,
+    root: Path,
+    primary: Path,
+    entries: Any,
+    fences: tuple[Fence, ...] = (),
+    way_out: str = CLONE_WAY_OUT,
 ) -> bool:
     """Admit a reviewed CLI's line (`worktree.reviewedCLIs`), reached only
     after ownership; refuse a line that names one but is not admitted.
@@ -1241,7 +1268,7 @@ def reviewed(
     if declared is not None:
         for target in declared:
             if not is_owned_target(target, root, primary, fences):
-                refuse_target(target, root, primary, fences)
+                refuse_target(target, root, primary, fences, way_out=way_out)
         refuse_during_push("Bash", [root, *declared], root)
         return True
     named = boundary.reviewed_cli_named(command, entries)
@@ -1317,10 +1344,14 @@ def main() -> None:
     # that a worktree session finds outside its own (`clone_fences`) stay
     # refused as targets.
     fences: tuple[Fence, ...] = ()
-    if not linked and owns_plain_checkout(loaded.own_checkout, root, os.environ):
+    clone = not linked and owns_plain_checkout(loaded.own_checkout, root, os.environ)
+    if clone:
         fences = clone_fences(root, loaded.own_checkout, os.environ)
     elif not linked or not boundary.is_claude_managed(root, primary):
         boundary.deny("Claude mutations require this session's Claude-managed worktree; use EnterWorktree")
+    # The consumer's `protectedPaths` hold in either kind of owned checkout.
+    fences += protected_fences(root, loaded)
+    way_out = CLONE_WAY_OUT if clone else WORKTREE_WAY_OUT
     if tool == "Bash" and boundary.trusted_request(
         boundary.tool_command(values), cwd, root, trusted
     ):
@@ -1330,7 +1361,7 @@ def main() -> None:
         refuse_during_push(tool, [root], root)
         return
     if tool == "Bash" and reviewed(
-        boundary.tool_command(values), cwd, root, primary, loaded.reviewed_clis, fences
+        boundary.tool_command(values), cwd, root, primary, loaded.reviewed_clis, fences, way_out
     ):
         return
     if targets is None:
@@ -1347,11 +1378,18 @@ def main() -> None:
             or in_memory(target)
             or folders.holds(target)
         ):
-            refuse_target(target, root, primary, fences, folders)
+            refuse_target(target, root, primary, fences, folders, way_out)
     if fences and tool == "Bash":
-        # In an owned clone, git and package managers write paths their
-        # command lines do not name (`clone_writers`).
-        reason = clone_writers.judge(segments, root, fences, in_fence, boundary)
+        # git and package managers write paths their command lines do not
+        # name (`clone_writers`). In an owned clone they are judged by all
+        # they can write. In a worktree, only git's subcommands that write
+        # the paths they name are: merges, rebases, branch switches and
+        # installs are a worktree's daily work, and stay open (the README's
+        # limit).
+        if clone:
+            reason = clone_writers.judge(segments, root, fences, in_fence, boundary)
+        else:
+            reason = clone_writers.judge_named_paths(segments, root, fences, in_fence, boundary, way_out)
         if reason is not None:
             boundary.deny(reason)
     refuse_during_push(tool, targets, root)

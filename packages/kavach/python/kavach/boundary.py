@@ -17,7 +17,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path, PurePath
-from typing import Mapping, Protocol, Sequence
+from typing import Mapping, NamedTuple, Protocol, Sequence
 
 
 # Admission to this set means one thing: NO invocation of the command mutates
@@ -2227,6 +2227,296 @@ def git_repository_destinations(
     if len(operands) == max_operands:
         outputs.append(operands[-1])
     return outputs
+
+
+def git_negatable(*names: str) -> frozenset[str]:
+    """Each long option and its ``--no-`` form, as git 2.54's ``-h`` lists
+    them (``--[no-]thin``)."""
+    return frozenset(names) | frozenset(f"--no-{name[2:]}" for name in names)
+
+
+# `git push` and `git send-pack` options, from git 2.54's `-h`: (short flags,
+# short options taking a value, long flags, long options taking the next word
+# or `=<value>`, long options whose value comes only with `=`). Exact names
+# only: an abbreviation (`--forc`), an option off these tables or a missing
+# value fails closed, since an option that takes the next word moves which
+# word is the repository. `--receive-pack` and `--exec` are refused before
+# this read (GIT_PROGRAM_OPTIONS).
+GitTransportTable = tuple[str, str, frozenset[str], frozenset[str], frozenset[str]]
+GIT_PUSH_OPTIONS: GitTransportTable = (
+    "vqdnfu46",
+    "o",
+    git_negatable(
+        "--verbose", "--quiet", "--all", "--branches", "--mirror", "--delete",
+        "--tags", "--dry-run", "--porcelain", "--force", "--force-if-includes",
+        "--thin", "--set-upstream", "--progress", "--prune", "--follow-tags",
+        "--atomic", "--force-with-lease", "--signed", "--repo", "--push-option",
+        "--recurse-submodules",
+    ) | {"--verify", "--ipv4", "--ipv6"},
+    frozenset({"--repo", "--push-option", "--recurse-submodules"}),
+    frozenset({"--force-with-lease", "--signed"}),
+)
+GIT_SEND_PACK_OPTIONS: GitTransportTable = (
+    "vqnf",
+    "",
+    git_negatable(
+        "--verbose", "--quiet", "--all", "--dry-run", "--mirror", "--force",
+        "--progress", "--thin", "--atomic", "--stateless-rpc", "--stdin",
+        "--helper-status", "--signed", "--force-with-lease", "--remote",
+        "--push-option",
+    ),
+    frozenset({"--remote", "--push-option"}),
+    frozenset({"--signed", "--force-with-lease"}),
+)
+
+
+def git_transport_operands(
+    args: list[str], table: GitTransportTable
+) -> tuple[list[str], list[tuple[str, str]]] | None:
+    """The operands of ``git push`` or ``git send-pack``, and each value
+    option with its value, in order. Git permutes options, so an option may
+    follow an operand; after ``--`` every word is an operand. ``--no-repo``
+    is kept with an empty value: it drops an earlier ``--repo``."""
+    short_flags, short_values, long_flags, long_values, long_optional = table
+    operands: list[str] = []
+    values: list[tuple[str, str]] = []
+    index = 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        if word == "--":
+            operands.extend(args[index:])
+            break
+        if not word.startswith("-") or word == "-":
+            operands.append(word)
+            continue
+        if word.startswith("--"):
+            name, has_value, _ = word.partition("=")
+            if name in long_values:
+                if has_value:
+                    value = shell_option_value(word)
+                elif index < len(args):
+                    value = args[index]
+                    index += 1
+                else:
+                    return None
+                values.append((name, value))
+            elif name in long_optional or (name in long_flags and not has_value):
+                if name == "--no-repo":
+                    values.append(("--repo", ""))
+            else:
+                return None
+            continue
+        for position, letter in enumerate(word[1:], start=1):
+            if letter in short_flags:
+                continue
+            if letter not in short_values:
+                return None
+            if position + 1 < len(word):
+                values.append((f"-{letter}", shell_slice(word, position + 1)))
+            elif index < len(args):
+                values.append((f"-{letter}", args[index]))
+                index += 1
+            else:
+                return None
+            break
+    return operands, values
+
+
+# The URL schemes a push may name without writing on this machine (git's
+# native transports over the network, and curl's); scp-like `host:path` is
+# ssh too. Any other scheme starts a remote helper (git 2.54 ran one for
+# `FILE://`), as `<helper>::<address>` does, so it is unproven.
+GIT_REMOTE_SCHEMES = re.compile(r"(?:https?|ssh|git)://[^/]")
+GIT_HELPER_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*::")
+GIT_SCHEME_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+def git_url_local_path(url: str) -> str | None:
+    """The local path a push URL names: ``""`` for a remote URL, None where
+    git's reading of it is not placed here.
+
+    As git 2.54's transport reads it: `file://<host><path>` is `<path>`
+    (any host: `file://../a` pushed to `/a`), a word with no colon, or with a
+    slash before its first colon, is a path, and `host:path` is ssh. A `%`
+    in a `file://` URL is decoded by git, and a leading `~` is expanded by
+    the receiving side, so both fail closed.
+    """
+    if not url or GIT_HELPER_URL.match(url):
+        return None
+    if GIT_REMOTE_SCHEMES.match(url):
+        return ""
+    if url.startswith("file://"):
+        rest = url[len("file://"):]
+        slash = rest.find("/")
+        return None if slash < 0 or "%" in rest else rest[slash:]
+    if GIT_SCHEME_URL.match(url):
+        return None
+    colon, slash = url.find(":"), url.find("/")
+    if colon >= 0 and not (0 <= slash < colon):
+        return ""
+    return None if url.startswith("~") else url
+
+
+def git_is_this_repository(path: str, top: Path, primary: Path) -> bool:
+    """Whether a push to ``path``, read from the top of the work tree as git
+    reads it, lands in the repository the session works in: the work tree
+    itself (`.`), the main checkout, or its `.git`. Anywhere else, inside the
+    worktree too, is not placed: git follows a `.git` file there
+    (`gitdir: <elsewhere>`), a `<path>.git` link or a `<path>.git/.git` file
+    (git 2.54 pushed through each)."""
+    target = (Path(path) if os.path.isabs(path) else top / path).resolve()
+    return target in {top.resolve(), primary.resolve(), (primary / ".git").resolve()}
+
+
+def git_remote_nick(name: str) -> bool:
+    """Whether git looks ``name`` up as a remote before reading it as a URL:
+    a name with no slash, other than `.` and `..`."""
+    return bool(name) and name not in {".", ".."} and "/" not in name
+
+
+# What a push may go through, read in one `git config` call: each remote's
+# URLs, each `url.<base>.insteadOf` and `pushInsteadOf` rewrite, and the
+# names a push with no repository picks among.
+GIT_PUSH_CONFIG = (
+    r"^remote\..+\.(url|pushurl)$|^url\..+\.(insteadof|pushinsteadof)$"
+    r"|^branch\..+\.(remote|pushremote)$|^remote\.pushdefault$"
+)
+
+
+class GitPushConfig(NamedTuple):
+    remotes: dict[str, list[str]]
+    rewrites: list[tuple[str, str]]
+    defaults: list[str]
+
+
+def git_push_config(cwd: Path) -> GitPushConfig | None:
+    """The config a push from ``cwd`` reads, as git itself answers (every
+    scope and include); None where git does not answer."""
+    try:
+        result = subprocess.run(
+            ["git", "config", "-z", "--get-regexp", GIT_PUSH_CONFIG],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=git_environment(),
+        )
+    except (OSError, UnicodeDecodeError):
+        return None
+    config = GitPushConfig({}, [], [])
+    if result.returncode == 1 and not result.stdout:
+        return config
+    if result.returncode != 0 or not result.stdout.endswith("\0"):
+        return None
+    for entry in result.stdout[:-1].split("\0"):
+        key, newline, value = entry.partition("\n")
+        if not newline:
+            return None
+        section, _, rest = key.partition(".")
+        subsection, _, name = rest.rpartition(".")
+        if section == "remote" and not subsection:
+            config.defaults.append(value)
+        elif section == "remote":
+            config.remotes.setdefault(subsection, []).append(value)
+        elif section == "url":
+            config.rewrites.append((subsection, value))
+        else:
+            config.defaults.append(value)
+    return config
+
+
+def git_rewritten_urls(url: str, rewrites: list[tuple[str, str]]) -> list[str]:
+    """``url`` and every rewrite of it a `url.<base>.insteadOf` or
+    `pushInsteadOf` makes. Git applies only the longest match; reading each
+    one only refuses more."""
+    return [url] + [base + url[len(prefix):] for base, prefix in rewrites if url.startswith(prefix)]
+
+
+def git_legacy_remotes(primary: Path) -> bool:
+    """Whether the repository keeps remotes in `.git/remotes` or
+    `.git/branches` files, which git reads beside the config."""
+    for folder in ("remotes", "branches"):
+        try:
+            if any((primary / ".git" / folder).iterdir()):
+                return True
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+    return False
+
+
+# Verbs that may come before a push on its line (`mutation_directories`):
+# each writes only objects, refs and the index, never a config or a work-tree
+# file a push reads. A push's own `-u` records the destination it was just
+# placed for. `fetch` is left out: `fetch --set-upstream <path>` makes
+# `<path>` the branch's remote, which a later bare `git push` pushes to.
+GIT_CONFIG_FREE_VERBS = frozenset({"add", "commit", "push", "tag"})
+
+
+def git_push_destinations(verb: str, args: list[str], cwd: Path) -> list[Path] | None:
+    """What ``git push`` and ``git send-pack`` write besides the repository
+    they run in: nothing, or None where the destination may be another
+    repository on this machine.
+
+    The repository is the first operand, or push's last ``--repo`` when
+    there is none (git 2.54 pushes to the operand when both are given). A
+    push resolves a remote name through its URLs and push URLs and every
+    rewrite; git reads a name the config does not hold as a URL, a path
+    from the top, unless a legacy `.git/remotes` file names it, which fails
+    closed. Without a repository, push picks among the branch's
+    `pushRemote`, `remote.pushDefault`, the branch's `remote` and `origin`:
+    every configured remote and each of those names is read. send-pack
+    reads no config. A path is read from the top of the work tree, after
+    `git -C sub` too (git 2.54), and placed only when it is this repository
+    (`git_is_this_repository`).
+    """
+    table = GIT_PUSH_OPTIONS if verb == "push" else GIT_SEND_PACK_OPTIONS
+    parsed = git_transport_operands(args, table)
+    if parsed is None:
+        return None
+    operands, values = parsed
+    repository: str | None = operands[0] if operands else None
+    if verb == "push":
+        for name, value in values:
+            if name == "--recurse-submodules" and value not in {"check", "no"}:
+                # `on-demand` and `only` push each submodule to its own remote.
+                return None
+            if name == "--repo" and not operands:
+                repository = value or None
+    elif repository is None:
+        return []
+    if repository is not None and has_dynamic_markers(repository):
+        return None
+    state = checkout_state(cwd)
+    if state is None:
+        return None
+    top, _linked, primary = state
+    if verb == "send-pack":
+        urls = [str(repository)]
+    else:
+        config = git_push_config(cwd)
+        if config is None:
+            return None
+        if repository is None:
+            if git_legacy_remotes(primary):
+                return None
+            names = [*config.defaults, "origin"]
+            urls = [url for each in config.remotes.values() for url in each]
+            urls += [name for name in names if name not in config.remotes]
+        elif git_remote_nick(repository) and str(repository) in config.remotes:
+            urls = config.remotes[str(repository)]
+        elif git_remote_nick(repository) and git_legacy_remotes(primary):
+            return None
+        else:
+            urls = [str(repository)]
+        urls = [each for url in urls for each in git_rewritten_urls(url, config.rewrites)]
+    for url in urls:
+        path = git_url_local_path(url)
+        if path is None or (path and not git_is_this_repository(path, top, primary)):
+            return None
+    return []
 
 
 # Git's global options, before the subcommand, as git 2.54 reads them: exact
@@ -5737,6 +6027,10 @@ def mutation_path_operands(
             return git_worktree_mutation_paths(words, command_index, git_cwd)
         if words[command_index] == "checkout-index":
             return git_checkout_index_paths(words[command_index + 1 :], git_cwd)
+        if words[command_index] in {"push", "send-pack"}:
+            return git_push_destinations(
+                words[command_index], words[command_index + 1 :], git_cwd
+            )
         if words[command_index] in GIT_UNPLACED_RUNNERS or (
             words[command_index] == "submodule"
             and "foreach" in words[command_index + 1 :]
@@ -5878,12 +6172,20 @@ def mutation_directories(
     relinked: list[Path] | None = None,
     collected: list[tuple[tuple[str, ...], Path, tuple[str, ...], bool]] | None = None,
     alone: bool = True,
+    wrote: list[bool] | None = None,
 ) -> list[Path] | None:
     """Resolve the directory in which each mutating segment would run.
 
     ``relinked`` holds the entries earlier segments may have made into links
     (`relinked_locations`), shared with a nested shell's program: a later
     write at or through one is unprovable.
+
+    ``wrote``, shared the same way, holds whether an earlier segment wrote
+    something other than git's own objects and refs: a push is placed from
+    the config as it is before the line runs, so `git remote set-url o <dir>
+    && git push o`, or a `cp` over a nested repository's config, would push
+    where the check never looked. Such a push after a write is unproven;
+    the verbs of GIT_CONFIG_FREE_VERBS before it do not count.
 
     ``collected``, when given, receives each mutating segment as (its words
     after wrappers, the folder it runs in, the words before it, whether it is
@@ -5896,6 +6198,8 @@ def mutation_directories(
         return None
     if relinked is None:
         relinked = []
+    if wrote is None:
+        wrote = [False]
     tokens = tokenize_command(command)
     if tokens is None:
         return None
@@ -6019,17 +6323,22 @@ def mutation_directories(
                 relinked=relinked,
                 collected=collected,
                 alone=alone,
+                wrote=wrote,
             )
             if nested is None:
                 return None
             mutations.extend(nested)
             continue
         target = current
+        verb = ""
         if name == "git":
             _index, git_target = git_command(words, current)
             if _index is None or git_target is None:
                 return None
             target = git_target
+            verb = words[_index] if _index < len(words) else ""
+            if verb in {"push", "send-pack"} and wrote[0]:
+                return None
             if not read_only and any(
                 option in {"-c", "--config-env", "--git-dir", "--work-tree"}
                 or option.startswith(
@@ -6069,6 +6378,7 @@ def mutation_directories(
                         relinked=relinked,
                         collected=collected,
                         alone=False,
+                        wrote=wrote,
                     )
                     if nested is None:
                         return None
@@ -6106,6 +6416,8 @@ def mutation_directories(
             if made is None:
                 return None
             relinked.extend(made)
+            if verb not in GIT_CONFIG_FREE_VERBS:
+                wrote[0] = True
     return mutations
 
 

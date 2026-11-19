@@ -122,6 +122,22 @@ whose relative links now lead elsewhere (`mv deep/S S && touch S/x`). Make
 the link in one call and write through it in the next: by then it exists, and
 the path resolves to where it leads.
 
+## Pushes
+
+A push writes the refs and objects of the repository it names, and runs that
+repository's hooks. So `git push` and `git send-pack` run only to a remote URL
+(`https://`, `http://`, `ssh://`, `git://`, or scp-like `host:path`), or to
+this repository itself: `.`, the worktree, the main checkout or its `.git`.
+Any other destination is refused as unproven: a local path or `file://` URL
+(read from the top of the work tree, as git reads it), a remote helper, or a
+path inside the worktree, where git follows a `.git` file anywhere. A remote's
+URLs are read from git's config, with every `insteadOf` and `pushInsteadOf`
+rewrite, and a `git push` with no repository reads every remote. Adding or
+changing a remote still runs; the push to it is what is judged. The config is
+read before the line runs, so a push after another write on its line, other
+than `git add`, `commit`, `push` or `tag`, is refused: push in a call of its
+own.
+
 ## What a refusal says
 
 Each refusal names the way out. "mutation targets could not be resolved"

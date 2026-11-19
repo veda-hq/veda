@@ -1102,6 +1102,8 @@ class WorktreeBoundaryTest(BoundaryFixture):
         nested = self.claude / "nested"
         nested.mkdir()
         relative = os.path.relpath(outside, nested)
+        # A push is placed through its remote's URL.
+        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
         # interpret-trailers and the object-dir writers resolve from the top
         # of the work tree.
         top_relative = os.path.relpath(outside, self.claude)
@@ -1273,6 +1275,170 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 result = self.claude_bash(self.claude, command)
                 self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(outside.exists())
+
+    def test_git_push_to_another_local_repository_is_unproven(self) -> None:
+        """A push writes the refs and objects of the repository it names and
+        runs that repository's hooks (#200). A destination is placed only
+        when it is plainly remote, or this repository itself. Git reads a
+        path from the top of the work tree, after `git -C sub` too, and
+        follows a `.git` file inside the worktree anywhere (git 2.54)."""
+        outside = self.external / "repo"
+        nested = self.claude / "nested"
+        nested.mkdir()
+        # From the top, as git reads it; `git -C nested` does not move it.
+        from_top = os.path.relpath(outside, self.claude)
+        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
+        for command in (
+            f"git push {outside} HEAD:refs/heads/x",
+            f"git push {from_top} HEAD:x",
+            f"git -C nested push {from_top} HEAD:x",
+            f"git push file://{outside} HEAD:x",
+            f"git push file://localhost{outside} HEAD:x",
+            f"git push file://host{outside} HEAD:x",
+            "git push 'file:///s%20p' HEAD:x",
+            "git push FILE:///repo HEAD:x",
+            "git push testgit::/repo HEAD:x",
+            "git push ftp://example.invalid/repo HEAD:x",
+            "git push '~/repo' HEAD:x",
+            "git push ~/repo HEAD:x",
+            f"git push -f {outside} HEAD:x",
+            f"git push {outside} -f HEAD:x",
+            f"git push -qfo ci.skip {outside} HEAD:x",
+            f"git push -o ci.skip {outside} HEAD:x",
+            f"git push -- {outside} HEAD:x",
+            f"git push --repo={outside}",
+            f"git push --repo {outside}",
+            f"git push -u --repo={outside}",
+            # Inside the worktree but not this repository: git follows a
+            # `.git` file there, or a `<path>.git` link, to anywhere.
+            "git push nested HEAD:x",
+            "git push ./nested HEAD:x",
+            "git push .tmp/scratch.git HEAD:x",
+            # A name the config does not hold, which git reads as a path.
+            "git push nosuch HEAD:x",
+            # Options off git 2.54's `git push -h`, abbreviated, or missing
+            # their value; and submodules pushed to their own remotes.
+            "git push --forc origin HEAD:x",
+            "git push --mirr origin",
+            "git push --frobnicate origin HEAD:x",
+            "git push origin HEAD:x -o",
+            "git push --recurse-submodules=on-demand origin HEAD:x",
+            "git push --recurse-submodules only origin HEAD:x",
+            "git push $REPO HEAD:x",
+            f"git send-pack {outside} main",
+            f"git send-pack {from_top} main",
+            f"git -C nested send-pack {from_top} main",
+            f"git send-pack --thin file://{outside} main",
+            f"git send-pack --remote=origin {outside} main",
+            "git send-pack nested main",
+            # The config is read before the line runs: a write before the
+            # push on its line could move where it goes.
+            f"git remote set-url origin {outside} && git push origin main",
+            f"git config remote.origin.pushurl {outside} && git push origin HEAD:x",
+            f"git remote add o {outside}; git push o HEAD:x",
+            "git fetch --set-upstream . main && git push",
+            "touch .tmp/x && git push origin main",
+            f"sh -c 'git remote set-url origin {outside}' && git push origin main",
+            f"git remote set-url origin {outside} && sh -c 'git push origin main'",
+            f"git remote set-url origin {outside} && git send-pack origin main",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("mutation targets could not be resolved", result.stderr)
+        for command in (
+            "git push origin main",
+            "git push -u origin HEAD",
+            "git push",
+            "git push --all",
+            "git push --tags origin",
+            "git push -qf origin HEAD:x",
+            "git push --force-with-lease origin HEAD:x",
+            "git push --force-with-lease=main:abc origin HEAD:x",
+            "git push --no-force-with-lease origin HEAD:x",
+            "git push --signed=if-asked origin HEAD:x",
+            "git push -o ci.skip origin HEAD:x",
+            "git push -oci.skip origin HEAD:x",
+            "git push --push-option=ci.skip origin HEAD:x",
+            "git push --recurse-submodules=check origin HEAD:x",
+            "git push --recurse-submodules no origin HEAD:x",
+            "git push --repo=origin",
+            f"git push --repo={outside} origin HEAD:x",
+            "git push origin --delete x",
+            "git push https://github.com/veda-hq/veda.git HEAD:x",
+            "git push git@github.com:veda-hq/veda.git HEAD:x",
+            "git push ssh://git@github.com/veda-hq/veda.git HEAD:x",
+            # An unconfigured name is read as a URL: here scp-like ssh.
+            "git push github.com:veda HEAD:x",
+            # This repository itself: what every commit already writes.
+            "git push . HEAD:refs/heads/x",
+            "git -C nested push . HEAD:x",
+            f"git push {self.main} HEAD:x",
+            f"git push {self.main}/.git HEAD:x",
+            f"git push file://{self.main} HEAD:x",
+            f"git push {self.claude} HEAD:x",
+            "git push nested/.. HEAD:x",
+            "git send-pack . main:refs/heads/x",
+            f"git send-pack {self.main} main:refs/heads/x",
+            "git add tracked.txt && git commit -qm x && git push origin HEAD",
+            "git commit -qm x && git push",
+            "git push origin HEAD && git push origin --tags",
+            # Config alone writes no other repository; the push is read.
+            f"git remote add o {outside}",
+            f"git remote set-url origin {outside}",
+            f"git config remote.o.url {outside}",
+            f"git fetch {outside}",
+            f"git pull {outside} main",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_git_push_through_a_local_remote_is_unproven(self) -> None:
+        """A remote's URL, push URL, and each `url.<base>.insteadOf` or
+        `pushInsteadOf` rewrite of a URL are read from the config; a bare
+        `git push` reads every remote and each name it may pick (#200)."""
+        outside = self.external / "repo"
+        git(self.main, "remote", "add", "origin", "https://example.invalid/veda.git")
+        git(self.main, "config", "branch.claude-task.pushRemote", str(outside))
+        for command, expected in (
+            ("git push", 2),
+            ("git push --all", 2),
+            ("git push origin HEAD:x", 0),
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, expected, result.stderr)
+        git(self.main, "config", "--unset", "branch.claude-task.pushRemote")
+        git(self.main, "config", "branch.claude-task.remote", ".")
+        result = self.claude_bash(self.claude, "git push")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        git(self.main, "remote", "add", "loc", str(outside))
+        git(self.main, "remote", "add", "rel", "../../../../external/repo")
+        git(self.main, "remote", "add", "pu", "https://example.invalid/pu.git")
+        git(self.main, "config", "remote.pu.pushurl", f"file://{outside}")
+        git(self.main, "remote", "add", "gh", "https://mirror.invalid/gh.git")
+        git(self.main, "config", f"url.{self.external}/.pushInsteadOf", "https://mirror.invalid/")
+        git(self.main, "remote", "add", "Up", "https://example.invalid/up.git")
+        for command in (
+            "git push loc HEAD:x",
+            "git push rel HEAD:x",
+            "git push pu HEAD:x",
+            "git push gh HEAD:x",
+            "git push https://mirror.invalid/gh.git HEAD:x",
+            "git push up HEAD:x",
+            "git push",
+            "git push -u",
+            "git push --tags",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("mutation targets could not be resolved", result.stderr)
+        for command in ("git push origin HEAD:x", "git push Up HEAD:x"):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_git_inspection_flags_preserve_reads_and_deny_ambiguous_writes(self) -> None:
         reads = ("git diff --stat", "git show HEAD", "git log -1 --oneline", "git diff -- --output=filename", "git show -- --ext-diff")

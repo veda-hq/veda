@@ -7,11 +7,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { DEFAULTS, type Config } from "./config.ts";
 import {
@@ -23,6 +24,40 @@ import {
 
 const STAGES = resolve(import.meta.dirname, "..", "shell", "stages.sh");
 
+/**
+ * Git hermetic for the whole process: the fixtures' git and the hooks the
+ * supervisor runs spawn git with this process's environment. A global trace2
+ * event target (a daemon's socket) could otherwise write into a fixture's
+ * .git while after() removes it, and fail it with ENOTEMPTY.
+ */
+const HERMETIC = {
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_TRACE2: "0",
+  GIT_TRACE2_EVENT: "0",
+  GIT_TRACE2_PERF: "0",
+};
+const inherited = Object.entries(process.env).filter(([name]) =>
+  name.startsWith("GIT_"),
+);
+for (const [name] of inherited) delete process.env[name];
+Object.assign(process.env, HERMETIC);
+
+/** Every folder the tests made, removed once they are done. */
+const dirs: string[] = [];
+after(() => {
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  for (const name of Object.keys(HERMETIC)) delete process.env[name];
+  Object.assign(process.env, Object.fromEntries(inherited));
+});
+
+const scratch = (prefix: string): string => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  dirs.push(dir);
+  return dir;
+};
+
 const git = (cwd: string, ...args: string[]) =>
   execFileSync(
     "git",
@@ -33,6 +68,12 @@ const git = (cwd: string, ...args: string[]) =>
       "user.email=t@t",
       "-c",
       "commit.gpgsign=false",
+      // No detached `git maintenance run --auto` still writing under .git
+      // when after() removes the repository.
+      "-c",
+      "maintenance.auto=false",
+      "-c",
+      "gc.auto=0",
       ...args,
     ],
     {
@@ -47,7 +88,7 @@ const repo = (
   name = "pre-push",
   commit = true,
 ): { root: string; hook: string } => {
-  const root = mkdtempSync(join(tmpdir(), "dvara-run-"));
+  const root = scratch("dvara-run-");
   git(root, "init", "-q", "-b", "main");
   writeFileSync(join(root, ".gitignore"), ".dvara/\nhooks/\n");
   if (commit) {
@@ -303,7 +344,7 @@ describe("supervise", () => {
   });
 
   it("runs outside a repository, knowing nothing of it", async () => {
-    const root = mkdtempSync(join(tmpdir(), "dvara-bare-"));
+    const root = scratch("dvara-bare-");
     const hook = join(root, "pre-commit");
     writeFileSync(hook, "echo hi");
     const { opts } = options(root, {}, { quietHooks: [] });
@@ -559,7 +600,7 @@ describe("quiet output", () => {
     // The leftover job holds the hook's output open until the test releases
     // it, so no clock decides the outcome. Its 30 s fallback turns a
     // supervisor that waits for the job into a failure, not a hang.
-    const marks = mkdtempSync(join(tmpdir(), "dvara-leftover-"));
+    const marks = scratch("dvara-leftover-");
     const release = join(marks, "release");
     const late = join(marks, "late");
     const { root, hook } = repo(

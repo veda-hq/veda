@@ -40,8 +40,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts --test-coverage-exclude=corpus/**/*.test.ts src/**/*.test.ts corpus/**/*.test.ts",
-    "test:python": "python3 -B -m unittest discover -s python/tests -t python",
+    "test": "node ../../scripts/fresh-tmpdir.mjs node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts --test-coverage-exclude=corpus/**/*.test.ts src/**/*.test.ts corpus/**/*.test.ts",
+    "test:python": "node ../../scripts/fresh-tmpdir.mjs python3 -B -m unittest discover -s python/tests -t python",
     "check": "pnpm typecheck && pnpm test:python && pnpm test && pnpm build"
   },
   "devDependencies": {

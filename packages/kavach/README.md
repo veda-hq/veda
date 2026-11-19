@@ -8,7 +8,7 @@ judged before it runs. Part of [Veda](https://github.com/veda-hq/veda).
 | Guard | Refuses | Entry point |
 | --- | --- | --- |
 | Worktree boundary | Any write outside the agent's own git worktree: a Bash command, an Edit or a Write; any write to the paths the project protects inside it, such as its git hooks (`protectedPaths`, settings below); and, while a push runs, any write into it (below). Read-only commands pass from any checkout. | `python3 python/kavach/worktree_guard.py` |
-| Command guard | Git-hook bypasses (`--no-verify`, `core.hooksPath`…), history-destroying pushes, a variable that hands a program text to run (`NODE_OPTIONS`, below), and the project's own command rules (settings below). It also runs the Bash rules that hold a lesson (below), and warns of a message the shell would change. | `python3 python/kavach/command_guard.py` |
+| Command guard | Git-hook bypasses (`--no-verify`, `core.hooksPath`…), history-destroying pushes, a variable or setting that makes a program run text or a file the guard does not read (`NODE_OPTIONS`, `PYTHONPATH`, npm's and pnpm's settings, below), and the project's own command rules (settings below). It also runs the Bash rules that hold a lesson (below), and warns of a message the shell would change. | `python3 python/kavach/command_guard.py` |
 | Tool guard | The rules that hold a lesson for tools other than Bash: Write, Edit, RemoteTrigger, the desktop app's sync tool and Workflow (below). | `python3 python/kavach/tool_guard.py` |
 | Rule checks | The project's own checks, written in TypeScript, refusing or warning with the rule's reason. | `kavach-rule-checks` (`dist/rule-checks/cli.js`) |
 
@@ -234,8 +234,16 @@ packages (`pnpm -r <word>`), a word that is a script of any selected package
 is a script, as pnpm 12.9 ran it only where it is one; the workspace root is
 not selected unless `--include-workspace-root` is given, and under a filter
 the guard cannot resolve, only a script of every package counts.
+
+A tool argument to `mise exec` (`mise exec node@24 -- …`, `mise x npm:cowsay -c …`)
+puts that tool's bins ahead of `PATH` (`mise exec node@24.21.0 -- which node`
+printed mise's node), so the program's name proves nothing, as under
+`npx -p <pkg>`. It is refused, as is an `exec` option the guard does not
+list. `mise exec -- go test ./...` runs, with the tools `mise.toml` names.
+
 yarn's and bun's own forms are not read this way (neither is installed here
-to probe); their `exec` is refused.
+to probe). Their `exec` is refused, and so is `yarn dlx`, which fetches the
+package it runs (yarn's documentation).
 
 A script file a runner runs (`pnpm exec bash .tmp/x.sh`,
 `pnpm exec tsx .tmp/x.ts`, `pnpm exec node .tmp/x.js`) still runs, as does
@@ -258,9 +266,53 @@ It reads an assignment, `env`, `export`, `declare` and the rest as
 `protectedVariables` does, in every checkout, with no settings needed. Every
 value is refused, `NODE_OPTIONS=--max-old-space-size=4096` too: put such a
 setting in a package script. Not listed, since probing found no program
-text they run: `RUBYOPT`, `PYTHONSTARTUP` (read only when interactive), and
-`NODE_OPTIONS`'s `--eval`, which node refuses there. A setting written into
-a file (`.npmrc`'s `node-options`) is repository content, as a script is.
+text they run: `PYTHONSTARTUP` (read only when interactive) and
+`NODE_OPTIONS`'s `--eval`, which node refuses there.
+
+It refuses, the same way, the variables that make a program run a file the
+guard does not read:
+
+- `SHELLOPTS=xtrace` with `PS4='$(…)'`, which runs in every bash and every
+  package script; `PS4` alone does so under `bash -x` or `set -x`.
+- `ZDOTDIR` and `HOME`: zsh sources their `.zshenv`, and npm reads
+  `$HOME/.npmrc`.
+- `XDG_CONFIG_HOME`: pnpm reads node-options and a global pnpmfile from its
+  `pnpm/` folder.
+- `PYTHONPATH` and `PYTHONUSERBASE`: a `sitecustomize.py` or
+  `usercustomize.py` there runs in every python, and a module there shadows
+  the one a program imports.
+- `RUBYOPT` (`-r<file>`) and `RUBYLIB`.
+
+**npm's and pnpm's settings are refused as a class:**
+
+- any `npm_config_*` or `pnpm_config_*` variable, in any case, `-` or `_`;
+- any pnpm `--config.<key>`, camelCase included (`--config.nodeOptions`);
+- npm's `--node-options`, `--userconfig`, `--globalconfig` and
+  `--script-shell`, and pnpm's `--pnpmfile` and `--global-pnpmfile`.
+
+One pass found four keys that run code:
+
+- node-options;
+- script-shell, which runs every package script through the file it names;
+- userconfig and globalconfig, whose file can hold node-options;
+- pnpmfile and global-pnpmfile, which pnpm runs on install.
+
+Only settings that run nothing pass, in any spelling:
+`manage-package-manager-versions`, `loglevel`, `color`, `update-notifier`,
+`fund`, `audit` and `progress`. So
+`npm_config_manage_package_manager_versions=false pnpm -v` runs. npm also
+takes a setting after its verb and expands any prefix it can place, so in
+a worktree an npm or npx line is refused when it gives node-options,
+userconfig, globalconfig or script-shell anywhere before a `--`, spelled in
+full or as a prefix (`npm run x --userc <file>`, `--node-o=…`, `--scr`,
+`--globalc`: npm 11 ran each).
+
+These cost a consumer `HOME=<tmp>` for test isolation and
+`PYTHONPATH=src pytest`; put such a setting in a package script.
+
+A setting or file written inside the checkout (`.npmrc`'s `node-options`, a
+`.zshenv`, a `sitecustomize.py` on the default path, `mise.toml`) is
+repository content, as a script is.
 
 ## What a refusal says
 

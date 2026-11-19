@@ -899,9 +899,9 @@ def unreadable_constructs(
             ) is None:
                 add(
                     f"`{head}` starting a program the guard reads as it would without `{head}` and "
-                    "cannot prove (`deno eval`, `xargs`), a package it would download, a bin that is "
-                    "not installed, or an option the guard does not list for it; install the bin as "
-                    "a dependency, or drop the option"
+                    "cannot prove (`deno eval`, `xargs`), a package or tool it would download or put "
+                    "first, a bin that is not installed, or an option the guard does not list for it; "
+                    "install the bin as a dependency, or drop the option"
                 )
             else:
                 add(f"`{head}`, a program whose writes the guard does not know")

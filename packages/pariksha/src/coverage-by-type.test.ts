@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import {
   categoryOf,
   DEFAULT_CONFIG,
@@ -23,9 +23,20 @@ const loaded = loadTypescript();
 if (typeof loaded === 'string') throw new Error(loaded);
 const ts: Ts = loaded;
 
+const temps: string[] = [];
+/** A fresh temporary directory, removed when this file's tests end. */
+const temp = (prefix: string): string => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  temps.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
+
 /** A directory with these files written, its path returned. */
 const tree = (files: Record<string, string>): string => {
-  const root = mkdtempSync(join(tmpdir(), 'pariksha-cov-'));
+  const root = temp('pariksha-cov-');
   for (const [path, body] of Object.entries(files)) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     writeFileSync(join(root, path), body);
@@ -312,7 +323,7 @@ describe('entries, treePaths and listedPaths', () => {
   it('reads relative and absolute entries against the real root, skipping symlinks and directories', () => {
     const root = realpathSync(tree({ 'scripts/services/tool.ts': '', 'app/services/s.ts': '' }));
     symlinkSync('s.ts', join(root, 'app/services/link.ts'));
-    const alias = join(mkdtempSync(join(tmpdir(), 'pariksha-alias-')), 'checkout');
+    const alias = join(temp('pariksha-alias-'), 'checkout');
     symlinkSync(root, alias);
     const listed = listedPaths(root, [join(alias, 'scripts/services/tool.ts'), 'app/services/s.ts', 'app/services/link.ts', 'app'].join('\n'));
     assert.deepEqual(listed, ['scripts/services/tool.ts', 'app/services/s.ts']);

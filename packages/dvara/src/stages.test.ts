@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import { DEFAULTS } from "./config.ts";
 import {
   parseStageLists,
@@ -134,7 +134,15 @@ describe("parseStageLists", () => {
 });
 
 describe("readStageLists", () => {
-  const root = () => mkdtempSync(join(tmpdir(), "dvara-stages-"));
+  const dirs: string[] = [];
+  after(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+  const root = () => {
+    const dir = mkdtempSync(join(tmpdir(), "dvara-stages-"));
+    dirs.push(dir);
+    return dir;
+  };
 
   it("uses the config's lists when no file is named, and none when they are empty", () => {
     assert.equal(readStageLists("/", DEFAULTS), null);

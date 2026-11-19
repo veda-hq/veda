@@ -1,7 +1,7 @@
 // The shell helpers, run in real bash.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, it } from "node:test";
@@ -18,8 +18,9 @@ const bash = (script: string, env: NodeJS.ProcessEnv = {}) => {
 };
 
 describe("stages.sh", () => {
-  it("writes stage markers and records where the supervisor says", () => {
+  it("writes stage markers and records where the supervisor says", (t) => {
     const dir = mkdtempSync(join(tmpdir(), "dvara-sh-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
     const stages = join(dir, "s");
     const records = join(dir, "r");
     const result = bash(

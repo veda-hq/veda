@@ -1,13 +1,35 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { run } from './cli.ts';
 import { affectedTargets, configInputs, DEFAULT_CONFIG, lintPackagesMoved, lintTargets, parseConfig } from './eslint-targets.ts';
 
-const temp = (): string => realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-lint-')));
+/**
+ * Git hermetic for the whole process, as in cli.test.ts: the code under test
+ * spawns git with this process's environment, as the fixtures do. A global
+ * trace2 event target (a daemon's socket) could otherwise write into a
+ * fixture's .git while after() removes it, and fail it with ENOTEMPTY.
+ */
+const HERMETIC = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TRACE2: '0', GIT_TRACE2_EVENT: '0', GIT_TRACE2_PERF: '0' };
+const inherited = Object.entries(process.env).filter(([name]) => name.startsWith('GIT_'));
+for (const [name] of inherited) delete process.env[name];
+Object.assign(process.env, HERMETIC);
+
+const temps: string[] = [];
+/** A fresh temporary directory, by its real path, removed when this file's tests end. */
+const temp = (): string => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-lint-')));
+  temps.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+  for (const name of Object.keys(HERMETIC)) delete process.env[name];
+  Object.assign(process.env, Object.fromEntries(inherited));
+});
 const put = (root: string, file: string, text = '') => {
   mkdirSync(dirname(join(root, file)), { recursive: true });
   writeFileSync(join(root, file), text);
@@ -110,7 +132,9 @@ describe('lintPackagesMoved', () => {
 });
 
 describe('pariksha eslint-targets', () => {
-  const git = (root: string, ...args: string[]) => execFileSync('git', ['-c', 'user.email=a@example.com', '-c', 'user.name=a', '-c', 'commit.gpgsign=false', ...args], { cwd: root, stdio: 'pipe' });
+  // No detached auto-maintenance after a commit: it could write into a fixture as it is removed.
+  const git = (root: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0', '-c', 'user.email=a@example.com', '-c', 'user.name=a', '-c', 'commit.gpgsign=false', ...args], { cwd: root, stdio: 'pipe' });
   const commit = (root: string, message: string) => {
     git(root, 'add', '-A');
     git(root, 'commit', '-q', '-m', message);

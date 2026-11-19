@@ -130,8 +130,9 @@ export function run(
       done = true;
       unlisten();
       // What was left is printed before the removal is tried, so a folder
-      // that cannot be removed is still named; a failure to read or remove
-      // the directory rejects the run.
+      // that cannot be removed is still named. A failure to read or remove
+      // the directory, or to print, rejects the run with that error as it is
+      // (an fs error names its path).
       try {
         /** @type {number} */
         let exit;
@@ -144,7 +145,7 @@ export function run(
         }
         resolve(exit);
       } catch (error) {
-        reject(new Error(`fresh-tmpdir: cannot read or remove the run's TMPDIR ${dir}`, { cause: error }));
+        reject(error);
       }
     };
     started.on('error', error => {

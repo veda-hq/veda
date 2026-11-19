@@ -150,11 +150,20 @@ describe('run', () => {
     const read = () => {
       throw denied;
     };
-    await assert.rejects(run([process.execPath, '-e', ''], { base, stderr: sink(), signals: new EventEmitter(), read }), error => {
-      assert.match(error.message, /^fresh-tmpdir: cannot read or remove the run's TMPDIR /);
-      assert.equal(error.cause, denied);
-      return true;
-    });
+    await assert.rejects(run([process.execPath, '-e', ''], { base, stderr: sink(), signals: new EventEmitter(), read }), error => error === denied);
+    assert.deepEqual(readdirSync(base), []);
+  });
+
+  test('output it cannot print fails the run with that error, and the directory is still removed', async () => {
+    const base = scratch();
+    const broken = new Error('EPIPE: broken pipe');
+    const stderr = {
+      write: () => {
+        throw broken;
+      },
+    };
+    const program = `require('node:fs').writeFileSync(require('node:path').join(require('node:os').tmpdir(), 'left'), '')`;
+    await assert.rejects(run([process.execPath, '-e', program], { base, stderr, signals: new EventEmitter() }), error => error === broken);
     assert.deepEqual(readdirSync(base), []);
   });
 
@@ -168,11 +177,7 @@ describe('run', () => {
       throw busy;
     };
     const program = `require('node:fs').writeFileSync(require('node:path').join(require('node:os').tmpdir(), 'stuck'), '')`;
-    await assert.rejects(run([process.execPath, '-e', program], { base, stderr, signals: new EventEmitter(), remove }), error => {
-      assert.match(error.message, /^fresh-tmpdir: cannot read or remove the run's TMPDIR /);
-      assert.equal(error.cause, busy);
-      return true;
-    });
+    await assert.rejects(run([process.execPath, '-e', program], { base, stderr, signals: new EventEmitter(), remove }), error => error === busy);
     assert.match(stderr.lines.join(''), leftOne(base, 'stuck'));
     assert.equal(tried.length, 1);
     rmSync(tried[0], { recursive: true, force: true });

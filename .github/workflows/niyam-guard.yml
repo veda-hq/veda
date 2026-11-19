@@ -1,0 +1,22 @@
+# Written by niyam onboard: the shared Guard's caller. onboard writes it again on every run, its pin
+# moving with .github/workflows/niyam.yml's; change it by running onboard, not by hand. It holds nothing a pull
+# request could weaken: pull_request_target runs the default branch's copy of it, and the Guard it
+# calls runs from the niyam release it pins. Its check is niyam-guard / judge.
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+    branches: ["main"]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  niyam-guard:
+    name: niyam-guard
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    uses: veda-hq/niyam/.github/workflows/shared-guard.yml@v0.7.5

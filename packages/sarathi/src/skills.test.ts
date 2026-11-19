@@ -138,6 +138,7 @@ describe('skills/research-first/SKILL.md', () => {
       'https://www.anthropic.com/constitution',
       'https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices',
       'https://www.anthropic.com/research/measuring-agent-autonomy',
+      'https://arxiv.org/abs/2605.07937',
     ]) {
       assert.ok(sources.includes(url), url);
     }

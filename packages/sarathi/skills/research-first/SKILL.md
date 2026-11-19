@@ -23,14 +23,14 @@ have been settled.
 
 Only the owner can answer these. Ask them:
 
-| Kind | Example | Grounding |
-| --- | --- | --- |
-| Preference or taste | naming, tone, a UX choice | STaR-GATE [1] |
-| Authority or approval | merging, scope beyond the request, a new dependency | Bain RAPID, the Decide role [2]; Model Spec, scope of autonomy [3a] |
-| A private or undocumented fact | a deploy step in someone's head, a business goal | Claude Code best practices, "Tell Claude what it can't see" [4] |
-| Money or credentials | spending, keys | Model Spec, side effects [3c]; OWASP LLM01, human approval [5] |
-| Irreversible steps or shared systems | deletion, force-push, publishing | Amazon 2015 letter, Type 1 decisions [6] |
-| Ambiguity left after research | the candidate solutions still disagree | Claude's constitution, "genuine ambiguity" [11a]; ClarifyGPT [7]; Clarify When Necessary [8]; Ambig-SWE [9] |
+| Kind | Example | Grounding | Declare |
+| --- | --- | --- | --- |
+| Preference or taste | naming, tone, a UX choice | STaR-GATE [1] | `preference` |
+| Authority or approval | merging, scope beyond the request, a new dependency | Bain RAPID, the Decide role [2]; Model Spec, scope of autonomy [3a] | `approval` |
+| A private or undocumented fact | a deploy step in someone's head, a business goal | Claude Code best practices, "Tell Claude what it can't see" [4] | `private` |
+| Money or credentials | spending, keys | Model Spec, side effects [3c]; OWASP LLM01, human approval [5] | `money` |
+| Irreversible steps or shared systems | deletion, force-push, publishing | Amazon 2015 letter, Type 1 decisions [6] | `irreversible` |
+| Ambiguity left after research | the candidate solutions still disagree | Claude's constitution, "genuine ambiguity" [11a]; ClarifyGPT [7]; Clarify When Necessary [8]; Ambig-SWE [9] | `ambiguity` |
 
 Researchable, so never asked: API behaviour, defaults, version facts, limits,
 error meanings, repository conventions, and state you can read (has the pull
@@ -86,6 +86,10 @@ question already answered.
 
 - Say what research found, with links.
 - Say why no source can settle the rest: which kind in the table above.
+  Declare it on a line of its own, `Kind: <word>`, with the word from the
+  Declare column (`Kind: preference`): in each `AskUserQuestion` question,
+  in the `wrap_up` ask, or in the closing paragraphs. A header counts too,
+  but holds 12 characters (`Kind: money` fits, `Kind: approval` does not).
 - Check which options actually work before offering them; never offer an
   option a source already rules out.
 - Put the recommended option first.
@@ -106,9 +110,21 @@ above. For other questions it does not count. The handler checks that a
 look happened, not what it found: asking again in the same turn goes
 through, so an owner-only question is asked again unchanged.
 
+A question that declares an owner-only kind (`Kind: preference`, from the
+Declare column) goes through the first time, and the turn's one hold stays
+for the next undeclared ask. `ambiguity` passes only after a look, since it
+is what is left after research. A declared researchable kind (`api`,
+`default`, `version`, `limit`, `error`, `convention`, `state`) stays held.
+The gate logs every kind it reads, so a kind declared to skip research
+shows. Holding a real owner-only question costs most early in a run: in one
+study, goal clarification raised pass@3 from 0.40
+with no clarification to 0.78 when asked at 10% of the run, and lost nearly
+all its value later [14]. Its samples are small (5 to 28 per
+dimension), so read that as direction, not size.
+
 ## Sources
 
-Read 2026-11-16; 11 to 13 read 2026-11-19.
+Read 2026-11-16; 11 to 14 read 2026-11-19.
 
 1. Andukuri et al., "STaR-GATE: Teaching Language Models to Ask Clarifying
    Questions", arXiv 2403.19154, abstract.
@@ -166,3 +182,9 @@ Read 2026-11-16; 11 to 13 read 2026-11-19.
     between proposed approaches" 35%, "To gather diagnostic information or
     test results" 21%.
     https://www.anthropic.com/research/measuring-agent-autonomy
+14. Gulati et al., "Ask Early, Ask Late, Ask Right: When Does Clarification
+    Timing Matter for Long-Horizon Agents?", arXiv 2605.07937 v1, 2026-05-08:
+    goal clarification "loses nearly all value after 10% of execution"
+    (abstract); "0.78 at 10% vs. 0.40 NC", NC meaning no clarification; samples
+    of 5 to 28 per dimension.
+    https://arxiv.org/abs/2605.07937

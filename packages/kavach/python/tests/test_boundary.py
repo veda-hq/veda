@@ -1805,6 +1805,8 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "yarn dlx cowsay",
             "yarn dlx --package cowsay touch .tmp/x",
             "yarn --cwd nested dlx cowsay",
+            "yarn workspace x dlx cowsay",
+            "yarn workspaces foreach -A dlx cowsay",
             # #277: npm reads node-options from the file `--userconfig` names.
             "npm --userconfig .tmp/rc run check",
             "npm --userconfig=.tmp/rc exec -- fixturetool",
@@ -1853,6 +1855,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "npm ls --global",
             # A script named dlx is not `yarn dlx` (Cubic, #285).
             "yarn run dlx",
+            "yarn workspace x run dlx",
             "pnpm dlx tsx .tmp/x.ts",
             "mise exec -- go test ./...",
             "mise -q exec -- go test ./...",

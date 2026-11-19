@@ -5833,11 +5833,12 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
     it runs (yarn's documentation).
     """
     if name == "yarn":
-        # The verb is the first word that is not an option (`yarn run dlx`
-        # runs a script named dlx). An option before it may take the next
-        # word, so with one there, a `dlx` anywhere fails closed.
-        verb = next((word for word in args if not word.startswith("-")), None)
-        if verb == "dlx" or (args[:1] and args[0].startswith("-") and "dlx" in args):
+        # `dlx` anywhere before a `--` fails closed, since yarn takes a
+        # command after `workspace <name>` and `workspaces foreach` too
+        # (yarn's documentation), except as the script `run` names
+        # (`yarn run dlx`, Cubic on #285).
+        words = args[: args.index("--")] if "--" in args else args
+        if any(word == "dlx" and (at == 0 or words[at - 1] != "run") for at, word in enumerate(words)):
             return None
         return False
     if name == "pnpm":

@@ -52,6 +52,29 @@ off. If the refusal is wrong, it is a kavach bug: tell Alok the command
 and the reason. If the reason says sarathi is not installed, the main
 checkout needs `pnpm install` after a pin bump: ask Alok.
 
+## Git hooks
+
+git runs the tracked hooks in `.githooks/`: `pre-commit` (dvara's records
+and frozen gates) and `pre-push` (those gates, `pnpm guards`, then niyam's
+pre-push for an agent session). The main checkout's shared git config sets
+`core.hooksPath` to `.githooks`, set once by Alok. Worktrees share that
+config, and the path is relative, so each worktree runs its own branch's
+hooks under its own `node_modules`. When a hook says a pinned package is
+not installed, run `pnpm install` in your worktree. The hooks folder in the
+git directory, where `niyam onboard` once wrote its pre-push, never runs.
+onboard now reads `.githooks/pre-push` as its own and leaves it alone. A
+Claude cloud session's fresh clone has no such config, so niyam's session
+start writes its own pre-push into that clone's git directory. Check the
+setting with `git config --show-scope --show-origin --get-all core.hooksPath`,
+run inside the checkout or worktree you mean. Outside a repository it reads
+only global and system config. It should print one `local` line, from the
+main checkout's config file, with the value `.githooks`. git uses the last
+line it prints. A `global` or `system` line comes first and loses to the
+`local` one. The repository has `extensions.worktreeConfig` on, so a
+`worktree` line, from that worktree's own `config.worktree`, comes last and
+wins there, and that worktree skips `.githooks`. For either, tell Alok,
+and leave the setting alone.
+
 ## Merging
 
 Right after `gh pr create`, turn on auto-merge: `gh pr merge --auto --squash`

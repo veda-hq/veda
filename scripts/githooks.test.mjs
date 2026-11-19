@@ -10,9 +10,13 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
+// The pinned niyam's own reading of a repository's pre-push hook, which
+// `niyam onboard` and a cloud session's start act on, and the hook onboard
+// writes into .git/hooks.
+const { PRE_PUSH_HOOK, prePushHook } = await import(pathToFileURL(join(ROOT, 'node_modules', '@veda-hq', 'niyam', 'dist', 'onboard.js')).href);
 const PINS = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).devDependencies;
 const PIN = PINS['@veda-hq/dvara'];
 const NIYAM_PIN = PINS['@veda-hq/niyam'];
@@ -33,9 +37,10 @@ const env = {
   PNPM_CALLS: pnpmCalls,
   NIYAM_CALLS: niyamCalls,
   STRAY_CALLS: strayCalls,
+  COPY_RUNS: join(scratch, 'copy-runs'),
 };
 for (const name of Object.keys(env)) {
-  if (name.startsWith('DVARA_') || name.startsWith('GIT_') || name === 'NIYAM_AGENT' || name === 'CLAUDECODE') delete env[name];
+  if (name.startsWith('DVARA_') || name.startsWith('GIT_') || name === 'NIYAM_AGENT' || name === 'NIYAM_REFUSE' || name === 'CLAUDECODE') delete env[name];
 }
 // No automatic maintenance: a commit's detached `git maintenance run --auto`
 // outlives it and can write into the scratch folder while it is removed.
@@ -58,6 +63,14 @@ function commitWithoutHooks(cwd, message) {
   const tree = git(cwd, 'write-tree').stdout;
   const commit = git(cwd, 'commit-tree', tree, '-p', 'HEAD', '-m', message).stdout;
   assert.equal(git(cwd, 'update-ref', 'refs/heads/main', commit).code, 0);
+}
+
+/** A commit of `file`, through the hooks. @param {string} cwd @param {string} file */
+function commitFile(cwd, file) {
+  writeFileSync(join(cwd, file), `${file}\n`);
+  git(cwd, 'add', file);
+  const result = git(cwd, 'commit', '-q', '-m', file);
+  assert.equal(result.code, 0, result.out);
 }
 
 let repo = '';
@@ -88,7 +101,9 @@ before(() => {
   mkdirSync(join(repo, 'node_modules', '@veda-hq', 'niyam'));
   writeFileSync(join(repo, 'node_modules', '@veda-hq', 'niyam', 'package.json'), JSON.stringify({ name: '@veda-hq/niyam', version: NIYAM_PIN }));
   mkdirSync(join(repo, 'node_modules', '.bin'));
-  writeFileSync(join(repo, 'node_modules', '.bin', 'niyam'), '#!/bin/sh\n{ echo "args: $*"; cat; } >> "$NIYAM_CALLS"\n');
+  // It records its arguments, the agent it was told of and git's ref lines,
+  // and refuses when NIYAM_REFUSE is set, as niyam refuses a push.
+  writeFileSync(join(repo, 'node_modules', '.bin', 'niyam'), '#!/bin/sh\n{ echo "args: $*"; echo "agent: ${NIYAM_AGENT:-}"; cat; } >> "$NIYAM_CALLS"\n[ -z "${NIYAM_REFUSE:-}" ]\n');
   chmodSync(join(repo, 'node_modules', '.bin', 'niyam'), 0o755);
   writeFileSync(join(repo, 'package.json'), JSON.stringify({ devDependencies: { '@veda-hq/dvara': PIN, '@veda-hq/niyam': NIYAM_PIN } }));
   // veda's own stage lists, so a hook that strays from them fails here.
@@ -100,7 +115,25 @@ before(() => {
     git(repo, 'config', key, value);
   }
   git(repo, 'remote', 'add', 'origin', remote);
+  // The hooks onboard left in .git/hooks, as on a machine onboarded before
+  // core.hooksPath was set: git must run neither once it is. onboard's
+  // pre-push runs the launcher in ~/.config, a stray here.
+  writeFileSync(join(repo, '.git', 'hooks', 'pre-push'), PRE_PUSH_HOOK, { mode: 0o755 });
+  writeFileSync(join(repo, '.git', 'hooks', 'pre-commit'), `#!/bin/sh\necho "$0" >> "$STRAY_CALLS"\n`, { mode: 0o755 });
 });
+
+/** The repository's hooks as niyam sees them: the pinned niyam's prePushHook with a real git. @param {string} root */
+function niyamReadsHook(root) {
+  const sys = {
+    exec: (command, args, { cwd }) => {
+      const result = spawnSync(command, args, { cwd, env, encoding: 'utf8' });
+      return { code: result.status, stdout: result.stdout, stderr: result.stderr };
+    },
+    exists: existsSync,
+    read: path => readFileSync(path, 'utf8'),
+  };
+  return prePushHook(sys, root);
+}
 
 describe('pre-commit', () => {
   test('passes a clean commit, under dvara', () => {
@@ -155,7 +188,31 @@ describe('pre-push', () => {
     const calls = readFileSync(niyamCalls, 'utf8');
     assert.match(calls, new RegExp(`^args: pre-push origin ${remote.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n`));
     assert.match(calls, new RegExp(`^refs/heads/main ${head} refs/heads/main [0-9a-f]{40}$`, 'm'));
-    assert.ok(!existsSync(strayCalls), 'neither the niyam on PATH nor the launcher in ~/.config runs');
+    assert.ok(!existsSync(strayCalls), 'neither the niyam on PATH, the launcher in ~/.config, nor .git/hooks runs');
+  });
+
+  test("once onboarded, anyone else's push goes ahead without niyam, as onboard's hook lets it", () => {
+    const before = readFileSync(niyamCalls, 'utf8');
+    commitFile(repo, 'owner.md');
+    const result = git(repo, 'push', '-q', 'origin', 'main');
+    assert.equal(result.code, 0, result.out);
+    assert.equal(readFileSync(niyamCalls, 'utf8'), before, 'niyam does not run');
+  });
+
+  test('NIYAM_AGENT alone marks an agent session, and reaches the pinned niyam', () => {
+    commitFile(repo, 'agent.md');
+    const result = spawnSync('git', ['push', '-q', 'origin', 'main'], { cwd: repo, env: { ...env, NIYAM_AGENT: 'AgentBot' }, encoding: 'utf8' });
+    assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    const calls = readFileSync(niyamCalls, 'utf8').split('args: ');
+    assert.match(calls.at(-1), /^pre-push origin .*\nagent: AgentBot\nrefs\/heads\/main /);
+  });
+
+  test('a push the pinned niyam refuses is refused, and nothing lands', () => {
+    commitFile(repo, 'refused.md');
+    const result = spawnSync('git', ['push', '-q', 'origin', 'main'], { cwd: repo, env: { ...env, CLAUDECODE: '1', NIYAM_REFUSE: '1' }, encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.notEqual(git(remote, 'rev-parse', 'main').stdout, git(repo, 'rev-parse', 'main').stdout);
+    assert.ok(!existsSync(strayCalls));
   });
 
   test("refuses an agent session's push when the pinned niyam's bin is missing", () => {
@@ -184,5 +241,43 @@ describe('pre-push', () => {
     assert.notEqual(result.code, 0);
     assert.match(result.out, /EVIDENCE-02/);
     assert.notEqual(git(remote, 'rev-parse', 'main').stdout, git(repo, 'rev-parse', 'main').stdout);
+  });
+});
+
+// core.hooksPath is .githooks, relative, in the main checkout's shared config
+// (CLAUDE.md, "Git hooks"): git ignores .git/hooks, and each worktree runs
+// the hooks its own branch has.
+describe('core.hooksPath', () => {
+  test('the pinned niyam reads .githooks/pre-push as its own, so onboard and a cloud session start leave it and .git/hooks alone', () => {
+    const hook = niyamReadsHook(repo);
+    assert.equal(realpathSync(hook.file), realpathSync(join(repo, '.githooks', 'pre-push')));
+    assert.equal(hook.state, 'ours');
+  });
+
+  test("a linked worktree runs its own branch's hooks, which niyam reads as its own", () => {
+    const tree = join(scratch, 'tree');
+    const copyRuns = env.COPY_RUNS;
+    assert.equal(git(repo, 'worktree', 'add', '-q', '-b', 'wt', tree, 'origin/main').code, 0);
+    symlinkSync(join(repo, 'node_modules'), join(tree, 'node_modules'));
+    // The worktree's branch changes its pre-commit, so a run of that copy is seen.
+    const hookFile = join(tree, '.githooks', 'pre-commit');
+    writeFileSync(hookFile, readFileSync(hookFile, 'utf8').replace('\n', '\necho copy >> "$COPY_RUNS"\n'));
+    git(tree, 'add', '.githooks/pre-commit');
+    const committed = git(tree, 'commit', '-q', '-m', 'the branch has its own pre-commit');
+    assert.equal(committed.code, 0, committed.out);
+    assert.ok(existsSync(copyRuns), "the worktree's commit runs its branch's pre-commit");
+    const runs = readFileSync(copyRuns, 'utf8');
+    commitFile(repo, 'main-only.md');
+    assert.equal(readFileSync(copyRuns, 'utf8'), runs, "the main checkout's commit runs main's");
+
+    const hook = niyamReadsHook(tree);
+    assert.equal(realpathSync(hook.file), realpathSync(join(tree, '.githooks', 'pre-push')));
+    assert.equal(hook.state, 'ours');
+
+    const head = git(tree, 'rev-parse', 'HEAD').stdout;
+    const pushed = spawnSync('git', ['push', '-q', 'origin', 'wt'], { cwd: tree, env: { ...env, CLAUDECODE: '1' }, encoding: 'utf8' });
+    assert.equal(pushed.status, 0, `${pushed.stdout}${pushed.stderr}`);
+    assert.match(readFileSync(niyamCalls, 'utf8'), new RegExp(`^refs/heads/wt ${head} refs/heads/wt 0{40}$`, 'm'));
+    assert.ok(!existsSync(strayCalls), '.git/hooks never runs');
   });
 });

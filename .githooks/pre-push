@@ -4,7 +4,9 @@
 # (`pnpm guards`), then niyam's check that an agent session pushes as the
 # agent and keeps the work rules. Every guard here is an installed release,
 # never packages/*/src, the source a change edits.
-# Dormant until the main checkout's git config points core.hooksPath here.
+# git runs it because the main checkout's shared config sets core.hooksPath
+# to .githooks, relative, so each worktree runs its own branch's copy and
+# the git directory's own hooks folder never runs (CLAUDE.md, "Git hooks").
 root="$(git rev-parse --show-toplevel)" || exit 1
 dvara="$root/node_modules/@veda-hq/dvara"
 if [ "${DVARA_MEASURED_HOOK:-}" != "pre-push" ]; then
@@ -30,8 +32,12 @@ dvara_stage guards
 
 # niyam's own hook, as `niyam onboard` writes it, once veda is onboarded
 # (.github/niyam.json): anyone else's push goes ahead; an agent session's
-# push is refused without the CLI. onboard reads the "$cli" pre-push line as
-# its own and leaves this file alone. The CLI is the release package.json
+# push is refused without the CLI. Where core.hooksPath is set, onboard and
+# a cloud session's start find this file through it, read the "$cli"
+# pre-push line as their own and leave it, and the git directory, alone
+# (scripts/githooks.test.mjs asks the pinned niyam). A cloud session's fresh
+# clone has no core.hooksPath, so its start writes niyam's own pre-push into
+# that clone's git directory instead. The CLI is the release package.json
 # pins (released-pins checked it above), never a copy on PATH or in
 # ~/.config, so every machine runs the same niyam.
 [ -f "$root/.github/niyam.json" ] || exit 0

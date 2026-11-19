@@ -388,10 +388,11 @@ const boundary = (f: Map<string, string>, io: Io): number => {
 const fileSize = (path: string): number | undefined => {
   try {
     const s = statSync(path);
-    return s.isFile() ? s.size : undefined;
+    if (s.isFile()) return s.size;
   } catch {
-    return undefined;
+    // A path that cannot be read has no size, as a folder has none.
   }
+  return undefined;
 };
 
 const docBudgets = (f: Map<string, string>, io: Io): number => {

@@ -1325,6 +1325,16 @@ describe('run repo-rules', () => {
     const top = repoRulesFixture();
     assertRefused(cli(['repo-rules', '--root', top, '--base', 'main', '--head', 'work']), ['pariksha repo-rules: src/pin.test.ts:2: deleted-path-still-pinned: quotes src/old.ts, which this change deletes or renames'], 'deleted-path-still-pinned');
   });
+
+  it('greps the working tree for a run of the whole tree', () => {
+    // turbo.json in the run makes the workers rule grep for its callers; the
+    // working tree holds one the index does not.
+    const top = tree({ 'turbo.json': '{ "globalPassThroughEnv": ["OTHER"] }\n', 'scripts/x.sh': 'turbo run test\n' });
+    writeFileSync(join(top, 'scripts/x.sh'), 'VITEST_MAX_WORKERS=2 turbo run test\n');
+    const r = cli(['repo-rules', '--root', top]);
+    assert.equal(r.code, 1);
+    assert.equal(r.err[0], "pariksha repo-rules: scripts/x.sh:1: vitest4-inert-pool-config: hands VITEST_MAX_WORKERS to a turbo run, and turbo.json's globalPassThroughEnv does not list it, so turbo strips it");
+  });
 });
 
 /** duplicate-tests and flaky-tests: a test body with enough matchers to compare. */
@@ -1816,6 +1826,12 @@ describe('run regression-controls', () => {
     writeFileSync(project, JSON.stringify({ checks: { 'regression-controls': JSON.parse(registry()) as unknown } }));
     const r = cli(['regression-controls', '--staged', '--root', staged()], w2Ts, { PARIKSHA_CONFIG: project });
     assert.deepEqual(r, { code: 0, out: STAGED, err: [] });
+  });
+
+  it('with --staged refuses a registry that is nowhere, naming the file it looked for', () => {
+    const r = cli(['regression-controls', '--config', 'absent.json', '--staged', '--root', staged()], w2Ts);
+    assert.equal(r.code, 2);
+    assert.match(r.err[0] ?? '', /^pariksha regression-controls: ENOENT: no such file or directory, open '.*absent\.json'; nothing was checked, so this is not a pass$/);
   });
 });
 
@@ -2590,6 +2606,9 @@ describe('run env-gate-switches', () => {
     const t = check(script, [], noTs);
     assert.equal(t.code, 2);
     assert.deepEqual(t.err, [`${P} needs the typescript package (>=5.4 <6) in the repository or beside pariksha`]);
+    // One script gate among shell ones is enough to need it.
+    const mixed = check(repo({ 'gates.json': GATE_CONFIG, 'scripts/a.sh': 'exit 0\n', 'scripts/b.ts': 'export {};\n' }), [], noTs);
+    assert.deepEqual([mixed.code, mixed.err], [2, [`${P} needs the typescript package (>=5.4 <6) in the repository or beside pariksha`]]);
     // The default loader finds the one beside pariksha.
     const found = check(script);
     assert.equal(found.code, 1);

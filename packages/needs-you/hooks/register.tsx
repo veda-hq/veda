@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, McpToolResult, Register } from 'claude-code'
 
 import type { Ask } from '../types'
-import { WAITING, file, unfile } from './filing'
+import { WAITING, file, selfIdOf, unfile } from './filing'
 
 const asks = atom({ plugin: 'needs-you', key: 'asks' } as const, [] as Ask[])
 const isHidden = atom({ plugin: 'needs-you', key: 'isHidden' } as const, false)
@@ -25,6 +25,8 @@ const PERSON_KINDS: readonly string[] = ['composer', 'bridge', 'sdk']
 const RELAYED = /^\s*<cross-session-message\b/
 const RELAYED_KINDS: readonly string[] = ['peer', 'peer-send-message']
 const SHOWN = 3
+/** Rows read of the linked family, archived ones included. */
+const LINKED_LIMIT = 500
 const POLL_MS = 60_000
 
 type Engine = EngineInterface
@@ -124,7 +126,8 @@ async function syncSessions($: Engine): Promise<boolean> {
     }
     if (selfId === null) return false
     // Archived rows are read too: an archived session between this chat and a waiting one still links them.
-    const listed = await $.mcp.call('ccd_session_mgmt', 'list_sessions', { linked: true, include_archived: true, limit: 100 })
+    // list_sessions has no cursor; LINKED_LIMIT bounds one family, newest first.
+    const listed = await $.mcp.call('ccd_session_mgmt', 'list_sessions', { linked: true, include_archived: true, limit: LINKED_LIMIT })
     // An error says nothing about the list: keep the rows shown until a read succeeds.
     if (listed.isError) return false
     // Plain text ("No sessions …") lists nothing.
@@ -229,9 +232,7 @@ function enqueue($: Engine, step: () => Promise<void>, clears = false): Promise<
 
 /** This session's id: the one the side-session read found, or read now. */
 async function ownId($: Engine): Promise<string | null> {
-  if (selfId !== null) return selfId
-  const self = jsonOf(await $.mcp.call('ccd_session_mgmt', 'get_session', { session_id: 'self' }))
-  return isRecord(self) && typeof self.sessionId === 'string' ? self.sessionId : null
+  return selfId ?? (await selfIdOf($))
 }
 
 /** Sends a reply button's label as the person's reply and takes the ask off. */

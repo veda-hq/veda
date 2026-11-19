@@ -8,7 +8,8 @@ import { afterFilingFailure, unfilesOn, waitingSessions } from '../hooks/registe
 type Session = {
   sessionId: string
   title: string
-  group: { id: string; name: string } | null
+  /** Left out where the app has not reported groups. */
+  group?: { id: string; name: string } | null
   pinned?: boolean
   parentSessionId?: string
   startedBy?: string
@@ -29,7 +30,10 @@ function app(
   sections: Section[] = [{ id: 'cg-needs', kind: 'manual', name: SECTION }],
   /** Tools the app refuses when they name another session than this one. */
   refused: readonly string[] = [],
+  /** Tools whose first call the app holds and never answers, as an approval card nobody sees. */
+  held: readonly string[] = [],
 ) {
+  const holding = new Set(held)
   const byId = new Map(sessions.map(session => [session.sessionId, session]))
   const calls: { tool: string; args: Record<string, unknown> }[] = []
   const id = (ref: unknown) => (ref === 'self' ? selfId : String(ref))
@@ -42,6 +46,7 @@ function app(
     calls.push({ tool: e.tool, args })
     const named = [args.session_id, ...(Array.isArray(args.session_ids) ? args.session_ids : [])].filter(ref => ref !== undefined)
     if (refused.includes(e.tool) && named.some(ref => id(ref) !== selfId)) return text('Changing another session needs the user’s approval.', true)
+    if (holding.delete(e.tool)) return new Promise<never>(() => undefined)
     switch (e.tool) {
       case 'get_session': {
         const found = byId.get(id(args.session_id))
@@ -153,6 +158,7 @@ test('only the person and a relayed message unfile; app events do not', () => {
   expect(unfilesOn({ text: '<side-sessions-event>done</side-sessions-event>', origin: { kind: 'sdk' } })).toBe(false)
   expect(unfilesOn({ text: '<ci-monitor-event>failed</ci-monitor-event>', origin: { kind: 'sdk' } })).toBe(false)
   expect(unfilesOn({ text: 'report', origin: { kind: 'task-notification' } })).toBe(false)
+  expect(unfilesOn({ text: '<scheduled-task name="daily">check #3670</scheduled-task>', origin: { kind: 'sdk' } })).toBe(false)
   expect(unfilesOn({ text: 'yes', isMeta: true, origin: { kind: 'composer' } })).toBe(false)
   // The desktop app often puts a system reminder ahead of an event or a message.
   const reminder = '<system-reminder>Linked sessions now: …</system-reminder>\n'
@@ -210,6 +216,66 @@ test('when the app refuses to move the top session, the title and the session’
   for (let tick = 0; tick < 50 && marked(fake.byId.get('self')?.title ?? ''); tick += 1) await clock.settle()
   expect(fake.byId.get('self')?.title).toBe('Approve veda#259')
   expect(fake.calls.filter(c => c.tool === 'move_sessions')).toHaveLength(1)
+})
+
+test('a top session whose group the app has not reported is not moved, and still gets its dot', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const { logged } = turns(on)
+  const sessions = family()
+  const top = sessions.find(s => s.sessionId === 'top')
+  if (top !== undefined) delete top.group
+  const fake = app(on, 'self', sessions)
+
+  await askThenAnswer($, clock, fake.calls, 't1')
+
+  expect(fake.calls.filter(c => c.tool === 'move_sessions')).toEqual([])
+  expect(fake.calls.filter(c => c.tool === 'set_unread').map(c => c.args.session_id)).toEqual(['self', 'top'])
+  expect(logged).toEqual(['needs-you: the sidebar was not updated (Error: the top session was not moved: the app has not reported its sidebar group)'])
+  expect(fake.byId.get('self')?.title).toBe('Approve veda#259')
+})
+
+test('parents that go round stop the walk, and say so', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const { logged } = turns(on)
+  const fake = app(on, 'self', [
+    { sessionId: 'a', title: 'A', group: null, parentSessionId: 'b' },
+    { sessionId: 'b', title: 'B', group: null, parentSessionId: 'a' },
+    { sessionId: 'self', title: 'Self', group: null, parentSessionId: 'a' },
+  ])
+
+  await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'r', ask: 'Approve?', actions: [{ label: 'Approved' }] })
+  await $.turn.complete({ answer: 'a', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' })
+  for (let tick = 0; tick < 50 && logged.length === 0; tick += 1) await clock.settle()
+
+  expect(fake.calls.filter(c => c.tool === 'get_session').length).toBeLessThan(6)
+  expect(fake.byId.get('self')?.title).toBe('✋ Self')
+  expect(logged).toHaveLength(1)
+})
+
+test('a move the app holds past its time is kept, so the answer still puts the top session back', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const { logged } = turns(on)
+  const fake = app(on, 'self', family(), undefined, [], ['move_sessions'])
+
+  await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'r', ask: 'Approve #289?', actions: [{ label: 'Approved' }] })
+  await $.turn.complete({ answer: 'a', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  for (let tick = 0; tick < 50 && !fake.calls.some(c => c.tool === 'move_sessions'); tick += 1) await clock.settle()
+  await clock.advance(20_000)
+  for (let tick = 0; tick < 50 && logged.length === 0; tick += 1) await clock.settle()
+  expect(logged).toEqual(['needs-you: the sidebar was not updated (Error: move_sessions took over 20 s)'])
+
+  const ui = await $.ui.mount(BAND)
+  const button = await ui.find({ type: 'Button', text: /^Approved$/ })
+  await ui.press({ key: String(button?.key) })
+  await ui.unmount()
+  for (let tick = 0; tick < 50 && fake.calls.filter(c => c.tool === 'move_sessions').length < 2; tick += 1) await clock.settle()
+  expect(fake.calls.filter(c => c.tool === 'move_sessions').map(c => c.args)).toEqual([
+    { session_ids: ['top'], section_id: 'cg-needs' },
+    { session_ids: ['top'], section_id: 'cg-work' },
+  ])
 })
 
 test('an ancestor the app cannot find stops the walk, and the answer still takes the mark off', async ($, on) => {

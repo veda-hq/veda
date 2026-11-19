@@ -25,8 +25,8 @@ export const WAITING = '✋'
 export const SECTION = 'Needs you'
 /** How long one app call may take: a call the app holds for an approval card gives up here. */
 export const CALL_MS = 20_000
-/** The most ancestors walked to find the top session. */
-const MAX_DEPTH = 12
+/** Past this many ancestors the walk gives up as a loop would: an error, not a guess. */
+const MAX_DEPTH = 100
 
 /** The fields of a `get_session` answer that filing reads. */
 export type Row = {
@@ -93,13 +93,26 @@ export const movedKey = (sessionId: string): string => `moved:${sessionId}`
 const textOf = (result: McpToolResult): string =>
   result.content.map(block => (block.type === 'text' ? block.text : '')).join('')
 
-/** An app call that rejects on an error answer, or when it takes longer than CALL_MS. */
+/** An app call the app answered with an error: it did nothing. A timeout is no such answer. */
+export class Refused extends Error {}
+
+/**
+ * An app call that rejects on an error answer (Refused), or when it takes
+ * longer than CALL_MS. `$.mcp.call` takes no signal, so a call that times
+ * out is not cancelled: the app may still carry it out later, and callers
+ * keep what they need to undo it.
+ */
 export async function call($: Engine, server: string, tool: string, args: Record<string, unknown>): Promise<string> {
   const result = await Promise.race([$.mcp.call(server, tool, args), $.clock.sleep(CALL_MS).then(() => null)])
   if (result === null) throw new Error(`${tool} took over ${CALL_MS / 1000} s`)
   const text = textOf(result)
-  if (result.isError === true) throw new Error(`${tool}: ${text}`)
+  if (result.isError === true) throw new Refused(`${tool}: ${text}`)
   return text
+}
+
+/** This session's id, read through `call`, so a held answer gives up like every other. */
+export async function selfIdOf($: Engine): Promise<string | null> {
+  return (await sessionRow($, 'self'))?.sessionId ?? null
 }
 
 const parsed = (text: string): unknown => {
@@ -121,17 +134,25 @@ let lastWalkError: string | null = null
 /**
  * The top session of a session's family: the first ancestor with no parent,
  * or one moved to top level. The walk stops at the last row it could read,
- * so an ancestor the app cannot find (deleted) leaves the highest one found.
+ * so an ancestor the app cannot find (deleted) leaves the highest one found;
+ * a parent seen before (a loop) or a family past MAX_DEPTH stops it too, and
+ * each says so with the filing's other failures.
  */
 export async function rootOf($: Engine, self: Row): Promise<Row> {
   let row = self
-  for (let depth = 0; depth < MAX_DEPTH && row.parentSessionId !== null && !row.detached; depth += 1) {
+  const seen = new Set([self.sessionId])
+  while (row.parentSessionId !== null && !row.detached) {
+    if (seen.has(row.parentSessionId) || seen.size > MAX_DEPTH) {
+      lastWalkError = `the walk up from ${self.sessionId} went round or past ${MAX_DEPTH} ancestors`
+      break
+    }
     const parent = await sessionRow($, row.parentSessionId).catch((error: unknown) => {
       // fail-open: an unreadable ancestor ends the walk; filing goes on from the highest row read, and the error is logged with the move it spoils.
       lastWalkError = String(error)
       return null
     })
     if (parent === null) break
+    seen.add(parent.sessionId)
     row = parent
   }
   return row
@@ -185,13 +206,20 @@ export async function file($: Engine): Promise<void> {
       if (!isTop) await call($, 'ccd_sidebar', 'set_unread', { session_id: 'self', unread: true })
     },
     async () => {
+      // A group the app has not reported is unknown: moving the row would lose where it goes back to.
+      if (root.group === undefined) throw new Error('the top session was not moved: the app has not reported its sidebar group')
       const section = await needsYou($)
-      if (root.group !== section) {
+      if (root.group === section) return
+      // Where the row goes back to is kept before the move, and only the first time. A
+      // refused move takes it off again; a move that timed out keeps it, since the app
+      // may still make the move after the call gave up.
+      const journaled = movedOf(await $.store.get(movedKey(root.sessionId))) === null
+      if (journaled) await $.store.set(movedKey(root.sessionId), { group: root.group, pinned: root.pinned } satisfies Moved)
+      try {
         await call($, 'ccd_sidebar', 'move_sessions', { session_ids: [ref(root.sessionId, self)], section_id: section })
-        // Kept only once the move is done, and only the first time: it is where the row goes back to.
-        if (movedOf(await $.store.get(movedKey(root.sessionId))) === null) {
-          await $.store.set(movedKey(root.sessionId), { group: root.group ?? null, pinned: root.pinned } satisfies Moved)
-        }
+      } catch (error) {
+        if (journaled && error instanceof Refused) await $.store.delete(movedKey(root.sessionId))
+        throw error
       }
     },
     // A dot on the top session's row shows even where the move was refused.

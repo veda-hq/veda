@@ -1,5 +1,5 @@
 /**
- * The plugins veda's marketplace lists, sarathi among them. Claude Code takes
+ * veda's marketplace lists its plugins, sarathi among them. Claude Code takes
  * an installed plugin's version from its manifest first, then from its
  * marketplace entry, and keeps a user on the cached copy until that string
  * changes. With neither set, a relative-path plugin in a Git-hosted

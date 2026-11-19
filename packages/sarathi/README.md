@@ -174,7 +174,8 @@ settled a question, so it checks that a look happened, not what it found.
   limit, credentials, Keychain, OAuth or an API key, Claude Code,
   claude.ai, Anthropic, OpenAI, a marketplace or Homebrew, documentation,
   release notes, a changelog or the latest version. No repository read
-  settles those; they need research. A file named like one
+  settles those; they need research. Case is ignored, and a service the
+  list does not name is not seen. A path or file named like one
   (`CHANGELOG.md`, `credentials.json`, `src/api/`) is no such word, and
   words a trade-off uses for the repository's own work ("costs a CI run",
   "docs-only", "login", "endpoint", "registry") are left out: in local

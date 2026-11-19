@@ -547,7 +547,9 @@ test('ask-gate: a look counts question by question, and not for a question about
   assert.equal(exit(looked(), ASK, batch), 2, 'a file named in one option passes no other question');
   for (const [why, question] of [
     ['an API', 'Which branch should call the API?'],
+    ['an api, lower case', 'Which branch should call the api?'],
     ['an SDK', 'Bump the SDK in package.json or pin it?'],
+    ['an sdk, lower case', 'Bump the sdk in package.json or pin it?'],
     ['a price', 'PR #12 wants the larger runner at $0.08 a minute: take it or wait?'],
     ['pricing', 'Which pricing tier does the CI job need?'],
     ['credits', 'Spend the credits on the PR review or keep them?'],
@@ -580,6 +582,15 @@ test('ask-gate: a look counts question by question, and not for a question about
   assert.equal(exit(looked(), WRAP_UP, wrapUp), 2, 'a wrap_up ask');
   assert.equal(holds(looked(), 'Done.\n\nPR #12 failed CI on the API quota. Retry it or revert?'), true, 'a closing question');
   assert.equal(holds(looked(), 'Done.\n\nPR #12 failed CI. Retry it or revert?'), false, 'a closing question about the state alone');
+  const two = 'PR #12 failed CI. Retry it or revert?\n\nWhich name next, kebab or camel?';
+  assert.equal(holds(looked(), two), true, 'state named in one closing paragraph passes no question in another');
+  const { run, lines } = logged();
+  run({ ...stopEvent(looked(), two), session_id: 'two-paragraphs' });
+  assert.deepEqual((lines()[0]?.['questions'] as Entry[]).map((q) => [q['question'], q['names_state']]), [
+    ['Retry it or revert?', true],
+    ['Which name next, kebab or camel?', false],
+  ]);
+  assert.equal(holds(looked(), 'PR #12 failed CI. Retry it or revert?\n\nOn branch next, keep the commit or drop it?'), false, 'every paragraph names state');
 });
 
 test('ask-gate log: names_state and names_outside, per question and for the ask', () => {
@@ -1039,4 +1050,21 @@ test('ask-gate: the state file, old and new, and what it cannot read', () => {
   assert.equal(bad.ask(ASK, QUESTION).status, 0, 'a held list it cannot read passes');
   assert.equal(bad.ask(ASK, asking('Merge now or wait?\nKind: approval')).status, 0, 'a declared ask passes as declared');
   assert.deepEqual(bad.lines().map((l) => l['outcome']), ['passed: state unreadable', 'passed: declared approval']);
+
+  for (const [n, kept] of [
+    '{"held": 5, "relabel_held": false}',
+    '{"held": [{"question": "which name", "kind": 5}], "relabel_held": false}',
+    '{"held": [{"question": "which name", "kind": [1]}], "relabel_held": false}',
+    '{"held": ["which name"], "relabel_held": false}',
+    '{"held": [], "relabel_held": "yes"}',
+    '[]',
+  ].entries()) {
+    const shape = session(`state-shape-${n}`);
+    mkdirSync(shape.state, { recursive: true });
+    writeFileSync(join(shape.state, `state-shape-${n}`), `${firstTurn(shape.path)}\n${kept}\n`);
+    const answer = shape.ask(ASK, asking(['Which name?', 'Kind: money']));
+    assert.deepEqual([answer.status, answer.stderr], [0, ''], kept);
+    assert.equal(shape.ask(ASK, QUESTION).status, 0, `${kept}: an undeclared ask passes too`);
+    assert.deepEqual(shape.lines().map((l) => l['outcome']), ['passed: declared money', 'passed: state unreadable'], kept);
+  }
 });

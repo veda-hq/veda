@@ -120,17 +120,18 @@ STATE = re.compile(
     r"|\b[\w-]+\.(ts|tsx|mjs|cjs|json|md|sh|py|ya?ml|toml|lock|rs|rb|java|kt|swift|css|html|sql)\b"
 )
 # An ask that names something outside the repository: an API or SDK, a
-# price, a bill or a quota, credentials, an outside tool or service by name,
-# its documentation or releases. No repository read settles such a question,
-# so a look does not count for it, whatever state it also names. A file
-# named like one (CHANGELOG.md, credentials.json) is no such word. Words a
+# price, a bill or a quota, credentials, one of the outside tools and
+# services listed by name, their documentation or releases, case ignored.
+# No repository read settles such a question, so a look does not count for
+# it, whatever state it also names. A path or file named like one
+# (CHANGELOG.md, credentials.json, src/api/) is no such word. Words a
 # trade-off uses for the repository's own work (cost, docs-only, login,
-# endpoint) are left out: in local transcripts they named it more often than
-# anything outside.
+# endpoint) are left out: in local transcripts they named it more often
+# than anything outside. A service not listed is not seen.
 OUTSIDE = re.compile(
-    r"\bAPIs?\b|\bSDKs?\b|\$\s?\d"
-    r"|(?i:\b(prices?|pricing|priced|billing|billed|credits|quotas?|subscriptions?|rate[ -]limits?"
-    r"|per (million|1k|1m|token)|credentials?|keychain|oauth|api keys?"
+    r"\$\s?\d"
+    r"|(?i:\b(apis?|sdks?|prices?|pricing|priced|billing|billed|credits|quotas?|subscriptions?|rate[ -]limits?"
+    r"|per (million|1k|1m|token)|credentials?|keychain|oauth"
     r"|claude code|claude\.ai|anthropic|openai|marketplaces?|homebrew"
     r"|(latest|newest) (version|release)|release notes|changelogs?|documentation)\b(?![./]\w))"
 )
@@ -357,9 +358,10 @@ def closing_paragraphs(message):
 
 def closing(message):
     """The choice-shaped questions in the last paragraphs of a closing
-    message, and the paragraphs that hold them, code and URLs kept: the
-    words read for repository state."""
-    found, holding = [], []
+    message, the paragraphs that hold them, code and URLs kept (the words
+    read for repository state, one paragraph each), and for each question
+    the index of its paragraph."""
+    found, holding, where = [], [], []
     for paragraph in closing_paragraphs(message):
         here = []
         for sentence in SENTENCE.split(URL.sub(" ", INLINE_CODE.sub(" ", paragraph))):
@@ -370,8 +372,9 @@ def closing(message):
                 here.append(question)
         if here:
             found += here
+            where += [len(holding)] * len(here)
             holding.append(paragraph)
-    return "\n\n".join(holding), found
+    return holding, found, where
 
 def ask_words(tool, given):
     """The words of an ask: its question, header, options and buttons."""
@@ -434,14 +437,15 @@ try:
         # The words read for state are the question's own paragraph: "PR #12
         # failed CI. Retry it or revert?" Wider, a closing summary that names
         # a file or a commit would pass most held questions.
-        words, choices = closing(message)
+        # Each question's paragraph is read on its own, so state named in one
+        # passes no question in another.
+        texts, choices, where = closing(message)
         if not choices:
             passes()
-        # A declaration is read from the same paragraphs, inline code left
+        # A declaration is read from the closing paragraphs, inline code left
         # out: a Kind: line of its own after a blank line declares too, and
-        # prose that quotes the field in code does not.
+        # prose that quotes the field in code does not. It is one unit.
         units = [kinds("\n\n".join(INLINE_CODE.sub(" ", p) for p in closing_paragraphs(message)))]
-        texts = [words]
     else:
         stop = False
         tool = data.get("tool_name")
@@ -455,17 +459,20 @@ try:
         texts = unit_words(tool, tool_input)
     if stop:
         questions = [{"question": choice, "options": []} for choice in choices]
-    # Whether each unit names repository state, and whether it names
-    # something outside: a look counts for a unit that names state and
-    # nothing outside. units and texts run alike: one per question of an
-    # AskUserQuestion, one for a wrap_up or a closing message.
+    # Whether each text names repository state, and whether it names
+    # something outside: a look counts when every text names state and
+    # nothing outside. A text is an AskUserQuestion question, a wrap_up ask,
+    # or a closing question's paragraph; a closing message's declaration is
+    # one unit over all its paragraphs, outside when any of them is.
     states = [names_state(t) for t in texts]
     outsides = [names_outside(t) for t in texts]
+    unit_outsides = [any(outsides)] if stop else outsides
     for number, question in enumerate(questions):
         at = number if len(units) == len(questions) else 0
+        text = where[number] if stop else (number if len(texts) == len(questions) else 0)
         question["kind"] = ", ".join(units[at]) or None
-        question["names_state"] = states[at]
-        question["names_outside"] = outsides[at]
+        question["names_state"] = states[text]
+        question["names_outside"] = outsides[text]
     with open(path) as handle:
         lines = handle.readlines()
 except Exception:
@@ -631,8 +638,15 @@ try:
         kept = {"held": [], "relabel_held": False}
         if rest.strip():
             loaded = json.loads(rest)
-            if isinstance(loaded, dict):
-                kept.update(loaded)
+            # Anything but the shape this handler writes is unreadable.
+            held_list = loaded.get("held") if isinstance(loaded, dict) else None
+            if not isinstance(held_list, list) or not isinstance(loaded.get("relabel_held"), bool) or not all(
+                isinstance(item, dict) and isinstance(item.get("question"), str)
+                and isinstance(item.get("kind"), list) and all(isinstance(k, str) for k in item["kind"])
+                for item in held_list
+            ):
+                raise ValueError("the held list is not the shape ask-gate writes")
+            kept = {"held": held_list, "relabel_held": loaded["relabel_held"]}
 except FileNotFoundError:
     pass
 except Exception:
@@ -656,8 +670,8 @@ def relabelled():
         return False
     held = {}
     for item in kept.get("held") or []:
-        if isinstance(item, dict) and isinstance(item.get("question"), str) and item["question"]:
-            held.setdefault(item["question"], []).append(sorted(item.get("kind") or []))
+        if item["question"]:
+            held.setdefault(item["question"], []).append(sorted(item["kind"]))
     for number, unit in enumerate(units):
         for question in unit_questions(number):
             if question in held and unit and sorted(unit) not in held[question]:
@@ -670,7 +684,7 @@ relabel = relabelled()
 # the turn is still held once. A Kind: line added to a question once it is
 # held passes nothing. For a kind that needs a look, a unit that names
 # something outside needs research: no repository read settles it.
-if not relabel and all(owner_only(unit, looked and not outside) for unit, outside in zip(units, outsides)):
+if not relabel and all(owner_only(unit, looked and not outside) for unit, outside in zip(units, unit_outsides)):
     log(dict(record, outcome="passed: declared " + record["kind"]))
     passes()
 if unreadable:

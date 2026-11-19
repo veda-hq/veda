@@ -109,9 +109,11 @@ branch, a commit, CI), reading that state counts as the look: `Read`,
 above. It counts question by question: each question of an `AskUserQuestion`
 must name that state, and none may name something outside the repository
 (an API or SDK, a price, credits or a bill, credentials or Keychain, Claude
-Code, Anthropic or another outside service, documentation or release notes).
-No repository read settles those: they need a web search, a fetched page,
-a browser read or a research subagent. The handler checks that a look
+Code, claude.ai, Anthropic, OpenAI, a marketplace or Homebrew, documentation
+or release notes). No repository read settles those: they need a web search,
+a fetched page, a browser read or a research subagent. The gate knows only
+the services it lists by name; a question about any other outside service
+needs that research all the same. The handler checks that a look
 happened, not what it found: asking again in the same turn goes through, so
 an owner-only question is asked again unchanged.
 

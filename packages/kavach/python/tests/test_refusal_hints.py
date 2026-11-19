@@ -83,6 +83,16 @@ class UnresolvedNamesTheConstruct(BoundaryFixture):
                 "git push $REPO HEAD:x",
                 "uses `git push` with an expansion on its line, whose destination the guard cannot place",
             ),
+            (
+                "pnpm exec sh -c 'touch x'",
+                "uses `pnpm` handing a shell a program (`sh -c`, or its own shell mode), which the guard does not read",
+            ),
+            ("npx -c 'touch x'", "uses `npx` handing a shell a program"),
+            (
+                "git remote add o ../other",
+                "uses `git remote` writing a push destination into the shared config that the guard cannot place",
+            ),
+            ("git push ssh://localhost/x HEAD:x", "uses `git push` to a repository the guard cannot place"),
         ):
             with self.subTest(command=command):
                 self.assertIn(named, self.refused(command))

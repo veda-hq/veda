@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { DEFAULT_SETTINGS, run } from './cli.ts';
-import { findMissing, formatFindings, parseRequirements } from './required-settings.ts';
+import { findMissing, formatFindings, parseRequirements, ruleProblem } from './required-settings.ts';
 
 const REQUIRE = JSON.stringify({ advisorModel: { value: 'fable', why: 'the advisor reviews every session' } });
 const BASELINE = new URL('../baselines/claude-settings.json', import.meta.url);
@@ -115,6 +115,62 @@ describe('formatFindings', () => {
       `pariksha required-settings: s.json: "d" is missing; it must be a list holding "x" (t). ${tail}`,
       `pariksha required-settings: s.json: "e" holds "x", not a list; it must be a list holding "x" (s). ${tail}`,
     ]);
+    const rule = formatFindings([{ key: 'permissions.allow', kind: 'rule', rule: 'Write(x)', why: 'r' }], 1, 's.json', 'r.json');
+    assert.deepEqual(rule.err, ['pariksha required-settings: s.json: "permissions.allow" lists "Write(x)": r.']);
+  });
+});
+
+describe('ruleProblem', () => {
+  for (const rule of ['Write(./**)', 'NotebookEdit(./**)', 'MultiEdit(src/**)', 'Write(x)']) {
+    it(`refuses the path rule ${rule}: Claude Code checks file edits against Edit(path)`, () => {
+      assert.match(ruleProblem(rule) ?? '', /against Edit\(path\) rules only, so a path on (Write|NotebookEdit|MultiEdit) never matches/);
+    });
+  }
+
+  for (const rule of ['Bash(*git push* :*)', 'Bash(*x*:*)', 'Bash(npm run *:*)']) {
+    it(`refuses ${rule}: a ":*" ending after another "*"`, () => {
+      assert.match(ruleProblem(rule) ?? '', /write ":\*\*" for that/);
+    });
+  }
+
+  // `:**` relies on behaviour observed on Claude Code 2.1.326: two adjacent
+  // stars read as one wildcard (Claude Code prints one informational line for
+  // the rule). In headless `claude -p` probes, ask `Bash(*git push* :**)`
+  // matched (denied) `echo git push origin :feature-x` and let
+  // `echo git push origin HEAD:feature-x` and `echo git push -u origin feature-x` run.
+  for (const rule of ['Bash(*git push* :**)', 'Bash(git status:*)', 'Bash(*--no-verify*)', 'Bash(niyam review-thread *)', 'Write', 'NotebookEdit', 'Edit(./**)', 'Read(./**)', 'mcp__ccd_pr__bind_pr', 'Bash(*:*', 'Bash']) {
+    it(`passes ${rule}`, () => assert.equal(ruleProblem(rule), undefined));
+  }
+});
+
+describe('permission rules Claude Code does not match as written', () => {
+  it('refuses them in a required permission list, naming each', () => {
+    const text = JSON.stringify({ 'permissions.allow': { includes: ['Edit(./**)', 'Write(./**)', 7], why: 'w' }, 'permissions.ask': { includes: ['Bash(*git push* :*)'], why: 'a' } });
+    assert.throws(() => parseRequirements(text), /"permissions\.allow" lists "Write\(\.\/\*\*\)": Claude Code checks file edits/);
+    assert.throws(
+      () => parseRequirements(JSON.stringify({ 'permissions.deny': { includes: ['NotebookEdit(a)', 'MultiEdit(b)'], why: 'd' } })),
+      /lists "NotebookEdit\(a\)": .*; "permissions\.deny" lists "MultiEdit\(b\)"/,
+    );
+    assert.throws(() => parseRequirements(JSON.stringify({ 'permissions.ask': { includes: ['Bash(*git push* :*)'], why: 'a' } })), /"permissions\.ask" lists "Bash\(\*git push\* :\*\)"/);
+  });
+
+  it('leaves the same strings alone in a list that is not a permission list', () => {
+    assert.equal(parseRequirements(JSON.stringify({ 'other.allow': { includes: ['Write(x)', 'Bash(*a*:*)'], why: 'w' } })).length, 1);
+  });
+
+  it('refuses them in the settings, among the requirement findings and with no requirement naming them', () => {
+    const reqs = parseRequirements(JSON.stringify({ advisorModel: { value: 'fable', why: 'w' } }));
+    const settings = { permissions: { allow: ['Edit(./**)', 'Write(./**)', { not: 'a rule' }], deny: 'Write(x)', ask: ['Bash(*git push* :*)', 'Bash(*git push* :**)'] } };
+    const found = findMissing(JSON.stringify(settings), reqs);
+    assert.deepEqual(
+      found.map((f) => [f.key, f.kind, f.kind === 'rule' ? f.rule : f.expected]),
+      [
+        ['advisorModel', 'value', 'fable'],
+        ['permissions.allow', 'rule', 'Write(./**)'],
+        ['permissions.ask', 'rule', 'Bash(*git push* :*)'],
+      ],
+    );
+    assert.deepEqual(findMissing(JSON.stringify({ advisorModel: 'fable', permissions: { ask: ['Bash(*git push* :**)'] } }), reqs), []);
   });
 });
 
@@ -122,7 +178,7 @@ describe('baselines/claude-settings.json', () => {
   const baseline = parseRequirements(readFileSync(BASELINE, 'utf8'));
 
   const allow = [
-    'Edit(./**)', 'Write(./**)', 'NotebookEdit(./**)',
+    'Edit(./**)',
     'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git show:*)', 'Bash(git branch:*)', 'Bash(git ls-remote:*)', 'Bash(git worktree list:*)',
     'Bash(gh pr view:*)', 'Bash(gh pr list:*)', 'Bash(gh pr checks:*)', 'Bash(gh pr comment:*)', 'Bash(gh run view:*)', 'Bash(gh run list:*)', 'Bash(gh issue list:*)',
     'Bash(git push -u origin:*)', 'Bash(gh pr create --draft:*)', 'Bash(gh pr ready:*)',
@@ -132,7 +188,7 @@ describe('baselines/claude-settings.json', () => {
   const deny = ['Bash(*--no-verify*)'];
   const ask = [
     'Bash(*git push*--force*)', 'Bash(*git push* -f*)', 'Bash(*git push*--for*)', 'Bash(*git push*--mi*)',
-    'Bash(*git push*--de*)', 'Bash(*git push*--pru*)', 'Bash(*git push* -d *)', 'Bash(*git push* +*)', 'Bash(*git push* :*)',
+    'Bash(*git push*--de*)', 'Bash(*git push*--pru*)', 'Bash(*git push* -d *)', 'Bash(*git push* +*)', 'Bash(*git push* :**)',
     'Bash(*git branch* -D*)', 'Bash(*git branch*-d*-f*)', 'Bash(*git branch*-f*-d*)', 'Bash(*git branch* -df*)', 'Bash(*git branch* -fd*)',
     'Bash(pnpm add:*)', 'Bash(pnpm remove:*)', 'Bash(pnpm update:*)',
     'Bash(npm install:*)', 'Bash(npm uninstall:*)', 'Bash(npm update:*)', 'Bash(yarn add:*)', 'Bash(yarn remove:*)',
@@ -177,6 +233,20 @@ describe('run required-settings', () => {
     const root = tree({ 'req.json': REQUIRE, 'other.json': JSON.stringify({ model: 'opus' }) });
     assert.equal(run(['required-settings', '--require', 'req.json', '--settings', 'other.json', '--root', root], c.io, '0.1.0'), 1);
     assert.match(c.err[0] ?? '', /other\.json: "advisorModel" is missing; it must be "fable" \(the advisor reviews every session\)/);
+  });
+
+  it('refuses a settings rule Claude Code does not match (exit 1) and exits 2 on one in the requirements', () => {
+    const root = tree({
+      'req.json': REQUIRE,
+      'bad-req.json': JSON.stringify({ 'permissions.ask': { includes: ['Bash(*git push* :*)'], why: 'a' } }),
+      [DEFAULT_SETTINGS]: JSON.stringify({ advisorModel: 'fable', permissions: { allow: ['NotebookEdit(./**)'] } }),
+    });
+    const settings = capture();
+    assert.equal(run(['required-settings', '--require', 'req.json', '--root', root], settings.io, '0.1.0'), 1);
+    assert.match(settings.err[0] ?? '', /\.claude\/settings\.json: "permissions\.allow" lists "NotebookEdit\(\.\/\*\*\)": .*write Edit\(path\)/);
+    const requirement = capture();
+    assert.equal(run(['required-settings', '--require', 'bad-req.json', '--root', root], requirement.io, '0.1.0'), 2);
+    assert.match(requirement.err[0] ?? '', /bad-req\.json: "permissions\.ask" lists "Bash\(\*git push\* :\*\)": .*; nothing was checked/);
   });
 
   it('refuses a missing settings file and settings that are not JSON', () => {

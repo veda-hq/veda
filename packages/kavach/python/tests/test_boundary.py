@@ -1596,6 +1596,8 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm exec python3 -Ic 1",
             "pnpm exec python3 -W error -c 1",
             "pnpm exec python3 -",
+            "pnpm exec python3 -- -",
+            "pnpm exec node -- -",
             "pnpm exec python3",
             "pnpm exec python3 -v",
             "pnpm exec python3 -i x.py",

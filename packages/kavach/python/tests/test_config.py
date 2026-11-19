@@ -222,7 +222,7 @@ class ParseTest(unittest.TestCase):
         self.refused(hosts("github.com"), f"{where} must be a JSON array")
         self.refused(hosts([""]), f"{where}[0] must be a non-empty string")
         self.refused(hosts([1]), f"{where}[0] must be a non-empty string")
-        for host in ("git@github.com", "github.com:22", "https://github.com", "github.com/", "-x", "[::1]", "a b"):
+        for host in ("git@github.com", "github.com:22", "https://github.com", "github.com/", "-x", "[::1]", "a b", "a..b", "a.-b", "a-.b", "github.com."):
             with self.subTest(host=host):
                 self.refused(hosts(["github.com", host]), f"{where}[1] must be a host name")
         self.assertEqual(config.parse(hosts(["GitLab.com", "github.com"])).push_hosts, ("gitlab.com", "github.com"))

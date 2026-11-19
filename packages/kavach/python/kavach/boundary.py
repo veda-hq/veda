@@ -5612,7 +5612,8 @@ def interpreter_reads_program_text(table: InterpreterOptions, args: list[str]) -
         word = args[index]
         index += 1
         if word == "--":
-            return index >= len(args)
+            # `node -- -` and `python3 -- -` read standard input too.
+            return index >= len(args) or args[index] == "-"
         if word == "-":
             return True
         if not word.startswith("-"):

@@ -145,7 +145,9 @@ here through sshd, `git daemon` or a local web server; the guard asks neither
 DNS nor ssh. A host that is this machine stays refused even when listed:
 `localhost` or a `.localhost` name, this machine's hostname, or a loopback or
 unspecified address in any spelling (`127.1`, `[::1]`). The host is matched
-exactly, in lower case, without its user or port. A URL is read as written
+exactly, in lower case, without its user, its port or a trailing dot (so
+`github.com.` in a URL is `github.com`; the list itself takes no trailing
+dot). A URL is read as written
 and after each rewrite that matches it, so an alias that `insteadOf` turns
 into a listed host (`gh:o/r`) is refused until the alias is listed too, and a
 `git push` with no repository, which reads every remote, is refused while any
@@ -188,9 +190,10 @@ spelling is: `pnpm exec node -e '…'`, `npx node -p '…'`,
 (`npx node@20 -e`). So is a `data:` URL given to `--import`, `--loader` or
 `-r`, and `python3 -m`, since a module may run text (`-m timeit '<code>'`).
 An interpreter with no script reads its standard input
-(`printf … | pnpm exec node`, `python3 -`, `bun run -`), so it is refused
-too. Each interpreter's options are read against the ones the guard lists
-for it; any other option is refused unless it carries its value after `=`,
+(`printf … | pnpm exec node`, `python3 -`, `node -- -`, `bun run -`), so it
+is refused too. Each interpreter's options are read against the ones the
+guard lists for it. Any other short option is refused, and so is any other
+long option unless it carries its value after `=` (`--max-old-space-size=4096`),
 since it may take the next word (`node -r ./x -e …`). The interpreter's name
 is read wherever it sits on the runner's line, except after a subcommand
 that names packages, first on the line (`pnpm add -D tsx`,

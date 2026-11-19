@@ -399,8 +399,10 @@ def parse(data: Any) -> Config:
 
 
 # A host as a push URL names it, with no user, port or scheme: a name or an
-# IPv4 address. Matched exactly, in lower case.
-PUSH_HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?")
+# IPv4 address, each dot-separated label well formed. Matched exactly, in
+# lower case.
+PUSH_HOST_LABEL = r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+PUSH_HOST = re.compile(rf"{PUSH_HOST_LABEL}(?:\.{PUSH_HOST_LABEL})*")
 
 
 def _push_host(value: Any, index: int) -> str:

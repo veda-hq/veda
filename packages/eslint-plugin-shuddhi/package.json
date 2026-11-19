@@ -40,7 +40,7 @@
     "!src/**/fixtures"
   ],
   "scripts": {
-    "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts --test-coverage-exclude=src/**/fixtures/** src/*.test.ts src/**/*.test.ts",
+    "test": "node ../../scripts/fresh-tmpdir.mjs node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts --test-coverage-exclude=src/**/fixtures/** src/*.test.ts src/**/*.test.ts",
     "smoke": "node --input-type=module -e \"const p = (await import('@veda-hq/eslint-plugin-shuddhi')).default; if (Object.keys(p.rules).length === 0) throw new Error('no rules');\"",
     "check": "pnpm test && pnpm smoke"
   },

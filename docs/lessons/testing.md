@@ -196,6 +196,25 @@ signals, git fixtures, Postgres and Docker in tests, and assertions that cannot 
   fixtures as inert, and replace a live pin with a sibling the same glob reaches.
   <!-- held by: pariksha repo-rules deleted-path-still-pinned (a deleted or renamed path a test file still quotes) -->
 
+## Temp folders
+
+- **A test run fails on what it leaves in its `TMPDIR`.** In veda, each package's `test`, the
+  root `test:scripts` and kavach's `test:python` run through `scripts/fresh-tmpdir.mjs`. It
+  points `TMPDIR`, `TEMP` and `TMP` at a fresh, empty `vt-*` folder, and when the suites end it
+  names every entry still in it and fails the run, even when every test passed:
+  `fresh-tmpdir: the run left 1 path in its TMPDIR:` and then the paths. The folder is removed
+  either way, so the paths are only names. Find the suite by the name's prefix (the one its
+  `mkdtemp` gives) and remove the folder there, in `after()`, `t.after()` or a `finally`
+  around the test's body, with `rmSync(dir, { recursive: true, force: true })`. A folder a
+  child process or a helper made counts too: the child inherits the `TMPDIR`. A cleanup that
+  throws (ENOTEMPTY, see "Hermetic git" above) stops its `after()`, so the folders it had not
+  reached show up in the list too: the error printed above the list is the cause. "was removed
+  or replaced during the run" means something removed the `TMPDIR` itself, usually a cleanup
+  that lost its child path. Mutation testing does not see a leak, and no lint checks that a
+  temp root is removed, so this check is the one that does.
+  <!-- held by: scripts/fresh-tmpdir.mjs (fails a test run that leaves anything in its TMPDIR) -->
+  <!-- when: error "fresh-tmpdir: the run left" -->
+
 ## Postgres and connection pools
 
 - **`backend_start` does not count pools.** Distinct `pg_stat_activity` `backend_start` values do

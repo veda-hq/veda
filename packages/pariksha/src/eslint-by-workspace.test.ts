@@ -1,13 +1,22 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { run } from './cli.ts';
 import { DEFAULT_CONFIG, eslintFor, groupFiles, inheritEslint, lintByWorkspace, owner, parseConfig, type EslintRunner } from './eslint-by-workspace.ts';
 
-const temp = (): string => realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-ebw-')));
+const temps: string[] = [];
+/** A fresh temporary directory, by its real path, removed when this file's tests end. */
+const temp = (): string => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-ebw-')));
+  temps.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 const bin = (root: string, ws: string, script = '#!/bin/sh\nexit 0\n'): string => {
   const path = join(root, ws, 'node_modules/.bin/eslint');
   mkdirSync(dirname(path), { recursive: true });

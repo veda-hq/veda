@@ -35,6 +35,7 @@ review-bots.md#re-triggering-a-review	command	gh pr comment .*@cubic		gh pr comm
 review-bots.md#the-review-allowance	error	line limit reached		Exit code 8 cubic · AI code reviewer  neutral  0  https://cubic.dev  AI review line limit reached
 stryker.md#source-text-inside-the-sandbox-is-instrumented	error	stryNS_		AssertionError: expected 'function stryNS_9fa48() {' to match /^import/
 testing.md#a-server-freeze-not-a-lock-leak	error	Can't reach database server		PrismaClientInitializationError: Can't reach database server at localhost:5432
+testing.md#a-test-run-fails-on-what-it-leaves-in-its-tmpdir	error	fresh-tmpdir: the run left		fresh-tmpdir: the run left 1 path in its TMPDIR:   vt-Ab12Cd/doc-links-Xy34Zw
 testing.md#a-test-that-kills-by-scan-is-a-kill-switch	content	process\.kill\(	**/*.test.*	scripts/reaper.test.ts for (const pid of scanProcesses()) process.kill(pid, 'SIGTERM');
 testing.md#address-pools-exhausted-by-leaked-networks	error	all predefined address pools have been fully subnetted		Exit code 1 network demo_default  Error failed to create network demo_default: Error response from daemon: all predefined address pools have been fully subnetted
 testing.md#drop-database-forces-a-checkpoint	content	DROP DATABASE	**/*.test.*	apps/server/test/orders.integration.test.ts afterAll(() => client.query('DROP DATABASE test_orders'))

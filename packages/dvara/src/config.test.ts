@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import {
   CONFIG_FILE,
   configName,
@@ -11,7 +11,17 @@ import {
   parseConfig,
 } from "./config.ts";
 
-const dir = () => mkdtempSync(join(tmpdir(), "dvara-config-"));
+/** Every folder the tests made, removed once they are done. */
+const dirs: string[] = [];
+after(() => {
+  for (const made of dirs) rmSync(made, { recursive: true, force: true });
+});
+
+const dir = () => {
+  const made = mkdtempSync(join(tmpdir(), "dvara-config-"));
+  dirs.push(made);
+  return made;
+};
 
 describe("parseConfig", () => {
   it("lays the given fields over the defaults", () => {

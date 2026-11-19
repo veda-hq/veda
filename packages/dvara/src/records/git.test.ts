@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -248,8 +248,9 @@ describe("readBlobs and objectTypes", () => {
     );
   });
 
-  it("throws when the batch cannot run", () => {
+  it("throws when the batch cannot run", (t) => {
     const elsewhere = mkdtempSync(join(tmpdir(), "dvara-no-repo-"));
+    t.after(() => rmSync(elsewhere, { recursive: true, force: true }));
     assert.throws(
       () => readBlobs({ cwd: elsewhere, env: hermeticEnv }, ["HEAD:a.md"]),
       /git cat-file --batch failed: .*not a git repository/,
@@ -458,9 +459,10 @@ describe("treeContext", () => {
     );
   });
 
-  it("judges nothing in a shallow clone, whose walk stops at its cut", () => {
+  it("judges nothing in a shallow clone, whose walk stops at its cut", (t) => {
     const { r } = histories();
     const clone = mkdtempSync(join(tmpdir(), "dvara-shallow-"));
+    t.after(() => rmSync(clone, { recursive: true, force: true }));
     r.git("clone", "-q", "--depth", "1", pathToFileURL(r.root).href, clone);
     const at = { cwd: clone, env: r.env };
     const tip = git(at, ["rev-parse", "HEAD"]).trim();

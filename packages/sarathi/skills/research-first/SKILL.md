@@ -10,10 +10,10 @@ asks the owner, and asks only what no source can answer. In a sample of 30
 asks taken from 40 agent sessions of 2026-11 (method and counts in
 veda-hq/veda#176), 12 were settled or narrowed by research the agent could
 have done first; the common miss was offering options before checking which
-of them work, with research only after the owner pushed back. Anthropic's
-own count points the same way: of Claude Code's self-initiated stops, 35%
-present a choice between proposed approaches and 21% gather diagnostic
-information or test results [13].
+of them work, with research only after the owner pushed back. Anthropic
+counts why Claude Code stops itself: 35% of those stops present a choice
+between proposed approaches, and 21% gather diagnostic information or test
+results [13].
 
 ## Who can answer
 
@@ -37,8 +37,9 @@ The middle tier: a gap that is cheap to get wrong and easy to undo is not a
 question. State the assumption and proceed (Model Spec, clarifying questions
 [3b]; Amazon, Type 2 decisions [6]). Claude's constitution counts checking in
 "more than necessary for simple agentic tasks" against helpfulness [11b], and
-Anthropic's prompting guide has Claude infer the most useful likely action and
-use tools to find missing details rather than guess [12].
+Anthropic's prompting guide offers an opt-in system-prompt pattern that has
+Claude infer the most useful likely action and use tools to find missing
+details rather than guess [12].
 
 ## Where to look
 

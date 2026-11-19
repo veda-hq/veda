@@ -160,12 +160,41 @@ settled a question, so it checks that a look happened, not what it found.
   (86%) came after a repo read, so counting a read for every ask would have
   passed 86% of them, including the questions
   official docs settle (API behaviour, defaults, version facts), the common
-  miss in veda-hq/veda#176's sample. Scoped, 380 pass, all naming repository
+  miss in veda-hq/veda#176's sample. Scoped as 0.7.8 read it, over the
+  whole ask, 380 pass, all naming repository
   state, and 352 stay held. On Stop, reading the question's own paragraph
   passes 50 of 166 held closing questions; reading the last three paragraphs
   would pass 102, since a closing summary names files and commits.
+- **Question by question, and nothing outside:** the state is read per
+  unit: each `AskUserQuestion` question with its header and options, the
+  `wrap_up` ask with its buttons, the closing question's paragraph. A look
+  counts only when every unit names repository state and none names
+  something outside the repository: `API` or `SDK`, a dollar amount,
+  price, pricing, billing, credits, a quota, a subscription or a rate
+  limit, credentials, Keychain, OAuth or an API key, Claude Code,
+  claude.ai, Anthropic, OpenAI, a marketplace or Homebrew, documentation,
+  release notes, a changelog or the latest version. No repository read
+  settles those; they need research. Case is ignored, and a service the
+  list does not name is not seen. A path or file named like one
+  (`CHANGELOG.md`, `credentials.json`, `src/api/`) is no such word, and
+  words a trade-off uses for the repository's own work ("costs a CI run",
+  "docs-only", "login", "endpoint", "registry") are left out: in local
+  transcripts they named the repository's work more often than anything
+  outside. On 2026-11-19 a four-question batch about API credits, spend and
+  scope passed as a look because one option's description named a file; it
+  is held now. Over 2,448 local transcripts (2026-11-20, the script on
+  veda-hq/veda#293), 0.7.8's reading passed 412 asks on a look, and this one
+  passes 364. Of the 48 held, 25 name something outside and 28 have a
+  question that names no state.
 - **Declaring the kind:** an ask that declares an owner-only kind passes the
-  first time. The field is `Kind: <kind>` at the start of a line, after the
+  first time: `approval`, `money` or `irreversible` at once, the owner's
+  authority; `preference`, `private` and `ambiguity` only after research or
+  a look in the turn (any look, for a question that names nothing outside;
+  research, for one that does). A choice among options nobody
+  checked is not yet a preference, and a fact the session could have read
+  is not private: on 2026-11-19 two asks declared `preference` for a
+  credential choice the official docs settle, with no research and no look,
+  and passed. The field is `Kind: <kind>` at the start of a line, after the
   end of a sentence or after `(`, its value running to the line's end or a
   `.`, `;` or `)`, case ignored. It is read from each `AskUserQuestion`
   question's text or header (12 characters at most, so `Kind: money` fits
@@ -180,8 +209,7 @@ settled a question, so it checks that a look happened, not what it found.
   one declaration in its last three paragraphs covers every choice question
   in them, and the log records that kind beside each one. Every
   declaration in a unit must be owner-only: `Kind: api` beside `Kind: preference` stays
-  held. `ambiguity` is what is left after research, so it passes only after
-  a look (any one above, for any ask). A researchable kind (`api`,
+  held. A researchable kind (`api`,
   `default`, `version`, `limit`, `error`, `convention`, `state`) or an
   unknown word stays held, and a value that runs into the question
   (`Kind: api - v1 or v2?`) is no known kind, so the question is still read
@@ -192,6 +220,20 @@ settled a question, so it checks that a look happened, not what it found.
   with none, and lost nearly all its value later, on samples of 5 to 28 per
   dimension, so a direction rather than a size. The log shows each kind it
   reads, so a kind declared to skip research shows.
+- **A relabel after a hold:** in the turn of a hold, an ask that puts a
+  question held then with only its `Kind:` fields added or changed is held
+  once more, and logged `held: relabelled`. The question is compared with
+  its `Kind:` fields out, case, spacing and punctuation aside: an
+  `AskUserQuestion` question's text, the `wrap_up` ask, a closing message's
+  choice questions, across the PreToolUse and Stop paths. A question asked
+  again unchanged, its declaration too, is no relabel and passes as the
+  turn's second ask; so does one rephrased with what research found. After
+  a relabel's hold every ask in the turn passes, so a turn holds at most
+  twice. On 2026-11-19 a `wrap_up` ask was held, then passed ten seconds
+  later with only `Kind: private` added. On Stop the continuation that
+  follows a hold carries `stop_hook_active` and passes unread, so a closing
+  message relabelled right after a Stop hold is not seen; one after a
+  `wrap_up` hold is.
 - **Refused (PreToolUse):** exit 2, with the rule, the owner-only kinds and
   how to declare one on stderr, which reaches the model.
 - **Held (Stop):** exit 0 with
@@ -206,12 +248,17 @@ settled a question, so it checks that a look happened, not what it found.
   ignores the field, and the turn ends as before.
 - **Once per turn:** a second held ask in the same turn goes through, keyed
   on the turn (the owner's last message), not the question's text, so an
-  owner-only question is asked again unchanged. The PreToolUse and Stop
+  owner-only question is asked again unchanged. A relabel (above) is the
+  one exception, held once more. The PreToolUse and Stop
   paths share the key: a Stop passes in a turn whose ask was held, and the
   other way round. A Stop with `stop_hook_active` set passes and spends
   nothing. The key is kept in `<dir>/<session id>`, where `<dir>` is
   `SARATHI_ASK_GATE_DIR`, else `$XDG_STATE_HOME/sarathi/ask-gate`, else
-  `~/.local/state/sarathi/ask-gate`.
+  `~/.local/state/sarathi/ask-gate`: the turn on the first line, then a
+  JSON line with the questions held (as compared for a relabel, with the
+  kinds each declared) and whether a relabel was held. A file of the turn
+  alone, as 0.7.8 wrote it, reads as a hold with no questions; a second line
+  it cannot read passes the ask as `passed: state unreadable`.
 - **Passing** is a silent exit 0, never an allow answer. Anything it cannot
   read passes.
 - **Limits on Stop:** the question has already reached the owner when Stop
@@ -270,14 +317,22 @@ JSON object:
   owner's message it follows), `via` (`AskUserQuestion`,
   `mcp__ccd_turn__wrap_up` or `Stop`), `tool_use_id`, `questions` (each
   question with its option labels, a `wrap_up`'s reply buttons, not its app
-  actions, and the `kind` it declares), `researched`, `looked`,
-  `names_state`, `kind` (the kinds the ask declares, each once, joined with
+  actions, the `kind` it declares, and its own `names_state` and
+  `names_outside`), `researched`, `looked`, `names_state` (every question
+  names repository state), `names_outside` (some question names something
+  outside), `kind` (the kinds the ask declares, each once, joined with
   `, `; an unknown value lowercased, its spaces and hyphens collapsed to
   single spaces, a leading "a" or "an" dropped, cut to 40 characters;
-  `null` for none), and `outcome`: `held`,
+  `null` for none), and `outcome`: `held`, `held: relabelled` (a `Kind:`
+  line added after a hold),
   `passed: research`, `passed: look`, `passed: declared <kind>`,
-  `passed: second ask`, or `passed: state unreadable` / `unwritable` (the
-  gate passes what it cannot keep its once-per-turn state for). An ask the
+  `passed: second ask` (with `relabelled`: `true` when it is a relabel
+  passing after its own hold), or `passed: state unreadable` /
+  `unwritable` (the
+  gate passes what it cannot keep its once-per-turn state for). A
+  `passed: look` with `names_outside` true cannot happen; a
+  `passed: declared preference` or `private` has `looked` true (a
+  researched ask logs `passed: research`). An ask the
   gate passes over (a go-ahead, a Stop with no choice, a Stop already
   continuing) is not logged, nor is any kind it declares.
 - **An answer** to an `AskUserQuestion`: `time`, `session`, `via: "answer"`,

@@ -8,6 +8,17 @@ import { run } from './cli.ts';
 import { gitAt } from './git.ts';
 import { changedPaths, selectedList, selectionOf, settingsInputs } from './selection.ts';
 
+/**
+ * Git hermetic for the whole process, as in cli.test.ts: the code under test
+ * spawns git with this process's environment, as the fixtures do. A global
+ * trace2 event target (a daemon's socket) could otherwise write into a
+ * fixture's .git while after() removes it, and fail it with ENOTEMPTY.
+ */
+const HERMETIC = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TRACE2: '0', GIT_TRACE2_EVENT: '0', GIT_TRACE2_PERF: '0' };
+const inherited = Object.entries(process.env).filter(([name]) => name.startsWith('GIT_'));
+for (const [name] of inherited) delete process.env[name];
+Object.assign(process.env, HERMETIC);
+
 // No detached auto-maintenance after a commit: it could write into a fixture as it is removed.
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0', '-c', 'user.email=a@example.com', '-c', 'user.name=a', '-c', 'commit.gpgsign=false', ...args], { cwd, stdio: 'pipe' }).toString();
@@ -21,6 +32,8 @@ const temp = (prefix: string): string => {
 };
 after(() => {
   for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+  for (const name of Object.keys(HERMETIC)) delete process.env[name];
+  Object.assign(process.env, Object.fromEntries(inherited));
 });
 
 const write = (root: string, files: Record<string, string>) => {

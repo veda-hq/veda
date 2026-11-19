@@ -4,3 +4,9 @@
 /.github/                  @AlokBansal8
 /scripts/version-rule.mjs  @AlokBansal8
 /README.md                 @AlokBansal8
+
+# What veda's lint enforces and what it forgives: the rules, and the findings
+# suppressed when they were turned on. Turning a rule off or adding a
+# suppression waits for the owner's review too.
+/eslint.config.js          @AlokBansal8
+/eslint-suppressions.json  @AlokBansal8

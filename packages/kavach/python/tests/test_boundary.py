@@ -1856,9 +1856,27 @@ class WorktreeBoundaryTest(BoundaryFixture):
         ):
             with self.subTest(command=command):
                 self.assertEqual(self.claude_bash(self.claude, command).returncode, 2)
-        for command in ("pnpm -r deno eval 1", "pnpm exec -r -- tsx .tmp/x.ts", "pnpm exec --filter nested tsc"):
+        for command in (
+            "pnpm -r deno eval 1",
+            "pnpm exec -r -- tsx .tmp/x.ts",
+            "pnpm exec --filter nested tsc",
+            "pnpm -r --include-workspace-root lint",
+        ):
             with self.subTest(command=command):
                 self.assertEqual(self.claude_bash(self.claude, command).returncode, 0)
+        # The root is no package `-r` selects: a script only in its manifest
+        # is a program in each package (pnpm 12.9 printed `Darwin` for
+        # `pnpm -r uname`, the script only in the root's).
+        self.assertEqual(self.claude_bash(self.claude, "pnpm -r lint").returncode, 2)
+        # Behind a selector the program runs in packages the guard does not
+        # place, so it is read from the workspace root too: from a folder
+        # deep below, `../../x` stays inside, and from the root it leaves.
+        deep = nested / "a" / "b"
+        deep.mkdir(parents=True)
+        for command in ("pnpm exec -w touch ../../x", "pnpm -r exec touch ../../x"):
+            with self.subTest(command=command):
+                self.assertEqual(self.claude_bash(deep, command).returncode, 2)
+        self.assertEqual(self.claude_bash(deep, "pnpm exec -w touch x").returncode, 0)
 
     def test_a_listed_host_that_is_this_machine_is_still_unproven(self) -> None:
         """`worktree.pushHosts` widens which hosts are remote, never this

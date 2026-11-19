@@ -5729,6 +5729,10 @@ class RunnerProgram(NamedTuple):
     folder: Path
     # The `node_modules/.bin` folders the runner provably looks in first.
     bins: tuple[Path, ...]
+    # A folder the program is read from too, when a selector runs it in
+    # packages the guard does not place: the workspace root, from which a
+    # path up and out is reached no later than from any package below it.
+    also: Path | None = None
 
 
 def nearest_holding(folder: Path, name: str) -> Path | None:
@@ -5842,7 +5846,7 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
             return None
         if verb in {"exec", "dlx"}:
             slot_values = values | (PNPM_DLX_VALUES if verb == "dlx" else frozenset())
-            unbinned = verb == "dlx"
+            unbinned, hidden = verb == "dlx", False
             index += 1
             while index < len(args) and args[index].startswith("-"):
                 option, attached, value = args[index].partition("=")
@@ -5853,9 +5857,9 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
                     # pnpm 12.9 applies a selector in the slot too
                     # (`pnpm exec --filter <pkg> tsc` ran the package's), so
                     # which bin folders it looks in is not read: the program
-                    # is read as the bare line, from here, where a path up
-                    # and out is reached sooner than from a package below.
-                    unbinned = True
+                    # is read as the bare line, from here and from the
+                    # workspace root (`RunnerProgram.also`).
+                    unbinned = hidden = True
                 if option in slot_values:
                     if not attached:
                         index += 1
@@ -5871,7 +5875,10 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
             if index >= len(args):
                 return False
             bins = () if unbinned else pnpm_bins(folder, recursive, moved)
-            return RunnerProgram(index, folder, bins)
+            spread = recursive or hidden
+            return RunnerProgram(
+                index, folder, bins, nearest_holding(folder, "pnpm-workspace.yaml") if spread else None
+            )
         if verb in PNPM_COMMANDS:
             return False
         scripts = package_scripts(folder, moved)
@@ -5895,11 +5902,22 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
                 if each and all(verb in found for found in each):
                     return False
                 return None
+            if root is not None:
+                # The root is no package `-r` selects: with the script only
+                # in the root's manifest, pnpm 12.9 ran `pnpm -r uname` as the
+                # program in each package. `--include-workspace-root` adds it.
+                scripts = (
+                    package_scripts(root, True)
+                    if "--include-workspace-root" in args[:index] else frozenset()
+                )
             for found in each:
                 scripts |= found
         if verb in scripts:
             return False
-        return RunnerProgram(index, folder, pnpm_bins(folder, recursive, moved))
+        return RunnerProgram(
+            index, folder, pnpm_bins(folder, recursive, moved),
+            nearest_holding(folder, "pnpm-workspace.yaml") if recursive else None,
+        )
     if name in {"npm", "npx"}:
         index = 0
         if name == "npm":
@@ -6025,16 +6043,21 @@ def runner_program_targets(
         return []
     program = word[0] + word[1:].partition("@")[0] if "/" not in word else word
     command = shlex.join([program, *args[found.index + 1 :]])
-    nested = mutation_directories(
-        command, found.folder, nested_depth=nested_depth + 1, read_namespaces=read_namespaces,
-        push_hosts=push_hosts,
-    )
-    if nested is None:
-        return None
+    nested: list[Path] = []
+    for folder in dict.fromkeys(place for place in (found.folder, found.also) if place is not None):
+        read = mutation_directories(
+            command, folder, nested_depth=nested_depth + 1, read_namespaces=read_namespaces,
+            push_hosts=push_hosts,
+        )
+        if read is None:
+            return None
+        nested.extend(read)
     # The folder the runner's own line runs in is counted by its caller; a
     # folder `--dir` moved the program to stays.
-    here = cwd.resolve()
-    return [target for target in nested if target.resolve() != here]
+    # The workspace root a selector's program is read from is a place to
+    # read from, not one it names.
+    counted = {cwd.resolve(), *([found.also.resolve()] if found.also is not None else [])}
+    return [target for target in nested if target.resolve() not in counted]
 
 
 def shell_reads_program_text(args: list[str]) -> bool:

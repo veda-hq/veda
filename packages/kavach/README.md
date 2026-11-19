@@ -158,11 +158,14 @@ any write on a line with `&` or `|`: push in a call of its own.
 
 ## Runners
 
-A package runner that hands a shell a program is refused as unproven:
-`pnpm exec sh -c '…'`, `npx bash -c '…'`, `mise exec -- sh -c '…'`, and each
-runner's own shell mode (`pnpm exec -c` or `--shell-mode`, `npm exec` and
+A package runner that hands a shell program text is refused as unproven:
+`pnpm exec sh -c '…'`, `npx bash -c '…'`, `mise exec -- sh -c '…'`, a shell
+under a runner reading its standard input (`printf … | pnpm exec sh`), and
+each runner's own shell mode (`pnpm exec -c` or `--shell-mode`, `npm exec` and
 `npx` `-c` or `--call`, `mise exec -c` or `--command`, `yarn exec`,
-`bun exec`). The guard does not read that program as a line of its own: the
+`bun exec`). A runner option the guard does not list in that slot is refused
+too, since it may take the next word. The guard does not read that program as
+a line of its own: the
 runner puts its own bin folders first on `PATH`, and `--dir` or `--filter`
 moves the folder the shell runs in. A script file a runner runs
 (`pnpm exec bash .tmp/x.sh`, `pnpm exec tsx .tmp/x.ts`) still runs, and what

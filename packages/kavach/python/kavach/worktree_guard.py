@@ -853,7 +853,7 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
             elif (
                 verb is not None
                 and verb < len(texts)
-                and texts[verb] in {"remote", "config", "fetch"}
+                and texts[verb] in {"remote", "config", "fetch", "pull"}
                 and boundary.git_remote_url_writes(texts[verb], texts[verb + 1 :]) not in (None, ([], []))
             ):
                 add(

@@ -2405,6 +2405,9 @@ def git_host_is_this_machine(authority: str) -> bool:
     local web server. No DNS is asked and no ssh config is read, so a name
     that reaches this machine only through either is not seen."""
     host = authority.rpartition("@")[2]
+    if "%" in host:
+        # git decodes `%XX` in a URL's host (`%6cocalhost`), so it is not read.
+        return True
     if host.startswith("["):
         host = host[1:].partition("]")[0]
     elif host.count(":") == 1:
@@ -2549,17 +2552,28 @@ def git_remote_url_writes(verb: str, args: list[str]) -> tuple[list[str], list[s
             return None
         branch = [value for key, value in settings if key.partition(".")[0].lower() == "branch"]
         return [value for key, value in settings if key.partition(".")[0].lower() != "branch"], branch
-    if verb == "fetch":
-        if not any(
-            git_long_prefix(word, "--set-upstream") and len(word.partition("=")[0]) >= len("--set")
-            for word in args
-        ):
+    if verb in {"fetch", "pull"}:
+        upstream = [
+            word for word in args
+            if git_long_prefix(word, "--set-upstream") and len(word.partition("=")[0]) >= len("--set")
+        ]
+        if not upstream:
             return [], []
-        # The repository is the first operand; a value an option takes
-        # may be read as it, which only refuses more.
+        # With `--set-upstream`, any other option fails closed: one that
+        # takes the next word would move which word is the repository.
+        if any(word.startswith("-") and word not in upstream for word in args):
+            return None
         first = next((word for word in args if not word.startswith("-")), None)
         return [], [] if first is None else [first]
-    if verb != "remote" or not args or args[0] not in {"add", "set-url"}:
+    if verb != "remote":
+        return [], []
+    # `git remote -v add`: only `-v`/`--verbose` may come before the
+    # subcommand (git 2.54); any other option there is not read.
+    while args and args[0] in {"-v", "--verbose"}:
+        args = args[1:]
+    if args and args[0].startswith("-"):
+        return None
+    if not args or args[0] not in {"add", "set-url"}:
         return [], []
     operands: list[str] = []
     index = 1
@@ -5291,44 +5305,87 @@ def generic_mutation_paths(
     ]
 
 
-# Each runner's subcommand that runs a program, and the options in that
-# subcommand's own slot that hand the rest to a shell instead (pnpm 12.9 and
-# npm 11 ran each; yarn's and bun's `exec` run their argument as a shell
-# command, unprobed since neither is installed). The pair `npx` keys is
-# npx's own options, before the program.
-RUNNER_SHELL_MODES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
-    "pnpm": (frozenset({"exec"}), frozenset({"-c", "--shell-mode"})),
-    "npm": (frozenset({"exec", "x"}), frozenset({"-c", "--call"})),
-    "npx": (frozenset(), frozenset({"-c", "--call"})),
-    "mise": (frozenset({"exec", "x"}), frozenset({"-c", "--command"})),
-    "yarn": (frozenset({"exec"}), frozenset()),
-    "bun": (frozenset({"exec"}), frozenset()),
+# Each runner's subcommand that runs a program (none for npx), the options
+# in that subcommand's own slot that hand the rest to a shell, and the slot's
+# other options, from its `--help` (pnpm 12.9, npm 11, mise): (subcommands,
+# shell modes, flags, options taking the next word). pnpm 12.9 and npm 11
+# ran each shell mode. yarn's and bun's `exec` run their argument as a shell
+# command (unprobed: neither is installed here), so the subcommand alone is
+# unproven.
+RunnerSlot = tuple[frozenset[str], frozenset[str], frozenset[str], frozenset[str]]
+NPM_EXEC_SLOT: RunnerSlot = (
+    frozenset(),
+    frozenset({"-c", "--call"}),
+    frozenset({
+        "-y", "--yes", "--no", "--workspaces", "--ws", "--include-workspace-root",
+        "--strict-allow-scripts", "--dangerously-allow-all-scripts",
+    }),
+    frozenset({"--package", "-p", "-w", "--workspace", "--allow-scripts"}),
+)
+RUNNER_SHELL_MODES: dict[str, RunnerSlot] = {
+    "pnpm": (
+        frozenset({"exec"}),
+        frozenset({"-c", "--shell-mode"}),
+        frozenset({
+            "-y", "--yes", "--ignore-workspace", "--color", "--no-progress", "--stream",
+            "--aggregate-output", "--use-stderr", "-r", "--recursive", "-w",
+            "--workspace-root", "--fail-if-no-match", "--include-workspace-root",
+            "--no-include-workspace-root", "--sort", "--no-sort", "--reverse", "--parallel",
+            "-h", "--help",
+        }),
+        frozenset({
+            "-C", "--dir", "--store-dir", "--state-dir", "--npmrc-auth-file", "--userconfig",
+            "--workspace-packages", "--registry", "--https-proxy", "--http-proxy", "--no-proxy",
+            "--reporter", "--loglevel", "-F", "--filter", "--filter-prod", "--test-pattern",
+            "--changed-files-ignore-pattern", "--workspace-concurrency",
+        }),
+    ),
+    "npm": (frozenset({"exec", "x"}), *NPM_EXEC_SLOT[1:]),
+    "npx": NPM_EXEC_SLOT,
+    "mise": (
+        frozenset({"exec", "x"}),
+        frozenset({"-c", "--command"}),
+        frozenset({
+            "--deny-all", "--deny-env", "--deny-net", "--deny-read", "--deny-write",
+            "--fresh-env", "--no-deps", "--raw", "--secrets-all", "-q", "--quiet", "-v",
+            "--verbose", "-y", "--yes", "--locked", "--silent", "-h", "--help",
+        }),
+        frozenset({
+            "-j", "--jobs", "--allow-env", "--allow-net", "--allow-read", "--allow-write",
+            "--secrets", "-C", "--cd", "-E", "--env",
+        }),
+    ),
+    "yarn": (frozenset({"exec"}), frozenset(), frozenset(), frozenset()),
+    "bun": (frozenset({"exec"}), frozenset(), frozenset(), frozenset()),
 }
-# Runner options that take the next word, so it is not read as the program.
-RUNNER_VALUE_OPTIONS = frozenset({"-p", "--package", "-C", "--cd", "-j", "--jobs", "--dir", "--filter", "-F"})
 
 
 def runner_runs_shell_program(name: str, args: list[str]) -> bool:
-    """Whether a runner's line hands a shell a program string: a shell word
-    followed by ``-c`` anywhere on it (`pnpm exec env sh -c …`), or the
-    runner's own shell mode (`npx -c …`, `pnpm exec --shell-mode …`).
+    """Whether a runner's line may hand a shell program text: a shell word
+    anywhere on it that reads `-c`, `-s` or its standard input
+    (`pnpm exec env sh -c …`, `printf … | pnpm exec sh`), or the runner's
+    own shell mode (`npx -c …`, `pnpm --reporter silent exec -c …`).
 
     The program is not read as a nested line: the runner puts its own bin
     folders first on `PATH` (the guard fails closed on a moved `PATH`), and
     `--dir` and `--filter` move the folder the shell runs in (pnpm 12.9 ran
     `pnpm --dir <pkg> exec sh -c` in `<pkg>`). A shell running a script file
-    (`pnpm exec bash run.sh`) is the runner limit the README names, and
-    still runs. A shell-mode option is read only in the runner's own slot:
-    `npx vitest -c <file>` hands `-c` to vitest.
+    (`pnpm exec bash run.sh`, #116) is the runner limit the README names,
+    and still runs. A shell mode is read only in the runner's own slot,
+    against that slot's options: `npx vitest -c <file>` hands `-c` to
+    vitest, and an option the slot does not list fails closed, since it may
+    take the next word.
     """
     for index, word in enumerate(args):
-        if os.path.basename(word) in SHELL_INTERPRETERS and nested_shell_program(args[index + 1 :]) is not None:
+        if os.path.basename(word) in SHELL_INTERPRETERS and shell_reads_program_text(args[index + 1 :]):
             return True
-    subcommands, shell_options = RUNNER_SHELL_MODES.get(name, (frozenset(), frozenset()))
+    if name not in RUNNER_SHELL_MODES:
+        return False
+    subcommands, shell_options, flags, values = RUNNER_SHELL_MODES[name]
     slot = args
     if subcommands:
-        verb = runner_first_operand(args)
-        if verb is None or args[verb] not in subcommands:
+        verb = next((index for index, word in enumerate(args) if word in subcommands), None)
+        if verb is None:
             return False
         if not shell_options:
             return True
@@ -5339,31 +5396,41 @@ def runner_runs_shell_program(name: str, args: list[str]) -> bool:
         index += 1
         if word == "--":
             return False
-        if not word.startswith("-"):
+        if not word.startswith("-") or word == "-":
             if name == "mise":
                 # `mise exec node@20 -c <cmd>`: tool versions come first.
                 continue
             return False
-        option = word.partition("=")[0]
-        if option in shell_options or (
-            not option.startswith("--") and "c" in option[1:] and "-c" in shell_options
-        ):
+        option, attached, _ = word.partition("=")
+        if option in shell_options:
             return True
-        if option in RUNNER_VALUE_OPTIONS and "=" not in word:
-            index += 1
+        if option in values:
+            if not attached:
+                index += 1
+            continue
+        if option in flags:
+            continue
+        if not option.startswith("--") and len(option) > 2 and all(f"-{letter}" in flags for letter in option[1:]):
+            continue
+        return True
     return False
 
 
-def runner_first_operand(args: list[str]) -> int | None:
-    """The index of a runner's subcommand: its first word that is neither an
-    option nor the value of one (`pnpm --dir <pkg> exec`)."""
-    index = 0
-    while index < len(args):
-        word = args[index]
-        if not word.startswith("-"):
-            return index
-        index += 2 if word in RUNNER_VALUE_OPTIONS else 1
-    return None
+def shell_reads_program_text(args: list[str]) -> bool:
+    """Whether a shell given ``args`` runs program text, not a script file:
+    `-c`, `-s` (alone or in a cluster), or no script at all, when it reads
+    its standard input. Only `--version` and `--help` run nothing."""
+    for index, item in enumerate(args):
+        if item == "--":
+            return index + 1 >= len(args)
+        if item in {"--version", "--help"}:
+            continue
+        if item.startswith(("-", "+")):
+            if re.fullmatch(r"[-+][A-Za-z]*[cs][A-Za-z]*", item):
+                return True
+            continue
+        return False
+    return not args or not all(item in {"--version", "--help"} for item in args)
 
 
 def nested_shell_program(args: list[str]) -> str | None:
@@ -6306,7 +6373,7 @@ def mutation_path_operands(
             return git_push_destinations(
                 words[command_index], words[command_index + 1 :], git_cwd
             )
-        if words[command_index] in {"remote", "config", "fetch"}:
+        if words[command_index] in {"remote", "config", "fetch", "pull"}:
             written = git_remote_url_writes(words[command_index], words[command_index + 1 :])
             if written is None:
                 return None
@@ -6316,7 +6383,7 @@ def mutation_path_operands(
                 config = git_push_config(git_cwd) if repositories else GitPushConfig({}, [], [])
                 if state is None or config is None:
                     return None
-                remotes = config.remotes if words[command_index] == "fetch" else None
+                remotes = config.remotes if words[command_index] in {"fetch", "pull"} else None
                 for url in urls:
                     if not git_destination_is_placed(url, state[0], state[2]):
                         return None

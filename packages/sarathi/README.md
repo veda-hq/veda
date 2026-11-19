@@ -270,6 +270,44 @@ settled a question, so it checks that a look happened, not what it found.
   handler's reason alone: the gate's feedback is not shown, and its once
   for the turn is spent.
 
+**An ask the app does not see (Stop).** The desktop app and the needs-you
+plugin show that a session waits on its owner from the `ask` of its
+`wrap_up`. A turn that asks only in its closing message shows nothing, so on
+Stop, before the research hold, the handler checks the closing message:
+
+- **It asks the owner** when a line of its last three paragraphs (code and
+  quoted lines out) opens `Needs you:`, bold or not, or ends on a question,
+  with URLs, inline code and "quoted text" taken out. A question answered on
+  its own line ("**Can it close?** Yes, once …") does not end that line.
+- **No `wrap_up` carried an ask** since the turn's prompt: the last
+  user-role entry from the owner, another session (meta or not) or an app
+  event, so a side session's turn counts from the message that started it.
+  A tool result, meta text other than another session's message, a row of
+  system reminders alone and a background task's report start no turn: a
+  `wrap_up` ask before them still stands.
+- **The session has `wrap_up`:** the desktop app names it in
+  `CLAUDE_CODE_TERMINAL_MCP_TOOLS`, or the transcript shows a call to it. A
+  terminal session's Stop is as before.
+
+Then the turn goes on once, with `additionalContext` that starts `file the
+ask.`, quotes the asking line, and says to call `wrap_up` with the question
+as `ask`, reply buttons, and `blocked: true` if the work stops; a turn that
+does not wait on the owner just ends again. The `wrap_up` it asks for then
+meets the research hold on PreToolUse, as any choice-shaped ask does. The
+continuation carries `stop_hook_active`, so it fires at most once a turn.
+Each one is a line in the ask log, `outcome: "nudged: no wrap_up ask"`. Like
+the hold, it needs Claude Code 2.1.163 or later, which reads
+`additionalContext` on Stop; an older one ignores it and the turn ends, so
+there a `nudged` line records feedback the model never saw.
+
+Replayed over this Mac's desktop transcripts (read 2026-11-20), the
+handler's own functions nudge 810 of 26,627 turn endings, most of them
+"Needs you:" endings. Those endings come from a split of the replay's own,
+at every user row that is not a tool result or meta text (reminder-only
+rows and task reports included), not from the handler's, so the sample
+does not lean on the rule it tests. Counting a task report as no prompt drops 11 nudges
+there, each a repeat of an ask already standing.
+
 A project lists it in `.claude/sarathi.json`, beside its other `PreToolUse`
 and `Stop` handlers:
 

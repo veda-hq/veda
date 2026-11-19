@@ -1500,6 +1500,15 @@ def git_destination_operands(words: list[str], command_index: int) -> list[str] 
         return git_fast_import_outputs(args)
     if verb == "credential-store":
         return git_credential_store_outputs(args)
+    if verb == "mailsplit":
+        return git_mailsplit_outputs(args)
+    if verb == "mailinfo":
+        return git_mailinfo_outputs(args)
+    if verb == "maintenance":
+        # `register`, `unregister`, `start` and `stop` write the global
+        # config (or `--config-file`) and schedule launchd, systemd or cron
+        # jobs; `run` works in the repository.
+        return [] if args[:1] == ["run"] else None
     return []
 
 
@@ -1618,10 +1627,146 @@ def git_credential_store_outputs(args: list[str]) -> list[str] | None:
     return files
 
 
+def git_long_prefix(word: str, option: str) -> bool:
+    """Whether ``word`` (before any ``=``) is ``option`` or an abbreviation
+    of it, from three characters on (``--e`` for ``--exec``). An ambiguous
+    abbreviation counts too: that only refuses more."""
+    name = word.partition("=")[0]
+    return name.startswith("--") and len(name) > len("--") and option.startswith(name)
+
+
+# Options that make git run a program, per verb: the remote side of a
+# transport runs through the shell (git 2.54 runs `git push --e <cmd>` and
+# `git fetch . --upload-pack=<cmd>`, an option after the operand). `clone`'s
+# `-u`/`--upload-pack` are read by GIT_CLONE_OPTIONS. Every word is read, past
+# `--` and as an option's value too, which only refuses more.
+GIT_PROGRAM_OPTIONS: dict[str, tuple[str, ...]] = {
+    "fetch": ("--upload-pack",),
+    "pull": ("--upload-pack",),
+    "fetch-pack": ("--upload-pack", "--exec"),
+    "ls-remote": ("--upload-pack", "--exec"),
+    "push": ("--receive-pack", "--exec"),
+    "send-pack": ("--receive-pack", "--exec"),
+    "archive": ("--exec",),
+    "grep": ("--open-files-in-pager",),
+}
+
+
+# Options that let a listed verb write outside the work tree, each with the
+# shortest spelling read as it: `apply --unsafe-paths` applies `../` paths and
+# `--directory=<outside>` (git 2.54 writes both), `repack --filter-to` and
+# `--expire-to` write packs at the prefix they name, as does gc's
+# `--expire-to`. `--filter-` keeps `repack --filter=blob:none` placed.
+GIT_ELSEWHERE_OPTIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    "apply": (("--unsafe-paths", "--uns"),),
+    "repack": (("--filter-to", "--filter-"), ("--expire-to", "--ex")),
+    "gc": (("--expire-to", "--ex"),),
+}
+
+
+def git_runs_program(verb: str, args: list[str]) -> bool:
+    """Whether a word of ``git <verb> <args>`` names a program for git to
+    run (an option of GIT_PROGRAM_OPTIONS, or grep's ``-O<pager>`` alone or
+    in a cluster of short flags, ``-iO``), or lets it write where no reader
+    here places (GIT_ELSEWHERE_OPTIONS)."""
+    options = GIT_PROGRAM_OPTIONS.get(verb, ())
+    elsewhere = GIT_ELSEWHERE_OPTIONS.get(verb, ())
+    for word in args:
+        if any(git_long_prefix(word, option) for option in options):
+            return True
+        name = word.partition("=")[0]
+        if any(
+            git_long_prefix(word, option) and len(name) >= len(shortest)
+            for option, shortest in elsewhere
+        ):
+            return True
+        if verb == "grep" and word.startswith("-") and not word.startswith("--") and "O" in word:
+            return True
+    return False
+
+
+def git_trailer_outputs(args: list[str]) -> list[str] | None:
+    """``git interpret-trailers --in-place`` rewrites every file it names.
+    Every word that is not an option counts, a ``--trailer`` value too,
+    which only refuses more; without ``--in-place`` (or ``--in``, ``--in-p``)
+    it prints and writes nothing."""
+    if not any(git_long_prefix(word, "--in-place") for word in args):
+        return []
+    dashes = False
+    outputs: list[str] = []
+    for word in args:
+        if word == "--" and not dashes:
+            dashes = True
+        elif dashes or not word.startswith("-") or word == "-":
+            outputs.append(word)
+    return outputs
+
+
+def git_object_dir_outputs(args: list[str]) -> list[str] | None:
+    """``--object-dir`` of commit-graph and multi-pack-index, and any
+    abbreviation (``--obj=``), before or after the subcommand: each writes
+    its graph or index into that folder. A missing or option-like value is
+    unproven."""
+    outputs: list[str] = []
+    index = 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        if not git_long_prefix(word, "--object-dir"):
+            continue
+        if "=" in word:
+            value = shell_option_value(word)
+        elif index < len(args):
+            value = args[index]
+            index += 1
+        else:
+            return None
+        if not value or value.startswith("-"):
+            return None
+        outputs.append(value)
+    return outputs
+
+
+def git_mailsplit_outputs(args: list[str]) -> list[str] | None:
+    """``git mailsplit -o<dir>`` writes a numbered file per message into
+    ``<dir>``. Git 2.54 takes the folder only attached, and options only
+    before the first operand or ``--``: ``-o <dir>`` and ``-bo<dir>`` are
+    unknown options to it. Without ``-o`` it writes in the folder it runs
+    in. An option this reader does not know is unproven."""
+    outputs: list[str] = []
+    for word in args:
+        if word == "--" or not word.startswith("-") or word == "-":
+            break
+        if word.startswith("-o"):
+            value = shell_slice(word, 2)
+            if not value:
+                return None
+            outputs.append(value)
+        elif word not in {"-b", "--keep-cr", "--mboxrd"} and not re.fullmatch(r"-[df][0-9]*", word):
+            return None
+    return outputs
+
+
+def git_mailinfo_outputs(args: list[str]) -> list[str] | None:
+    """``git mailinfo <msg> <patch>`` writes both. Every word that is not
+    an option counts, an ``--encoding`` or ``--quoted-cr`` value too, which
+    only refuses more."""
+    dashes = False
+    outputs: list[str] = []
+    for word in args:
+        if word == "--" and not dashes:
+            dashes = True
+        elif dashes or not word.startswith("-") or word == "-":
+            outputs.append(word)
+    return outputs
+
+
 def git_top_relative_outputs(verb: str, args: list[str]) -> list[str] | None:
-    """What fast-export, pack-objects and read-tree write. Git resolves
-    these from the top of the work tree, not from the folder it runs in:
-    from `git -C sub`, `--export-marks=m` writes `<top>/m` (git 2.54).
+    """What fast-export, pack-objects, read-tree, interpret-trailers,
+    commit-graph and multi-pack-index write. Git resolves these from the top
+    of the work tree, not from the folder it runs in: from `git -C sub`,
+    `--export-marks=m` writes `<top>/m`, and `interpret-trailers --in-place t`
+    reads and writes `<top>/t` (git 2.54).
 
     - ``fast-export --export-marks`` exactly, anywhere. Git 2.54 calls
       ``--export-m=`` ambiguous, so an abbreviation is unproven.
@@ -1632,6 +1777,10 @@ def git_top_relative_outputs(verb: str, args: list[str]) -> list[str] | None:
       (git 2.54 takes ``--i=``), anywhere, past ``--`` too.
     """
     outputs: list[str] = []
+    if verb == "interpret-trailers":
+        return git_trailer_outputs(args)
+    if verb in {"commit-graph", "multi-pack-index"}:
+        return git_object_dir_outputs(args)
     if verb == "pack-objects":
         dashes = False
         for word in args:
@@ -1733,12 +1882,51 @@ GIT_CONFIG_SUBCOMMANDS = frozenset({
 })
 
 
+# Keys `git config` may set in the repository's own config: each names no
+# program and no file, and moves nothing git writes. Any other key is
+# unproven, since a list of the keys that run a program could not be
+# finished: core.fsmonitor, core.hooksPath, core.sshCommand, core.pager,
+# core.editor, core.worktree, alias.*, include.path, includeIf.*, filter.*,
+# diff.external, diff.<driver>.textconv, merge.<driver>.driver,
+# credential.helper, remote.<name>.uploadpack, protocol.*.allow and more.
+# Section and name are matched lowercased, as git reads them; a subsection
+# (`branch.<name>.remote`) may be anything.
+GIT_CONFIG_INERT_KEYS = frozenset({
+    "user.name", "user.email", "user.useconfigonly",
+    "push.default", "push.autosetupremote", "push.followtags",
+    "pull.rebase", "pull.ff", "fetch.prune", "fetch.prunetags",
+    "rebase.autostash", "rebase.autosquash", "rebase.updaterefs",
+    "merge.conflictstyle", "init.defaultbranch", "color.ui",
+})
+GIT_CONFIG_INERT_SUBSECTION_KEYS = {
+    "branch": frozenset({"remote", "merge", "rebase", "description", "pushremote"}),
+    "remote": frozenset({"url", "pushurl", "fetch", "push", "tagopt", "prune"}),
+}
+
+
+def git_config_key_is_inert(key: str) -> bool:
+    """Whether ``key`` is one git config may set without making git run a
+    program or write elsewhere (GIT_CONFIG_INERT_KEYS, ``advice.*``)."""
+    section, dot, rest = key.partition(".")
+    if not dot or not rest or has_dynamic_markers(key):
+        return False
+    section = section.lower()
+    subsection, dot, name = rest.rpartition(".")
+    name = name.lower()
+    if not dot:
+        return f"{section}.{name}" in GIT_CONFIG_INERT_KEYS or (
+            section == "advice" and re.fullmatch(r"[a-z0-9-]+", name) is not None
+        )
+    return bool(subsection) and name in GIT_CONFIG_INERT_SUBSECTION_KEYS.get(section, frozenset())
+
+
 def git_config_file_outputs(args: list[str]) -> list[str] | None:
     """The file ``git config -f <file>`` writes; ``--global`` and
     ``--system`` write outside any worktree and fail closed.
 
-    Without them git config writes the repository's own config, which the
-    guard does not read here. A read writes nothing: ``get``, ``list``,
+    Without them git config writes the repository's own config, where a
+    value is placed only for a key `git_config_key_is_inert` takes, and an
+    unset or removed section always is. A read writes nothing: ``get``, ``list``,
     ``--get``, ``--list``, or a lone key with no action
     (``git config --global user.name``). Anything else with a file option
     is a write, and an option the reader does not know fails closed.
@@ -1749,6 +1937,13 @@ def git_config_file_outputs(args: list[str]) -> list[str] | None:
     writes = False
     subcommand = bool(args) and args[0] in GIT_CONFIG_SUBCOMMANDS
     reads = subcommand and args[0] in {"get", "list"}
+    # What a write does to the repository's own config: `set` (a value),
+    # `unset`, or `other` (rename a section, or open an editor).
+    action = (
+        {"set": "set", "unset": "unset", "remove-section": "unset"}.get(args[0], "other")
+        if subcommand else "set"
+    )
+    keys: list[str] = []
     positionals = 0
     index = 1 if subcommand else 0
     while index < len(args):
@@ -1756,13 +1951,19 @@ def git_config_file_outputs(args: list[str]) -> list[str] | None:
         index += 1
         if word == "--":
             positionals += len(args) - index
+            keys.extend(args[index:])
             break
         if not word.startswith("-") or word == "-":
             positionals += 1
+            keys.append(word)
         elif word in GIT_CONFIG_READERS:
             reads = True
         elif word in GIT_CONFIG_WRITERS:
             writes = True
+            if word in {"--unset", "--unset-all", "--remove-section"}:
+                action = "unset" if action != "other" else action
+            elif word not in {"--add", "--replace-all"}:
+                action = "other"
         elif word.startswith("--"):
             name, has_value, _ = word.partition("=")
             if len(name) > len("--fi") and "--file".startswith(name):
@@ -1801,6 +2002,7 @@ def git_config_file_outputs(args: list[str]) -> list[str] | None:
                     reads = True
                 elif letter == "e":
                     writes = True
+                    action = "other"
                 elif letter != "z":
                     unplaced = True
     if unplaced:
@@ -1808,12 +2010,20 @@ def git_config_file_outputs(args: list[str]) -> list[str] | None:
         # writes `git config --comm -- -f <file> core.x y`, where this read
         # stopped at the `--`. git_safety refuses these options too.
         return None
-    if not files and not elsewhere:
-        return []
     if not subcommand and positionals == 1 and not writes:
         reads = True
     if reads and not writes:
         return []
+    if not files and not elsewhere:
+        # The repository's own config (the main checkout's `.git/config`
+        # for a linked worktree) or `config.worktree`. Unsetting a key or
+        # removing a section runs nothing new; setting a value is placed
+        # only for a key in GIT_CONFIG_INERT_KEYS.
+        if action == "unset":
+            return []
+        if action == "set" and keys and git_config_key_is_inert(keys[0]):
+            return []
+        return None
     if elsewhere or any(not value or value.startswith("-") for value in files):
         return None
     return files
@@ -2036,6 +2246,56 @@ GIT_GLOBAL_VALUES = frozenset({
     "-c", "--config-env", "--git-dir", "--work-tree", "--namespace", "--attr-source",
 })
 GIT_GLOBAL_ATTACHED = GIT_GLOBAL_VALUES - {"-c"} | {"--exec-path", "--list-cmds"}
+
+# The git verbs this guard places, from git 2.54's `git --list-cmds=main`.
+# Each writes only into the repository and its work tree, or names what else
+# it writes in words a reader here places (`git_destination_operands`,
+# `git_top_relative_outputs`, the runners and program options). Any other
+# verb is unproven: an alias (`!` runs a shell command), a `git-<name>` on
+# PATH, and the verbs left out on purpose:
+# - servers and transports: daemon, shell, upload-pack, receive-pack,
+#   upload-archive, http-backend, http-fetch, http-push, remote-* (each
+#   serves or writes a repository it is pointed at, or runs a command);
+# - mail and foreign tools: send-email, imap-send, p4, quiltimport and
+#   subtree;
+# - credential, credential-cache and credential-osxkeychain, which run the
+#   configured helper or keep secrets outside;
+# - hook, whose `run` starts a hook by name, from a folder the session may
+#   have written (a `core.hooksPath` inside the worktree);
+# - for-each-repo, which runs git in every repository a config list names;
+# - merge-index and the merge-* strategy programs, which run a program;
+# - init-db (init's old name, which `git_repository_destinations` does not
+#   read) and the runners in GIT_UNPLACED_RUNNERS.
+GIT_KNOWN_VERBS = frozenset({
+    "add", "am", "annotate", "apply", "archive", "backfill", "bisect", "blame",
+    "branch", "bugreport", "bundle", "cat-file", "check-attr", "check-ignore",
+    "check-mailmap", "check-ref-format", "checkout", "checkout-index", "cherry",
+    "cherry-pick", "clean", "clone", "column", "commit", "commit-graph",
+    "commit-tree", "config", "count-objects", "credential-store",
+    "describe", "diagnose", "diff", "diff-files", "diff-index", "diff-pairs",
+    "diff-tree", "fast-export", "fast-import", "fetch", "fetch-pack",
+    "fmt-merge-msg", "for-each-ref", "format-patch", "fsck", "fsck-objects",
+    "gc", "get-tar-commit-id", "grep", "hash-object", "help", "history",
+    "index-pack", "init", "interpret-trailers", "last-modified", "log",
+    "ls-files", "ls-remote", "ls-tree", "mailinfo", "mailsplit", "maintenance",
+    "merge", "merge-base", "merge-file", "merge-tree", "mktag", "mktree",
+    "multi-pack-index", "mv", "name-rev", "notes", "pack-objects",
+    "pack-redundant", "pack-refs", "patch-id", "pickaxe", "prune",
+    "prune-packed", "pull", "push", "range-diff", "read-tree", "rebase",
+    "reflog", "refs", "remote", "repack", "replace", "replay", "repo",
+    "request-pull", "rerere", "reset", "restore", "rev-list", "rev-parse",
+    "revert", "rm", "send-pack", "shortlog", "show", "show-branch",
+    "show-index", "show-ref", "sparse-checkout", "stage", "stash", "status",
+    "stripspace", "submodule", "switch", "symbolic-ref", "tag", "unpack-file",
+    "unpack-objects", "update-index", "update-ref", "update-server-info", "var",
+    "verify-commit", "verify-pack", "verify-tag", "version", "whatchanged",
+    "worktree", "write-tree",
+})
+
+# The reviewed runners that can run a program named on their line
+# (`pnpm exec git`, `npx git`, `mise exec -- git`). Git under one is refused
+# in `mutation_path_operands`, as `clone_writers` does in an owned clone.
+GIT_RUNNERS = frozenset({"pnpm", "npm", "npx", "yarn", "bun", "mise"})
 
 # Verbs that run a command from a place the guard cannot read: filter-branch
 # evals its filters in a temporary tree, difftool and mergetool run a tool
@@ -5469,6 +5729,10 @@ def mutation_path_operands(
         command_index, git_cwd = git_command(words, cwd)
         if command_index is None or git_cwd is None or command_index >= len(words):
             return None
+        if words[command_index] not in GIT_KNOWN_VERBS:
+            return None
+        if git_runs_program(words[command_index], words[command_index + 1 :]):
+            return None
         if words[command_index] == "worktree":
             return git_worktree_mutation_paths(words, command_index, git_cwd)
         if words[command_index] == "checkout-index":
@@ -5478,7 +5742,10 @@ def mutation_path_operands(
             and "foreach" in words[command_index + 1 :]
         ):
             return None
-        if words[command_index] in {"fast-export", "pack-objects", "read-tree"}:
+        if words[command_index] in {
+            "fast-export", "pack-objects", "read-tree", "interpret-trailers",
+            "commit-graph", "multi-pack-index",
+        }:
             top_relative = git_top_relative_outputs(
                 words[command_index], words[command_index + 1 :]
             )
@@ -5561,6 +5828,11 @@ def mutation_path_operands(
             return written
         linked = link_sources(positionals, target_directory, cwd, modes)
         return None if linked is None else written + linked
+    if name in GIT_RUNNERS and any(os.path.basename(word) == "git" for word in words[1:]):
+        # `GIT_DIR=<outside> pnpm exec git init`, `npx git rebase -x <cmd>`:
+        # what the runner hands git is read here only as an unknown
+        # runner's path-like words, so none of git's own readers apply.
+        return None
     if name in ALL_OPERAND_MUTATORS:
         value_options = {
             "mkdir": {"-m", "--mode"},
@@ -5769,6 +6041,11 @@ def mutation_directories(
             # Above the read-only gate: `GIT_EXTERNAL_DIFF=<cmd> git diff`
             # runs the command, and `GIT_TRACE=<file> git status` writes.
             if not git_prefix_is_inert(prefix):
+                return None
+            # `--exec-path=<dir>` runs git's own helpers from <dir>: git 2.54
+            # runs `<dir>/git` for the `gc --auto` after a commit. Bare
+            # `--exec-path` only prints the folder.
+            if any(word.startswith("--exec-path=") for word in words[1:_index]):
                 return None
             programs = (
                 git_runner_programs(words, _index) if _index < len(words) else []

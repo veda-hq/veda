@@ -821,7 +821,21 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
             continue
         own = each.heredocs or each.redirect_targets or any(word.bodies or word.dynamic for word in words)
         if not own and boundary.mutation_directories(shlex.join(word.text for word in words), cwd) is None:
-            add(f"`{head}`, a program whose writes the guard does not know")
+            texts = [word.text for word in words]
+            verb, _ = boundary.git_command(texts, None) if head == "git" else (None, None)
+            if verb is not None and verb < len(texts):
+                # An alias, a verb git does not list, or a form of a known
+                # verb the guard does not place (`config core.fsmonitor`).
+                add(f"`git {shown(texts[verb])}`, a git command or option whose writes the guard does not read")
+            elif head in boundary.GIT_RUNNERS and any(os.path.basename(text) == "git" for text in texts[1:]):
+                # `pnpm add git` names a package, but is refused the same
+                # way: the word, not where it sits, is what fails closed.
+                add(
+                    f"`{head}` with `git` on its line, which the guard reads only "
+                    "when `git` is the command itself"
+                )
+            else:
+                add(f"`{head}`, a program whose writes the guard does not know")
     if any(each.piped_from is not None for each in commands):
         add("a pipeline (`|`)")
     if any(each.follows in (";", "&&", "||", "\n", "&") for each in commands[1:]):

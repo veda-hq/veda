@@ -292,9 +292,10 @@ def runs_program(sub: str, word: str) -> bool:
     if sub == "grep" and word.startswith("-") and not word.startswith("--") and "O" in word:
         # `-O<pager>`, alone or after other short flags (`-iO`).
         return True
-    if not word.startswith("--") or len(word) < 4:
-        return False
     name = word.split("=", 1)[0]
+    # From three characters on: git 2.54 runs `git push --e <cmd>`.
+    if not name.startswith("--") or len(name) < 3:
+        return False
     return any(option.startswith(name) for option in RUNS_PROGRAM)
 
 

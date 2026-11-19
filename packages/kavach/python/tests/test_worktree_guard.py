@@ -739,6 +739,25 @@ class OwnCheckoutTest(BoundaryFixture):
     counts as its own, in the environment the setting names, with its git
     folder still refused."""
 
+    def test_a_program_option_is_read_from_three_characters(self) -> None:
+        """git 2.54 runs `git push --e <cmd>`: `--e` abbreviates --exec, the
+        receive-pack it starts. The boundary refuses it before this reader
+        runs; `runs_program` must not let it through on its own either."""
+        from kavach import clone_writers
+
+        for verb, word in (
+            ("push", "--e"),
+            ("push", "--e=x"),
+            ("fetch", "--upl=x"),
+            ("ls-remote", "--exec"),
+            ("grep", "-iO.tmp/x.sh"),
+        ):
+            with self.subTest(word=word):
+                self.assertTrue(clone_writers.runs_program(verb, word))
+        for verb, word in (("push", "--"), ("log", "--reverse"), ("push", "-u"), ("fetch", "--all")):
+            with self.subTest(word=word):
+                self.assertFalse(clone_writers.runs_program(verb, word))
+
     def hosted_env(
         self, project: Path | None = None, *, setting: bool = True, **variables: str
     ) -> dict[str, str]:
@@ -995,7 +1014,6 @@ class OwnCheckoutTest(BoundaryFixture):
             "git apply --directory=.claude/hooks .tmp/new.patch",
             "git apply --index .tmp/plain.patch .tmp/hooks.patch",
             "git apply --apply --stat .tmp/hooks.patch",
-            "git apply --unsafe-paths .tmp/plain.patch",
             "git apply",
             "git merge evil",
             "git pull",
@@ -1016,15 +1034,7 @@ class OwnCheckoutTest(BoundaryFixture):
             "git submodule update",
             "git bisect start",
             "git clone . .tmp/copy",
-            "git config core.fsmonitor .tmp/x.sh",
-            "git config --add core.hooksPath .tmp",
-            "git fetch --upload-pack=.tmp/x.sh .",
-            "git fetch --upload-p=.tmp/x.sh .",
-            "git push --receive-pack=.tmp/x.sh .",
-            "git grep -O.tmp/x.sh guard",
-            "git grep -iO.tmp/x.sh guard",
-            "git --exec-path=.tmp commit -qm x",
-            "git co evil",
+            "git config user.name x",
             "git diff-files --output=.claude/hooks/guard.sh",
         )
         for command in refused:
@@ -1032,13 +1042,27 @@ class OwnCheckoutTest(BoundaryFixture):
                 result = self.claude_bash(self.main, command, environment)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("an owned plain clone does not open it", result.stderr)
-        # An abbreviated --output is unproven in any checkout, before the
-        # owned clone's fences are read.
-        result = self.claude_bash(
-            self.main, "git whatchanged --outpu=.claude/hooks/guard.sh", environment,
-        )
-        self.assertEqual(result.returncode, 2, result.stderr)
-        self.assertIn("mutation targets could not be resolved", result.stderr)
+        # An abbreviated --output, a verb git does not list (an alias), a
+        # config key that runs a program and an option that does are
+        # unproven in any checkout, before the owned clone's fences are read.
+        for command in (
+            "git whatchanged --outpu=.claude/hooks/guard.sh",
+            "git co evil",
+            "git config core.fsmonitor .tmp/x.sh",
+            "git config --add core.hooksPath .tmp",
+            "git fetch --upload-pack=.tmp/x.sh .",
+            "git fetch --upload-p=.tmp/x.sh .",
+            "git push --receive-pack=.tmp/x.sh .",
+            "git push --e .tmp/x.sh .",
+            "git grep -O.tmp/x.sh guard",
+            "git grep -iO.tmp/x.sh guard",
+            "git apply --unsafe-paths .tmp/plain.patch",
+            "git --exec-path=.tmp commit -qm x",
+        ):
+            with self.subTest(command=command):
+                result = self.claude_bash(self.main, command, environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("mutation targets could not be resolved", result.stderr)
         # From a subfolder, and through `-C`: the paths, not the folder, count.
         for cwd, command in (
             (self.main / "sub", "git checkout HEAD -- ../.claude/hooks/guard.sh"),
@@ -1085,11 +1109,12 @@ class OwnCheckoutTest(BoundaryFixture):
             with self.subTest(command=command):
                 result = self.claude_bash(self.main, command, environment)
                 self.assertEqual(result.returncode, 2, result.stderr)
-        # Only this check refuses these: the runner itself is one kavach knows.
+        # The runner itself is one kavach knows; git under it is unproven in
+        # any checkout (#198), before the owned clone's check reads it.
         for command in ("pnpm exec git checkout HEAD -- .claude", "mise exec -- git restore .claude"):
             with self.subTest(reason=command):
                 result = self.claude_bash(self.main, command, environment)
-                self.assertIn("would run `git`", result.stderr)
+                self.assertIn("with `git` on its line, which the guard reads only", result.stderr)
 
     def test_a_name_both_a_tag_and_a_branch_is_judged_both_ways(self) -> None:
         """`git checkout twin` takes branch `twin` where `rev-parse twin`

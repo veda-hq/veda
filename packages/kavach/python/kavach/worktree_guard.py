@@ -835,6 +835,13 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
                 add(f"an interpreter running a file or module (`{shown(typed)}`)")
             continue
         own = each.heredocs or each.redirect_targets or any(word.bodies or word.dynamic for word in words)
+        if own and head == "git" and any(word.dynamic for word in words):
+            # `git push $REPO HEAD:x`: the expansion is named elsewhere only
+            # as a construct, so name the push whose destination it hides.
+            texts = [word.text for word in words]
+            verb, _ = boundary.git_command(texts, None)
+            if verb is not None and verb < len(texts) and texts[verb] in {"push", "send-pack"}:
+                add(f"`git {texts[verb]}` with an expansion on its line, whose destination the guard cannot place")
         if not own and boundary.mutation_directories(shlex.join(word.text for word in words), cwd) is None:
             texts = [word.text for word in words]
             verb, _ = boundary.git_command(texts, None) if head == "git" else (None, None)

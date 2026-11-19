@@ -79,6 +79,10 @@ class UnresolvedNamesTheConstruct(BoundaryFixture):
                 "(only a remote URL, or this repository itself, is placed)",
             ),
             ("git send-pack ../other main", "uses `git send-pack` to a repository the guard cannot place"),
+            (
+                "git push $REPO HEAD:x",
+                "uses `git push` with an expansion on its line, whose destination the guard cannot place",
+            ),
         ):
             with self.subTest(command=command):
                 self.assertIn(named, self.refused(command))

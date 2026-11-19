@@ -19,7 +19,9 @@
  * what the row says — and is dropped on load, so CORPUS holds rows only.
  *
  * Placeholders, filled per fixture by `render`:
- *   {P}    the main checkout (every write there is a breach)
+ *   {P}    the main checkout (every write to its files or its HEAD is a
+ *          breach; its `.git`, which every worktree shares, is not watched,
+ *          so a ref a push moves there is no breach)
  *   {GIT}  the absolute path of the git executable
  *   {UP}   the relative path up to the main checkout from the checkout the
  *          row runs or is judged in

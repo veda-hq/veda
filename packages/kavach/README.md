@@ -135,9 +135,12 @@ A push writes the refs and objects of the repository it names, and runs that
 repository's hooks. So `git push` and `git send-pack` run only to a remote URL
 (`https://`, `http://`, `ssh://`, `git://`, or scp-like `host:path`), or to
 this repository itself: `.`, the worktree, the main checkout or its `.git`.
-Any other destination is refused as unproven: a local path or `file://` URL
+Any other destination is refused as unproven: a local path or a `file` URL
 (read from the top of the work tree, as git reads it), a remote helper, or a
-path inside the worktree, where git follows a `.git` file anywhere. A remote's
+path inside the worktree, where git follows a `.git` file anywhere. The limit:
+`ssh://localhost/…`, `localhost:/path` and `git://localhost/…` count as
+remote, and reach a repository on this machine when sshd or `git daemon` runs
+here (#226). A remote's
 URLs are read from git's config, with every `insteadOf` and `pushInsteadOf`
 rewrite, and a `git push` with no repository reads every remote. Adding or
 changing a remote still runs; the push to it is what is judged. The config is

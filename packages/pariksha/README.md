@@ -9,9 +9,10 @@ npx @veda-hq/pariksha@0.7.2 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
-(each finding on stderr, with how to fix it; `absolute-paths` and
-`non-synced-resources` print theirs on stdout, as the shell checks they were
-ported from did), and 2 on a usage or input error. `--root <dir>` (default:
+(each finding on stderr, with how to fix it; `absolute-paths`,
+`non-synced-resources`, `license-check` and `codeql-baseline` print theirs on
+stdout, as the scripts they were ported from did), and 2 on a usage or input
+error. `--root <dir>` (default:
 the current directory) names the repository. Node 24 or later. MIT; one
 ported file is ISC, see `NOTICE`.
 
@@ -42,8 +43,9 @@ or a CI step runs `pariksha <check> --staged` and names no settings file.
   then widens a selection as a change to the file would (see Choosing files).
 - **Flag-only checks.** `authority-citations` reads `authority` and
   `issuePrefix` (a string, or a list of strings) and `adrDir`; `doc-budgets`
-  reads `table` and `section`. Each is the flag of the same name. `table`
-  is a file, read from the config file's folder as an entry's path is;
+  reads `table` and `section`; `codeql-baseline` reads `baseline`. Each is
+  the flag of the same name. `table` and `baseline` are files, read from the
+  config file's folder as an entry's path is;
   `adrDir` is the folder citations name, under `--root`.
 - **Precedence.** `--config` on the command line wins over the entry, and a
   flag over a field. The entry wins over the check's built-in default.
@@ -325,6 +327,48 @@ lists are malformed; a root holding no tracked file; discovery finding no
 hand parser, or no pair, since a kind found nowhere is checked nowhere; no
 base without `--no-base`; a git call that fails. Needs `typescript`, as
 `coverage-by-type` does.
+
+## `codeql-baseline`
+
+```sh
+pariksha codeql-baseline --check <results.sarif> [--baseline <file>] [--root <dir>]
+pariksha codeql-baseline --write <results.sarif> [--baseline <file>] [--root <dir>]
+```
+
+A CodeQL gate that counts results whose `level` says `error` counts none:
+CodeQL leaves `level` out when it equals the rule's default, which is how it
+writes every alert. This reads each result's effective level (SARIF 2.1.0
+§3.27.10: the result's `level`, else the rule's
+`defaultConfiguration.level` from the driver or an extension, else
+`warning`) and refuses, with `--check`, every error-level alert the
+committed baseline does not hold. The alerts an existing codebase already
+has go in the baseline, so they do not block while a new one does.
+
+- **Identity.** An alert is its rule, its file and CodeQL's
+  `primaryLocationLineHash` (the line's number when there is none). The hash
+  reads the line's content, so an edit elsewhere in the file keeps a known
+  alert known. The baseline is a multiset: a second copy of a baselined alert
+  is new.
+- **Suppressions.** A result with an accepted suppression (a missing
+  `status` means accepted, SARIF §3.35) blocks nothing and is never written
+  to the baseline. CodeQL writes one for a result under a
+  `// codeql[rule-id]` comment only when the analysis includes
+  `codeql/javascript-queries:AlertSuppression.ql`.
+- **`--write`** regenerates the baseline from a scan, sorted, so an unchanged
+  scan writes the same bytes. Write it from a scan of the main branch, never
+  by hand. A baseline alert no longer reported is counted on `--check`'s
+  first line, as a reminder to regenerate.
+- **`--baseline`** (default `.github/codeql/error-baseline.json`) is read
+  from `--root`. Its `.pariksha.json` entry is `{ "baseline": "<path>" }`,
+  read from the config file's folder.
+
+The verdict goes to stdout, as in the script this was ported from. A SARIF
+log with no runs is a broken analysis, never a clean one: exit 1 on
+`--check`. A SARIF log or a baseline that cannot be read or is not JSON, a
+baseline that is not `{ "alerts": [...] }`, and a log `--write` cannot
+write from exit 2. The module (`@veda-hq/pariksha/dist/codeql-baseline.js`)
+exports `checkSarif`, `readBaseline` and `ALERT_SUPPRESSION` for a
+pre-push scan that judges the same way.
 
 ## `coverage-by-type`
 
@@ -959,6 +1003,49 @@ to the root) replaces each default it names:
 - `packageRoots` (default none): directories, relative to the root, whose
   files Vitest runs from that directory, with its config.
 - `exclude` (default none): globs passed to Vitest as `--exclude`.
+
+## `license-check`
+
+```sh
+pariksha license-check --config <file> [--report <file.json>] [--root <dir>]
+```
+
+Every installed package's licence must equal a name on the allow list, or
+the package must be allowed by name, with a reason. A checker that accepts a
+licence when an allowed name is a substring of it passes `FSL-1.1-MIT` on
+`MIT` and `MIT-0` on `MIT`; here a licence passes only when it equals an
+allowed name. An SPDX expression passes when one `OR` branch passes, and a
+branch when every `AND` term does (`AND` binds tighter; brackets group); a
+malformed one is refused. A name may hold spaces (`Apache 2.0`).
+
+The inventory is `pnpm licenses list --json --recursive`, run at `--root`:
+every workspace's installed dependencies, dev ones included, read from the
+store pnpm already has. `--report` reads a saved copy of that output instead,
+from the working directory. pnpm reads only the `license` field and reports
+`Unknown` for a package that declares none: such a package is refused unless
+`Unknown` is on the allow list or the package is allowed by name. A package
+pnpm lists under two licences must pass both.
+
+```json
+{
+  "allow": ["Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "MIT"],
+  "packages": {
+    "some-tool": "source-available build tool; its licence permits this use",
+    "old-package@1.0.9": "declares no licence; its LICENSE file is MIT"
+  }
+}
+```
+
+- `allow` (required, not empty) lists the licence names, compared exactly.
+  pariksha ships no allow list: with no settings the check exits 2.
+- `packages` (default none) maps a package to the reason it is allowed
+  whatever its licence: `name` for every version, `name@version` for that
+  version only.
+
+The verdict goes to stdout, as in the script this was ported from: one line
+when every licence passes, else a count and one line per package with its
+licence. pnpm failing, a report that cannot be read, text that is not JSON
+or not pnpm's shape, and an inventory with no package judged nothing: exit 2.
 
 ## `masked-exit-codes`
 

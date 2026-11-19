@@ -43,6 +43,8 @@ import { CONFIG_FILE, entryObject, entryText, loadProjectConfig, type Entry } fr
 import { selectedList, selectionOf, settingsInputs } from './selection.ts';
 import { DEFAULT_CONFIG as DEFAULT_ESLINT_TARGETS, parseConfig as parseEslintTargetsConfig, rangeTargets } from './eslint-targets.ts';
 import { DEFAULT_CONFIG as DEFAULT_ESLINT_BY_WORKSPACE, inheritEslint, lintByWorkspace, parseConfig as parseEslintByWorkspaceConfig, type EslintRunner } from './eslint-by-workspace.ts';
+import { parseLicenseConfig, pnpmLicenses, runLicenseCheck, type LicensesRunner } from './license-check.ts';
+import { BASELINE_PATH as CODEQL_BASELINE, runCodeqlBaseline } from './codeql-baseline.ts';
 
 export interface Io {
   readonly out: (line: string) => void;
@@ -67,6 +69,8 @@ export interface Io {
   readonly python?: PythonRunner;
   /** How eslint-by-workspace runs each group's ESLint; on this process's own streams by default. */
   readonly eslintRunner?: EslintRunner;
+  /** How license-check gets `pnpm licenses list --json` text; pnpm on PATH, run at the root, by default. */
+  readonly licenses?: LicensesRunner;
   /** The directory `.pariksha.json` is found from; the process's own by default. */
   readonly cwd?: () => string;
 }
@@ -147,6 +151,7 @@ const USAGE = [
   '       pariksha aggregate-gate-needs [--config <file>] [--root <dir>]',
   '       pariksha boundary [--root <dir>] [--deny <file>]',
   '       pariksha codec-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
+  '       pariksha codeql-baseline (--check <results.sarif> | --write <results.sarif>) [--baseline <file>] [--root <dir>]',
   '       pariksha coverage-by-type [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha coverage-exemptions --config <file> [--package <dir>] [--root <dir>]',
   '       pariksha doc-budgets --table <file> [--section <name>] [--root <dir>]',
@@ -159,6 +164,7 @@ const USAGE = [
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
   '       pariksha fault-injection-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
   '       pariksha flaky-tests [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--runs <n>] [--root <dir>]',
+  '       pariksha license-check --config <file> [--report <file.json>] [--root <dir>]',
   '       pariksha masked-exit-codes [--config <file>] [--staged] [--root <dir>]',
   '       pariksha non-synced-resources [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha pnpm-settings [--config <file>] [--root <dir>]',
@@ -982,6 +988,36 @@ const pythonFloor = (f: Map<string, string>, io: Io): number => {
 };
 
 /**
+ * license-check: the licences `pnpm licenses list` reports at `--root`, or
+ * the saved report `--report` names, against the allow list the settings
+ * give. With no settings there is no allow list, and nothing to judge by.
+ */
+const licenseCheck = (f: Map<string, string>, io: Io): number => {
+  const P = 'pariksha license-check:';
+  if (!f.has('--config')) {
+    io.err(`${P} no allow list: name a settings file with --config or set checks.license-check in ${CONFIG_FILE}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+  const root = resolve(f.get('--root') ?? '.');
+  const config = unchecked(P, io, () => parseLicenseConfig(configText(f, root)));
+  if (config === undefined) return 2;
+  const report = f.get('--report');
+  return runLicenseCheck({ config, root, ...(report === undefined ? {} : { report }) }, io.licenses ?? pnpmLicenses(), io);
+};
+
+/** codeql-baseline: one of `--check <sarif>` or `--write <sarif>`, against the baseline `--baseline` names under `--root`. */
+const codeqlBaseline = (f: Map<string, string>, io: Io): number => {
+  const check = f.get('--check');
+  const write = f.get('--write');
+  const sarif = check ?? write;
+  if (sarif === undefined || (check !== undefined && write !== undefined)) {
+    io.err(USAGE);
+    return 2;
+  }
+  return runCodeqlBaseline({ mode: check === undefined ? 'write' : 'check', sarif, root: resolve(f.get('--root') ?? '.'), baseline: f.get('--baseline') ?? CODEQL_BASELINE }, io);
+};
+
+/**
  * The registry text: with `--staged`, as the index holds it when it lies
  * under the root and the index has it, so a commit is judged on the registry
  * it records; otherwise as `--config`, or the inline entry, gives it.
@@ -1135,6 +1171,7 @@ const repoRules = (f: Map<string, string>, io: Io): number => {
 
 const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly string[]; run: (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv) => number | Promise<number> }> = {
   'codec-registry': { allowed: ['--config', '--base', '--root'], switches: ['--no-base'], run: codecRegistry },
+  'codeql-baseline': { allowed: ['--check', '--write', '--baseline', '--root'], run: codeqlBaseline },
   'coverage-exemptions': { allowed: ['--config', '--package', '--root'], run: coverageExemptions },
   'fault-injection-registry': { allowed: ['--config', '--base', '--root'], switches: ['--no-base'], run: faultInjectionRegistry },
   'absolute-paths': { allowed: ['--config', '--files-from', '--base', '--head', '--root'], switches: ['--staged', '--all'], run: absolutePaths },
@@ -1154,6 +1191,7 @@ const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly
   'flaky-tests': { allowed: ['--config', '--files-from', '--base', '--head', '--runs', '--root'], switches: ['--staged', '--all'], run: flakyTests },
   'env-gate-switches': { allowed: ['--config', '--mode', '--root'], run: envGateSwitches },
   'export-deletions': { allowed: ['--base', '--root'], run: exportDeletions },
+  'license-check': { allowed: ['--config', '--report', '--root'], run: licenseCheck },
   'masked-exit-codes': { allowed: ['--config', '--root'], switches: ['--staged'], run: maskedExitCodes },
   'repo-rules': { allowed: ['--config', '--files-from', '--base', '--head', '--root'], switches: ['--staged', '--all'], run: repoRules },
   'required-settings': { allowed: ['--require', '--settings', '--root'], run: requiredSettings },
@@ -1169,6 +1207,7 @@ const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly
 type FlagField = { readonly flag: string; readonly list?: boolean; readonly file?: boolean };
 const FLAG_FIELDS: Readonly<Record<string, Readonly<Record<string, FlagField>>>> = {
   'authority-citations': { authority: { flag: '--authority', list: true }, issuePrefix: { flag: '--issue-prefix', list: true }, adrDir: { flag: '--adr-dir' } },
+  'codeql-baseline': { baseline: { flag: '--baseline', file: true } },
   'doc-budgets': { table: { flag: '--table', file: true }, section: { flag: '--section' } },
 };
 

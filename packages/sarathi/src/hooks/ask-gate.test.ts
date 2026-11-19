@@ -7,7 +7,7 @@
  * an app event are user-role entries too, marked otherwise.
  */
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -210,7 +210,7 @@ test('ask-gate: a second gated ask in the same turn passes, whatever it says', (
   const ask = (input: Entry, tool = ASK): number | null => gate({ tool_name: tool, tool_input: input, transcript_path: t, session_id: 'escape' }, {}, state).status;
   assert.equal(ask(QUESTION), 2);
   assert.equal(ask(CHOICE, WRAP_UP), 0, 'rephrased, through the other tool');
-  assert.deepEqual(readdirSync(state).sort(), ['ask-log.jsonl', 'escape'], 'state is kept per session in the state folder');
+  assert.deepEqual(readdirSync(state).sort(), ['ask-log.jsonl', 'ask-log.jsonl.lock', 'escape'], 'state is kept per session in the state folder');
   // A new owner message is a new turn: the gate asks for research again.
   writeFileSync(t, `${readFileSync(t, 'utf8')}${owner('next task')}\n`);
   assert.equal(ask(QUESTION), 2);
@@ -257,16 +257,16 @@ test('ask-gate: a session without an id is keyed on its transcript', () => {
   const t = transcript(owner());
   assert.equal(gate({ tool_name: ASK, tool_input: QUESTION, transcript_path: t }, {}, state).status, 2);
   assert.equal(gate({ tool_name: ASK, tool_input: QUESTION, transcript_path: t }, {}, state).status, 0);
-  assert.deepEqual(readdirSync(state).sort(), [t.split('/').pop(), 'ask-log.jsonl'].sort());
+  assert.deepEqual(readdirSync(state).sort(), [t.split('/').pop(), 'ask-log.jsonl', 'ask-log.jsonl.lock'].sort());
 });
 
 test('ask-gate: state goes under XDG_STATE_HOME, else ~/.local/state', () => {
   const xdg = join(TMP, 'xdg');
   const input = { tool_name: ASK, tool_input: QUESTION, transcript_path: transcript(owner()), session_id: 'xdg/../s' };
   assert.equal(gate(input, { SARATHI_ASK_GATE_DIR: '', XDG_STATE_HOME: xdg }).status, 2);
-  assert.deepEqual(readdirSync(join(xdg, 'sarathi', 'ask-gate')).sort(), ['ask-log.jsonl', 'xdg_.._s']);
+  assert.deepEqual(readdirSync(join(xdg, 'sarathi', 'ask-gate')).sort(), ['ask-log.jsonl', 'ask-log.jsonl.lock', 'xdg_.._s']);
   assert.equal(gate(input, { SARATHI_ASK_GATE_DIR: '' }).status, 2);
-  assert.deepEqual(readdirSync(join(TMP, '.local', 'state', 'sarathi', 'ask-gate')).sort(), ['ask-log.jsonl', 'xdg_.._s']);
+  assert.deepEqual(readdirSync(join(TMP, '.local', 'state', 'sarathi', 'ask-gate')).sort(), ['ask-log.jsonl', 'ask-log.jsonl.lock', 'xdg_.._s']);
 });
 
 test('ask-gate: runs the launcher interpreter when it names one', () => {
@@ -530,10 +530,11 @@ test('ask-gate: a look counts only when the ask names repository or session stat
 let logs = 0;
 /** A fresh log file and a runner that writes to it. */
 function logged(): { readonly file: string; readonly run: (input: Entry, env?: NodeJS.ProcessEnv, state?: string) => Run; readonly lines: () => Entry[] } {
-  const file = join(TMP, 'logs', `${logs++}.jsonl`);
+  const index = logs++;
+  const file = join(TMP, 'logs', `${index}.jsonl`);
   return {
     file,
-    run: (input, env = {}, state = join(TMP, `state-log-${logs}`)) => gate(input, { SARATHI_ASK_LOG: file, ...env }, state),
+    run: (input, env = {}, state = join(TMP, `state-log-${index}`)) => gate(input, { SARATHI_ASK_LOG: file, ...env }, state),
     lines: () => (existsSync(file) ? readFileSync(file, 'utf8').trimEnd().split('\n').filter(Boolean).map((l) => JSON.parse(l) as Entry) : []),
   };
 }
@@ -652,4 +653,31 @@ test('ask-gate log: where it goes, how it is turned off, and that it never chang
   assert.equal(run(ask('rotate')).status, 2);
   assert.equal(existsSync(`${file}.1`), true, 'past 5 MB the log moves aside');
   assert.equal(lines().length, 1, 'and starts again');
+});
+
+test('ask-gate log: hooks running at once over a full log lose no line', async () => {
+  const { file, lines } = logged();
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${'x'.repeat(5 * 1024 * 1024 + 1)}\n`);
+  const t = transcript(owner());
+  const writers = 8;
+  const codes = await Promise.all(
+    Array.from({ length: writers }, (_, n) =>
+      new Promise<number | null>((done) => {
+        const child = spawn('bash', [GATE], {
+          env: { PATH: process.env['PATH'] ?? '', HOME: TMP, SARATHI_ASK_GATE_DIR: join(TMP, `state-race-${n}`), SARATHI_ASK_LOG: file },
+          stdio: ['pipe', 'ignore', 'ignore'],
+        });
+        const timer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+        child.on('close', (code) => {
+          clearTimeout(timer);
+          done(code);
+        });
+        child.stdin.end(JSON.stringify({ tool_name: ASK, tool_input: QUESTION, transcript_path: t, session_id: `race-${n}` }));
+      }),
+    ),
+  );
+  assert.deepEqual(codes, Array(writers).fill(2));
+  assert.equal(lines().length, writers, 'one line from each, in the fresh log');
+  assert.equal(readFileSync(`${file}.1`, 'utf8').length, 5 * 1024 * 1024 + 2, 'the full log moved aside once, whole');
 });

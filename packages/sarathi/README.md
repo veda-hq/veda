@@ -262,7 +262,10 @@ JSON object:
 The log is `ask-log.jsonl` in the state folder
 (`~/.local/state/sarathi/ask-gate/ask-log.jsonl` by default), or the file
 `SARATHI_ASK_LOG` names. `SARATHI_ASK_LOG=0` (or `false`, `off`, `no`) turns
-it off. Past 5 MB it moves aside to `ask-log.jsonl.1` and starts again. It
+it off. Past 5 MB it moves aside to `ask-log.jsonl.1`, replacing the one
+there, and starts again, so it keeps the last 5 to 10 MB and older lines
+are gone: copy `ask-log.jsonl.1` away to keep them. Writes take a lock
+(`ask-log.jsonl.lock`), so two hooks at once lose no line. It
 holds the questions and what the owner typed, which can be a private fact,
 so the file is the owner's alone (mode 0600) and stays on the machine:
 nothing sends it anywhere. A log it cannot write changes nothing about the

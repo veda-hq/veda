@@ -178,18 +178,35 @@ def log(record):
     if setting.lower() in LOG_OFF:
         return
     try:
+        import fcntl
         target = setting or os.path.join(state_dir(), "ask-log.jsonl")
         os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
-        if os.path.exists(target) and os.path.getsize(target) > LOG_LIMIT:
-            os.replace(target, target + ".1")
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        line = json.dumps(dict({"time": stamp}, **record), ensure_ascii=False) + "\n"
-        handle = os.open(target, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        payload = (json.dumps(dict({"time": stamp}, **record), ensure_ascii=False) + "\n").encode("utf-8")
+        # One writer at a time: the size check, the move aside and the append
+        # hold a lock, so two hooks at once neither race the move nor lose a
+        # line.
+        lock = os.open(target + ".lock", os.O_WRONLY | os.O_CREAT, 0o600)
         try:
-            os.fchmod(handle, 0o600)
-            os.write(handle, line.encode("utf-8"))
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                if os.path.getsize(target) > LOG_LIMIT:
+                    os.replace(target, target + ".1")
+            except FileNotFoundError:
+                pass
+            handle = os.open(target, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            try:
+                os.fchmod(handle, 0o600)
+                written = 0
+                while written < len(payload):
+                    count = os.write(handle, payload[written:])
+                    if count <= 0:
+                        raise OSError("the ask log took no bytes")
+                    written += count
+            finally:
+                os.close(handle)
         finally:
-            os.close(handle)
+            os.close(lock)
     except Exception:
         pass
 

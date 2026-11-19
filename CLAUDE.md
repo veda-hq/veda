@@ -78,7 +78,12 @@ waits for all of them:
   `reviewThreads` too.
 - When Cubic missed a push it had reviewed before, comment
   `@cubic incremental review`. `@cubic-dev-ai review` reviews the whole
-  pull request again and spends the allowance on every line again.
+  pull request again and spends the allowance on every line again: use it
+  only on a pull request Cubic never reviewed. A push that adds nothing to
+  the pull request's diff gets a neutral Cubic check, which `main`'s
+  ruleset passes (neutral pull requests have merged), so it needs no new
+  review. Merge `main` in only on a real conflict: a moved merge base buys
+  a fresh review.
 
 If the allowance runs out, the check reports neutral and the pull request
 goes unreviewed: tell Alok rather than assume that is fine.

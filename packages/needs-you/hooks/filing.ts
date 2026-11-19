@@ -40,8 +40,18 @@ export type Row = {
   isArchived: boolean
 }
 
-/** What the store keeps for a filed session: the top session whose row moved. */
-export type Filed = { root: string }
+/**
+ * What the store keeps for a filed session: the top session whose row moved,
+ * and when the record was written (0 for a record written before 0.2.0 kept
+ * the time).
+ */
+export type Filed = { root: string; at: number }
+/**
+ * How long a fresh record counts as waiting before its ✋ lands: another
+ * session's filing writes the record first and its title after, so an
+ * unmarked title inside this time is a filing under way, not a stale record.
+ */
+export const FRESH_MS = 2 * 60_000
 /** What the store keeps for a moved top session: where it was before. */
 export type Moved = { group: string | null; pinned: boolean }
 
@@ -78,7 +88,9 @@ export const sectionOf = (value: unknown): string | null => {
 }
 
 export const filedOf = (value: unknown): Filed | null =>
-  isRecord(value) && typeof value.root === 'string' ? { root: value.root } : null
+  isRecord(value) && typeof value.root === 'string'
+    ? { root: value.root, at: typeof value.at === 'number' ? value.at : 0 }
+    : null
 
 export const movedOf = (value: unknown): Moved | null =>
   isRecord(value) && (value.group === null || typeof value.group === 'string')
@@ -194,7 +206,7 @@ export async function file($: Engine): Promise<void> {
   if (self === null) return
   lastWalkError = null
   const root = await rootOf($, self)
-  await $.store.set(filedKey(self.sessionId), { root: root.sessionId } satisfies Filed)
+  await $.store.set(filedKey(self.sessionId), { root: root.sessionId, at: await $.clock.now() } satisfies Filed)
   const isTop = root.sessionId === self.sessionId
   await each([
     async () => {
@@ -231,20 +243,24 @@ export async function file($: Engine): Promise<void> {
 }
 
 /**
- * Whether another session filed under the same top session still waits. An
- * entry whose session is gone, archived or no longer marked is stale: it is
- * dropped, so a session archived while filed does not hold the row forever.
+ * Whether another session filed under the same top session still waits. A
+ * marked session waits; so does one whose record is fresh (FRESH_MS), since
+ * its filing writes the record before the ✋. An entry whose session is gone,
+ * archived, or unmarked past that time is stale: it is dropped, so a session
+ * archived while filed does not hold the row forever.
  */
 async function stillWaiting($: Engine, rootId: string, selfId: string): Promise<boolean> {
+  const now = await $.clock.now()
   for (const key of await $.store.keys()) {
     if (!key.startsWith('filed:') || key === filedKey(selfId)) continue
-    if (filedOf(await $.store.get(key))?.root !== rootId) continue
+    const entry = filedOf(await $.store.get(key))
+    if (entry?.root !== rootId) continue
     const other = await sessionRow($, key.slice('filed:'.length)).catch((error: unknown) => {
       // A session the app no longer knows is gone; any other failure says nothing, so it stops the unfiling.
       if (String(error).includes('not found')) return null
       throw error
     })
-    if (other !== null && !other.isArchived && marked(other.title)) return true
+    if (other !== null && !other.isArchived && (marked(other.title) || now - entry.at < FRESH_MS)) return true
     await $.store.delete(key)
   }
   return false
@@ -271,6 +287,12 @@ export async function unfile($: Engine, selfId: string): Promise<void> {
     })
     if (moved.pinned) await call($, 'ccd_sidebar', 'set_pinned', { session_id: ref(filed.root, self), pinned: true })
     await $.store.delete(movedKey(filed.root))
+    // The store has no compare-and-set, so another session may have filed under the same
+    // top session while this one moved it back: look once more, and file the row again.
+    if (await stillWaiting($, filed.root, selfId)) {
+      await $.store.set(movedKey(filed.root), moved satisfies Moved)
+      await call($, 'ccd_sidebar', 'move_sessions', { session_ids: [ref(filed.root, self)], section_id: await needsYou($) })
+    }
   }
   await $.store.delete(filedKey(selfId))
 }

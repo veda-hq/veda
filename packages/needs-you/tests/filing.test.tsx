@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { MockClock, TestBody } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { SECTION, filedKey, marked, rowOf, sectionOf, withMark, withoutMark } from '../hooks/filing'
+import { FRESH_MS, SECTION, filedKey, marked, rowOf, sectionOf, withMark, withoutMark } from '../hooks/filing'
 import { afterFilingFailure, unfilesOn, waitingSessions } from '../hooks/register'
 
 type Session = {
@@ -401,6 +401,22 @@ test('the top session stays under Needs you while another filed session under it
   // The sibling was archived without unfiling: its entry is stale and holds the row no longer.
   if (sibling !== undefined) sibling.isArchived = true
   await askAndAnswer('t2')
+  expect(fake.byId.get('top')?.group?.id).toBe('cg-work')
+})
+
+test('a sibling filing under way, its record written but its ✋ not yet, holds the top session', async ($, on) => {
+  const clock = mock.clock(on)
+  // The clock starts at 0: the sibling's record is fresh.
+  mock.store(on, { [filedKey('sibling')]: { root: 'top', at: 0 } })
+  turns(on)
+  const fake = app(on, 'self', family())
+
+  await askThenAnswer($, clock, fake.calls, 't1')
+  expect(fake.byId.get('top')?.group?.id).toBe('cg-needs')
+
+  // Past FRESH_MS with no ✋, the record is stale and holds the row no longer.
+  await clock.advance(FRESH_MS + 1)
+  await askThenAnswer($, clock, fake.calls, 't2')
   expect(fake.byId.get('top')?.group?.id).toBe('cg-work')
 })
 

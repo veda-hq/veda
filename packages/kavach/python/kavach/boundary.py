@@ -5372,21 +5372,24 @@ NPM_EXEC_SLOT: RunnerSlot = (
     frozenset({"--package", "-p", "-w", "--workspace", "--allow-scripts"}),
 )
 RUNNER_SHELL_MODES: dict[str, RunnerSlot] = {
+    # `pnpm dlx -c` too, from its `--help` (#256); its own options that take
+    # the next word are listed with the others.
     "pnpm": (
-        frozenset({"exec"}),
+        frozenset({"exec", "dlx"}),
         frozenset({"-c", "--shell-mode"}),
         frozenset({
             "-y", "--yes", "--ignore-workspace", "--color", "--no-progress", "--stream",
             "--aggregate-output", "--use-stderr", "-r", "--recursive", "-w",
             "--workspace-root", "--fail-if-no-match", "--include-workspace-root",
             "--no-include-workspace-root", "--sort", "--no-sort", "--reverse", "--parallel",
-            "-h", "--help",
+            "-h", "--help", "-v", "--version",
         }),
         frozenset({
             "-C", "--dir", "--store-dir", "--state-dir", "--npmrc-auth-file", "--userconfig",
             "--workspace-packages", "--registry", "--https-proxy", "--http-proxy", "--no-proxy",
             "--reporter", "--loglevel", "-F", "--filter", "--filter-prod", "--test-pattern",
             "--changed-files-ignore-pattern", "--workspace-concurrency",
+            "--package", "--allow-build", "--cpu", "--os", "--libc",
         }),
     ),
     "npm": (frozenset({"exec", "x"}), *NPM_EXEC_SLOT[1:]),
@@ -5575,6 +5578,30 @@ RUNNER_PACKAGE_VERBS: dict[str, frozenset[str]] = {
 }
 
 
+def runner_verb_index(name: str, args: list[str]) -> int | None:
+    """Where a runner's subcommand sits, past the global options its
+    tables list (`pnpm --filter x add`), or None past one they do not, which
+    may take the next word (`pnpm --dir add exec …` names the folder `add`)."""
+    if name == "pnpm":
+        _subcommands, _modes, flags, values = RUNNER_SHELL_MODES["pnpm"]
+    elif name == "npm":
+        flags, values = NPM_GLOBAL_FLAGS, NPM_GLOBAL_VALUES
+    else:
+        flags, values = frozenset(), frozenset()
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        option, attached, _ = args[index].partition("=")
+        if name == "pnpm" and option.startswith("--config.") and attached:
+            index += 1
+        elif option in values:
+            index += 1 if attached else 2
+        elif option in flags:
+            index += 1
+        else:
+            return None
+    return index
+
+
 def runner_runs_inline_program(name: str, args: list[str]) -> bool:
     """Whether a runner's line may hand an interpreter program text, not a
     script file: an interpreter word anywhere on it (`pnpm exec node`,
@@ -5589,11 +5616,13 @@ def runner_runs_inline_program(name: str, args: list[str]) -> bool:
     input (`node -i`). The first word that is not an option is the script,
     and what follows it is the script's (`pnpm exec node x.js -e 1` runs
     `x.js`). Like a shell word (`runner_runs_shell_program`), the word is
-    read wherever it sits, except after a subcommand that names packages,
-    first on the line (`pnpm add -D tsx`, `mise install node`); behind a
-    runner option (`pnpm --filter x add node`) it is still read.
+    read wherever it sits, except after a subcommand that names packages
+    (`pnpm add -D tsx`, `mise install node`), found past the runner's own
+    global options (`pnpm --filter x add -D tsx`, #256); past an option its
+    tables do not list, it is still read.
     """
-    if args and args[0] in RUNNER_PACKAGE_VERBS.get(name, frozenset()):
+    verb = runner_verb_index(name, args)
+    if verb is not None and verb < len(args) and args[verb] in RUNNER_PACKAGE_VERBS.get(name, frozenset()):
         return False
     return any(
         (table := runner_interpreter(word)) is not None
@@ -5662,6 +5691,250 @@ def interpreter_reads_program_text(table: InterpreterOptions, args: list[str]) -
             continue
         return True
     return not no_stdin
+
+
+# Runner programs (#256). pnpm 12.9's own commands, with their aliases, from
+# `pnpm --help`: a word on a pnpm line that is none of these and no package
+# script is a program pnpm runs from its bin folders or `PATH`
+# (`pnpm uname -s` ran `uname`).
+PNPM_COMMANDS = frozenset({
+    "access", "init", "recursive", "multi", "m", "add", "install", "i", "install-test", "it",
+    "update", "up", "upgrade", "outdated", "audit", "change", "version", "lane", "bugs", "issues",
+    "list", "ls", "ll", "la", "licenses", "licences", "why", "view", "info", "show", "v", "sbom",
+    "whoami", "deprecate", "undeprecate", "unpublish", "star", "unstar", "stars", "dist-tag",
+    "dist-tags", "ping", "doctor", "search", "s", "se", "find", "rebuild", "rb", "pack", "publish",
+    "stage", "remove", "uninstall", "rm", "un", "uni", "patch", "patch-commit", "patch-remove",
+    "peers", "set-script", "ss", "test", "t", "tst", "run", "run-script", "tasks", "pipeline",
+    "exec", "dlx", "create", "completion", "start", "stop", "restart", "find-hash", "runtime", "rt",
+    "env", "shim", "bin", "clean", "purge", "ci", "clean-install", "ic", "install-clean", "root",
+    "prefix", "config", "c", "get", "set", "pkg", "pack-app", "store", "cache", "cat-file",
+    "cat-index", "ignored-builds", "approve-builds", "link", "ln", "import", "dedupe", "deploy",
+    "prune", "fetch", "unlink", "dislink", "docs", "home", "repo", "self-update", "setup", "login",
+    "adduser", "team", "owner", "owners", "logout", "with", "edit", "profile", "token", "xmas", "help",
+})
+# The options of `pnpm dlx`'s own slot that take the next word.
+PNPM_DLX_VALUES = frozenset({"--package", "--allow-build", "--cpu", "--os", "--libc"})
+NPM_GLOBAL_VALUES = frozenset({"--prefix", "--loglevel", "-w", "--workspace", "--userconfig"})
+NPM_GLOBAL_FLAGS = frozenset({
+    "-s", "--silent", "-q", "--quiet", "-y", "--yes", "--workspaces", "--ws", "-v", "--version", "-h", "--help",
+})
+
+
+class RunnerProgram(NamedTuple):
+    """The program a runner's line starts (`runner_program`)."""
+
+    # Where the program's word sits in the runner's arguments.
+    index: int
+    # The folder the runner runs it in.
+    folder: Path
+    # The `node_modules/.bin` folders the runner provably looks in first.
+    bins: tuple[Path, ...]
+
+
+def nearest_holding(folder: Path, name: str) -> Path | None:
+    """The nearest of ``folder`` and its parents that holds ``name``."""
+    return next((place for place in (folder, *folder.parents) if (place / name).exists()), None)
+
+
+def package_scripts(folder: Path, moved: bool = False) -> frozenset[str]:
+    """The script names of the package ``folder`` is in, or, when `--dir`
+    moved pnpm there (``moved``), of ``folder``'s own manifest (as
+    `pnpm_bins` reads it)."""
+    root = folder if moved and (folder / "package.json").exists() else (
+        None if moved else nearest_holding(folder, "package.json")
+    )
+    try:
+        manifest = json.loads((root / "package.json").read_text(encoding="utf-8")) if root else {}
+    except (OSError, ValueError, UnicodeDecodeError):
+        return frozenset()
+    scripts = manifest.get("scripts") if isinstance(manifest, dict) else None
+    return frozenset(scripts) if isinstance(scripts, dict) else frozenset()
+
+
+def pnpm_bins(folder: Path, recursive: bool, moved: bool) -> tuple[Path, ...]:
+    """The bin folders `pnpm exec` looks in from ``folder``, and the
+    workspace root's. Run from ``folder``, pnpm 12.9 looked in its nearest
+    package's (from `packages/kavach/python`, kavach's `tsc`); moved there by
+    `--dir` (``moved``), in that folder's own only (`--dir
+    packages/kavach/python` ran the root's `tsc`, and outside a workspace
+    `--dir sub` found none of its package's). A bin of an outer folder that
+    is neither it did not find. Across every package (`-r`), only the
+    workspace root's is looked in by all of them."""
+    places: list[Path] = []
+    package = folder if moved else nearest_holding(folder, "package.json")
+    if package is not None and not recursive:
+        places.append(package / "node_modules" / ".bin")
+    workspace = nearest_holding(folder, "pnpm-workspace.yaml")
+    if workspace is not None:
+        places.append(workspace / "node_modules" / ".bin")
+    return tuple(places)
+
+
+def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | bool | None:
+    """The program a runner's line starts, False when it starts none (a
+    package script, a package or tool subcommand), or None when its slot
+    cannot be read: an option the runner's tables do not list may take the
+    next word.
+
+    pnpm: `exec`, `dlx` and its implicit form (`pnpm uname`, for a word that
+    is neither a pnpm command nor a script of the package), after its global
+    options, and through `recursive` and `-r`. `pnpm with <version>` and
+    `pnpm create` fail closed. npm: `exec` and `x`; npx. mise: `exec` and
+    `x`, the program after `--`. yarn's and bun's are not read here
+    (unprobed: neither is installed); their `exec` already fails closed.
+    """
+    if name == "pnpm":
+        _subcommands, _modes, flags, values = RUNNER_SHELL_MODES["pnpm"]
+        recursive, filtered, index = False, False, 0
+        while index < len(args):
+            word = args[index]
+            option, attached, _ = word.partition("=")
+            if word.startswith("--config.") and attached:
+                index += 1
+            elif option in values:
+                index += 1 if attached else 2
+                filtered = filtered or option in {"-F", "--filter", "--filter-prod"}
+            elif option in flags or (attached and option == "--color"):
+                recursive = recursive or option in {"-r", "--recursive"}
+                index += 1
+            elif word.startswith("-"):
+                return None
+            elif word in {"recursive", "multi", "m"}:
+                recursive = True
+                index += 1
+            else:
+                break
+        if index >= len(args):
+            return False
+        # One `--dir` or `--filter` naming one folder moves it; a filter that
+        # names several packages runs the program in each.
+        selected = pnpm_selected_directory(args[:index] + ["run"], cwd)
+        folder = selected[0] if selected is not None else cwd
+        moved = selected is not None
+        recursive = recursive or (filtered and selected is None)
+        verb = args[index]
+        if verb in {"with", "create"}:
+            return None
+        if verb in {"exec", "dlx"}:
+            slot_values = values | (PNPM_DLX_VALUES if verb == "dlx" else frozenset())
+            index += 1
+            while index < len(args) and args[index].startswith("-"):
+                option, attached, value = args[index].partition("=")
+                if args[index] == "--":
+                    index += 1
+                    break
+                if option in slot_values:
+                    if not attached:
+                        index += 1
+                        value = args[index] if index < len(args) else ""
+                    if option in {"-C", "--dir"}:
+                        place = resolve_shell_path(value, folder)
+                        if place is None:
+                            return None
+                        folder, moved = place, True
+                elif option not in flags:
+                    return None
+                index += 1
+            if index >= len(args):
+                return False
+            bins = () if verb == "dlx" else pnpm_bins(folder, recursive, moved)
+            return RunnerProgram(index, folder, bins)
+        if verb in PNPM_COMMANDS:
+            return False
+        scripts = package_scripts(folder, moved)
+        if recursive and selected is None:
+            # The script is looked up in each selected package; a word that is
+            # a script of none of them would run as a program.
+            return None if verb not in scripts else False
+        if verb in scripts:
+            return False
+        return RunnerProgram(index, folder, pnpm_bins(folder, recursive, moved))
+    if name in {"npm", "npx"}:
+        index = 0
+        if name == "npm":
+            while index < len(args) and args[index].startswith("-"):
+                option, attached, _ = args[index].partition("=")
+                if option in NPM_GLOBAL_VALUES:
+                    index += 1 if attached else 2
+                elif option in NPM_GLOBAL_FLAGS:
+                    index += 1
+                else:
+                    return None
+            if index >= len(args) or args[index] not in {"exec", "x"}:
+                return False
+            index += 1
+        _subcommands, _modes, flags, values = NPM_EXEC_SLOT
+        downloads = False
+        while index < len(args) and args[index].startswith("-"):
+            option, attached, _ = args[index].partition("=")
+            if args[index] == "--":
+                index += 1
+                break
+            if option in values:
+                downloads = downloads or option in {"--package", "-p"}
+                index += 1 if attached else 2
+            elif option in flags:
+                index += 1
+            else:
+                return None
+        if index >= len(args):
+            return False
+        # npm 11 looks in every folder above, too (`npm exec` ran the
+        # workspace root's bin from `packages/kavach`, and npx an outer
+        # folder's from an inner package). A program from `--package` may be
+        # a bin of a package it downloads.
+        bins = () if downloads else tuple(place / "node_modules" / ".bin" for place in (cwd, *cwd.parents))
+        return RunnerProgram(index, cwd, bins)
+    if name == "mise":
+        if not args or args[0] not in {"exec", "x"}:
+            return False
+        if "--" not in args:
+            return False
+        index = args.index("--") + 1
+        return RunnerProgram(index, cwd, ()) if index < len(args) else False
+    return False
+
+
+def runner_program_targets(
+    name: str,
+    args: list[str],
+    cwd: Path,
+    *,
+    read_namespaces: tuple[Path, ...] = (),
+    push_hosts: Sequence[str] = DEFAULT_PUSH_HOSTS,
+    nested_depth: int = 0,
+) -> list[Path] | None:
+    """What the program a runner starts writes, read as the same words
+    without the runner, in the folder it runs in; None when that cannot be
+    proven.
+
+    A package bin, installed in a bin folder the runner looks in first
+    (`pnpm exec niyam`, `npx vitest`), is the repository's code, which the
+    README's runner limit already names, and so adds nothing. A shell or a
+    listed interpreter is read by `runner_runs_shell_program` and
+    `runner_runs_inline_program`, which still let a script file run. Any
+    other program is read as it would be without the runner: `pnpm exec
+    touch .tmp/x` writes `.tmp/x`, and `pnpm exec deno eval …`,
+    `pnpm exec xargs …` or `npx -y <a package not installed>` are unproven,
+    as `deno eval …` is.
+    """
+    found = runner_program(name, args, cwd)
+    if found is None:
+        return None
+    if found is False:
+        return []
+    word = args[found.index]
+    base = os.path.basename(word)
+    if base in SHELL_INTERPRETERS or runner_interpreter(word) is not None:
+        return []
+    if "/" not in word and any((place / word).exists() for place in found.bins):
+        return []
+    program = word[0] + word[1:].partition("@")[0] if "/" not in word else word
+    command = shlex.join([program, *args[found.index + 1 :]])
+    return mutation_directories(
+        command, found.folder, nested_depth=nested_depth + 1, read_namespaces=read_namespaces,
+        push_hosts=push_hosts,
+    )
 
 
 def shell_reads_program_text(args: list[str]) -> bool:
@@ -6592,11 +6865,14 @@ def mutation_path_operands(
     lookup_modified: bool = False,
     read_namespaces: tuple[Path, ...] = (),
     push_hosts: Sequence[str] = DEFAULT_PUSH_HOSTS,
+    nested_depth: int = 0,
 ) -> list[Path] | None:
     """Resolve filesystem operands mutated by a simple command.
 
     ``push_hosts`` are the hosts a push, or a URL written for one, may name
-    (the settings' ``worktree.pushHosts``)."""
+    (the settings' ``worktree.pushHosts``); ``nested_depth`` is how many
+    lines deep the command sits (a runner's program is read as a line of
+    its own)."""
 
     name = os.path.basename(words[0])
     if name in GENERIC_SCOPED_COMMANDS | READ_ONLY_COMMANDS and words[0] != name:
@@ -6778,6 +7054,15 @@ def mutation_path_operands(
         return None
     if name in GIT_RUNNERS and runner_runs_inline_program(name, words[1:]):
         return None
+    if name in GIT_RUNNERS:
+        program = runner_program_targets(
+            name, words[1:], cwd, read_namespaces=read_namespaces, push_hosts=push_hosts,
+            nested_depth=nested_depth,
+        )
+        if program is None:
+            return None
+        operands = generic_mutation_paths(name, words[1:], cwd, read_namespaces=read_namespaces)
+        return None if operands is None else operands + program
     if name in ALL_OPERAND_MUTATORS:
         value_options = {
             "mkdir": {"-m", "--mode"},
@@ -7076,6 +7361,7 @@ def mutation_directories(
                 lookup_modified=lookup_modified,
                 read_namespaces=read_namespaces,
                 push_hosts=push_hosts,
+                nested_depth=nested_depth,
             )
             if operand_targets is None:
                 return None

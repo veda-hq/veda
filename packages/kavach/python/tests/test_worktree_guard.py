@@ -1322,12 +1322,16 @@ class OwnCheckoutTest(BoundaryFixture):
             "npm i left-pad",
             "yarn",
             "yarn add left-pad",
-            "npx left-pad",
         ):
             with self.subTest(refused=command):
                 result = self.claude_bash(self.main, command, environment)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("an owned plain clone does not open it", result.stderr)
+        # A package npx would download, which the guard does not review, is
+        # unproven before the clone's own reading of npx (#256).
+        result = self.claude_bash(self.main, "npx left-pad", environment)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("could not be resolved", result.stderr)
 
     def test_a_worktree_session_is_judged_as_before(self) -> None:
         """Outside an owned clone nothing here applies: a Claude-managed

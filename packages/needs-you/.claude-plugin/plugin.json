@@ -1,6 +1,5 @@
 {
   "name": "needs-you",
-  "version": "0.1.2",
   "description": "A band above the message box listing what this chat is waiting on from you",
   "author": {
     "name": "veda-hq"

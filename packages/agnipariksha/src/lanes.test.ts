@@ -6,12 +6,14 @@ import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 import {
+  countLines,
   DRY_RUN_TIMEOUT,
   FAILED_INITIAL_RUN,
   FALLBACK_TRIGGERS,
   flakyRetry,
   judgeLane,
   MARKERS,
+  overCutoff,
   planLane,
   wrapperConfig,
   type Lane,
@@ -39,6 +41,35 @@ test('planLane: owned files are targets, the rest are named and skipped', () => 
   assert.deepEqual(plan.targets, ['apps/web/src/a.ts', 'apps/web/src/b.tsx', 'apps/web/src/a2.ts']);
   assert.deepEqual(plan.suites, ['apps/web/src/a.test.ts', 'apps/web/src/b.test.tsx', 'apps/web/src/a2.test.ts']);
   assert.deepEqual(plan.notJudged, ['not judged (comment-only change): apps/web/src/c.ts', 'not judged (no colocated suite): apps/web/src/d.ts']);
+});
+
+test('countLines counts as wc -l does, plus a last line with no newline', () => {
+  assert.equal(countLines(''), 0);
+  assert.equal(countLines('a'), 1);
+  assert.equal(countLines('a\n'), 1);
+  assert.equal(countLines('a\nb'), 2);
+  assert.equal(countLines('a\n\n'), 2, 'a blank line counts');
+  assert.equal(countLines('\n'), 1);
+  assert.equal(countLines('// x\n\n  y();\n'), 3, 'comments and blank lines count');
+});
+
+test('overCutoff: over means more lines than maxLines, across every target, and an unreadable target counts 0', () => {
+  const texts = new Map([['apps/web/src/a.ts', 'x\ny\nz\n'], ['apps/web/src/b.ts', 'p\nq']]);
+  const read = (file: string) => texts.get(file);
+  const plan = (maxLines: number | undefined, targets = ['apps/web/src/a.ts', 'apps/web/src/b.ts']): Plan => ({
+    lane: maxLines === undefined ? web : { ...web, maxLines },
+    targets,
+    suites: [],
+    notJudged: [],
+  });
+  assert.equal(overCutoff(plan(undefined), read), null, 'no cut-off');
+  assert.equal(overCutoff(plan(5), read), null, 'at the cut-off is judged');
+  assert.equal(
+    overCutoff(plan(4), read),
+    'apps/web: 5 lines in 2 file(s), over its cut-off of 4 - not judged in this run, CI judges it (--lane "apps/web" judges it here)',
+  );
+  assert.equal(overCutoff(plan(2, ['apps/web/src/a.ts', 'apps/web/src/gone.ts']), read), 'apps/web: 3 lines in 2 file(s), over its cut-off of 2 - not judged in this run, CI judges it (--lane "apps/web" judges it here)');
+  assert.equal(overCutoff(plan(1, ['apps/web/src/gone.ts']), read), null, 'a failed read never causes a skip');
 });
 
 test('planLane lists each owning suite once', () => {

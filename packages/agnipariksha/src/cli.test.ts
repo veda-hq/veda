@@ -92,6 +92,56 @@ test('--lane runs only the lanes it names; an unknown name refuses before the lo
   assert.equal(unknown.exits.length, 0);
 });
 
+/** The fake's lanes, with scripts/a.ts at 3 lines and tools/new.ts unreadable. */
+function cutOff(scriptsMax: number, reports: Record<string, string>): Fake {
+  const f = fake(reports, { lanes: [{ ...lane('scripts', 'scripts/'), maxLines: scriptsMax }, { ...lane('tools', 'tools/'), maxLines: 1 }, lane('docs', 'nothing/')] });
+  f.files.set('/repo/scripts/a.ts', 'one();\n\n// three\n');
+  return f;
+}
+const SCRIPTS_OVER = 'scripts: 3 lines in 1 file(s), over its cut-off of 2 - not judged in this run, CI judges it (--lane "scripts" judges it here)';
+
+test('the cut-off: a run naming no lane leaves out a lane over it, judges the rest, and counts it in the total', async () => {
+  const f = cutOff(2, { tools: JSON.stringify({ files: { 'tools/new.ts': { mutants: [] } } }) });
+  assert.equal(await main([], f.deps), 0);
+  assert.deepEqual(f.logs, [
+    '  not judged (comment-only change): scripts/b.ts',
+    '  not judged (no colocated suite): scripts/c.ts',
+    SCRIPTS_OVER,
+    'agnipariksha: tools: stryker run --mutate tools/new.ts',
+    "  no mutants (absent from Stryker's report): tools/new.ts",
+    'tools: 0 killed of 0 in 1 file(s) (no mutants; 0 timeout(s) retried) - pass',
+    'docs: nothing to judge - not run',
+    'agnipariksha total: 0 killed of 0 in 1 lane(s), 0 blocking, 0 refused, 1 over the cut-off for CI - exit 0',
+  ]);
+  assert.equal(f.strykerRuns.length, 1, 'only tools ran: its unreadable file counts 0 lines, under its cut-off of 1');
+});
+
+test('the cut-off: a lane at it is judged, and so is a lane --lane names, whatever its size', async () => {
+  const at = cutOff(3, { scripts: mutants('Killed') });
+  assert.equal(await main(['--tracked-only'], at.deps), 0);
+  assert.ok(at.logs.includes('agnipariksha: scripts: stryker run --mutate scripts/a.ts'));
+  assert.equal(at.logs.at(-1), 'agnipariksha total: 1 killed of 1 in 1 lane(s), 0 blocking, 0 refused - exit 0');
+
+  const named = cutOff(2, { scripts: mutants('Survived') });
+  assert.equal(await main(['--lane', 'scripts'], named.deps), 1);
+  assert.equal(named.logs.includes(SCRIPTS_OVER), false);
+  assert.equal(named.strykerRuns.length, 1);
+  assert.equal(named.logs.at(-1), 'agnipariksha total: 0 killed of 1 in 1 lane(s), 1 blocking, 0 refused - exit 1');
+});
+
+test('the cut-off: --files without --lane still applies it, and a run with every lane over it passes having judged none', async () => {
+  const files = cutOff(2, {});
+  assert.equal(await main(['--files', 'scripts/a.ts'], files.deps), 0);
+  assert.deepEqual(files.strykerRuns, []);
+  assert.ok(files.logs.includes(SCRIPTS_OVER));
+  assert.equal(files.logs.at(-1), 'agnipariksha total: 0 killed of 0 in 0 lane(s), 0 blocking, 0 refused, 1 over the cut-off for CI - exit 0');
+
+  const tracked = cutOff(2, {});
+  assert.equal(await main(['--tracked-only'], tracked.deps), 0);
+  assert.deepEqual(tracked.strykerRuns, []);
+  assert.equal(tracked.logs.at(-1), 'agnipariksha total: 0 killed of 0 in 0 lane(s), 0 blocking, 0 refused, 1 over the cut-off for CI - exit 0');
+});
+
 const lane = (name: string, prefix: string): Lane => ({ name, cwd: '', config: `${name}.mjs`, selects: (path) => path.startsWith(prefix), reuse: true, env: () => ({}) });
 
 test('summaryLine names counts, statuses, retries and the verdict', () => {

@@ -54,12 +54,34 @@ test('a bad file is refused with the field that is wrong', () => {
     [valid({ unsetEnv: ['A=1'] }), /^agnipariksha\.json\.unsetEnv\[0\] is not a variable name: it holds "="$/],
     [valid({ reuseKey: { ...reuseKey, pluginDir: '' } }), /^agnipariksha\.json\.reuseKey\.pluginDir must be a non-empty string$/],
     [valid({ reuseKey: { ...reuseKey, always: 'x' } }), /reuseKey\.always must be an array of strings$/],
+    [valid({ maxLines: 0 }), /^agnipariksha\.json\.maxLines must be a whole number of 1 or more$/],
+    [valid({ maxLines: -5 }), /^agnipariksha\.json\.maxLines must be a whole number of 1 or more$/],
+    [valid({ maxLines: 1.5 }), /^agnipariksha\.json\.maxLines must be a whole number of 1 or more$/],
+    [valid({ maxLines: '800' }), /^agnipariksha\.json\.maxLines must be a whole number of 1 or more$/],
+    [valid({ maxLines: 2 ** 53 }), /^agnipariksha\.json\.maxLines must be a whole number of 1 or more$/],
+    [valid({ lanes: [{ ...lane, maxLines: 0 }] }), /^agnipariksha\.json\.lanes\[0\]\.maxLines must be a whole number of 1 or more$/],
+    [valid({ lanes: [{ ...lane, maxLines: null }] }), /^agnipariksha\.json\.lanes\[0\]\.maxLines must be a whole number of 1 or more$/],
   ];
   for (const [source, reason] of refusals) {
     const result = parseConfig(source);
     assert.equal(typeof result, 'string', source);
     assert.match(result as string, reason, source);
   }
+});
+
+test("maxLines: a lane takes its own, else the config's, else has no cut-off", () => {
+  assert.equal(Object.hasOwn(parsed(valid()), 'maxLines'), false, 'absent means no cut-off');
+  assert.equal(Object.hasOwn(parsed(valid()).lanes[0] ?? {}, 'maxLines'), false);
+  assert.equal(parsed(valid({ maxLines: 1 })).maxLines, 1, '1 is the least');
+  const config = parsed(valid({ maxLines: 1200, lanes: [lane, { ...lane, name: 'slow', maxLines: 400 }] }));
+  assert.equal(config.lanes[1]?.maxLines, 400);
+  const [lib, slow] = lanesOf(config);
+  assert.equal(lib?.maxLines, 1200);
+  assert.equal(slow?.maxLines, 400);
+  const [own] = lanesOf(parsed(valid({ lanes: [{ ...lane, maxLines: 300 }] })));
+  assert.equal(own?.maxLines, 300);
+  const [none] = lanesOf(parsed(valid()));
+  assert.equal(Object.hasOwn(none ?? {}, 'maxLines'), false);
 });
 
 test('loadConfig reads the file at the root, and a missing one is refused', () => {

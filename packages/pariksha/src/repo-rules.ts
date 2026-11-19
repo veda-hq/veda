@@ -55,25 +55,25 @@ export interface GrepHit {
 /** Where a selection's tracked files are read for `grep`: the index, a commit, or the working tree. */
 export type Side = { readonly kind: 'index' } | { readonly kind: 'commit'; readonly commit: string } | { readonly kind: 'tree' };
 
-/** `git grep -n` output as hits; a commit's prefix (`<rev>:`) dropped. */
-export const parseGrep = (out: string, prefix: string): GrepHit[] =>
-  out
-    .split('\n')
-    .filter(Boolean)
-    .flatMap((raw) => {
-      const line = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
-      const match = /^(.*?):(\d+):(.*)$/.exec(line);
-      return match === null ? [] : [{ file: match[1] as string, line: Number(match[2]), text: match[3] as string }];
-    });
+/**
+ * `git grep -n` output as hits. A grep of a commit starts every line with
+ * `prefix` (`<rev>:`), which is dropped; any other grep has none.
+ */
+export const parseGrep = (out: string, prefix?: string): GrepHit[] =>
+  out.split('\n').flatMap((raw) => {
+    const match = /^(.*?):(\d+):(.*)$/.exec(prefix === undefined ? raw : raw.slice(prefix.length));
+    return match === null ? [] : [{ file: match[1] as string, line: Number(match[2]), text: match[3] as string }];
+  });
 
 /** `grep` for a side: git exits 1 when nothing matches, which is no hit, not a failure. */
 export const sideGrep =
   (git: Git, side: Side) =>
   (fixed: readonly string[], pathspecs: readonly string[]): GrepHit[] => {
     if (fixed.length === 0) return [];
-    const where = side.kind === 'index' ? ['--cached'] : side.kind === 'commit' ? [side.commit] : [];
+    const where = side.kind === 'tree' ? [] : side.kind === 'index' ? ['--cached'] : [side.commit];
     const out = git.run(['grep', '--no-color', '-n', '-I', '-F', ...fixed.flatMap((f) => ['-e', f]), ...where, '--', ...pathspecs]);
-    return parseGrep(out ?? '', side.kind === 'commit' ? `${side.commit}:` : '');
+    if (out === undefined) return [];
+    return parseGrep(out, side.kind === 'commit' ? `${side.commit}:` : undefined);
   };
 
 export interface Rule {
@@ -195,8 +195,8 @@ export const diskRepo = (root: string, files: readonly string[], tracked: () => 
       return lstatSync(full(path)).isFile();
     } catch {
       // fail-open: a path gone from the working tree has nothing to read.
-      return false;
     }
+    return false;
   };
   return {
     root,
@@ -214,7 +214,7 @@ export const diskRepo = (root: string, files: readonly string[], tracked: () => 
 /** The 1-based line of offset `index` in `text`. */
 export const lineAt = (text: string, index: number): number => {
   let line = 1;
-  for (let i = 0; i < index && i < text.length; i += 1) if (text.charCodeAt(i) === 10) line += 1;
+  for (let i = 0; i < index; i += 1) if (text.charCodeAt(i) === 10) line += 1;
   return line;
 };
 

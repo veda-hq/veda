@@ -39,7 +39,9 @@ library behaviour that surprised a working change.
   The one standing entry is veda's own scope, `@veda-hq/*` (Alok, 2026-11-14): a new release
   installs at once, and `pnpm provenance` (in `pnpm check`) checks instead that its own repository's
   release workflow (veda's, or niyam's for `@veda-hq/niyam`) built and signed each `@veda-hq`
-  package the lockfile resolves, from its own tag.
+  package the lockfile resolves, from its own tag. niyam releases from main and tags what it
+  built, so for niyam it must be built from main at the commit its `v<version>` tag names, read
+  from GitHub: without GitHub, or with no such tag, niyam fails the check.
   When Sigstore rotates a key, it fails until `scripts/sigstore-trusted-root.json` is refreshed.
   Check whether the default branch already carries the bump before making it.
 - **A lost patch looks like a code bug.** When pnpm warns that `node_modules` are out of sync

@@ -10,6 +10,14 @@
 // lockfile installs. A release published any other way (a stolen token, a fork,
 // another workflow) fails here before anything runs it.
 //
+// niyam is the exception (RELEASED_FROM_MAIN). Since 0.6.18 its release runs on
+// a push to main and makes the tag itself (niyam's P-61), so its certificate
+// names refs/heads/main, which says nothing of the version. For niyam the
+// certificate's source commit must be the commit niyam's v<version> tag names,
+// and that tag is read from GitHub (veda-hq/niyam, Alok's option A on
+// veda-hq/veda#220). So for niyam this check is not offline: a GitHub answer
+// that fails, or that names no commit, refuses the package, never passes it.
+//
 // The statement's workflow fields are written by whoever ran npm publish, so
 // they alone prove nothing. What binds them is the Sigstore bundle around the
 // statement. This verifies it offline with @sigstore/verify:
@@ -17,7 +25,9 @@
 // - the signing certificate's chain to Sigstore's public-good Fulcio;
 // - its signed certificate timestamp, and the Rekor entry that times it;
 // - the certificate's identity. Its SAN must name that repository's release
-//   workflow at the version's tag, and its issuer must be GitHub Actions.
+//   workflow at the version's tag (for niyam, at refs/heads/main, with the
+//   tag's commit as its source repository digest), and its issuer must be
+//   GitHub Actions.
 //
 // The trust anchors are sigstore-trusted-root.json beside this script: the
 // public-good trusted_root.json, whose sha256 matched Sigstore's TUF targets
@@ -43,21 +53,72 @@ export const WORKFLOW = '.github/workflows/release.yml';
 
 /** The repository whose release must have built package `name`. @param {string} name */
 export const repositoryOf = name => (Object.hasOwn(OTHER_REPOSITORIES, name) ? OTHER_REPOSITORIES[name] : REPOSITORY);
+/**
+ * The own packages whose release runs on a push to main and tags the commit it
+ * built: each must be built from main, at the commit its version's tag names.
+ */
+export const RELEASED_FROM_MAIN = Object.freeze(['@veda-hq/niyam']);
+/** The branch RELEASED_FROM_MAIN packages are released from. */
+export const MAIN = 'refs/heads/main';
 export const SLSA = 'https://slsa.dev/provenance/v1';
 /** The OIDC issuer Fulcio records for a GitHub Actions run. */
 export const ISSUER = 'https://token.actions.githubusercontent.com';
+/** Fulcio's Source Repository Digest extension: the commit the run built. */
+export const SOURCE_COMMIT_OID = Object.freeze([1, 3, 6, 1, 4, 1, 57264, 1, 13]);
+export const GITHUB_API = 'https://api.github.com';
 export const TRUSTED_ROOT = fileURLToPath(new URL('sigstore-trusted-root.json', import.meta.url));
+
+/** `owner/name` of a https://github.com/ repository. @param {string} repository */
+const slugOf = repository => repository.replace('https://github.com/', '');
+
+/** A full git commit id. */
+const COMMIT = /^[0-9a-f]{40}$/;
 
 /**
  * Who must have signed the provenance of `version`: the release workflow of
- * `repository` at its tag.
+ * `repository` at its tag, or, given `commit`, the same workflow on main with
+ * `commit` (the one the version's tag names) as the certificate's source
+ * commit. Fulcio writes that extension as a DER UTF8String.
  * @param {string} version
  * @param {string} [repository]
+ * @param {string} [commit]
  */
-export const signingPolicy = (version, repository = REPOSITORY) => ({
-  subjectAlternativeName: `${repository}/${WORKFLOW}@refs/tags/v${version}`,
-  extensions: { issuer: ISSUER },
-});
+export const signingPolicy = (version, repository = REPOSITORY, commit = undefined) =>
+  commit === undefined
+    ? { subjectAlternativeName: `${repository}/${WORKFLOW}@refs/tags/v${version}`, extensions: { issuer: ISSUER } }
+    : {
+        subjectAlternativeName: `${repository}/${WORKFLOW}@${MAIN}`,
+        extensions: { issuer: ISSUER },
+        oids: [{ oid: { id: [...SOURCE_COMMIT_OID] }, value: Buffer.concat([Buffer.from([0x0c, commit.length]), Buffer.from(commit, 'ascii')]) }],
+      };
+
+/** Where GitHub serves `repository`'s tag v`version`. @param {string} repository @param {string} version */
+export const tagUrl = (repository, version) => `${GITHUB_API}/repos/${slugOf(repository)}/git/ref/tags/v${version}`;
+
+/**
+ * The commit `repository`'s tag v`version` names, read from GitHub (an
+ * annotated tag is followed to its commit), or why there is none. Every
+ * failure is a reason, so a GitHub that cannot be asked refuses the package.
+ * @param {string} repository
+ * @param {string} version
+ * @param {(url: string) => Promise<unknown>} fetchJson
+ * @returns {Promise<{ commit: string } | { problem: string }>}
+ */
+export async function tagCommit(repository, version, fetchJson) {
+  const tag = `${slugOf(repository)}'s tag v${version}`;
+  let object;
+  try {
+    object = /** @type {any} */ (await fetchJson(tagUrl(repository, version)))?.object;
+    if (object?.type === 'tag' && COMMIT.test(object.sha)) {
+      object = /** @type {any} */ (await fetchJson(`${GITHUB_API}/repos/${slugOf(repository)}/git/tags/${object.sha}`))?.object;
+    }
+  } catch (error) {
+    // fail-open: the error is returned as a problem, so the check still fails
+    return { problem: `${tag} could not be read from GitHub (${/** @type {Error} */ (error).message}), so nothing binds its build from main to v${version}` };
+  }
+  if (object?.type === 'commit' && typeof object.sha === 'string' && COMMIT.test(object.sha)) return { commit: object.sha };
+  return { problem: `${tag} names no commit on GitHub (its object is ${JSON.stringify(object ?? null)}), so nothing binds its build from main to v${version}` };
+}
 
 /**
  * A function that verifies a Sigstore bundle against a policy and throws when
@@ -122,25 +183,38 @@ function provenanceOf(document) {
  * @param {{ name: string, version: string, integrity: string }} pkg
  * @param {unknown} document the registry's attestations response
  * @param {ReturnType<typeof bundleVerifier>} verifyBundle
+ * @param {string} [commit] for a RELEASED_FROM_MAIN package, the commit its version's tag names
  * @returns {string[]}
  */
-export function provenanceFailures(pkg, document, verifyBundle) {
+export function provenanceFailures(pkg, document, verifyBundle, commit = undefined) {
   const at = `${pkg.name}@${pkg.version}`;
+  const fromMain = RELEASED_FROM_MAIN.includes(pkg.name);
+  const repository = repositoryOf(pkg.name);
+  if (fromMain && (typeof commit !== 'string' || !COMMIT.test(commit))) {
+    return [`${at}: no commit of ${slugOf(repository)}'s tag v${pkg.version} was given, so nothing binds its build from main to its version`];
+  }
   const provenance = provenanceOf(document);
   if (typeof provenance === 'string') return [`${at}: ${provenance}`];
   const { bundle, statement } = provenance;
   const failures = [];
-  const repository = repositoryOf(pkg.name);
+  const release = fromMain ? `release of ${commit}, the commit its tag v${pkg.version} names` : `release of v${pkg.version}`;
   try {
-    verifyBundle(bundle, signingPolicy(pkg.version, repository));
+    verifyBundle(bundle, signingPolicy(pkg.version, repository, fromMain ? commit : undefined));
   } catch (error) {
     // fail-open: the error is recorded as a failure, so the check still fails
-    failures.push(`${at}: its provenance is not signed by ${repository.replace('https://github.com/', '')}'s release of v${pkg.version} (${/** @type {Error} */ (error).message})`);
+    failures.push(`${at}: its provenance is not signed by ${slugOf(repository)}'s ${release} (${/** @type {Error} */ (error).message})`);
   }
   const workflow = statement?.predicate?.buildDefinition?.externalParameters?.workflow ?? {};
-  const expected = { repository, path: WORKFLOW, ref: `refs/tags/v${pkg.version}` };
+  const ref = fromMain ? MAIN : `refs/tags/v${pkg.version}`;
+  const expected = { repository, path: WORKFLOW, ref };
   for (const [key, value] of Object.entries(expected)) {
     if (workflow[key] !== value) failures.push(`${at}: built with workflow ${key} ${JSON.stringify(workflow[key] ?? null)}, not ${JSON.stringify(value)}`);
+  }
+  if (fromMain) {
+    const dependencies = statement?.predicate?.buildDefinition?.resolvedDependencies;
+    const source = (Array.isArray(dependencies) ? dependencies : []).find(d => d?.uri === `git+${repository}@${ref}`);
+    const built = source?.digest?.gitCommit ?? null;
+    if (built !== commit) failures.push(`${at}: built from commit ${JSON.stringify(built)}, not ${commit}, the commit ${slugOf(repository)}'s tag v${pkg.version} names`);
   }
   const digest = Buffer.from(pkg.integrity.slice('sha512-'.length), 'base64').toString('hex');
   const subjects = Array.isArray(statement?.subject) ? statement.subject : [];
@@ -159,6 +233,15 @@ export async function check(lockText, fetchJson, verifyBundle) {
   // The root pins sarathi, so a lockfile with no own package is one this did not read.
   if (packages.length === 0) failures.push(`the lockfile resolves no ${SCOPE} package, so nothing was checked`);
   for (const pkg of packages) {
+    let commit;
+    if (RELEASED_FROM_MAIN.includes(pkg.name)) {
+      const tag = await tagCommit(repositoryOf(pkg.name), pkg.version, fetchJson);
+      if ('problem' in tag) {
+        failures.push(`${pkg.name}@${pkg.version}: ${tag.problem}`);
+        continue;
+      }
+      commit = tag.commit;
+    }
     let document;
     try {
       document = await fetchJson(attestationsUrl(pkg.name, pkg.version));
@@ -167,15 +250,23 @@ export async function check(lockText, fetchJson, verifyBundle) {
       failures.push(`${pkg.name}@${pkg.version}: its attestations could not be read (${/** @type {Error} */ (error).message})`);
       continue;
     }
-    failures.push(...provenanceFailures(pkg, document, verifyBundle));
+    failures.push(...provenanceFailures(pkg, document, verifyBundle, commit));
   }
   return { packages, failures };
 }
 
 /* node:coverage disable */
-/** @param {string} url */
+/**
+ * The JSON at `url`. GitHub is asked with the session's token when there is
+ * one, so a busy address does not hit the anonymous rate limit.
+ * @param {string} url
+ */
 async function fetchJson(url) {
-  const response = await fetch(url);
+  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  const github = url.startsWith(`${GITHUB_API}/`);
+  /** @type {Record<string, string>} */
+  const headers = github ? { accept: 'application/vnd.github+json', ...(token ? { authorization: `Bearer ${token}` } : {}) } : {};
+  const response = await fetch(url, { headers });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }

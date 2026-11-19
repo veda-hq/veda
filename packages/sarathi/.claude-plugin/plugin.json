@@ -1,6 +1,5 @@
 {
   "name": "sarathi",
-  "version": "0.7.8",
   "description": "Veda's Claude Code plugin: the worker and researcher agents and the working-rules and research-first skills. The hooks run from the @veda-hq/sarathi package (one settings entry per event).",
   "author": { "name": "veda-hq" },
   "homepage": "https://github.com/veda-hq/veda/tree/main/packages/sarathi#readme",

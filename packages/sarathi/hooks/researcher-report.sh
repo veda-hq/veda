@@ -25,7 +25,7 @@
 # HOOK_PYTHON is the launcher's interpreter; python3 without one.
 
 PY_SRC=$(cat <<'PYEOF'
-import json, os, re, sys
+import datetime, json, os, re, sys
 
 HANDBACK = "SubagentHandback"
 # The plugin's agent only. A bare "researcher" is another agent: a user's or
@@ -55,6 +55,16 @@ PATH = re.compile(
     r"|\b[\w-]+\.(ts|tsx|mjs|cjs|json|md|sh|py|ya?ml|toml|lock|rs|rb|java|kt|swift|css|html|sql)\b"
 )
 DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+
+def has_date(text):
+    """Whether text holds a real calendar date (not 2026-99-99)."""
+    for found in DATE.findall(text):
+        try:
+            datetime.date.fromisoformat(found)
+            return True
+        except ValueError:
+            continue
+    return False
 
 def claim_lines(section):
     """The claims in a Claims section: each top-level list item with the
@@ -102,7 +112,7 @@ def problems(report):
         if not (URL.search(claim) or PATH.search(claim)):
             lacks.append("a URL or repository path")
         # A date inside a URL (a dated page) is no read date.
-        if not DATE.search(URL.sub(" ", claim)):
+        if not has_date(URL.sub(" ", claim)):
             lacks.append("a read date (YYYY-MM-DD)")
         if lacks:
             short = claim if len(claim) <= 80 else claim[:77] + "..."

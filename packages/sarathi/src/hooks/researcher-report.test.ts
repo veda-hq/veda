@@ -90,6 +90,7 @@ test('researcher-report: a report that falls short is refused with what it lacks
     ['a claim with no source', 'Verdict: Settled. Yes.\nClaims:\n- The cap is 8, read 2026-11-19\nNext: act.', /the claim "The cap is 8, read 2026-11-19" lacks a URL or repository path/],
     ['a claim with no date', 'Verdict: Settled. Yes.\nClaims:\n- The cap is 8: https://code.claude.com/docs/en/hooks\nNext: act.', /lacks a read date/],
     ['a claim with neither', 'Verdict: Settled. Yes.\nClaims:\n- The cap is 8\nNext: act.', /lacks a URL or repository path and a read date/],
+    ['an impossible date', 'Verdict: Settled. Yes.\nClaims:\n- The cap is 8: https://code.claude.com/docs/en/hooks, read 2026-99-99\nNext: act.', /lacks a read date/],
     ['a date only inside a URL', 'Verdict: Settled. Yes.\nClaims:\n- Ask when unsure: https://model-spec.openai.com/2026-10-29.html#ask_clarifying_questions\nNext: act.', /lacks a read date/],
     ['a product name as the source', 'Verdict: Settled. Yes.\nClaims:\n- Node.js 24 strips types, read 2026-11-19\nNext: act.', /lacks a URL or repository path/],
     ['"e.g." as the source', 'Verdict: Settled. Yes.\nClaims:\n- Flags, e.g. --fast, are gone, read 2026-11-19\nNext: act.', /lacks a URL or repository path/],
@@ -127,7 +128,8 @@ test('researcher-report: on SubagentStop a short report keeps the subagent going
   assert.deepEqual(hook(stopped('Done.', { agent_transcript_path: transcript })), { status: 0, stdout: '', stderr: '' }, 'the report went through SubagentHandback');
   const mention = join(TMP, 'mention.jsonl');
   writeFileSync(mention, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'use SubagentHandback to report' } })}\n`);
-  assert.equal(hook(stopped('Done.', { agent_transcript_path: mention })).stdout === '', false, 'a mere mention of the tool is no handback');
+  const mentioned = hook(stopped('Done.', { agent_transcript_path: mention }));
+  assert.equal((JSON.parse(mentioned.stdout) as { decision: string }).decision, 'block', 'a mere mention of the tool is no handback');
 });
 
 test('researcher-report: other agents, tools and events pass', () => {
@@ -152,16 +154,19 @@ test('researcher-report: anything it cannot read passes', () => {
     ['a message that is not a string', handback(['Verdict'])],
     ['tool input not an object', { ...handback(''), tool_input: 'x' }],
     ['no message on SubagentStop', { ...stopped(''), last_assistant_message: undefined }],
-    ['an unreadable agent transcript', stopped('Verdict: Settled. Yes.', { agent_transcript_path: join(TMP, 'missing.jsonl') })],
   ] as const) {
-    assert.equal(hook(input).status === 2, false, why);
+    assert.deepEqual(hook(input), { status: 0, stdout: '', stderr: '' }, why);
   }
+  // A missing agent transcript tells nothing of a handback, so the last message is checked as the report.
+  const missing = join(TMP, 'missing.jsonl');
+  assert.deepEqual(hook(stopped(GOOD, { agent_transcript_path: missing })), { status: 0, stdout: '', stderr: '' }, 'a missing transcript, a good report');
+  assert.equal((JSON.parse(hook(stopped('Verdict: Settled. Yes.', { agent_transcript_path: missing })).stdout) as { decision: string }).decision, 'block', 'a missing transcript, a short report');
   const odd = join(TMP, 'odd.jsonl');
   writeFileSync(odd, 'SubagentHandback but not json\n');
   assert.deepEqual(hook(stopped('no shape', { agent_transcript_path: odd })), { status: 0, stdout: '', stderr: '' }, 'an agent transcript it cannot parse');
   const blocker = join(TMP, 'a-file');
   writeFileSync(blocker, '');
-  assert.equal(hook(handback('no shape'), {}, join(blocker, 'state')).status, 0, 'state it cannot write');
+  assert.deepEqual(hook(handback('no shape'), {}, join(blocker, 'state')), { status: 0, stdout: '', stderr: '' }, 'state it cannot write');
 });
 
 test('researcher-report: at most two refusals per subagent, then it passes', () => {

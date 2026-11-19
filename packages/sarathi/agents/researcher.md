@@ -37,8 +37,9 @@ Reply in this shape:
   one or two sentences.
 - **Claims:** one line each: the claim, its URL (for the repository, the
   path, with a line where it helps), the version it holds for, the date read
-  as `YYYY-MM-DD`. sarathi's `researcher-report.sh` sends back a report with
-  no Verdict line or a claim without its source and date.
+  as `YYYY-MM-DD`. Every claim names its source and date, and a `Settled` or
+  `Conflicting` verdict has at least one claim. Where a project runs sarathi's
+  `researcher-report.sh`, a report that misses any of these comes back to you.
 - **Next:** for `Settled`, say so plainly: the caller acts on it within the
   scope it was given and cites it, and does not ask the owner the question
   the source answered. A settled fact authorizes nothing: an approval,

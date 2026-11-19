@@ -1147,6 +1147,11 @@ test('ask-gate on Stop: a wrap_up ask this turn, or no wrap_up at all, ends the 
       `${why} starts no new ask: the wrap_up ask before it stands`,
     );
   }
+  // Many reminders ahead of a row cost one pass each, not a backtrack that doubles with every block.
+  const reminders = line({ type: 'user', uuid: next(), message: { role: 'user', content: `${'<system-reminder>r</system-reminder>\n'.repeat(40)}<side-sessions-event>done` } });
+  const started = Date.now();
+  assert.match(stopFeedbackOf(transcript(peer(), wrapUp({ recap: 'r', ask: 'Approve #259?' }), reminders), NEEDS_YOU_261), /^file the ask\./, 'an app event behind reminders starts a turn');
+  assert.ok(Date.now() - started < 3000, '40 leading reminders read in well under the hook timeout');
   // In a side session the answer comes relayed: another session's message, or an app event, starts the next turn.
   for (const [why, next] of [['a peer message', peer()], ['an app event', appEvent()]] as const) {
     assert.match(

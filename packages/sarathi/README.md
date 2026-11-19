@@ -282,9 +282,9 @@ Stop, before the research hold, the handler checks the closing message:
 - **No `wrap_up` carried an ask** since the turn's prompt: the last
   user-role entry from the owner, another session (meta or not) or an app
   event, so a side session's turn counts from the message that started it.
-  A tool result, meta text, a row of system reminders alone and a
-  background task's report start no turn: a `wrap_up` ask before them
-  still stands.
+  A tool result, meta text other than another session's message, a row of
+  system reminders alone and a background task's report start no turn: a
+  `wrap_up` ask before them still stands.
 - **The session has `wrap_up`:** the desktop app names it in
   `CLAUDE_CODE_TERMINAL_MCP_TOOLS`, or the transcript shows a call to it. A
   terminal session's Stop is as before.
@@ -300,10 +300,12 @@ the hold, it needs Claude Code 2.1.163 or later, which reads
 `additionalContext` on Stop; an older one ignores it and the turn ends, so
 there a `nudged` line records feedback the model never saw.
 
-Replayed over this Mac's desktop transcripts (read 2026-11-20), with turns
-split at every user row that is not a tool result or meta text, the
+Replayed over this Mac's desktop transcripts (read 2026-11-20), the
 handler's own functions nudge 810 of 26,627 turn endings, most of them
-"Needs you:" endings. Counting a task report as no prompt drops 11 nudges
+"Needs you:" endings. Those endings come from a split of the replay's own,
+at every user row that is not a tool result or meta text (reminder-only
+rows and task reports included), not from the handler's, so the sample
+does not lean on the rule it tests. Counting a task report as no prompt drops 11 nudges
 there, each a repeat of an ask already standing.
 
 A project lists it in `.claude/sarathi.json`, beside its other `PreToolUse`

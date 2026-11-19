@@ -444,7 +444,6 @@ def is_peer(entry):
     kind = origin.get("kind") if isinstance(origin, dict) else None
     return kind in ("peer", "peer-send-message") or entry.get("turnOrigin") == "peer"
 
-TASK_REPORT = re.compile(r"^\s*(<system-reminder>.*?</system-reminder>\s*)*<task-notification\b", re.S)
 
 def is_task_report(entry):
     """A background task's notification, by its origin or its leading tag."""
@@ -456,7 +455,8 @@ def is_task_report(entry):
     content = (entry.get("message") or {}).get("content")
     if isinstance(content, list):
         content = "\n".join(item.get("text") for item in content if isinstance(item, dict) and isinstance(item.get("text"), str))
-    return isinstance(content, str) and bool(TASK_REPORT.match(content))
+    # Reminders out first, then a look at what leads: one pass, no nested repeat to backtrack through.
+    return isinstance(content, str) and REMINDER.sub("", content).lstrip().startswith("<task-notification")
 
 def is_prompt(entry):
     """A user-role entry that starts a turn, whoever sent it: the owner,

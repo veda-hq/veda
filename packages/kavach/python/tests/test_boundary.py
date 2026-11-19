@@ -176,6 +176,8 @@ class BoundaryFixture(GuardFixture):
         # script of the package as a program (#256).
         for checkout in (self.main, self.claude):
             (checkout / "package.json").write_text(SCRIPTS_MANIFEST, encoding="utf-8")
+        (self.claude / "pkg").mkdir()
+        (self.claude / "pkg" / "package.json").write_text(SCRIPTS_MANIFEST, encoding="utf-8")
 
     def claude_bash(
         self, cwd: Path, command: str, env: dict[str, str] | None = None
@@ -1058,7 +1060,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 self.assertIn("mutation targets could not be resolved", result.stderr)
         for command in (
             "git rebase -x 'pnpm test' HEAD~1",
-            "git rebase --exec='pnpm --dir packages/kavach test:python' HEAD~1",
+            "git rebase --exec='pnpm --dir pkg test:python' HEAD~1",
             "git rebase -x 'touch .tmp/x' HEAD~1",
             "git rebase -i HEAD~1",
             "git -C nested rebase -x 'touch .tmp/x' HEAD~1",
@@ -1521,7 +1523,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm exec tsx .tmp/x.ts",
             "pnpm exec node --experimental-strip-types .tmp/x.ts",
             "pnpm exec node --version",
-            "pnpm --dir nested test:python -k x",
+            "pnpm --dir pkg test:python -k x",
             "pnpm --filter @veda-hq/kavach check",
             "pnpm install --frozen-lockfile",
             "pnpm exec bash run.sh",
@@ -1692,7 +1694,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm --filter x add node",
             "pnpm -w add -D tsx",
             "pnpm exec vitest run",
-            "pnpm --dir nested test:python -k x",
+            "pnpm --dir pkg test:python -k x",
             "git push origin main",
             "git push https://github.com/veda-hq/veda.git HEAD:x",
             "git push ssh://git@GitHub.com:22/veda-hq/veda.git HEAD:x",
@@ -1762,6 +1764,26 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm --dir nested exec fixturetool",
             "pnpm -C nested exec fixturetool",
             "pnpm exec --dir nested fixturetool",
+            "pnpm --reporter silent --dir nested exec fixturetool",
+            "pnpm --dir nested --filter y exec fixturetool",
+            "pnpm --dir missing exec fixturetool",
+            # Outside a workspace, `-w` names no folder.
+            "pnpm -w exec fixturetool",
+            # npm under another folder or a workspace looks in its bins.
+            "npm --prefix nested exec -- fixturetool",
+            "npx -w nested fixturetool",
+            # mise's own options, and the folder it moves to.
+            "mise -q exec -- deno eval 1",
+            "mise --cd nested exec -- deno eval 1",
+            "mise --no-such-option exec -- tsc",
+            # A setting every later run reads, and a package npm downloads
+            # or a command it runs elsewhere.
+            "pnpm config set node-options --import=x",
+            "pnpm set script-shell /x",
+            "npm config set node-options --import=x",
+            "npm init vite",
+            "npm create vite",
+            "npm explore left-pad -- ls",
         ):
             with self.subTest(command=command):
                 result = self.claude_bash(self.claude, command)
@@ -1791,16 +1813,26 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm dlx prettier@3 --check .",
             "mise exec -- go test ./...",
             "mise exec node@24 -- node --version",
+            "mise -q exec -- go test ./...",
             "mise run lint",
+            "pnpm config get registry",
+            "npm init -y",
         ):
             with self.subTest(command=command):
                 result = self.claude_bash(self.claude, command)
                 self.assertEqual(result.returncode, 0, result.stderr)
         # In a workspace, pnpm looks in the root's bin folder from every
-        # package too.
-        (nested / "package.json").write_text('{"name": "nested"}', encoding="utf-8")
+        # package too; across packages, a script of any of them is a script.
+        (nested / "package.json").write_text(
+            '{"name": "nested", "scripts": {"deno": "true"}}', encoding="utf-8"
+        )
         (self.claude / "pnpm-workspace.yaml").write_text("packages:\n  - nested\n", encoding="utf-8")
-        for command in ("pnpm --dir nested exec fixturetool", "pnpm -r exec fixturetool"):
+        for command in (
+            "pnpm --dir nested exec fixturetool",
+            "pnpm -r exec fixturetool",
+            "pnpm -w exec fixturetool",
+            "pnpm -r deno eval 1",
+        ):
             with self.subTest(command=command):
                 self.assertEqual(self.claude_bash(self.claude, command).returncode, 0)
 

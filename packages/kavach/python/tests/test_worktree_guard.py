@@ -1510,6 +1510,23 @@ class ProtectedPathsTest(BoundaryFixture):
     def bash(self, command: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         return self.claude_bash(self.claude if cwd is None else cwd, command, self.env)
 
+    def test_a_runners_program_from_the_root_does_not_name_the_root(self) -> None:
+        # #256 reads the program a runner starts as a line of its own; the
+        # folder it runs in is the runner's, already counted, so it does not
+        # count as naming the checkout's root, which holds the fences.
+        for command in (
+            "npx vitest run",
+            "pnpm exec touch .tmp/x",
+            "pnpm exec env CI=1 vitest run",
+            "mise exec -- go test ./...",
+        ):
+            with self.subTest(command=command):
+                result = self.bash(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        for command in ("pnpm exec touch .githooks/pre-push", "pnpm exec touch ."):
+            with self.subTest(command=command):
+                self.assertEqual(self.bash(command).returncode, 2)
+
     def test_an_edit_of_the_hook_is_refused(self) -> None:
         hook = self.claude / ".githooks" / "pre-push"
         result = self.invoke(

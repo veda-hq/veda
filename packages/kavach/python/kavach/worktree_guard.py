@@ -894,6 +894,15 @@ def unreadable_constructs(
                     "(`node -e`, `python3 -c`, or no script), or an option the guard does not "
                     "list for it, which the guard does not read"
                 )
+            elif head in boundary.GIT_RUNNERS and boundary.runner_program_targets(
+                head, texts[1:], cwd, push_hosts=push_hosts
+            ) is None:
+                add(
+                    f"`{head}` starting a program the guard reads as it would without `{head}` and "
+                    "cannot prove (`deno eval`, `xargs`), a package it would download, a bin that is "
+                    "not installed, or an option the guard does not list for it; install the bin, "
+                    "or run the program as the command itself"
+                )
             else:
                 add(f"`{head}`, a program whose writes the guard does not know")
     if any(each.piped_from is not None for each in commands):

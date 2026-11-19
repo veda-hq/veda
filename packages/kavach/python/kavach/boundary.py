@@ -5400,7 +5400,7 @@ RUNNER_SHELL_MODES: dict[str, RunnerSlot] = {
         frozenset({
             "--deny-all", "--deny-env", "--deny-net", "--deny-read", "--deny-write",
             "--fresh-env", "--no-deps", "--raw", "--secrets-all", "-q", "--quiet", "-v",
-            "--verbose", "-y", "--yes", "--locked", "--silent", "-h", "--help",
+            "--verbose", "-y", "--yes", "--locked", "--silent", "-h", "--help", "-V", "--version",
         }),
         frozenset({
             "-j", "--jobs", "--allow-env", "--allow-net", "--allow-read", "--allow-write",
@@ -5785,17 +5785,21 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
     """
     if name == "pnpm":
         _subcommands, _modes, flags, values = RUNNER_SHELL_MODES["pnpm"]
-        recursive, filtered, index = False, False, 0
+        recursive, index = False, 0
+        selectors: list[str] = []
         while index < len(args):
             word = args[index]
             option, attached, _ = word.partition("=")
             if word.startswith("--config.") and attached:
                 index += 1
             elif option in values:
+                if option in {"-C", "--dir", "-F", "--filter", "--filter-prod"}:
+                    selectors.extend([word] if attached else args[index : index + 2])
                 index += 1 if attached else 2
-                filtered = filtered or option in {"-F", "--filter", "--filter-prod"}
             elif option in flags or (attached and option == "--color"):
                 recursive = recursive or option in {"-r", "--recursive"}
+                if option in {"-w", "--workspace-root"}:
+                    selectors.append(option)
                 index += 1
             elif word.startswith("-"):
                 return None
@@ -5806,14 +5810,35 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
                 break
         if index >= len(args):
             return False
-        # One `--dir` or `--filter` naming one folder moves it; a filter that
-        # names several packages runs the program in each.
-        selected = pnpm_selected_directory(args[:index] + ["run"], cwd)
-        folder = selected[0] if selected is not None else cwd
-        moved = selected is not None
-        recursive = recursive or (filtered and selected is None)
+        verb = args[index]
+        if verb in PNPM_COMMANDS and verb not in {"exec", "dlx", "with", "create", "set", "config", "c"}:
+            return False
+        # One `--dir` or `--filter` naming one folder moves it, and `-w` to
+        # the workspace root; a filter that names several packages runs the
+        # program in each. A `--dir` the guard cannot place, or two
+        # selectors, fail closed.
+        folder, moved = cwd, False
+        if selectors in (["-w"], ["--workspace-root"]):
+            root = nearest_holding(cwd, "pnpm-workspace.yaml")
+            if root is None:
+                return None
+            folder, moved = root, True
+        elif selectors:
+            selected = pnpm_selected_directory(selectors + ["run"], cwd)
+            if selected is not None:
+                folder, moved = selected[0], True
+            elif selectors[0].partition("=")[0] in {"-C", "--dir"} or sum(
+                word.startswith("-") for word in selectors
+            ) > 1:
+                return None
+            else:
+                recursive = True
         verb = args[index]
         if verb in {"with", "create"}:
+            return None
+        if verb == "set" or (verb in {"config", "c"} and args[index + 1 : index + 2] in (["set"], ["delete"])):
+            # A setting pnpm reads on every later run (`node-options`,
+            # `script-shell`), written where the guard does not read.
             return None
         if verb in {"exec", "dlx"}:
             slot_values = values | (PNPM_DLX_VALUES if verb == "dlx" else frozenset())
@@ -5842,10 +5867,17 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
         if verb in PNPM_COMMANDS:
             return False
         scripts = package_scripts(folder, moved)
-        if recursive and selected is None:
-            # The script is looked up in each selected package; a word that is
-            # a script of none of them would run as a program.
-            return None if verb not in scripts else False
+        if recursive:
+            # Across packages, pnpm 12.9 ran the script in each package that
+            # has it and skipped the others (`pnpm -r uname`, with `uname` a
+            # script of one); a word that is a script of none runs as a
+            # program in each.
+            root = nearest_holding(folder, "pnpm-workspace.yaml")
+            packages = workspace_packages(root) if root is not None else []
+            if packages is None:
+                return None
+            for package, _name in packages:
+                scripts |= package_scripts(package, True)
         if verb in scripts:
             return False
         return RunnerProgram(index, folder, pnpm_bins(folder, recursive, moved))
@@ -5860,20 +5892,36 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
                     index += 1
                 else:
                     return None
-            if index >= len(args) or args[index] not in {"exec", "x"}:
+            moved = any(word.partition("=")[0] in {"--prefix", "-w", "--workspace"} for word in args[:index])
+            verb = args[index] if index < len(args) else ""
+            if verb in {"init", "create", "innit", "explore"} and any(
+                not word.startswith("-") for word in args[index + 1 :]
+            ):
+                # `npm init <x>` runs `create-<x>`, a package it downloads;
+                # `npm explore <pkg> -- <cmd>` runs a command in its folder.
+                return None
+            if verb == "set" or (verb in {"config", "c"} and args[index + 1 : index + 2] in (["set"], ["delete"])):
+                return None
+            if verb not in {"exec", "x"}:
                 return False
             index += 1
+        else:
+            moved = False
         _subcommands, _modes, flags, values = NPM_EXEC_SLOT
-        downloads = False
+        downloads = moved
         while index < len(args) and args[index].startswith("-"):
             option, attached, _ = args[index].partition("=")
             if args[index] == "--":
                 index += 1
                 break
             if option in values:
-                downloads = downloads or option in {"--package", "-p"}
+                # A program from `--package` may be a bin of a package it
+                # downloads; under `--prefix` or a workspace, npm looks in
+                # another folder's bins.
+                downloads = downloads or option in {"--package", "-p", "-w", "--workspace"}
                 index += 1 if attached else 2
             elif option in flags:
+                downloads = downloads or option in {"--workspaces", "--ws"}
                 index += 1
             else:
                 return None
@@ -5881,17 +5929,44 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
             return False
         # npm 11 looks in every folder above, too (`npm exec` ran the
         # workspace root's bin from `packages/kavach`, and npx an outer
-        # folder's from an inner package). A program from `--package` may be
-        # a bin of a package it downloads.
+        # folder's from an inner package).
         bins = () if downloads else tuple(place / "node_modules" / ".bin" for place in (cwd, *cwd.parents))
         return RunnerProgram(index, cwd, bins)
     if name == "mise":
-        if not args or args[0] not in {"exec", "x"}:
+        _subcommands, _modes, flags, values = RUNNER_SHELL_MODES["mise"]
+        folder, index = cwd, 0
+        while index < len(args) and args[index].startswith("-"):
+            option, attached, value = args[index].partition("=")
+            if option in values:
+                if not attached:
+                    value = args[index + 1] if index + 1 < len(args) else ""
+                if option in {"-C", "--cd"}:
+                    place = resolve_shell_path(value, folder)
+                    if place is None:
+                        return None
+                    folder = place
+                index += 1 if attached else 2
+            elif option in flags:
+                index += 1
+            else:
+                return None
+        if index >= len(args) or args[index] not in {"exec", "x"}:
             return False
-        if "--" not in args:
+        rest = args[index + 1 :]
+        if "--" not in rest:
             return False
-        index = args.index("--") + 1
-        return RunnerProgram(index, cwd, ()) if index < len(args) else False
+        before = rest[: rest.index("--")]
+        for at, word in enumerate(before):
+            option = word.partition("=")[0]
+            if option in {"-C", "--cd"}:
+                place = resolve_shell_path(
+                    word.partition("=")[2] or (before[at + 1] if at + 1 < len(before) else ""), folder
+                )
+                if place is None:
+                    return None
+                folder = place
+        start = index + 1 + rest.index("--") + 1
+        return RunnerProgram(start, folder, ()) if start < len(args) else False
     return False
 
 
@@ -5931,10 +6006,16 @@ def runner_program_targets(
         return []
     program = word[0] + word[1:].partition("@")[0] if "/" not in word else word
     command = shlex.join([program, *args[found.index + 1 :]])
-    return mutation_directories(
+    nested = mutation_directories(
         command, found.folder, nested_depth=nested_depth + 1, read_namespaces=read_namespaces,
         push_hosts=push_hosts,
     )
+    if nested is None:
+        return None
+    # The folder the runner's own line runs in is counted by its caller; a
+    # folder `--dir` moved the program to stays.
+    here = cwd.resolve()
+    return [target for target in nested if target.resolve() != here]
 
 
 def shell_reads_program_text(args: list[str]) -> bool:

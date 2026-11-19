@@ -215,8 +215,14 @@ that is not installed (`pnpm exec stryker` with no stryker in the
 dependencies, where pnpm would run whatever `PATH` holds), a package the
 runner downloads that the guard does not review (`npx -y cowsay`,
 `pnpm dlx cowsay`, `pnpm create vite`), a program named by its path
-(`pnpm exec ./node_modules/.bin/x`, as `./node_modules/.bin/x` is), and a
-runner option the guard does not list, since it may take the next word.
+(`pnpm exec ./node_modules/.bin/x`, as `./node_modules/.bin/x` is), a
+wrapper before an interpreter (`pnpm exec env CI=1 node x.js`, read as
+`env CI=1 node x.js` is; `CI=1 pnpm exec node x.js` runs), a setting every
+later run reads (`pnpm config set`, `pnpm set`, `npm config set`), npm's
+`init <x>`, `create <x>` and `explore`, a `--dir` the guard cannot place or
+two selectors, and a runner option the guard does not list, since it may
+take the next word. Across packages (`pnpm -r <word>`), a word that is a
+script of any package is a script, as pnpm 12.9 ran it only where it is one.
 yarn's and bun's own forms are not read this way (neither is installed here
 to probe); their `exec` is refused.
 

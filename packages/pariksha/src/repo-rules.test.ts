@@ -110,6 +110,8 @@ describe('grep', () => {
       { file: 'b.ts', line: 12, text: 'z' },
     ]);
     assert.deepEqual(parseGrep('a b.ts:107:x:1:\nnot a hit\n\n'), [{ file: 'a b.ts', line: 107, text: 'x:1:' }]);
+    // `.` stops at a carriage return, so a line that holds one is no hit, as it never was.
+    assert.deepEqual(parseGrep('a.ts:3:x\r\n\rb.ts:4:y\n'), []);
   });
 
   it('greps the index, a commit or the tree, and reads no match as no hit', () => {

@@ -61,7 +61,7 @@ export type Side = { readonly kind: 'index' } | { readonly kind: 'commit'; reado
  */
 export const parseGrep = (out: string, prefix?: string): GrepHit[] =>
   out.split('\n').flatMap((raw) => {
-    const match = /(.*?):(\d+):(.*)/.exec(prefix === undefined ? raw : raw.slice(prefix.length));
+    const match = /^(.*?):(\d+):(.*)$/.exec(prefix === undefined ? raw : raw.slice(prefix.length));
     return match === null ? [] : [{ file: match[1] as string, line: Number(match[2]), text: match[3] as string }];
   });
 

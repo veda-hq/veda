@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   time:
-    # A fixed name: GitHub adds the module to it, as "cosmic-ray timing (boundary)".
+    # A fixed name: GitHub adds the matrix values to it.
     name: cosmic-ray timing
     runs-on: ubuntu-latest
     # GitHub-hosted jobs stop at 360 minutes.
@@ -28,26 +28,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # __init__.py (11 lines of imports) is left out.
-        module:
-          - boundary
-          - git_safety
-          - bash_guard
-          - worktree_guard
-          - clone_writers
-          - rules
-          - config
-          - command_guard
-          - refusal_log
-          - tool_guard
+        # __init__.py (11 lines of imports) is left out. The smoke run put the
+        # four small modules at 4 to 8 hours, so they get the most a job
+        # allows; the other six, at 30 to 280 hours, get a rate sample.
+        include:
+          - { module: refusal_log, minutes: 320, distributor: http }
+          - { module: config, minutes: 320, distributor: http }
+          - { module: tool_guard, minutes: 320, distributor: http }
+          - { module: command_guard, minutes: 320, distributor: http }
+          - { module: clone_writers, minutes: 90, distributor: http }
+          - { module: rules, minutes: 90, distributor: http }
+          - { module: worktree_guard, minutes: 90, distributor: http }
+          - { module: bash_guard, minutes: 90, distributor: http }
+          - { module: git_safety, minutes: 90, distributor: http }
+          - { module: boundary, minutes: 90, distributor: http }
+          # One mutant at a time: what four workers buy.
+          - { module: refusal_log, minutes: 90, distributor: local }
     env:
       MODULE: ${{ matrix.module }}
+      EXEC_MINUTES: ${{ matrix.minutes }}
+      DISTRIBUTOR: ${{ matrix.distributor }}
       # kavach's own command (`pnpm test:python`) with -f: the first failing
       # test ends the run, which kills the mutant all the same.
-      TEST_COMMAND: python3 -B -m unittest discover -f -s python/tests -t python
-      # Minutes before exec is stopped. The first run is a short smoke run
-      # for every module's mutant count; the long run raises it.
-      EXEC_MINUTES: 10
+      SUITE: python3 -B -m unittest discover -f -s python/tests -t python
+      # The same, keeping unittest's report in each copy's unittest.log, so
+      # the tests that killed mutants can be read afterwards.
+      TEST_COMMAND: sh -c 'python3 -B -m unittest discover -f -s python/tests -t python 2>>unittest.log; s=$?; echo === exit $s >>unittest.log; exit $s'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -60,68 +66,84 @@ jobs:
           echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
       - name: The runner
         run: |
+          if [ "$DISTRIBUTOR" = http ]; then workers=$(nproc); else workers=1; fi
+          echo "WORKERS=${workers}" >> "$GITHUB_ENV"
           {
-            echo "### ${MODULE}.py ($(wc -l < "packages/kavach/python/kavach/${MODULE}.py") lines)"
+            echo "### ${MODULE}.py ($(wc -l < "packages/kavach/python/kavach/${MODULE}.py") lines), ${DISTRIBUTOR}, ${workers} worker(s), exec stopped at ${EXEC_MINUTES} min"
             echo
             echo "- Runner: $(nproc) CPUs, $(lscpu | sed -n 's/^Model name: *//p'), $(free -g | awk '/^Mem:/ {print $2}') GiB, $(python3 --version), cosmic-ray $(pip show cosmic-ray | sed -n 's/^Version: //p')"
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: The suite alone
-        working-directory: packages/kavach
-        run: |
-          set -euo pipefail
-          start=$(date +%s)
-          # TEST_COMMAND is a command line, split on spaces on purpose.
-          # shellcheck disable=SC2086
-          $TEST_COMMAND
-          end=$(date +%s)
-          echo "- Suite alone: $(( end - start )) s" >> "$GITHUB_STEP_SUMMARY"
-      - name: One worker per CPU, each in its own copy
+      - name: One copy per worker
         # cosmic-ray mutates the file in place, so each worker runs in a copy.
         # The copy keeps the folder name `kavach`: a test reads it.
         run: |
           set -euo pipefail
-          urls=""
-          for i in $(seq 1 "$(nproc)"); do
-            port=$(( 9875 + i ))
+          for i in $(seq 1 "$WORKERS"); do
             mkdir -p "$RUNNER_TEMP/w$i"
             cp -R packages/kavach "$RUNNER_TEMP/w$i/kavach"
-            (cd "$RUNNER_TEMP/w$i/kavach" && nohup cosmic-ray http-worker --port "$port" > "$RUNNER_TEMP/w$i.log" 2>&1 &)
-            urls="${urls:+$urls, }\"http://localhost:$port\""
           done
-          cat > "$RUNNER_TEMP/cr.toml" <<EOF
-          [cosmic-ray]
-          module-path = "python/kavach/${MODULE}.py"
-          timeout = 900.0
-          excluded-modules = []
-          test-command = "${TEST_COMMAND}"
-
-          [cosmic-ray.distributor]
-          name = "http"
-
-          [cosmic-ray.distributor.http]
-          worker-urls = [${urls}]
-          EOF
-          cat "$RUNNER_TEMP/cr.toml"
-          for i in $(seq 1 "$(nproc)"); do
-            port=$(( 9875 + i ))
-            for _ in $(seq 1 60); do
-              curl -s -o /dev/null "http://localhost:$port/" && break
-              sleep 1
-            done
-            curl -s -o /dev/null "http://localhost:$port/" || { cat "$RUNNER_TEMP/w$i.log"; exit 1; }
-          done
-      - name: The suite in a worker's copy
-        # A test that fails only in the copy would kill every mutant at once.
-        working-directory: ${{ runner.temp }}/w1/kavach
+      - name: The unmutated suite in every copy at once
+        # Under the same load as the mutants: a test that fails only under
+        # load would kill every mutant falsely.
         run: |
           set -euo pipefail
           start=$(date +%s)
+          pids=""
+          for i in $(seq 1 "$WORKERS"); do
+            # SUITE is a command line, split on spaces on purpose.
+            # shellcheck disable=SC2086
+            (cd "$RUNNER_TEMP/w$i/kavach" && $SUITE > "$RUNNER_TEMP/load-w$i.txt" 2>&1; echo "exit $?" >> "$RUNNER_TEMP/load-w$i.txt") &
+            pids="$pids $!"
+          done
           # shellcheck disable=SC2086
-          $TEST_COMMAND
+          wait $pids || true
           end=$(date +%s)
-          echo "- Suite in a worker's copy: $(( end - start )) s" >> "$GITHUB_STEP_SUMMARY"
+          tail -n 4 "$RUNNER_TEMP"/load-w*.txt
+          echo "- Unmutated suite, ${WORKERS} at once: $(( end - start )) s" >> "$GITHUB_STEP_SUMMARY"
+          if grep -L '^exit 0$' "$RUNNER_TEMP"/load-w*.txt | grep -q .; then
+            echo "- The unmutated suite failed under load" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Workers and config
+        run: |
+          set -euo pipefail
+          urls=""
+          if [ "$DISTRIBUTOR" = http ]; then
+            for i in $(seq 1 "$WORKERS"); do
+              port=$(( 9875 + i ))
+              (cd "$RUNNER_TEMP/w$i/kavach" && nohup cosmic-ray --verbosity INFO http-worker --port "$port" > "$RUNNER_TEMP/w$i.log" 2>&1 &)
+              urls="${urls:+$urls, }\"http://localhost:$port\""
+            done
+          fi
+          {
+            echo '[cosmic-ray]'
+            echo "module-path = \"python/kavach/${MODULE}.py\""
+            echo 'timeout = 900.0'
+            echo 'excluded-modules = []'
+            echo "test-command = \"${TEST_COMMAND}\""
+            echo
+            echo '[cosmic-ray.distributor]'
+            echo "name = \"${DISTRIBUTOR}\""
+            if [ "$DISTRIBUTOR" = http ]; then
+              echo
+              echo '[cosmic-ray.distributor.http]'
+              echo "worker-urls = [${urls}]"
+            fi
+          } > "$RUNNER_TEMP/cr.toml"
+          cat "$RUNNER_TEMP/cr.toml"
+          if [ "$DISTRIBUTOR" = http ]; then
+            for i in $(seq 1 "$WORKERS"); do
+              port=$(( 9875 + i ))
+              for _ in $(seq 1 60); do
+                curl -s -o /dev/null "http://localhost:$port/" && break
+                sleep 1
+              done
+              curl -s -o /dev/null "http://localhost:$port/" || { cat "$RUNNER_TEMP/w$i.log"; exit 1; }
+            done
+          fi
       - name: Plan the mutants
-        working-directory: packages/kavach
+        # The local distributor mutates where exec runs, so it runs in w1.
+        working-directory: ${{ runner.temp }}/w1/kavach
         run: |
           set -euo pipefail
           start=$(date +%s)
@@ -129,71 +151,74 @@ jobs:
           end=$(date +%s)
           planned=$(cosmic-ray dump "$RUNNER_TEMP/${MODULE}.sqlite" | wc -l)
           echo "- Planned: ${planned} mutants (init $(( end - start )) s)" >> "$GITHUB_STEP_SUMMARY"
-      - name: cosmic-ray baseline
-        working-directory: packages/kavach
-        run: cosmic-ray --verbosity=INFO baseline "$RUNNER_TEMP/cr.toml"
       - name: cosmic-ray exec
-        working-directory: packages/kavach
+        working-directory: ${{ runner.temp }}/w1/kavach
+        env:
+          COLUMNS: 200
         run: |
           set -uo pipefail
           start=$(date +%s)
           # Stopped below the job's cap, so a module that cannot finish still
           # reports how far it got. Each result is saved as it lands.
-          timeout -k 2m "${EXEC_MINUTES}m" cosmic-ray exec "$RUNNER_TEMP/cr.toml" "$RUNNER_TEMP/${MODULE}.sqlite"
-          status=$?
+          # Actions runs bash with -e, so keep the status without exiting.
+          status=0
+          timeout -k 2m "${EXEC_MINUTES}m" cosmic-ray --verbosity INFO exec "$RUNNER_TEMP/cr.toml" "$RUNNER_TEMP/${MODULE}.sqlite" > "$RUNNER_TEMP/exec-log.txt" 2>&1 || status=$?
           end=$(date +%s)
           secs=$(( end - start ))
           if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
             echo "- exec: stopped at the ${EXEC_MINUTES} min limit, unfinished" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "- exec: exit ${status}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- exec: exit ${status}, finished" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "- exec time: $(( secs / 60 )) min $(( secs % 60 )) s" >> "$GITHUB_STEP_SUMMARY"
           echo "EXEC_SECS=${secs}" >> "$GITHUB_ENV"
+          tail -n 20 "$RUNNER_TEMP/exec-log.txt"
       - name: Results
         if: always()
-        working-directory: packages/kavach
         run: |
           set -uo pipefail
           db="$RUNNER_TEMP/${MODULE}.sqlite"
           [ -f "$db" ] || exit 0
-          cosmic-ray dump "$db" > "$RUNNER_TEMP/${MODULE}.jsonl"
+          out="$RUNNER_TEMP/${MODULE}-${DISTRIBUTOR}"
+          cosmic-ray dump "$db" > "${out}.jsonl"
           counts=$(jq -rs '
             def r: .[1];
             (map(select(r != null))) as $done
             | "planned \(length), done \($done | length), "
               + ($done | map("\(r.test_outcome // "none")/\(r.worker_outcome)") | group_by(.) | map("\(.[0]) \(length)") | join(", "))
-          ' "$RUNNER_TEMP/${MODULE}.jsonl")
-          survived=$(jq -s '[.[] | select(.[1] != null and .[1].test_outcome == "survived")] | length' "$RUNNER_TEMP/${MODULE}.jsonl")
-          done_count=$(jq -s '[.[] | select(.[1] != null)] | length' "$RUNNER_TEMP/${MODULE}.jsonl")
+          ' "${out}.jsonl")
+          survived=$(jq -s '[.[] | select(.[1] != null and .[1].test_outcome == "survived")] | length' "${out}.jsonl")
+          done_count=$(jq -s '[.[] | select(.[1] != null)] | length' "${out}.jsonl")
+          jq -c 'select(.[1] != null and .[1].test_outcome == "survived") | {item: .[0], diff: .[1].diff}' \
+            "${out}.jsonl" > "${out}-survivors.jsonl" || true
+          cat "$RUNNER_TEMP"/w*/kavach/unittest.log 2>/dev/null | grep -E '^(FAIL|ERROR): ' | sort | uniq -c | sort -rn > "${out}-killing-tests.txt" || true
           {
             echo "- Outcomes: ${counts}"
             echo "- Surviving: ${survived}"
             if [ -n "${EXEC_SECS:-}" ] && [ "$done_count" -gt 0 ]; then
-              echo "- Per mutant (wall, $(nproc) workers): $(( EXEC_SECS * 1000 / done_count )) ms"
+              echo "- Per mutant (wall, ${WORKERS} worker(s)): $(( EXEC_SECS / done_count )) s"
             fi
             echo
-            echo '<details><summary>cr-report</summary>'
+            echo '<details><summary>Tests that failed first, by count</summary>'
             echo
             echo '```'
-            cr-report "$db" | tail -n 5
+            head -n 15 "${out}-killing-tests.txt"
             echo '```'
             echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"
-          head -n 1 "$RUNNER_TEMP/${MODULE}.jsonl" > "$RUNNER_TEMP/${MODULE}-first-line.txt"
-          jq -c 'select(.[1] != null and .[1].test_outcome == "survived") | {item: .[0], diff: .[1].diff}' \
-            "$RUNNER_TEMP/${MODULE}.jsonl" > "$RUNNER_TEMP/${MODULE}-survivors.jsonl" || true
-          cr-report --help > "$RUNNER_TEMP/cr-report-help.txt" || true
-          cr-report "$db" > "$RUNNER_TEMP/${MODULE}-report.txt" || true
-          cr-html "$db" > "$RUNNER_TEMP/${MODULE}.html" || true
+          cr-report "$db" > "${out}-report.txt" || true
+          cr-html "$db" > "${out}.html" || true
+          for i in $(seq 1 "$WORKERS"); do
+            cp "$RUNNER_TEMP/w$i/kavach/unittest.log" "$RUNNER_TEMP/unittest-w$i.log" 2>/dev/null || true
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: cosmic-ray-timing-${{ matrix.module }}
+          name: cosmic-ray-timing-${{ matrix.module }}-${{ matrix.distributor }}
           path: |
             ${{ runner.temp }}/*.sqlite
             ${{ runner.temp }}/*.jsonl
             ${{ runner.temp }}/*.txt
             ${{ runner.temp }}/*.html
-            ${{ runner.temp }}/w*.log
+            ${{ runner.temp }}/*.log
           if-no-files-found: ignore

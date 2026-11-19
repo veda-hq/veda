@@ -150,7 +150,8 @@ A remote's URLs are read from git's config, with every `insteadOf` and
 remote. Every worktree shares the main checkout's config, so writing a push
 destination into it is judged as the push would be: `git remote add` and
 `set-url`, `git config` of a remote's `url` or `pushurl` or a branch's
-`remote` or `pushRemote`, and `git fetch` or `git pull --set-upstream`.
+`remote` or `pushRemote`, `git fetch --set-upstream` and
+`git pull --set-upstream`.
 Writing a remote URL, a remote's name, or this repository runs; writing a
 local path, or a host that is this machine, is refused. The config is
 read before the line runs, so a push after another write on its line, other

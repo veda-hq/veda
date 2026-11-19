@@ -307,7 +307,7 @@ test('ask-gate on Stop: a choice in the closing message, with no research, goes 
   assert.deepEqual(Object.keys(answer), ['hookSpecificOutput'], 'context, not a block decision');
   const context = (answer['hookSpecificOutput'] as Entry)['additionalContext'] as string;
   assert.match(context, /\(Fix the parser first or the lexer\?\)/, 'it quotes the question');
-  for (const part of [/official docs at the version in use/, /a preference/, /an approval/, /irreversible/, /end the turn with it unchanged and it goes through/]) {
+  for (const part of [/official docs at the version in use/, /a preference/, /an approval/, /irreversible/, /end the turn again and it goes through: the owner already sees the question, so do not repeat it/]) {
     assert.match(context, part);
   }
   assert.equal(holds(transcript(owner(), toolUse('WebSearch'), toolResult()), CLOSING), false, 'research since the owner spoke');
@@ -448,6 +448,9 @@ test('ask-gate: a write is no look, and a look before the owner spoke does not c
     'gh api repos/o/r/issues -f title=x',
     'echo git status is clean',
     'pnpm install',
+    'pnpm add -D vitest',
+    'npm install jest',
+    'pnpm --filter x add jest',
   ]) {
     assert.equal(exit(transcript(owner(), toolUse('Bash', { command }), toolResult()), ASK, STATE_ASK), 2, command);
   }
@@ -490,6 +493,13 @@ test('ask-gate: a look counts only when the ask names repository or session stat
   const wrapUp = { recap: 'r', ask: 'PR #12 failed CI: retry it or revert?', actions: [{ label: 'Retry' }, { label: 'Revert' }] };
   assert.equal(exit(looked, WRAP_UP, wrapUp), 0, 'a wrap_up ask');
   assert.equal(exit(looked, WRAP_UP, { ...wrapUp, ask: 'Which one first?', actions: [{ label: 'The PR' }, { label: 'The issue' }] }), 0, 'a wrap_up button');
-  assert.equal(holds(looked, 'PR #12 failed CI.\n\nRetry it or revert?'), false, 'a closing message: its paragraphs name the state');
+  assert.equal(holds(looked, 'Done.\n\nPR #12 failed CI. Retry it or revert?'), false, "a closing question whose paragraph names the state");
+  assert.equal(holds(looked, 'Edited `src/a.ts`.\n\nRetry it or revert?'), true, 'the state named only in another paragraph');
   assert.equal(holds(looked, 'Retry it or revert?'), true, 'a closing message that names none');
+  for (const [why, input] of [
+    ['a docs URL', asking('Which API does https://docs.example.com/api/v2.html describe?')],
+    ['a version pair', asking('Target 1.2/1.3 or 2.0?')],
+  ] as const) {
+    assert.equal(exit(looked, ASK, input), 2, why);
+  }
 });

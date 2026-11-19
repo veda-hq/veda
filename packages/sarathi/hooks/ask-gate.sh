@@ -61,8 +61,11 @@ GH_API = re.compile(r"^gh\s+api\b")
 GH_API_WRITE_METHOD = re.compile(r"\s(-X|--method)[\s=]*(POST|PUT|PATCH|DELETE)\b", re.I)
 GH_API_GET = re.compile(r"\s(-X|--method)[\s=]*GET\b", re.I)
 GH_API_FIELDS = re.compile(r"\s(-f|-F|--field|--raw-field|--input)\b")
+# A package manager's script runs after its flags only: "pnpm --filter x run
+# check" is a test run, "pnpm add -D vitest" is not.
 TEST_RUN = re.compile(
-    r"^((pnpm|npm|yarn|bun)(\s+\S+)*?\s+(test|check|vitest|jest)\b|npx\s+(vitest|jest)\b|node\s+--test\b|"
+    r"^((pnpm|npm|yarn|bun)(\s+-\S+(\s+[^-\s]\S*)?)*\s+((run|exec)\s+)?(test|check|vitest|jest)\b|"
+    r"npx\s+(vitest|jest)\b|node\s+--test\b|"
     r"python3?\s+-m\s+pytest\b|pytest\b|go\s+test\b|cargo\s+test\b|make\s+(test|check)\b|vitest\b|jest\b)"
 )
 SEGMENT = re.compile(r"&&|\|\||[;|\n]")
@@ -70,12 +73,15 @@ SEGMENT = re.compile(r"&&|\|\||[;|\n]")
 # assignments, env, time. The openers are hex escapes (\x28 \x7b): bare and
 # unbalanced, they would break the shell's reading of this $(...) block.
 LEAD = re.compile(r"^[\s\x28\x7b!]*((\w+=\S*|env|time|command)\s+)*")
-# An ask that names repository or session state. A bare file name counts
-# only with an extension that is not also a product name (Node.js).
+# An ask that names repository or session state, read with its URLs taken
+# out (a docs page is no repository path), save a GitHub pull request, issue,
+# run or commit URL. A path needs an extension that starts with a letter
+# (not 1.2/1.3); a bare file name, one that is not also a product name
+# (Node.js).
+STATE_URL = re.compile(r"github\.com/\S+/(pull|issues|actions|commit)/")
 STATE = re.compile(
     r"(?<![\w&])#\d+\b|\bPRs?\b|(?i:\bpull requests?\b|\bbranch(es)?\b|\bcommits?\b|\bworkflows?\b)|\bCI\b"
-    r"|github\.com/\S+/(pull|issues|actions|commit)/"
-    r"|[\w.-]+/[\w./-]*\.[A-Za-z0-9]{1,6}\b"
+    r"|[\w.-]+/[\w./-]*\.[A-Za-z][A-Za-z0-9]{0,5}\b"
     r"|\b[\w-]+\.(ts|tsx|mjs|cjs|json|md|sh|py|ya?ml|toml|lock|rs|rb|java|kt|swift|css|html|sql)\b"
 )
 # A user-role entry the harness marks as not the person's: a background
@@ -138,6 +144,9 @@ def names_alternatives(text, pairs):
         return True
     return pairs and bool(PAIR.search(words))
 
+def names_state(text):
+    return bool(STATE_URL.search(text) or STATE.search(URL.sub(" ", text)))
+
 def choice_shaped(wrap):
     ask = wrap.get("ask")
     if not isinstance(ask, str) or not ask.strip():
@@ -153,19 +162,23 @@ def choice_shaped(wrap):
     return names_alternatives(ask, not go_ahead)
 
 def closing(message):
-    """The last paragraphs of a closing message, fenced code and quoted lines
-    left out, and the choice-shaped questions in them."""
+    """The choice-shaped questions in the last paragraphs of a closing
+    message, fenced code and quoted lines left out, and the paragraphs that
+    hold them, code and URLs kept: the words read for repository state."""
     paragraphs = [p for p in PARAGRAPH.split(QUOTED.sub("", FENCE.sub("", message))) if p.strip()]
-    paragraphs = paragraphs[-CLOSING_PARAGRAPHS:]
-    found = []
-    for paragraph in paragraphs:
+    found, holding = [], []
+    for paragraph in paragraphs[-CLOSING_PARAGRAPHS:]:
+        here = []
         for sentence in SENTENCE.split(URL.sub(" ", INLINE_CODE.sub(" ", paragraph))):
             if "?" not in sentence:
                 continue
             question = sentence[: sentence.rindex("?") + 1].strip()
             if names_alternatives(OR_NOT.sub(" ", question), False):
-                found.append(question)
-    return "\n\n".join(paragraphs), found
+                here.append(question)
+        if here:
+            found += here
+            holding.append(paragraph)
+    return "\n\n".join(holding), found
 
 def ask_words(tool, given):
     """The words of an ask: its question, header, options and buttons."""
@@ -196,8 +209,9 @@ try:
         message = data.get("last_assistant_message")
         if data.get("stop_hook_active") is True or not isinstance(message, str):
             passes()
-        # The words an ask is read for state are its paragraphs, code and
-        # URLs kept: "PR #12 failed CI. Retry it or revert?"
+        # The words read for state are the question's own paragraph: "PR #12
+        # failed CI. Retry it or revert?" Wider, a closing summary that names
+        # a file or a commit would pass most held questions.
         words, choices = closing(message)
         if not choices:
             passes()
@@ -304,7 +318,7 @@ def window(lines):
     return turn, researched, looked
 
 turn, researched, looked = window(lines)
-if researched or (looked and STATE.search(words)):
+if researched or (looked and names_state(words)):
     passes()
 
 session = str(data.get("session_id") or os.path.basename(path))
@@ -350,8 +364,9 @@ if stop:
         "research before you ask. Your closing message asks the owner to "
         "choose (" + " / ".join(choices)[:300] + "). " + LOOKED + RULE +
         "Research and end the turn again with what you found and your "
-        "recommendation first; if the question is one of those kinds, end "
-        "the turn with it unchanged and it goes through."
+        "recommendation first. If the question is one of those kinds, end "
+        "the turn again and it goes through: the owner already sees the "
+        "question, so do not repeat it."
     )
     print(json.dumps({"hookSpecificOutput": {"hookEventName": STOP, "additionalContext": reason}}))
     sys.exit(0)

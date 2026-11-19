@@ -139,7 +139,7 @@ settled a question, so it checks that a look happened, not what it found.
   Stop hook's feedback.
 - **Repo research, for repo questions:** an ask can name repository or
   session state in its question, header, options or buttons, or, on Stop,
-  in its closing paragraphs. That means a path or a file name (`README.md`),
+  in the paragraph that holds the question. That means a path or a file name (`README.md`),
   `#N` or `owner/repo#N`, a pull request URL, "PR", "pull request",
   "branch", "commit", "CI" or "workflow". For such an ask a look at that
   state counts too: `Read`, `Grep`, `Glob`, `mcp__ccd_pr__get_status`, or a
@@ -148,11 +148,15 @@ settled a question, so it checks that a look happened, not what it found.
   `list`, `checks`; `gh search`; `gh api` without a write method or fields),
   or a test run (`pnpm test`, `pnpm check`, `node --test`, `vitest`,
   `pytest`, `go test` …). A `git commit`, a `gh pr create` or a
-  `pnpm install` is no look. A look does not count for other asks. Across
-  1,867 asks in local session transcripts (2026-11-19), 87.5% followed a repo
-  read and 15% followed web research. Counting a read for every ask would
-  wave through the questions official docs settle (API behaviour, defaults,
-  version facts), the common miss in veda-hq/veda#176's sample.
+  `pnpm install` is no look. A look does not count for other asks. In 2,333
+  local session transcripts (2026-11-19), the gate held 732 asks with no web
+  research. 629 of them (86%) came after a repo read, so counting a read for
+  every ask would have passed nearly all of them, including the questions
+  official docs settle (API behaviour, defaults, version facts), the common
+  miss in veda-hq/veda#176's sample. Scoped, 380 pass, all naming repository
+  state, and 352 stay held. On Stop, reading the question's own paragraph
+  passes 50 of 166 held closing questions; reading the last three paragraphs
+  would pass 102, since a closing summary names files and commits.
 - **Refused (PreToolUse):** exit 2, with the rule and the owner-only kinds on
   stderr, which reaches the model.
 - **Held (Stop):** exit 0 with
@@ -175,8 +179,11 @@ settled a question, so it checks that a look happened, not what it found.
   `~/.local/state/sarathi/ask-gate`.
 - **Passing** is a silent exit 0, never an allow answer. Anything it cannot
   read passes.
-- **Limits on Stop:** the transcript can lag, so research in the turn's last
-  moments may not be in it yet; the cost is one extra continuation. A Stop
+- **Limits on Stop:** the question has already reached the owner when Stop
+  runs; the feedback tells the model to research and end again, and not to
+  repeat an owner-only question. The transcript can lag, so research in the
+  turn's last moments may not be in it yet; the cost is one extra
+  continuation. A Stop
   handler that exits 2 beside it wins, and sarathi answers with that
   handler's reason alone: the gate's feedback is not shown, and its once
   for the turn is spent.
@@ -201,13 +208,13 @@ It widens its settings' `PreToolUse` matcher to include
 `AskUserQuestion|mcp__ccd_turn__wrap_up`, for example
 `Bash|Edit|Write|NotebookEdit|AskUserQuestion|mcp__ccd_turn__wrap_up`. It
 also gives the settings a `Stop` entry that runs sarathi, with no matcher
-(Stop has none) and a timeout of at least the handler's:
+(Stop has none) and a timeout of at least the longest Stop handler's:
 
 ```json
 {
   "hooks": {
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "npx --no-install sarathi hook Stop", "timeout": 10 }] }
+      { "hooks": [{ "type": "command", "command": "npx --no-install sarathi hook Stop", "timeout": 20 }] }
     ]
   }
 }

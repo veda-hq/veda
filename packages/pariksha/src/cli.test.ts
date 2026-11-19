@@ -1,13 +1,51 @@
+// cli.ts's own suite: every command's flags, what it hands its check, what it
+// prints and its exit codes. The cli.*.test.ts suites beside it test the
+// checks end to end; this one is what the mutation gate runs against cli.ts,
+// so it reaches every line in-process and stays fast: cheap tests come
+// first, and the ones that build git histories last.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, beforeEach, describe, it } from 'node:test';
 import { hash } from './boundary.ts';
-import { DENY_FILE, ownVersion, run, trackedFiles, type Io } from './cli.ts';
+import { CONFIGURABLE, consoleIo, DENY_FILE, flags, main, ownVersion, run, splitFiles, trackedFiles, type Io } from './cli.ts';
 import { diskReads, type Reads } from './env-gate-switches.ts';
 import { loadTypescript, type Ts } from './typescript.ts';
+
+/**
+ * Git hermetic for the whole process: `run` spawns git with this process's
+ * environment, as the fixtures' own git calls do. Both config files point at
+ * /dev/null, trace2 is off, and every inherited `GIT_*` (a hook's `GIT_DIR`)
+ * is dropped, so no fixture `git init` lands in the real repository.
+ */
+const HERMETIC = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TRACE2: '0', GIT_TRACE2_EVENT: '0', GIT_TRACE2_PERF: '0' };
+const inherited = Object.entries(process.env).filter(([name]) => name.startsWith('GIT_'));
+for (const [name] of inherited) delete process.env[name];
+Object.assign(process.env, HERMETIC);
+
+const temps: string[] = [];
+/** A fresh temporary directory, by its real path, removed when this file's tests end. */
+const temp = (prefix = 'pariksha-cli-'): string => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  temps.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+  for (const name of Object.keys(HERMETIC)) delete process.env[name];
+  Object.assign(process.env, Object.fromEntries(inherited));
+});
+
+/**
+ * One turn of the event loop before each test. Under Stryker's tap runner a
+ * mutant stops at its first failing test only once that test's TAP line
+ * reaches the runner, and node writes it asynchronously: a file of
+ * synchronous tests would print nothing until its end, so every mutant would
+ * cost the whole file.
+ */
+beforeEach(() => new Promise((resolve) => setImmediate(resolve)));
 
 const capture = () => {
   const out: string[] = [];
@@ -17,19 +55,211 @@ const capture = () => {
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
 
-/** A git repository with these files tracked. */
-const repo = (files: Record<string, string | Uint8Array>): string => {
-  const root = mkdtempSync(join(tmpdir(), 'pariksha-'));
-  git(root, 'init', '-q');
+/** A folder with these files written; tracked by a fresh git repository unless `tracked` is false. */
+const tree = (files: Record<string, string | Uint8Array>, tracked = true): string => {
+  const root = temp();
+  if (tracked) git(root, 'init', '-q');
   for (const [path, body] of Object.entries(files)) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     writeFileSync(join(root, path), body);
   }
-  git(root, 'add', '-A');
+  if (tracked) git(root, 'add', '-A');
   return root;
 };
 
+/** A git repository with these files tracked. */
+const repo = (files: Record<string, string | Uint8Array>): string => tree(files);
+
+/** A folder outside any git repository, holding nothing. */
+const NOWHERE = temp('pariksha-nowhere-');
+
+/** A `.pariksha.json` with no entries, named by PARIKSHA_CONFIG, so a run reads no settings and asks git nothing to find them. */
+const NO_PROJECT = join(NOWHERE, 'no-project.json');
+writeFileSync(NO_PROJECT, '{ "checks": {} }');
+
+/** Stands in for standard input: a test that reads it says so by giving `stdin`. */
+const noStdin = (): string => {
+  throw new Error('this test reads no standard input');
+};
+
+interface Ran {
+  readonly code: number;
+  readonly out: string[];
+  readonly err: string[];
+}
+
+/** `pariksha <args>` in-process, as version 0, reading no `.pariksha.json` unless `env` names one. */
+const cli = (args: readonly string[], over: Partial<Io> = {}, env: NodeJS.ProcessEnv = { PARIKSHA_CONFIG: NO_PROJECT }): Ran => {
+  const c = capture();
+  const code = run(args, { ...c.io, stdin: noStdin, cwd: () => NOWHERE, ...over }, '0', env);
+  assert.equal(typeof code, 'number', 'a synchronous command');
+  return { code: code as number, out: c.out, err: c.err };
+};
+
+/** The async form of `cli`, for enforcement-claims. */
+const cliAsync = async (args: readonly string[], over: Partial<Io> = {}, env: NodeJS.ProcessEnv = { PARIKSHA_CONFIG: NO_PROJECT }): Promise<Ran> => {
+  const c = capture();
+  const code = await run(args, { ...c.io, stdin: noStdin, cwd: () => NOWHERE, ...over }, '0', env);
+  return { code, out: c.out, err: c.err };
+};
+
+const USAGE = [
+  'usage: pariksha authority-citations [--mode staged|tree] [--authority <a,b>] [--issue-prefix <A,B>] [--adr-dir <dir>] [--root <dir>]',
+  '       pariksha absolute-paths [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
+  '       pariksha aggregate-gate-needs [--config <file>] [--root <dir>]',
+  '       pariksha boundary [--root <dir>] [--deny <file>]',
+  '       pariksha codec-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
+  '       pariksha coverage-by-type [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
+  '       pariksha coverage-exemptions --config <file> [--package <dir>] [--root <dir>]',
+  '       pariksha doc-budgets --table <file> [--section <name>] [--root <dir>]',
+  '       pariksha doc-references --config <file> (--staged | --base <ref> [--head <ref>] | --all [--update-baseline | --write-baseline]) [--checks <ids>] [--root <dir>]',
+  '       pariksha duplicate-tests [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
+  '       pariksha enforcement-claims --config <file> [--root <dir>]',
+  '       pariksha env-gate-switches --config <file> [--mode staged|tree] [--root <dir>]',
+  '       pariksha eslint-by-workspace [--config <file>] [--files-from <file>|-] [--root <dir>] [<file>...] [-- <eslint args>...]',
+  '       pariksha eslint-targets --range <git range> [--config <file>] [--root <dir>]',
+  '       pariksha export-deletions [--base <ref>] [--root <dir>]',
+  '       pariksha fault-injection-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
+  '       pariksha flaky-tests [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--runs <n>] [--root <dir>]',
+  '       pariksha masked-exit-codes [--config <file>] [--staged] [--root <dir>]',
+  '       pariksha non-synced-resources [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
+  '       pariksha pnpm-settings [--config <file>] [--root <dir>]',
+  '       pariksha python-floor --python <interpreter> --floor-file <path> [--exclude <regex>] [--selector <path>] [--root <dir>]',
+  '       pariksha regression-controls --config <file> [--staged] [--root <dir>]',
+  '       pariksha repo-rules [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
+  '       pariksha required-settings --require <file> [--settings <file>] [--root <dir>]',
+  '       pariksha schema-roots [--files-from <file>|-] [--root <dir>] [<file>...]',
+  '       pariksha shell-gates [--config <file>] [--staged | --all | --base <ref> | --files-from <file>|-] [--only <checks>] [--root <dir>]',
+  '       pariksha hash <word>',
+  '       pariksha --version',
+].join('\n');
+
+/** A refusal with the usage text and nothing else. */
+const assertUsage = (r: Ran): void => {
+  assert.equal(r.code, 2);
+  assert.deepEqual(r.err, [USAGE]);
+  assert.deepEqual(r.out, []);
+};
+
 const DENY = `${hash('acme')}\n`;
+
+describe('flags', () => {
+  it('reads --name value pairs and bare switches, each once', () => {
+    assert.deepEqual([...(flags(['--a', '1', '--s', '--b', '2'], ['--a', '--b'], ['--s']) ?? [])], [
+      ['--a', '1'],
+      ['--s', ''],
+      ['--b', '2'],
+    ]);
+    assert.deepEqual([...(flags([], ['--a']) ?? [])], []);
+    assert.deepEqual([...(flags(['--s'], [], ['--s']) ?? [])], [['--s', '']]);
+  });
+
+  it('refuses an unknown name, a repeat, a missing or empty value, and a switch given as a name', () => {
+    for (const rest of [['--c', '1'], ['--a', '1', '--a', '2'], ['--s', '--s'], ['--a'], ['--a', ''], ['1'], ['--s', 'x']]) {
+      assert.equal(flags(rest, ['--a'], ['--s']), undefined, rest.join(' '));
+    }
+    assert.equal(flags(['--s'], ['--a']), undefined);
+  });
+});
+
+describe('splitFiles', () => {
+  it('takes each --flag with the word after it, and the rest as files, in order', () => {
+    assert.deepEqual(splitFiles(['a.json', '--root', 'r', 'b.json', '--files-from', '-', 'c.json']), { flagArgs: ['--root', 'r', '--files-from', '-'], files: ['a.json', 'b.json', 'c.json'] });
+    assert.deepEqual(splitFiles(['--root']), { flagArgs: ['--root'], files: [] });
+    assert.deepEqual(splitFiles(['-x', '--a', '--b']), { flagArgs: ['--a', '--b'], files: ['-x'] });
+    assert.deepEqual(splitFiles([]), { flagArgs: [], files: [] });
+  });
+});
+
+describe('run: what no command takes', () => {
+  it('prints the version it is given, or its own, and a hash', () => {
+    const v = capture();
+    assert.equal(run(['--version'], v.io, '1.2.3'), 0);
+    assert.deepEqual(v.out, ['1.2.3']);
+    assert.deepEqual(v.err, []);
+    const own = capture();
+    assert.equal(run(['--version'], own.io), 0);
+    const pkg = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { version: string };
+    assert.deepEqual(own.out, [pkg.version]);
+    assert.equal(ownVersion(), pkg.version);
+    const h = capture();
+    assert.equal(run(['hash', 'Acme'], h.io, '1.2.3'), 0);
+    assert.deepEqual(h.out, [hash('acme')]);
+    assert.deepEqual(h.err, []);
+  });
+
+  it('refuses anything else with the usage, and nothing on stdout', () => {
+    for (const args of [[], ['lint'], ['hash'], ['hash', ''], ['hash', 'a', 'b'], ['--version', 'x'], ['constructor'], ['toString'], ['__proto__'], ['boundary', '--nope', 'x']]) {
+      assertUsage(cli(args));
+    }
+  });
+
+  it('lists the checks .pariksha.json can configure', () => {
+    assert.deepEqual(CONFIGURABLE, [
+      'absolute-paths',
+      'aggregate-gate-needs',
+      'authority-citations',
+      'codec-registry',
+      'coverage-by-type',
+      'coverage-exemptions',
+      'doc-budgets',
+      'doc-references',
+      'duplicate-tests',
+      'enforcement-claims',
+      'env-gate-switches',
+      'eslint-by-workspace',
+      'eslint-targets',
+      'fault-injection-registry',
+      'flaky-tests',
+      'masked-exit-codes',
+      'non-synced-resources',
+      'pnpm-settings',
+      'regression-controls',
+      'repo-rules',
+      'shell-gates',
+    ]);
+  });
+});
+
+describe('main and the console', () => {
+  const script = join(import.meta.dirname, 'cli.ts');
+
+  it('runs the arguments after the script when the script is this file, and nothing when it is another', async () => {
+    const c = capture();
+    assert.equal(await main([process.execPath, script, '--version'], c.io), 0);
+    const pkg = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { version: string };
+    assert.deepEqual(c.out, [pkg.version]);
+    const usage = capture();
+    assert.equal(await main([process.execPath, script, 'nope'], usage.io), 2);
+    assert.deepEqual(usage.err, [USAGE]);
+    const other = capture();
+    assert.equal(await main([process.execPath, join(import.meta.dirname, 'cli.test.ts'), '--version'], other.io), undefined);
+    assert.equal(await main([process.execPath], other.io), undefined);
+    assert.deepEqual(other.out, []);
+    assert.deepEqual(other.err, []);
+  });
+
+  it('follows a link to this file, as node names a bin', async () => {
+    const link = join(temp(), 'pariksha');
+    symlinkSync(script, link);
+    const c = capture();
+    assert.equal(await main([process.execPath, link, 'hash', 'x'], c.io), 0);
+    assert.deepEqual(c.out, [hash('x')]);
+  });
+
+  it('prints to the console by default: reports on stdout, refusals on stderr', async (t) => {
+    const info = t.mock.method(console, 'info', () => undefined);
+    const error = t.mock.method(console, 'error', () => undefined);
+    assert.equal(await main([process.execPath, script, 'hash', 'Acme']), 0);
+    assert.deepEqual(info.mock.calls.map((call) => call.arguments), [[hash('acme')]]);
+    assert.equal(await main([process.execPath, script, 'nope']), 2);
+    assert.deepEqual(error.mock.calls.map((call) => call.arguments), [[USAGE]]);
+    consoleIo.out('out');
+    consoleIo.err('err');
+    assert.deepEqual(info.mock.calls.at(-1)?.arguments, ['out']);
+    assert.deepEqual(error.mock.calls.at(-1)?.arguments, ['err']);
+  });
+});
 
 describe('trackedFiles', () => {
   it('lists tracked text files, skipping binary and deleted ones', () => {
@@ -90,35 +320,6 @@ describe('run boundary', () => {
       assert.equal(run(['boundary', ...args], c.io, '0.1.0'), 2);
       assert.match(c.err[0] ?? '', /^usage: pariksha authority-citations/);
     }
-  });
-});
-
-describe('run, other commands', () => {
-  it('prints the version and a hash', () => {
-    const v = capture();
-    assert.equal(run(['--version'], v.io, '1.2.3'), 0);
-    assert.deepEqual(v.out, ['1.2.3']);
-    const h = capture();
-    assert.equal(run(['hash', 'Acme'], h.io, '1.2.3'), 0);
-    assert.deepEqual(h.out, [hash('acme')]);
-  });
-
-  it('refuses anything else with the usage', () => {
-    for (const args of [[], ['lint'], ['hash'], ['hash', ''], ['hash', 'a', 'b'], ['--version', 'x'], ['constructor'], ['toString']]) {
-      const c = capture();
-      assert.equal(run(args, c.io, '1.2.3'), 2);
-      assert.match(c.err[0] ?? '', /^usage: pariksha authority-citations/);
-    }
-  });
-});
-
-describe('ownVersion and the command', () => {
-  it('reads package.json and runs as a script', () => {
-    const pkg = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { version: string };
-    assert.equal(ownVersion(), pkg.version);
-    const cli = join(import.meta.dirname, 'cli.ts');
-    assert.equal(execFileSync(process.execPath, [cli, '--version'], { encoding: 'utf8' }).trim(), pkg.version);
-    assert.throws(() => execFileSync(process.execPath, [cli, 'nope'], { stdio: 'pipe' }), { status: 2 });
   });
 });
 
@@ -629,4 +830,15 @@ describe('run env-gate-switches under fault injection', () => {
       }
     });
   }
+});
+
+// Last: the only test that starts node, so the cheap tests above stop a
+// mutant before it pays for the start.
+describe('the command', () => {
+  it('runs as a script, its arguments after the script, and exits with the code', () => {
+    const pkg = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { version: string };
+    const script = join(import.meta.dirname, 'cli.ts');
+    assert.equal(execFileSync(process.execPath, [script, '--version'], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }), `${pkg.version}\n`);
+    assert.throws(() => execFileSync(process.execPath, [script, 'nope'], { stdio: 'pipe', timeout: 30_000, killSignal: 'SIGKILL' }), { status: 2 });
+  });
 });

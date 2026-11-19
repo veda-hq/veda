@@ -83,7 +83,10 @@ def ansi_c(body):
     def one(m):
         s = m.group(0)[1:]
         if s[0] in "xuU":
-            return chr(int(s[1:], 16))
+            # bash takes `\U00110000`, past what a character can hold; read
+            # it as no character rather than fail on it.
+            code = int(s[1:], 16)
+            return chr(code) if code <= 0x10FFFF else "�"
         if s[0] == "c":
             return chr(ord(s[1]) & 0x1F)
         if s[0].isdigit():
@@ -993,7 +996,8 @@ ANSI_SIMPLE = {
 def ansi_char(m):
     s = m.group(1)
     if s[0] in "xuU" and len(s) > 1:
-        return chr(int(s[1:], 16))
+        code = int(s[1:], 16)
+        return chr(code) if code <= 0x10FFFF else "�"
     if s[0] in "01234567":
         return chr(int(s, 8) & 0xFF)
     if s[0] == "c" and len(s) > 1:

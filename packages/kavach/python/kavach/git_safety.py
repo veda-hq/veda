@@ -188,7 +188,9 @@ def decode_ansi_c(text: str, start: int) -> tuple[str, int]:
             ):
                 digits += text[index]
                 index += 1
-            out.append(chr(int(digits, 16)) if digits else "\\" + code)
+            # bash takes `\U00110000`, past what a character can hold.
+            point = int(digits, 16) if digits else None
+            out.append("\\" + code if point is None else chr(point) if point <= 0x10FFFF else "�")
         elif code == "c" and index < len(text):
             out.append(chr(ord(text[index]) & 0x1F))
             index += 1

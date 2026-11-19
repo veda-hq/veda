@@ -1424,6 +1424,12 @@ class WorktreeBoundaryTest(BoundaryFixture):
         outside = self.external / "repo"
         git(self.main, "remote", "add", "origin", "https://github.com/veda-hq/veda.git")
         host = socket.gethostname()
+        # The package bins the allowed rows run, installed: npx fetches a
+        # bin it does not find (#256).
+        bins = self.claude / "node_modules" / ".bin"
+        bins.mkdir(parents=True)
+        for name in ("tsc", "vitest"):
+            (bins / name).write_text("#!/bin/sh\n", encoding="utf-8")
         for command in (
             f"pnpm exec sh -c 'git push {outside} HEAD:x'",
             f"pnpm exec sh -c 'touch {outside}/x'",
@@ -1742,6 +1748,10 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "npx deno eval 1",
             "npx -y cowsay hi",
             "npx -p cowsay cowsay hi",
+            "npx -p cowsay touch x",
+            "pnpm dlx touch x",
+            "pnpm dlx prettier@3 --check .",
+            "npx vitest run",
             "npm exec -- deno eval 1",
             "npm x deno eval 1",
             "pnpm dlx cowsay hi",
@@ -1808,9 +1818,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm -v",
             "npm --version",
             "npm run check",
-            "npx vitest run",
             "pnpm dlx tsx .tmp/x.ts",
-            "pnpm dlx prettier@3 --check .",
             "mise exec -- go test ./...",
             "mise exec node@24 -- node --version",
             "mise -q exec -- go test ./...",
@@ -1836,7 +1844,8 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm --filter 'nested...' deno eval 1",
         ):
             with self.subTest(command=command):
-                self.assertEqual(self.claude_bash(self.claude, command).returncode, 0)
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
         # A filter the guard cannot resolve may select a package without the
         # script, where pnpm runs the word as a program (pnpm 12.9 printed
         # `Darwin` for `--filter 'b...' uname`, the script only in `a`); and
@@ -1855,7 +1864,8 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm dlx --filter nested fixturetool",
         ):
             with self.subTest(command=command):
-                self.assertEqual(self.claude_bash(self.claude, command).returncode, 2)
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
         for command in (
             "pnpm -r deno eval 1",
             "pnpm exec -r -- tsx .tmp/x.ts",
@@ -1863,7 +1873,8 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm -r --include-workspace-root lint",
         ):
             with self.subTest(command=command):
-                self.assertEqual(self.claude_bash(self.claude, command).returncode, 0)
+                result = self.claude_bash(self.claude, command)
+                self.assertEqual(result.returncode, 0, result.stderr)
         # The root is no package `-r` selects: a script only in its manifest
         # is a program in each package (pnpm 12.9 printed `Darwin` for
         # `pnpm -r uname`, the script only in the root's).
@@ -1875,7 +1886,8 @@ class WorktreeBoundaryTest(BoundaryFixture):
         deep.mkdir(parents=True)
         for command in ("pnpm exec -w touch ../../x", "pnpm -r exec touch ../../x"):
             with self.subTest(command=command):
-                self.assertEqual(self.claude_bash(deep, command).returncode, 2)
+                result = self.claude_bash(deep, command)
+                self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(self.claude_bash(deep, "pnpm exec -w touch x").returncode, 0)
 
     def test_a_listed_host_that_is_this_machine_is_still_unproven(self) -> None:

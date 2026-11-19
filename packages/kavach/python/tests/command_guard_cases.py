@@ -287,6 +287,8 @@ CASES = [
     ("exit", 0, "searching for NODE_OPTIONS allowed", "git grep -n NODE_OPTIONS -- packages"),
     ("exit", 0, "unsetting NODE_OPTIONS allowed", "unset NODE_OPTIONS"),
     ("exit", 0, "running without NODE_OPTIONS allowed", "env -u NODE_OPTIONS node scripts/check.js"),
+    ("exit", 0, "an ANSI-C escape past the last code point allowed", "printf '%s' $'\\U00110000'"),
+    ("exit", 0, "the same escape on a git line allowed", "git log --grep=$'\\U00110000'"),
     ("exit", 0, "a longer name allowed", "export NODE_OPTIONS_FOR_TESTS=1"),
     ("exit", 0, "RUBYOPT allowed", "RUBYOPT=-w ruby x.rb"),
     ("exit", 0, "another variable before a script allowed", "CI=1 FORCE_COLOR=0 pnpm check"),

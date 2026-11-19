@@ -212,9 +212,11 @@ runner looks in first, is the repository's code and runs (`pnpm exec dvara`,
 from where it runs; the folder itself under `--dir`) and the workspace
 root's, and npm in every folder above. So these are refused: a package bin
 that is not installed (`pnpm exec stryker` with no stryker in the
-dependencies, where pnpm would run whatever `PATH` holds), a package the
-runner downloads that the guard does not review (`npx -y cowsay`,
-`pnpm dlx cowsay`, `pnpm create vite`), a program named by its path
+dependencies, where pnpm would run whatever `PATH` holds), any bin `npx`,
+`npm exec` or `pnpm dlx` would fetch, whatever its name, since they never
+fall back to `PATH` and the bin is the package's code (`npx -y cowsay`,
+`pnpm dlx prettier`, `npx -p <pkg> touch`, `pnpm create vite`; a listed
+interpreter on a script file, `pnpm dlx tsx x.ts`, still runs), a program named by its path
 (`pnpm exec ./node_modules/.bin/x`, as `./node_modules/.bin/x` is), a
 wrapper before an interpreter (`pnpm exec env CI=1 node x.js`, read as
 `env CI=1 node x.js` is; `CI=1 pnpm exec node x.js` runs), a setting every

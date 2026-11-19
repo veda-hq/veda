@@ -5733,6 +5733,11 @@ class RunnerProgram(NamedTuple):
     # packages the guard does not place: the workspace root, from which a
     # path up and out is reached no later than from any package below it.
     also: Path | None = None
+    # Whether a program not found in ``bins`` is a package the runner
+    # fetches (`npx`, `npm exec` and `pnpm dlx` never fall back to `PATH`),
+    # whose bin is that package's code, whatever its name: `npx -p <pkg>
+    # touch` runs the package's `touch`, not this machine's.
+    fetched: bool = False
 
 
 def nearest_holding(folder: Path, name: str) -> Path | None:
@@ -5877,7 +5882,8 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
             bins = () if unbinned else pnpm_bins(folder, recursive, moved)
             spread = recursive or hidden
             return RunnerProgram(
-                index, folder, bins, nearest_holding(folder, "pnpm-workspace.yaml") if spread else None
+                index, folder, bins, nearest_holding(folder, "pnpm-workspace.yaml") if spread else None,
+                fetched=verb == "dlx",
             )
         if verb in PNPM_COMMANDS:
             return False
@@ -5968,7 +5974,7 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
         # workspace root's bin from `packages/kavach`, and npx an outer
         # folder's from an inner package).
         bins = () if downloads else tuple(place / "node_modules" / ".bin" for place in (cwd, *cwd.parents))
-        return RunnerProgram(index, cwd, bins)
+        return RunnerProgram(index, cwd, bins, fetched=True)
     if name == "mise":
         _subcommands, _modes, flags, values = RUNNER_SHELL_MODES["mise"]
         folder, index = cwd, 0
@@ -6041,6 +6047,10 @@ def runner_program_targets(
         return []
     if "/" not in word and any((place / word).exists() for place in found.bins):
         return []
+    if found.fetched:
+        # A bin the runner fetches is the package's code, named as it
+        # likes: unproven, whatever command its name matches.
+        return None
     program = word[0] + word[1:].partition("@")[0] if "/" not in word else word
     command = shlex.join([program, *args[found.index + 1 :]])
     nested: list[Path] = []

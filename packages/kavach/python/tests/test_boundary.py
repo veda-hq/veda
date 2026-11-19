@@ -1807,6 +1807,14 @@ class WorktreeBoundaryTest(BoundaryFixture):
             # #277: npm reads node-options from the file `--userconfig` names.
             "npm --userconfig .tmp/rc run check",
             "npm --userconfig=.tmp/rc exec -- fixturetool",
+            # npm takes its settings after the verb too, and expands an
+            # unambiguous prefix (npm 11 ran each of these).
+            "npm run check --userc .tmp/rc",
+            "npm run check --node-o=--import=x",
+            "npm run check --scr .tmp/x.sh",
+            "npm run check --globalc .tmp/rc",
+            "npm test --NODE_OPTIONS=x",
+            "npx fixturetool --userc .tmp/rc",
             # A setting every later run reads, and a package npm downloads
             # or a command it runs elsewhere.
             "pnpm config set node-options --import=x",
@@ -1839,6 +1847,9 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm -v",
             "npm --version",
             "npm run check",
+            "npm run check --silent",
+            "npm run check -- --userc x",
+            "npm ls --global",
             "pnpm dlx tsx .tmp/x.ts",
             "mise exec -- go test ./...",
             "mise -q exec -- go test ./...",

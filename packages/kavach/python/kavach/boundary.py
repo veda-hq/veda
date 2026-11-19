@@ -5720,6 +5720,26 @@ NPM_GLOBAL_FLAGS = frozenset({
     "-s", "--silent", "-q", "--quiet", "-y", "--yes", "--workspaces", "--ws", "-v", "--version", "-h", "--help",
 })
 
+# npm settings that run code, which npm also takes after its verb
+# (`npm run x --userc <file>`) and from any unambiguous prefix (#277: npm 11
+# expanded `--userc`, `--node-o`, `--scr` and `--globalc`, and ran each).
+NPM_PROGRAM_CONFIG = ("node-options", "userconfig", "globalconfig", "script-shell")
+
+
+def npm_sets_program_config(args: list[str]) -> bool:
+    """Whether an npm or npx line, before a `--`, gives one of
+    `NPM_PROGRAM_CONFIG` or a prefix of one, in any case, `-` or `_`."""
+    for word in args:
+        if word == "--":
+            return False
+        if word.startswith("--") and len(word) > 2:
+            key = word[2:].partition("=")[0].lower().replace("_", "-")
+            # `--global` is npm's own setting, not a prefix npm expands.
+            if key != "global" and any(setting.startswith(key) for setting in NPM_PROGRAM_CONFIG):
+                return True
+    return False
+
+
 # `mise exec`'s own options before its tool arguments, from mise's `--help`:
 # those that take the next word, and the rest.
 MISE_EXEC_VALUES = frozenset({
@@ -5948,6 +5968,8 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
             nearest_holding(folder, "pnpm-workspace.yaml") if recursive else None,
         )
     if name in {"npm", "npx"}:
+        if npm_sets_program_config(args):
+            return None
         index = 0
         if name == "npm":
             while index < len(args) and args[index].startswith("-"):

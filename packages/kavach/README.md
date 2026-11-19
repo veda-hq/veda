@@ -298,9 +298,12 @@ One pass found four keys that run code:
 Only settings that run nothing pass, in any spelling:
 `manage-package-manager-versions`, `loglevel`, `color`, `update-notifier`,
 `fund`, `audit` and `progress`. So
-`npm_config_manage_package_manager_versions=false pnpm -v` runs. In a
-worktree, npm's abbreviations (`--userc`, `--node-opt`) are refused as
-options the guard's tables do not list.
+`npm_config_manage_package_manager_versions=false pnpm -v` runs. npm also
+takes a setting after its verb and expands any prefix it can place, so in
+a worktree an npm or npx line is refused when it gives node-options,
+userconfig, globalconfig or script-shell anywhere before a `--`, spelled in
+full or as a prefix (`npm run x --userc <file>`, `--node-o=…`, `--scr`,
+`--globalc`: npm 11 ran each).
 
 These cost a consumer `HOME=<tmp>` for test isolation and
 `PYTHONPATH=src pytest`; put such a setting in a package script.

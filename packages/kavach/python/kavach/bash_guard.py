@@ -108,7 +108,9 @@ def sets_variable(pattern, bare):
         re.search(r"(?<![\w$])" + pattern + r"\s*\+?=", bare)
         or re.search(r"\$\{" + pattern + r":?=", bare)
         or re.search(
-            r"(?<![\w-])(?:export|declare|typeset|readonly|local|read|printf\s[^\n;&|]*?-v)\s[^\n;&|]*?(?<![\w$])"
+            # `${HOME}` reads the name (`export PATH=${HOME}/bin`); the
+            # assigning `${NAME:=…}` is the clause above.
+            r"(?<![\w-])(?:export|declare|typeset|readonly|local|read|printf\s[^\n;&|]*?-v)\s[^\n;&|]*?(?<![\w$])(?<!\$\{)"
             + pattern,
             bare,
         )

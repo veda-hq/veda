@@ -66,7 +66,10 @@ GIT_BRANCH_WRITE = {
 GIT_BRANCH_VALUE = {"--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "--sort", "--format", "--color", "--column"}
 GIT_BRANCH_LIST = {"-l", "--list"}
 GIT_REFLOG_WRITE = re.compile(r"^(expire|delete)\b")
-GIT_OUTPUT = re.compile(r"(^|\s)--output\b")
+# --output and the abbreviations git's option parser takes for it. A short
+# -o is no output file: git diff has none, and in git grep and git ls-files
+# it reads (--only-matching, --others).
+GIT_OUTPUT = re.compile(r"(^|\s)--out(p(u(t)?)?)?(=|\s|$)")
 GH_API = re.compile(r"^gh\s+api\b")
 # A gh api method counts only when it is a plain GET; a variable ("$METHOD")
 # could be anything.

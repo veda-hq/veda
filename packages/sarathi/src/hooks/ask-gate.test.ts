@@ -439,6 +439,9 @@ test('ask-gate: a look at the repository counts for an ask that names its state'
     ['Bash', { command: 'gh api --method=get repos/o/r/pulls' }],
     ['Bash', { command: 'pnpm test || true' }],
     ['Bash', { command: 'false; git status' }],
+    ['Bash', { command: 'git grep -o needle' }],
+    ['Bash', { command: 'git ls-files -o --exclude-standard' }],
+    ['Bash', { command: 'git diff --output-indicator-new=+ HEAD' }],
   ] as const) {
     assert.equal(exit(transcript(owner(), toolUse(name, input), toolResult()), ASK, STATE_ASK), 0, `${name} ${JSON.stringify(input)}`);
   }
@@ -463,6 +466,8 @@ test('ask-gate: a write is no look, and a look before the owner spoke does not c
     'git branch --set-upstream-to=origin/x',
     'git reflog expire --all',
     'git diff --output=x.patch',
+    'git diff --out=x.patch',
+    'git log -p --output x.patch',
     'METHOD=DELETE gh api --method "$METHOD" repos/o/r/x',
     'false && pnpm test',
     'true || pnpm test',

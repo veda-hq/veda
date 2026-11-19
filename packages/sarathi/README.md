@@ -295,10 +295,10 @@ meets the research hold on PreToolUse, as any choice-shaped ask does. The
 continuation carries `stop_hook_active`, so it fires at most once a turn.
 Each one is a line in the ask log, `outcome: "nudged: no wrap_up ask"`.
 
-On this Mac's desktop transcripts (26,368 turn endings, read 2026-11-20),
-the rule fired on 82 of the 2,160 turns that called `wrap_up` without an
-ask, most of them "Needs you:" endings, and on 681 turns that asked in plain
-text and never called `wrap_up`.
+Replayed over this Mac's desktop transcripts (26,129 turn endings, read
+2026-11-20), the handler's own functions nudge 765 turns, most of them
+"Needs you:" endings, and none of the 1,483 turns whose `wrap_up` carried an
+ask.
 
 A project lists it in `.claude/sarathi.json`, beside its other `PreToolUse`
 and `Stop` handlers:

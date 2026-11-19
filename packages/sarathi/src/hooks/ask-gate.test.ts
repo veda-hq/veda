@@ -1139,6 +1139,19 @@ test('ask-gate on Stop: a wrap_up ask this turn, or no wrap_up at all, ends the 
     '',
     "a Stop hook's feedback starts no turn",
   );
+  assert.equal(
+    stopFeedbackOf(transcript(peer(), wrapUp({ recap: 'r', ask: 'Approve #259?' }), reminderOnly()), NEEDS_YOU_259),
+    '',
+    'a row of reminders alone starts no turn',
+  );
+  // A terminal session that only read a file naming wrap_up has no wrap_up: its research hold is as before.
+  const readSettings = line({
+    type: 'user',
+    uuid: next(),
+    toolUseResult: { ok: true },
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: `"matcher": "AskUserQuestion|${WRAP_UP}"` }] },
+  });
+  assert.match(stopFeedbackOf(transcript(owner(), toolUse('Read', { file_path: '.claude/settings.json' }), readSettings), CLOSING, {}), /^research before you ask\./, 'a mention is no call');
   // A terminal session has no wrap_up: the research hold is as before.
   assert.equal(stopFeedbackOf(sideTurn(), NEEDS_YOU_259, {}), '', 'no wrap_up, no plain choice: the turn ends');
   assert.match(stopFeedbackOf(transcript(owner()), CLOSING, {}), /^research before you ask\./, 'no wrap_up: a choice is held for research');

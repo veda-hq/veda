@@ -405,12 +405,31 @@ def owner_ask(message):
                 asking = line.strip()
     return asking
 
+def wrap_up_calls(entry):
+    """The wrap_up calls in a main-loop assistant entry."""
+    if not isinstance(entry, dict) or entry.get("type") != "assistant" or entry.get("isSidechain") is True:
+        return []
+    content = (entry.get("message") or {}).get("content")
+    return [
+        item for item in (content if isinstance(content, list) else [])
+        if isinstance(item, dict) and item.get("type") == "tool_use" and item.get("name") == WRAP_UP
+    ]
+
 def has_wrap_up(lines):
     """Whether this session has the app's wrap_up: the desktop app names it
-    for the hooks, or the session has called it."""
+    for the hooks, or the session has called it. A line that only mentions
+    the name (a file read, a settings file) is no call."""
     if WRAP_UP in re.split(r"[\s,]+", os.environ.get(APP_TOOLS, "")):
         return True
-    return any(WRAP_UP in line for line in lines)
+    for line in lines:
+        if WRAP_UP not in line:
+            continue
+        try:
+            if wrap_up_calls(json.loads(line)):
+                return True
+        except Exception:
+            continue
+    return False
 
 def is_prompt(entry):
     """A user-role entry that starts a turn, whoever sent it: the owner,
@@ -423,9 +442,20 @@ def is_prompt(entry):
     if entry.get("toolUseResult") is not None or entry.get("sourceToolUseID"):
         return False
     content = (entry.get("message") or {}).get("content")
-    if isinstance(content, list):
-        return not any(isinstance(item, dict) and item.get("type") == "tool_result" for item in content)
-    return isinstance(content, str)
+    if isinstance(content, str):
+        texts = [content]
+    elif isinstance(content, list):
+        if any(isinstance(item, dict) and item.get("type") == "tool_result" for item in content):
+            return False
+        texts = [item.get("text") for item in content if isinstance(item, dict) and isinstance(item.get("text"), str)]
+        if any(isinstance(item, dict) and item.get("type") in ATTACHMENTS for item in content):
+            return True
+    else:
+        return False
+    # A row of system reminders alone, which the harness adds mid-turn, starts nothing.
+    return REMINDER.sub("", "\n".join(texts)).strip() != ""
+
+REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 
 def asked_this_turn(lines):
     """Whether a wrap_up since the turn's prompt carried an ask."""
@@ -440,14 +470,10 @@ def asked_this_turn(lines):
         if is_prompt(entry):
             asked = False
             continue
-        if entry.get("type") != "assistant" or entry.get("isSidechain") is True:
-            continue
-        content = (entry.get("message") or {}).get("content")
-        for item in content if isinstance(content, list) else []:
-            if isinstance(item, dict) and item.get("type") == "tool_use" and item.get("name") == WRAP_UP:
-                given = item.get("input")
-                ask = given.get("ask") if isinstance(given, dict) else None
-                asked = asked or (isinstance(ask, str) and bool(ask.strip()))
+        for item in wrap_up_calls(entry):
+            given = item.get("input")
+            ask = given.get("ask") if isinstance(given, dict) else None
+            asked = asked or (isinstance(ask, str) and bool(ask.strip()))
     return asked
 
 def ask_words(tool, given):

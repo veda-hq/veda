@@ -57,9 +57,37 @@ checkout needs `pnpm install` after a pin bump: ask Alok.
 Right after `gh pr create`, turn on auto-merge: `gh pr merge --auto --squash`
 (in the Claude app, the pull request tools' auto-merge does the same). The
 `main` ruleset holds the merge until every required check passes and every
-review thread is resolved. Nobody clicks merge. No AI review runs: veda-hq's
-Cubic trial is used up, and Alok said on 2026-11-14 he is OK with
-unreviewed pull requests. Cubic's check still reports, as skipped.
+review thread is resolved. Nobody clicks merge.
+
+Cubic reviews pull requests again: its monthly review allowance reset, Alok
+said on 2026-11-19. `cubic.yaml` at the root lists the files it skips, so
+the allowance goes on sources, tests, scripts, guards and hooks; what it
+skips is Alok's call. Each Cubic finding is a review thread, and the merge
+waits for all of them:
+
+- Fix a real finding, push the fix and wait for green before resolving its
+  thread. With auto-merge on, resolving the last thread merges the head as
+  it stands.
+- Answer every finding in its thread: the commit that fixes it, or why
+  there is none. kavach refuses `niyam review-thread … --body-file`, so
+  reply with `gh api graphql`'s `addPullRequestReviewThreadReply`, the
+  body read from a file under `.tmp/` (`-F body=@.tmp/<file>`). Cubic
+  resolves a thread it sees fixed; resolve the rest with
+  `niyam review-thread <PRRT_…> --resolve`.
+- A green Cubic check is not a finished review: read the pull request's
+  `reviewThreads` too.
+- When Cubic missed a push it had reviewed before, comment
+  `@cubic incremental review`. `@cubic-dev-ai review` reviews the whole
+  pull request again and spends the allowance on every line again: use it
+  only on a pull request Cubic never reviewed. A push that adds nothing to
+  the pull request's diff gets a neutral Cubic check, which `main`'s
+  ruleset passes (neutral pull requests have merged), so it needs no new
+  review. Merge `main` in only on a real conflict: a moved merge base buys
+  a fresh review.
+
+If the allowance runs out, the check reports neutral and the pull request
+goes unreviewed: tell Alok rather than assume that is fine.
+`docs/lessons/review-bots.md` has the rest.
 
 One exception waits for a person: once the ruleset requires code-owner
 review, a pull request touching a path `.github/CODEOWNERS` gives Alok

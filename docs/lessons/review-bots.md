@@ -36,7 +36,9 @@ every round, why a green PR sits unqueued, and when it is safe to resolve review
   When the allowance runs out, the check goes neutral "AI review line limit reached", and a
   Mergify rule requiring `check-success` never queues the PR even though `gh pr checks` shows
   nothing failing. Buying seats or flex capacity is an owner spend decision, so never narrow
-  review scope to fit a budget.
+  review scope to fit a budget on your own. Files the owner chose to skip go in `cubic.yaml`'s
+  `reviews.ignore.files` on the default branch, the only branch Cubic reads it from; skipped
+  files spend no allowance.
   <!-- when: error "line limit reached" -->
 - **Re-triggering a review.** Comment `@cubic incremental review` only if Cubic already
   reviewed that PR (cheaper on the line allowance); otherwise comment `@cubic review`, since

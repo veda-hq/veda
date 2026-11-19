@@ -1586,18 +1586,20 @@ class ProtectedPathsTest(BoundaryFixture):
                 result = self.bash(command)
                 self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_a_case_spelling_or_a_link_reaches_the_same_hook(self) -> None:
+    def test_a_link_reaches_the_same_hook(self) -> None:
         (self.claude / "hooks-link").symlink_to(self.claude / ".githooks")
         self.refused(self.bash("touch hooks-link/pre-push"))
-        if (self.claude / ".GITHOOKS").exists():
-            # A case-insensitive filesystem: another spelling is the same file.
-            self.refused(self.bash("touch .GITHOOKS/pre-push"))
-            result = self.invoke(
-                self.claude,
-                tool_input={"file_path": str(self.claude / ".GitHooks" / "pre-push"), "content": "x"},
-                env=self.env,
-            )
-            self.refused(result)
+
+    def test_a_case_spelling_reaches_the_same_hook(self) -> None:
+        if not (self.claude / ".GITHOOKS").exists():
+            self.skipTest("a case-sensitive filesystem: another spelling is another file")
+        self.refused(self.bash("touch .GITHOOKS/pre-push"))
+        result = self.invoke(
+            self.claude,
+            tool_input={"file_path": str(self.claude / ".GitHooks" / "pre-push"), "content": "x"},
+            env=self.env,
+        )
+        self.refused(result)
 
     def test_git_writes_of_a_named_protected_path_are_refused(self) -> None:
         for command in (
@@ -1614,9 +1616,21 @@ class ProtectedPathsTest(BoundaryFixture):
             "git rm -r .githooks",
             "git mv .githooks/pre-push .githooks/off",
             "git -C .githooks rm pre-push",
+            # An option the table lacks leaves the words that are paths judged.
+            "git checkout -m .githooks/pre-push",
+            "git checkout --recurse-submodules HEAD .githooks/pre-push",
         ):
             with self.subTest(command=command):
                 self.refused(self.bash(command), WORKTREE_WAY_OUT)
+
+    def test_a_forced_checkout_passes_only_where_the_hooks_match_head(self) -> None:
+        """`git checkout -f` rewrites the work tree to HEAD, so it is judged
+        as a switch to HEAD: open while the protected paths match it."""
+
+        result = self.bash("git checkout -f")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (self.claude / ".githooks" / "pre-push").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        self.refused(self.bash("git checkout -f"), ".githooks/pre-push", WORKTREE_WAY_OUT)
 
     def test_git_options_before_a_path_writer_are_not_read(self) -> None:
         """An option before git's subcommand that `git_start` does not read
@@ -1684,6 +1698,8 @@ class ProtectedPathsTest(BoundaryFixture):
             "git restore --staged .githooks/pre-push",
             "git checkout -- tracked.txt",
             "git checkout main",
+            "git checkout -m main",
+            "git checkout --recurse-submodules main",
             "git checkout -b next origin/main",
             "git switch -c next",
             "git merge main",

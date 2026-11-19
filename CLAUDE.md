@@ -87,9 +87,11 @@ them: Edit, Write, Bash, and the git commands that write the paths they
 name (`git restore .` and `git checkout .` included). A command that names
 the root as what it writes (`rm -rf .`, `cp file .`) is refused too: name
 the paths. Run mutating commands from the root, not from `scripts/`,
-`.github/`, `.veda/` or `node_modules/`. A hook change is Alok's. He makes it himself, or allows one session
-by taking the path off the list in the main checkout's
-`.claude/kavach.json` and putting it back after. A session that needs one
+`.github/`, `.veda/` or `node_modules/`. A hook change is Alok's. He makes
+it himself, or allows one session by taking the path off the list in the
+main checkout's `.claude/kavach.json` and putting it back after. That list
+is every session's: while the path is off it, any session may write it, so
+he does it with no other session working. A session that needs one
 says so in its pull request or brief and leaves the file alone, and so
 does one with a merge conflict in such a file. Pins in
 `package.json` stay agents' work: `released-pins.mjs` holds each one to an

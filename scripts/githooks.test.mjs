@@ -187,6 +187,9 @@ describe('pre-push', () => {
     commitFile(repo, 'guarded.md');
     const result = spawnSync('git', ['push', '-q', 'origin', 'main'], { cwd: repo, env: { ...env, GUARDS_REFUSE: '1' }, encoding: 'utf8' });
     assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+    // The guards ran on this push too (the first push recorded one run), so
+    // the refusal is theirs, not an earlier stage's.
+    assert.equal(readFileSync(guardsCalls, 'utf8'), 'guards \nguards \n');
     assert.equal(git(remote, 'rev-parse', 'main').stdout, git(repo, 'rev-parse', 'HEAD~1').stdout);
   });
 

@@ -653,7 +653,16 @@ def worktree_checkout(args: list[str], cwd: Path, segment: Segment, context: Con
         git_checkout(args, cwd, segment, context)
         return
     command = "git checkout"
-    options, before, _after = parse_options(args, CHECKOUT, command)
+    try:
+        options, before, _after = parse_options(args, CHECKOUT, command)
+    except Refused:
+        # An option the clone's table lacks (`-m`, `--recurse-submodules`):
+        # a branch switch stays open, so judge only the words that are not
+        # options, each a commit or else a path.
+        for word in args:
+            if not word.startswith("-") and not is_commit(word, cwd, context):
+                check_paths([word], cwd, command, context)
+        return
     if any(name in options for name in ("-p", "--patch")):
         check_paths(["."], cwd, command, context)
     if any(name in options for name in ("-b", "-B", "--orphan")):
@@ -665,12 +674,20 @@ def worktree_checkout(args: list[str], cwd: Path, segment: Segment, context: Con
             "write `git checkout [<ref>] -- <path>…`"
         )
     if not before:
+        if any(name in options for name in ("-f", "--force")):
+            # `-f` with no commit rewrites the work tree to HEAD: it passes
+            # where the protected paths already match HEAD, as in a clone.
+            check_switch("HEAD", segment, cwd, command, context)
         return
-    rev = "@{-1}" if before[0] == "-" else before[0]
-    found = context.git(cwd, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{rev}^{{commit}}")
-    if found.returncode != 0 or not found.stdout.strip():
+    if not is_commit(before[0], cwd, context):
         # No commit by that name: git reads it as a path.
         check_paths(before, cwd, command, context)
+
+
+def is_commit(word: str, cwd: Path, context: Context) -> bool:
+    rev = "@{-1}" if word == "-" else word
+    found = context.git(cwd, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{rev}^{{commit}}")
+    return found.returncode == 0 and bool(found.stdout.strip())
 
 
 # git's subcommands that write the paths they name, judged in a worktree.

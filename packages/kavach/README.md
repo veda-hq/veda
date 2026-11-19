@@ -315,7 +315,9 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
   `protectedPathsReason` is required with the paths. It goes into every
   refusal, so say there why the paths are protected and how they get
   changed instead (the owner edits them, or allows one session by taking
-  the path off the list in the settings the hooks load).
+  the path off the list in the settings the hooks load; those settings are
+  every session's, so a path off the list is open to all of them until it
+  is back).
 
   An Edit, Write or NotebookEdit of a listed path is refused, and so is a
   Bash command whose targets land in one (`sed -i`, `cp`, `touch`, `chmod`,

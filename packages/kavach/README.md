@@ -55,7 +55,14 @@ in the environment. A default config is `.curlrc`, `curlrc` or
 passwd home. Any `curl`, read-only or not, is
 unproven with `-K`/`--config`, with a `-w` that writes or reads a file, or in
 a command that assigns `CURL_HOME`, `XDG_CONFIG_HOME` or `HOME` (a config may
-set its `output`), or `SSLKEYLOGFILE` or `QLOGDIR` (files curl writes). When it
+set its `output`), or `SSLKEYLOGFILE` or `QLOGDIR` (files curl writes). A
+`git log`, `show`, `diff`, `diff-tree` or `rev-list` pickaxe passes attached
+(`-S'text'`, `-G'regex'`) as it does spaced. `claude --version` (`-v`, `-V`,
+either one alone or followed by `--verbose`) passes where no `BUN_` variable
+and no `NODE_OPTIONS` is set in the environment or on its line: Claude Code
+prints its version before it loads anything, but `BUN_OPTIONS=--preload`
+(the native build) or `NODE_OPTIONS=--require` (an npm install) runs a
+program first. Any other `claude` starts the full CLI. When it
 cannot prove a command, it treats it as writing, and from outside an owned
 worktree that refuses. An expansion that could become an option (`git log
 $X`, where `X=--output=/elsewhere`) leaves the command unproven.

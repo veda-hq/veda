@@ -797,6 +797,21 @@ def unreadable_constructs(command: str, cwd: Path) -> list[str]:
         words = list(each.words)
         while words and words[0].is_assignment() is not None:
             words.pop(0)
+        if (
+            len(words) in (2, 3)
+            and words[0].text == "claude"
+            and words[1].text in boundary.CLAUDE_VERSION_FLAGS
+            and [word.text for word in words[2:]] in ([], ["--verbose"])
+            and (
+                boundary.claude_runtime_is_moved()
+                or boundary.claude_environment_is_moved(command)
+            )
+        ):
+            add(
+                "`claude` with a `BUN_` variable or `NODE_OPTIONS` set, which can load "
+                "a program before it prints its version"
+            )
+            continue
         if not words or words[0].dynamic:
             continue
         head = os.path.basename(words[0].text)

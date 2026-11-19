@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, McpToolResult, Register } from 'claude-code'
 
 import type { Ask } from '../types'
+import { WAITING, file, unfile } from './filing'
 
 const asks = atom({ plugin: 'needs-you', key: 'asks' } as const, [] as Ask[])
 const isHidden = atom({ plugin: 'needs-you', key: 'isHidden' } as const, false)
@@ -13,8 +14,9 @@ const PAGE = /https:\/\/claude\.ai\/artifact\/[A-Za-z0-9_-]+/
 const NOT_PERSON = /^\s*<(side-sessions-event|cross-session-message|ci-monitor-event)\b/
 /** Prompts the person typed or sent from the phone or the desktop app. */
 const PERSON_KINDS: readonly string[] = ['composer', 'bridge', 'sdk']
-/** A side session waiting on the person files itself with a title starting with this. */
-const WAITING = '✋'
+/** Another session's message: it relays an answer as often as not, so it unfiles too. */
+const RELAYED = /^\s*<cross-session-message\b/
+const RELAYED_KINDS: readonly string[] = ['peer', 'peer-send-message']
 const SHOWN = 3
 const POLL_MS = 60_000
 
@@ -37,19 +39,29 @@ export const age = (ms: number): string => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null
 
-/** The side sessions this chat started that wait on the person. */
-export const waitingSessions = (rows: unknown, selfId: string): Session[] =>
-  (Array.isArray(rows) ? rows : [])
+/**
+ * The side sessions below this chat that wait on the person: the ones it
+ * started, the ones they started, and so on down. A nested session's row
+ * moves only with its family's top session, so the band of the top session
+ * is where its grandchildren show.
+ */
+export const waitingSessions = (rows: unknown, selfId: string): Session[] => {
+  const listed = (Array.isArray(rows) ? rows : [])
     .filter(isRecord)
-    .filter(
-      row =>
-        typeof row.sessionId === 'string' &&
-        typeof row.title === 'string' &&
-        row.startedBy === selfId &&
-        row.isArchived !== true &&
-        row.title.startsWith(WAITING),
-    )
+    .filter(row => typeof row.sessionId === 'string' && typeof row.title === 'string')
+  const startedBy = new Map(listed.map(row => [String(row.sessionId), typeof row.startedBy === 'string' ? row.startedBy : null]))
+  const below = (sessionId: string): boolean => {
+    let parent = startedBy.get(sessionId) ?? null
+    for (let depth = 0; parent !== null && depth < listed.length; depth += 1) {
+      if (parent === selfId) return true
+      parent = startedBy.get(parent) ?? null
+    }
+    return false
+  }
+  return listed
+    .filter(row => row.isArchived !== true && String(row.title).startsWith(WAITING) && below(String(row.sessionId)))
     .map(row => ({ sessionId: String(row.sessionId), title: String(row.title) }))
+}
 
 /** The reply buttons of a wrap_up: its actions that are replies, not app actions. */
 export const replies = (actions: unknown): string[] =>
@@ -104,7 +116,8 @@ async function syncSessions($: Engine): Promise<boolean> {
       selfId = isRecord(self) && typeof self.sessionId === 'string' ? self.sessionId : null
     }
     if (selfId === null) return false
-    const listed = await $.mcp.call('ccd_session_mgmt', 'list_sessions', { linked: true })
+    // Archived rows are read too: an archived session between this chat and a waiting one still links them.
+    const listed = await $.mcp.call('ccd_session_mgmt', 'list_sessions', { linked: true, include_archived: true, limit: 100 })
     // An error says nothing about the list: keep the rows shown until a read succeeds.
     if (listed.isError) return false
     // Plain text ("No sessions …") lists nothing.
@@ -162,9 +175,61 @@ function poll($: Engine): void {
   )
 }
 
+/** A prompt the person sent, from any of their surfaces. */
+export const isPersonPrompt = (e: { text: string; isMeta?: true; origin: { kind: string } }): boolean =>
+  e.isMeta !== true && PERSON_KINDS.includes(e.origin.kind) && !NOT_PERSON.test(e.text)
+
+/**
+ * A prompt that answers a filed session: the person's own, or another
+ * session's message, which relays an answer as often as not. App events (a CI
+ * or side-session note, a task's report) leave the session filed: it still waits.
+ */
+export const unfilesOn = (e: { text: string; isMeta?: true; origin: { kind: string } }): boolean =>
+  isPersonPrompt(e) || (e.isMeta !== true && (RELAYED_KINDS.includes(e.origin.kind) || RELAYED.test(e.text)))
+
+/** Whether the main loop's turn now running called a wrap_up with a question. */
+let askedThisTurn = false
+/** Filing and unfiling run one at a time, in the order asked. */
+let filing: Promise<void> = Promise.resolve()
+/** The filing failure logged last, so a repeat stays out of the transcript. */
+let lastFilingLogged: string | null = null
+
+/** What a filing failure logs: nothing without the app's tools (a terminal has no sidebar), and a repeat once. */
+export const afterFilingFailure = (error: unknown, logged: string | null): { lastLogged: string | null; line: string | null } => {
+  const text = String(error)
+  if (NO_TOOL.test(text) || text === logged) return { lastLogged: logged, line: null }
+  return { lastLogged: text, line: `needs-you: the sidebar was not updated (${text})` }
+}
+
+/** Queues a filing step behind the ones before it; never thrown. */
+function enqueue($: Engine, step: () => Promise<void>): Promise<void> {
+  filing = filing.then(step).then(
+    () => {
+      lastFilingLogged = null
+    },
+    (error: unknown) => {
+      const after = afterFilingFailure(error, lastFilingLogged)
+      lastFilingLogged = after.lastLogged
+      if (after.line !== null) $.ui.log(after.line)
+    },
+  )
+  return filing
+}
+
+/** This session's id: the one the side-session read found, or read now. */
+async function ownId($: Engine): Promise<string | null> {
+  if (selfId !== null) return selfId
+  const self = jsonOf(await $.mcp.call('ccd_session_mgmt', 'get_session', { session_id: 'self' }))
+  return isRecord(self) && typeof self.sessionId === 'string' ? self.sessionId : null
+}
+
 /** Sends a reply button's label as the person's reply and takes the ask off. */
 async function answer($: Engine, ask: Ask, label: string): Promise<void> {
   await update($, asks, current => current.filter(old => old.id !== ask.id))
+  void enqueue($, async () => {
+    const id = await ownId($)
+    if (id !== null) await unfile($, id)
+  })
   await $.prompt.submit({ text: label, asUser: true })
 }
 
@@ -224,6 +289,7 @@ export const register: Register = on => {
         sessionId: null,
       }
       addedThisTurn = [...addedThisTurn, ask.id]
+      if (e.agentId === undefined) askedThisTurn = true
       await update($, asks, current => [...current.filter(old => old.from !== 'chat'), ask])
     }
     return result
@@ -231,6 +297,11 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     const completed = await next(e)
+    if (e.agentId === undefined) {
+      // A turn that ended on a question to the person files the session; an interrupted one does not.
+      if (askedThisTurn && e.reason === 'answer') void enqueue($, () => file($))
+      askedThisTurn = false
+    }
     const added = addedThisTurn
     addedThisTurn = []
     if (added.length > 0) {
@@ -246,9 +317,14 @@ export const register: Register = on => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    const fromPerson = e.isMeta !== true && PERSON_KINDS.includes(e.origin.kind) && !NOT_PERSON.test(e.text)
-    if (fromPerson) {
+    if (isPersonPrompt(e)) {
       await update($, asks, current => current.filter(ask => ask.from !== 'chat'))
+    }
+    if (unfilesOn(e)) {
+      void enqueue($, async () => {
+        const id = await ownId($)
+        if (id !== null) await unfile($, id)
+      })
     }
     return next(e)
   }).catch(($, e, next) => next(e))

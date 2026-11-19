@@ -213,18 +213,23 @@ from where it runs; the folder itself under `--dir`) and the workspace
 root's, and npm in every folder above. So these are refused: a package bin
 that is not installed (`pnpm exec stryker` with no stryker in the
 dependencies, where pnpm would run whatever `PATH` holds), any bin `npx`,
-`npm exec` or `pnpm dlx` would fetch, whatever its name, since they never
-fall back to `PATH` and the bin is the package's code (`npx -y cowsay`,
-`pnpm dlx prettier`, `npx -p <pkg> touch`, `pnpm create vite`; a listed
-interpreter on a script file, `pnpm dlx tsx x.ts`, still runs), a program named by its path
+`npm exec` or `pnpm dlx` would fetch, whatever its name, since the bin is
+the package's code (`npx -y cowsay`, `pnpm dlx prettier`,
+`npx -p <pkg> touch`, `pnpm create vite`; npm 11 did not fall back to `PATH`
+for a name it did not find), a program named by its path
 (`pnpm exec ./node_modules/.bin/x`, as `./node_modules/.bin/x` is), a
 wrapper before an interpreter (`pnpm exec env CI=1 node x.js`, read as
 `env CI=1 node x.js` is; `CI=1 pnpm exec node x.js` runs), a setting every
 later run reads (`pnpm config set`, `pnpm set`, `npm config set`), npm's
 `init <x>`, `create <x>` and `explore`, a `--dir` the guard cannot place or
 two selectors, and a runner option the guard does not list, since it may
-take the next word. Across packages (`pnpm -r <word>`), a word that is a
-script of any package is a script, as pnpm 12.9 ran it only where it is one.
+take the next word. A listed interpreter on a script file that a runner
+fetches (`pnpm dlx tsx x.ts`) still runs, unless the line names another
+package (`npx -p <pkg> node x.js` runs one of that package's bins). Across
+packages (`pnpm -r <word>`), a word that is a script of any selected package
+is a script, as pnpm 12.9 ran it only where it is one; the workspace root is
+not selected unless `--include-workspace-root` is given, and under a filter
+the guard cannot resolve, only a script of every package counts.
 yarn's and bun's own forms are not read this way (neither is installed here
 to probe); their `exec` is refused.
 

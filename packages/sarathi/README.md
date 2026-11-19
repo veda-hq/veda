@@ -174,8 +174,11 @@ settled a question, so it checks that a look happened, not what it found.
   The owner-only kinds are `preference`, `approval`, `private`, `money`,
   `irreversible` and `ambiguity` (the Declare column of `research-first`;
   the table's row names, such as `Money or credentials`, work too). Every
-  question of an `AskUserQuestion` must declare one, and every declaration
-  in a unit must be owner-only: `Kind: api` beside `Kind: preference` stays
+  question of an `AskUserQuestion` must declare one. A `wrap_up` ask is one
+  unit, and so is a closing message on Stop, which has no question fields:
+  one declaration in its last three paragraphs covers every choice question
+  in them, and the log records that kind beside each one. Every
+  declaration in a unit must be owner-only: `Kind: api` beside `Kind: preference` stays
   held. `ambiguity` is what is left after research, so it passes only after
   a look (any one above, for any ask). A researchable kind (`api`,
   `default`, `version`, `limit`, `error`, `convention`, `state`) or an
@@ -268,7 +271,9 @@ JSON object:
   question with its option labels, a `wrap_up`'s reply buttons, not its app
   actions, and the `kind` it declares), `researched`, `looked`,
   `names_state`, `kind` (the kinds the ask declares, each once, joined with
-  `, `, an unknown word as written; `null` for none), and `outcome`: `held`,
+  `, `; an unknown value lowercased, its spaces and hyphens collapsed to
+  single spaces, a leading "a" or "an" dropped, cut to 40 characters;
+  `null` for none), and `outcome`: `held`,
   `passed: research`, `passed: look`, `passed: declared <kind>`,
   `passed: second ask`, or `passed: state unreadable` / `unwritable` (the
   gate passes what it cannot keep its once-per-turn state for). An ask the

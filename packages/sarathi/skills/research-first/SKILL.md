@@ -113,8 +113,8 @@ for the next undeclared ask. `ambiguity` passes only after a look, since it
 is what is left after research. A declared researchable kind (`api`,
 `default`, `version`, `limit`, `error`, `convention`, `state`) stays held.
 The gate logs every kind it reads, so a kind declared to skip research
-shows. Holding a real owner-only question costs most when the question is
-about the goal: in one study, goal clarification raised pass@3 from 0.40
+shows. Holding a real owner-only question costs most early in a run: in one
+study, goal clarification raised pass@3 from 0.40
 with no clarification to 0.78 when asked at 10% of the run, and lost nearly
 all its value later [14]. Its samples are small (5 to 28 per
 dimension), so read that as direction, not size.

@@ -103,7 +103,8 @@ describe('skills/research-first/SKILL.md', () => {
     assert.ok(at > 0, 'a ## Sources section');
     const body = text.slice(0, at);
     const sources = text.slice(at);
-    assert.match(sources, /^\n## Sources\n\nRead \d{4}-\d{2}-\d{2}\./);
+    // The first read date, and a second one for the sources added later.
+    assert.match(sources, /^\n## Sources\n\nRead \d{4}-\d{2}-\d{2}; \d+ to \d+ read \d{4}-\d{2}-\d{2}\./);
     const entries = new Map([...sources.matchAll(/^(\d+)\. ([\s\S]*?)(?=^\d+\. |(?![\s\S]))/gm)].map((m) => [Number(m[1]), m[2] ?? '']));
     const cited = new Set([...body.matchAll(/\[(\d+)[a-z]?\]/g)].map((m) => Number(m[1])));
     assert.deepEqual([...entries.keys()], [...cited].sort((a, b) => a - b), 'every source the text cites is a numbered entry, and every entry is cited');
@@ -123,6 +124,9 @@ describe('skills/research-first/SKILL.md', () => {
       'https://arxiv.org/abs/2311.09469',
       'https://arxiv.org/abs/2502.13069',
       'https://www.rfc-editor.org/rfc/rfc2026.html#section-4.2',
+      'https://www.anthropic.com/constitution',
+      'https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices',
+      'https://www.anthropic.com/research/measuring-agent-autonomy',
     ]) {
       assert.ok(sources.includes(url), url);
     }

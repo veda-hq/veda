@@ -1598,6 +1598,8 @@ class WorktreeBoundaryTest(BoundaryFixture):
             "pnpm exec python3 -",
             "pnpm exec python3 -- -",
             "pnpm exec node -- -",
+            # An unlisted short option is refused even with `=`.
+            "pnpm exec node -x=foo .tmp/x.js",
             "pnpm exec python3",
             "pnpm exec python3 -v",
             "pnpm exec python3 -i x.py",

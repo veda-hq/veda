@@ -261,18 +261,27 @@ def kinds(text):
     the value as written, lowercase."""
     found = []
     for match in DECLARED.finditer(text or ""):
-        value = re.sub(r"[\s-]+", " ", match.group(1).strip(" \t*_").lower()).strip()
-        value = re.sub(r"^an? ", "", value)
+        value = normalised(match)
         if value:
             found.append(OWNER_KINDS.get(value) or RESEARCHABLE_KINDS.get(value) or value[:40])
     return found
+
+def normalised(match):
+    value = re.sub(r"[\s-]+", " ", match.group(1).strip(" \t*_").lower()).strip()
+    return re.sub(r"^an? ", "", value)
+
+def known_declaration(match):
+    """A declaration of a known kind reads as no words of the ask; any other
+    stays in place, so its value is still read for alternatives."""
+    value = normalised(match)
+    return " " if value in OWNER_KINDS or value in RESEARCHABLE_KINDS else match.group(0)
 
 def owner_only(declared, looked):
     """Whether a unit of an ask declares only owner-only kinds."""
     return bool(declared) and all(k in OWNER_KINDS.values() and (k not in NEEDS_LOOK or looked) for k in declared)
 
 def names_alternatives(text, pairs):
-    words = URL.sub(" ", DECLARED.sub(" ", text))
+    words = URL.sub(" ", DECLARED.sub(known_declaration, text))
     if ALTERNATIVES.search(words):
         return True
     return pairs and bool(PAIR.search(words))

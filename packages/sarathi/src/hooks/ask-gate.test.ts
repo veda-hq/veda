@@ -737,6 +737,22 @@ test('ask-gate: a researchable, unknown, loose or partial declaration stays held
   assert.equal(holds(transcript(owner()), `${CLOSING}\n\n> Kind: preference`), true, 'on Stop, a quoted line is no declaration');
 });
 
+test('ask-gate: a declaration that runs into the question does not hide it', () => {
+  const { run, lines } = logged();
+  const t = transcript(owner());
+  for (const [n, message] of ['Both fail.\n\nKind: api - fix the parser first or the lexer?', 'Both fail.\n\nKind: preference, fix the parser first or the lexer?'].entries()) {
+    const answer = run({ ...stopEvent(t, message), session_id: `run-in-${n}` });
+    assert.match(answer.stdout, /research before you ask/, message);
+  }
+  assert.equal(run({ tool_name: WRAP_UP, tool_input: { recap: 'r', ask: 'Kind: x - parser or lexer?' }, transcript_path: t, session_id: 'run-in-w' }).status, 2, 'a wrap_up with no buttons');
+  assert.equal(run({ tool_name: WRAP_UP, tool_input: { recap: 'r', ask: 'Ship it? Kind: money or credentials', actions: [{ label: 'Yes' }, { label: 'Not now' }] }, transcript_path: t, session_id: 'run-in-g' }).status, 0, 'a known kind leaves a go-ahead a go-ahead');
+  assert.deepEqual(lines().map((l) => [l['via'], l['kind'], l['outcome']]), [
+    ['Stop', 'api fix the parser first or the lexer?', 'held'],
+    ['Stop', 'preference, fix the parser first or the ', 'held'],
+    [WRAP_UP, 'x parser or lexer?', 'held'],
+  ]);
+});
+
 test('ask-gate: ambiguity passes only after a look', () => {
   const ambiguous = asking('Which fix?\nKind: ambiguity');
   assert.equal(exit(transcript(owner()), ASK, ambiguous), 2, 'no look');

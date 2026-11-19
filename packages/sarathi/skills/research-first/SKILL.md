@@ -84,8 +84,9 @@ question already answered.
 - Say what research found, with links.
 - Say why no source can settle the rest: which kind in the table above.
   Declare it on a line of its own, `Kind: <word>`, with the word from the
-  Declare column (`Kind: preference`): in each `AskUserQuestion` question
-  or its header, in the `wrap_up` ask, or in the closing paragraphs.
+  Declare column (`Kind: preference`): in each `AskUserQuestion` question,
+  in the `wrap_up` ask, or in the closing paragraphs. A header counts too,
+  but holds 12 characters (`Kind: money` fits, `Kind: approval` does not).
 - Check which options actually work before offering them; never offer an
   option a source already rules out.
 - Put the recommended option first.
@@ -115,7 +116,7 @@ The gate logs every kind it reads, so a kind declared to skip research
 shows. Holding a real owner-only question costs most when the question is
 about the goal: in one study, goal clarification raised pass@3 from 0.40
 with no clarification to 0.78 when asked at 10% of the run, and lost nearly
-all its value later [14]. Its samples are small (5 to 28 runs per
+all its value later [14]. Its samples are small (5 to 28 per
 dimension), so read that as direction, not size.
 
 ## Sources
@@ -181,6 +182,6 @@ Read 2026-11-16; 11 to 14 read 2026-11-19.
 14. Gulati et al., "Ask Early, Ask Late, Ask Right: When Does Clarification
     Timing Matter for Long-Horizon Agents?", arXiv 2605.07937 v1, 2026-05-08:
     goal clarification "loses nearly all value after 10% of execution"
-    (abstract); "0.78 at 10% vs. 0.40 NC", NC meaning no clarification; 5 to
-    28 runs per dimension.
+    (abstract); "0.78 at 10% vs. 0.40 NC", NC meaning no clarification; samples
+    of 5 to 28 per dimension.
     https://arxiv.org/abs/2605.07937

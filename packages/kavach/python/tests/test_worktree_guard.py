@@ -164,13 +164,22 @@ class AdapterTest(BoundaryFixture):
 
         prefix = "Claude mutations require this session's Claude-managed worktree; use EnterWorktree. "
         main = self.main.resolve()  # the guard names targets resolved (/private/var on macOS)
+        (self.main / "sub").mkdir(exist_ok=True)
+        run_in = "the folder it runs in, where it cannot prove the command writes nothing."
         for tool, tool_input, expected in (
             ("Bash", {"command": "frobnicate --wide"},
              "it uses `frobnicate`, a program whose writes the guard does not know"),
             ("Bash", {"command": "echo x > out.txt"}, "an output redirection (`>` to out.txt)"),
+            # Files first; the folder the command runs in last, said as that.
             ("Bash", {"command": "touch new.txt"},
-             f"The guard counts this call as writing `{main / 'new.txt'}`."),
-            ("Bash", {"command": "touch a b c d e"}, f"`{main / 'c'}` and 2 more."),
+             f"writing `{main / 'new.txt'}` and `{main}`, {run_in}"),
+            ("Bash", {"command": "touch a b c d e"}, f"`{main / 'c'}` and 3 more."),
+            # veda#242 review: a folder named as an operand is still shown.
+            ("Bash", {"command": "touch . nested"}, f"`{main / 'nested'}` and `{main}`, {run_in}"),
+            # veda#242 review: the folder after `cd` or `git -C` is the run folder.
+            ("Bash", {"command": "git commit -m x"}, f"writing `{main}`, {run_in}"),
+            ("Bash", {"command": "cd sub && git commit -m x"}, f"writing `{main / 'sub'}`, {run_in}"),
+            ("Bash", {"command": "git -C sub commit -m x"}, f"writing `{main / 'sub'}`, {run_in}"),
             ("Write", {"file_path": str(self.main / "new.txt")},
              f"The guard counts this call as writing `{main / 'new.txt'}`."),
         ):
@@ -179,10 +188,6 @@ class AdapterTest(BoundaryFixture):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn(prefix, result.stderr)
                 self.assertIn(expected, result.stderr)
-        # The folder a command runs in, counted with the file it names, is
-        # not shown beside it.
-        result = self.invoke(self.main, tool_name="Bash", tool_input={"command": "touch new.txt"})
-        self.assertNotIn(f"`{main}`", result.stderr)
         self.assertEqual(
             ADAPTER.not_owned("Write", {}, self.main, None),
             f"{prefix}The tool's file path cannot be read as one place.",
@@ -193,12 +198,6 @@ class AdapterTest(BoundaryFixture):
                 ADAPTER.not_owned("Bash", {"command": "x"}, self.main, None),
                 f"{prefix}The guard cannot prove this command writes nothing.",
             )
-        # A command counted only as writing where it runs says so.
-        result = self.invoke(self.main, tool_name="Bash", tool_input={"command": "git commit -m x"})
-        self.assertIn(
-            f"writing `{main}`, the folder it runs in, where it cannot prove the command writes nothing.",
-            result.stderr,
-        )
 
     def test_hook_rejects_malformed_and_non_object_payloads(self) -> None:
         for payload in ("{", "[]"):

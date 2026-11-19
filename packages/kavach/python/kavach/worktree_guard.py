@@ -913,8 +913,26 @@ def unresolved(tool: object, values: dict[str, object], cwd: Path) -> str:
 NOT_OWNED = "Claude mutations require this session's Claude-managed worktree; use EnterWorktree"
 
 
+def run_folders(segments: list[Any]) -> set[Path]:
+    """The folders the mutating segments run in, as `mutation_directories`
+    counts them: where each one runs after any `cd`, or git's `-C` folder."""
+
+    folders: set[Path] = set()
+    for words, current, *_rest in segments:
+        folder = current
+        if os.path.basename(words[0]) == "git":
+            _verb, git_target = boundary.git_command(list(words), current)
+            folder = git_target or current
+        folders.add(folder)
+    return folders
+
+
 def not_owned(
-    tool: object, values: dict[str, object], cwd: Path, targets: list[Path] | None
+    tool: object,
+    values: dict[str, object],
+    cwd: Path,
+    targets: list[Path] | None,
+    segments: list[Any] | None = None,
 ) -> str:
     """The refusal outside an owned checkout, naming why the call counts as a
     mutation (veda#6): the words of a command the guard could not read, or
@@ -923,12 +941,12 @@ def not_owned(
 
     if targets is None and tool != "Bash":
         return f"{NOT_OWNED}. The tool's file path cannot be read as one place."
-    # A folder that holds another target (the directory a command runs in,
-    # counted with every file it names) says nothing the file does not.
+    # A folder a command runs in is counted as a write there with every
+    # file it names: it comes last, said as that, so the files show first.
+    folders = run_folders(segments or []) if tool == "Bash" else set()
     unique = list(dict.fromkeys(targets or []))
-    places = [
-        target for target in unique
-        if not any(other != target and boundary.is_inside(other, target) for other in unique)
+    places = [place for place in unique if place not in folders] + [
+        place for place in unique if place in folders
     ]
     if not places:
         if tool != "Bash":
@@ -942,7 +960,7 @@ def not_owned(
         )
     shown_places = [
         f"`{place}`, the folder it runs in, where it cannot prove the command writes nothing"
-        if tool == "Bash" and place == cwd else f"`{place}`"
+        if place in folders else f"`{place}`"
         for place in places[:3]
     ]
     if len(places) > 3:
@@ -1371,7 +1389,7 @@ def main() -> None:
     if not linked and owns_plain_checkout(loaded.own_checkout, root, os.environ):
         fences = clone_fences(root, loaded.own_checkout, os.environ)
     elif not linked or not boundary.is_claude_managed(root, primary):
-        boundary.deny(not_owned(tool, values, cwd, targets))
+        boundary.deny(not_owned(tool, values, cwd, targets, segments))
     if tool == "Bash" and boundary.trusted_request(
         boundary.tool_command(values), cwd, root, trusted
     ):

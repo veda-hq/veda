@@ -65,7 +65,7 @@ describe('skills/working-rules/SKILL.md', () => {
     // `sarathi:research-first` exists only under the plugin. A project that imports
     // this file from the package has no such skill; one that copies the skills has
     // a plain `research-first`; one with neither reads the file in the package.
-    assert.match(flat, /`sarathi:research-first` where the sarathi plugin is installed, else a project's own `research-first`/);
+    assert.match(flat, /`sarathi:research-first` where the sarathi plugin is enabled, else a project's own `research-first`/);
     const path = /With neither listed, read `node_modules\/([^`]+)`/.exec(flat)?.[1];
     assert.ok(path !== undefined, 'names the file to read with neither skill listed');
     const pkg = JSON.parse(read('package.json')) as { name: string; files: string[] };

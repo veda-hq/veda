@@ -7,11 +7,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { DEFAULTS, type Config } from "./config.ts";
 import {
@@ -22,6 +23,18 @@ import {
 } from "./supervisor.ts";
 
 const STAGES = resolve(import.meta.dirname, "..", "shell", "stages.sh");
+
+/** Every folder the tests made, removed once they are done. */
+const dirs: string[] = [];
+after(() => {
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+});
+
+const scratch = (prefix: string): string => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  dirs.push(dir);
+  return dir;
+};
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync(
@@ -47,7 +60,7 @@ const repo = (
   name = "pre-push",
   commit = true,
 ): { root: string; hook: string } => {
-  const root = mkdtempSync(join(tmpdir(), "dvara-run-"));
+  const root = scratch("dvara-run-");
   git(root, "init", "-q", "-b", "main");
   writeFileSync(join(root, ".gitignore"), ".dvara/\nhooks/\n");
   if (commit) {
@@ -303,7 +316,7 @@ describe("supervise", () => {
   });
 
   it("runs outside a repository, knowing nothing of it", async () => {
-    const root = mkdtempSync(join(tmpdir(), "dvara-bare-"));
+    const root = scratch("dvara-bare-");
     const hook = join(root, "pre-commit");
     writeFileSync(hook, "echo hi");
     const { opts } = options(root, {}, { quietHooks: [] });
@@ -559,7 +572,7 @@ describe("quiet output", () => {
     // The leftover job holds the hook's output open until the test releases
     // it, so no clock decides the outcome. Its 30 s fallback turns a
     // supervisor that waits for the job into a failure, not a hang.
-    const marks = mkdtempSync(join(tmpdir(), "dvara-leftover-"));
+    const marks = scratch("dvara-leftover-");
     const release = join(marks, "release");
     const late = join(marks, "late");
     const { root, hook } = repo(

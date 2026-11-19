@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -81,10 +81,14 @@ describe('parseConfig', () => {
 describe('loadConfig', () => {
   it('reads a file and names one it cannot read', () => {
     const dir = mkdtempSync(join(tmpdir(), 'sarathi-config-'));
-    const file = join(dir, 'sarathi.json');
-    writeFileSync(file, JSON.stringify({ hooks: { Stop: [{ command: 'true' }] } }));
-    assert.equal(loadConfig(file, dir).hooks.Stop?.length, 1);
-    assert.throws(() => loadConfig(join(dir, 'missing.json'), dir), /cannot read .*missing\.json \(ENOENT\)/);
+    try {
+      const file = join(dir, 'sarathi.json');
+      writeFileSync(file, JSON.stringify({ hooks: { Stop: [{ command: 'true' }] } }));
+      assert.equal(loadConfig(file, dir).hooks.Stop?.length, 1);
+      assert.throws(() => loadConfig(join(dir, 'missing.json'), dir), /cannot read .*missing\.json \(ENOENT\)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

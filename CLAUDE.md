@@ -65,13 +65,15 @@ git directory, where `niyam onboard` once wrote its pre-push, never runs.
 onboard now reads `.githooks/pre-push` as its own and leaves it alone. A
 Claude cloud session's fresh clone has no such config, so niyam's session
 start writes its own pre-push into that clone's git directory. Check the
-setting with `git config --show-origin --get-all core.hooksPath`, run
-inside the checkout or worktree you mean (outside a repository it prints
-nothing). It should print one line, from the main checkout's config file,
-with the value `.githooks`. The repository has `extensions.worktreeConfig`
-on, so a worktree's own `config.worktree` can set `core.hooksPath` too and
-win there. A second line from that file means the worktree skips
-`.githooks`: tell Alok, and leave the setting alone.
+setting with `git config --show-scope --show-origin --get-all core.hooksPath`,
+run inside the checkout or worktree you mean. Outside a repository it reads
+only global and system config. It should print one `local` line, from the
+main checkout's config file, with the value `.githooks`. git uses the last
+line it prints. A `global` or `system` line comes first and loses to the
+`local` one. The repository has `extensions.worktreeConfig` on, so a
+`worktree` line, from that worktree's own `config.worktree`, comes last and
+wins there, and that worktree skips `.githooks`. For either, tell Alok,
+and leave the setting alone.
 
 ## Merging
 

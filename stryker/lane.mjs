@@ -31,7 +31,8 @@ export function lane(cwd, env = process.env) {
     },
     coverageAnalysis: 'perTest',
     checkers: [],
-    reporters: ['json', 'clear-text'],
+    // agnipariksha prints each blocking mutant itself; clear-text would print each again in full.
+    reporters: ['json'],
     // agnipariksha's wrapper config moves the report into reports/agnipariksha/.
     jsonReporter: { fileName: 'reports/mutation/mutation.json' },
     tempDirName: '.stryker-tmp',

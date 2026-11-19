@@ -46,6 +46,12 @@ const git = (cwd: string, ...args: string[]) =>
       "user.email=t@t",
       "-c",
       "commit.gpgsign=false",
+      // No detached `git maintenance run --auto` still writing under .git
+      // when after() removes the repository.
+      "-c",
+      "maintenance.auto=false",
+      "-c",
+      "gc.auto=0",
       ...args,
     ],
     {

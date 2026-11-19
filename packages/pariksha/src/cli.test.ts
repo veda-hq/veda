@@ -2789,8 +2789,8 @@ describe('run env-gate-switches under fault injection', () => {
   }
 });
 
-// Last: the only test that starts node, so the cheap tests above stop a
-// mutant before it pays for the start.
+// Last: the only tests that start node, so the cheap tests above stop a
+// mutant before it pays for a start.
 describe('the command', () => {
   it('runs as a script, its arguments after the script, and exits with the code', () => {
     const pkg = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { version: string };

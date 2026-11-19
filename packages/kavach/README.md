@@ -191,7 +191,7 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
       "reason": "a hosted session clones the repository for itself, with no worktree",
       "protectedPaths": [".claude/hooks/", ".claude/settings.json", ".claude/settings.local.json", ".claude/kavach.json", "node_modules/"]
     },
-    "protectedPaths": [".githooks/", "scripts/guards.sh", "node_modules/.bin/"],
+    "protectedPaths": [".githooks/", "scripts/guards.sh", "node_modules/"],
     "protectedPathsReason": "the git hooks run them on every commit and push; the owner changes them"
   },
   "command": {
@@ -319,17 +319,24 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
 
   An Edit, Write or NotebookEdit of a listed path is refused, and so is a
   Bash command whose targets land in one (`sed -i`, `cp`, `touch`, `chmod`,
-  `ln`, `rm`) or hold one (`rm -rf .githooks`, `mv .githooks off`). A
-  mutating command run from a folder that holds one (`scripts/`, when
-  `scripts/guards.sh` is listed) counts that folder as a target, so run it
-  from the root. Paths compare as in an owned clone: by file identity too,
-  so another case spelling or a symlink reaches nothing. In a worktree, the
+  `ln`, `rm`, through `sh -c` or `pnpm exec` too) or hold one (`rm -rf
+  .githooks`, `mv .githooks off`). A command that names the checkout's root
+  as what it writes (`rm -rf .`, `chmod -R a-x .`, `find . -delete`, `cp
+  file .`) is refused too, in an owned clone as well: name the paths
+  instead (`cp file ./file`). A mutating command run from a folder that
+  holds one (`scripts/`, when `scripts/guards.sh` is listed) counts that
+  folder as a target, so run it from the root. Paths compare as in an owned
+  clone: by file identity too, so another case spelling or a symlink
+  reaches nothing. A listed folder of links does not cover what they point
+  to: pnpm's `node_modules/<pkg>` is a link into `node_modules/.pnpm/`, so
+  list `node_modules/` whole. In a worktree, the
   git subcommands that write the paths they name are judged by those paths,
   as in an owned clone: `checkout [<ref>] -- <path>` (and
   `checkout <path>`, where no commit has that name), `restore`, `rm`, `mv`
   and `apply`. So `git rm .githooks/pre-push` and `git restore .` are
   refused, and `git rm --cached` and `git restore --staged` run. Reads run
-  as before.
+  as before. Resolving a merge conflict in a listed file is the owner's
+  too: the session can write neither side into it.
 
   The limit, beyond the owned clone's: in a worktree, every other git
   subcommand and every package install stays open, since merging, rebasing,
@@ -338,7 +345,10 @@ that cannot be read, is not JSON, or has an unknown key refuses every call.
   and the index plumbing (`update-index`, `checkout-index`) can still bring
   a committed change to a listed path into the work tree, and `pnpm install`
   rewrites `node_modules` from the lockfile. Package scripts, tests and
-  other repository code write what they like. The guard keeps a session
+  other repository code write what they like, and so does a
+  `trustedCommands` script, which runs before these checks. Environment
+  variables a hook reads (one that tells it an agent is pushing) are
+  `command.protectedVariables`' job. The guard keeps a session
   from editing the hooks; it does not stop a session set on getting around
   them. Keep the required checks on the server. The settings file the
   hooks load should live outside the session's worktree, as a desktop

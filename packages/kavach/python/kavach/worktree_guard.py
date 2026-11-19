@@ -1222,6 +1222,35 @@ def fence_of(target: Path, root: Path, fences: tuple[Fence, ...]) -> tuple[Fence
     return None
 
 
+def refuse_named_root(
+    segments: list[Any],
+    root: Path,
+    fences: tuple[Fence, ...],
+    read_namespaces: tuple[Path, ...],
+    way_out: str,
+) -> None:
+    """Refuse a command that names the checkout's root as what it writes.
+
+    The root is exempt from holding a fence (`fence_of`), since every
+    mutating command run there counts it as a target. But an operand that
+    is the root itself (`rm -rf .`, `chmod -R a-x .`, `find . -delete`,
+    `cp -R src/. .`) writes the whole checkout, every fence in it included.
+    The operands are read again here, apart from the folder the command
+    runs in, which is all that tells the two apart.
+    """
+
+    for words, cwd, _prefix, _alone in segments:
+        operands = boundary.mutation_path_operands(list(words), cwd, read_namespaces=read_namespaces)
+        for operand in operands or ():
+            if is_root(operand, root):
+                place, what = fences[0]
+                boundary.deny(
+                    f"`{os.path.basename(words[0])}` names {operand}, the checkout's root, as what it "
+                    f"writes, and the root holds {place}, {what}; {way_out}. Name the paths it "
+                    "writes instead (`./<name>`, not `.`)"
+                )
+
+
 def is_owned_target(target: Path, root: Path, primary: Path, fences: tuple[Fence, ...]) -> bool:
     """A session target (`boundary.is_session_target`) that reaches no fence."""
 
@@ -1380,6 +1409,7 @@ def main() -> None:
         ):
             refuse_target(target, root, primary, fences, folders, way_out)
     if fences and tool == "Bash":
+        refuse_named_root(segments, root, fences, read_namespaces, way_out)
         # git and package managers write paths their command lines do not
         # name (`clone_writers`). In an owned clone they are judged by all
         # they can write. In a worktree, only git's subcommands that write

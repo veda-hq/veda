@@ -78,16 +78,20 @@ and leave the setting alone.
 **Agents do not change the hooks or what they run** (veda#235). That is
 `.githooks/`, `scripts/guards.sh`, `scripts/released-pins.mjs`,
 `.dvara.json`, `.veda/records-baseline.json`,
-`.veda/required-settings.json`, `.github/niyam.json`, and
-`node_modules/@veda-hq/` and `node_modules/.bin/`. A worktree runs its own
+`.veda/required-settings.json`, `.github/niyam.json`, and `node_modules/`
+(`pnpm install` still runs). A worktree runs its own
 copy of each, so an edit would let that session's own pushes skip the
 checks. Once veda's hooks run kavach 0.7.5, `worktree.protectedPaths` in
 `.claude/kavach.json` lists them, and kavach refuses a session's writes to
 them: Edit, Write, Bash, and the git commands that write the paths they
-name. A hook change is Alok's. He makes it himself, or allows one session
+name (`git restore .` and `git checkout .` included). A command that names
+the root as what it writes (`rm -rf .`, `cp file .`) is refused too: name
+the paths. Run mutating commands from the root, not from `scripts/`,
+`.github/`, `.veda/` or `node_modules/`. A hook change is Alok's. He makes it himself, or allows one session
 by taking the path off the list in the main checkout's
 `.claude/kavach.json` and putting it back after. A session that needs one
-says so in its pull request or brief and leaves the file alone. Pins in
+says so in its pull request or brief and leaves the file alone, and so
+does one with a merge conflict in such a file. Pins in
 `package.json` stay agents' work: `released-pins.mjs` holds each one to an
 exact release.
 

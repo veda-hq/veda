@@ -1403,7 +1403,7 @@ class OwnCheckoutTest(BoundaryFixture):
 PROTECTED_REASON = "the repository's git hooks run them on commit and push; the owner changes them"
 PROTECTED_SETTINGS = {
     "worktree": {
-        "protectedPaths": [".githooks/", "scripts/pins.mjs", "node_modules/.bin/"],
+        "protectedPaths": [".githooks/", "scripts/pins.mjs", "node_modules/"],
         "protectedPathsReason": PROTECTED_REASON,
     }
 }
@@ -1428,8 +1428,15 @@ class ProtectedPathsTest(BoundaryFixture):
         (self.claude / "scripts" / "other.mjs").write_text("// other\n", encoding="utf-8")
         git(self.claude, "add", ".githooks/pre-push", "scripts")
         git(self.claude, "commit", "-qm", "hooks")
-        (self.claude / "node_modules" / ".bin").mkdir(parents=True)
-        (self.claude / "node_modules" / "pkg").mkdir()
+        # As pnpm lays it out: the package a link into its store.
+        modules = self.claude / "node_modules"
+        (modules / ".bin").mkdir(parents=True)
+        store = modules / ".pnpm" / "@scope+pkg@1.0.0" / "node_modules" / "@scope" / "pkg"
+        store.mkdir(parents=True)
+        (store / "cli.js").write_text("// cli\n", encoding="utf-8")
+        (modules / "@scope").mkdir()
+        (modules / "@scope" / "pkg").symlink_to(Path("..") / ".pnpm" / "@scope+pkg@1.0.0" / "node_modules" / "@scope" / "pkg")
+        self.store = store
         self.env = self.settings_env(PROTECTED_SETTINGS)
 
     def refused(self, result: subprocess.CompletedProcess[str], *expected: str) -> None:
@@ -1457,6 +1464,8 @@ class ProtectedPathsTest(BoundaryFixture):
             ("a new hook", self.claude / ".githooks" / "pre-commit"),
             ("a protected script", self.claude / "scripts" / "pins.mjs"),
             ("an installed bin", self.claude / "node_modules" / ".bin" / "dvara"),
+            ("an installed package, through its link", self.claude / "node_modules" / "@scope" / "pkg" / "cli.js"),
+            ("an installed package, in the store", self.store / "cli.js"),
             ("a relative spelling", self.claude / "scripts" / ".." / ".githooks" / "pre-push"),
         ):
             with self.subTest(label):
@@ -1486,14 +1495,55 @@ class ProtectedPathsTest(BoundaryFixture):
             "rm -f scripts/pins.mjs",
             "tee .githooks/pre-push < tracked.txt",
             "ln -sf /bin/true node_modules/.bin/dvara",
+            "sed -i '' s/cli/x/ node_modules/@scope/pkg/cli.js",
             # A target that holds a protected path removes or moves it whole.
             "rm -rf .githooks",
             "mv .githooks .githooks-off",
             "rm -rf node_modules",
             "rm -r scripts",
+            # Through a runner or a nested shell, the write is read the same.
+            "pnpm exec rm .githooks/pre-push",
+            "bash -c 'rm .githooks/pre-push'",
         ):
             with self.subTest(command=command):
                 self.refused(self.bash(command))
+        for command in ("env git rm .githooks/pre-push", "sh -c 'git rm .githooks/pre-push'"):
+            with self.subTest(command=command):
+                self.refused(self.bash(command), "`git rm` would write", WORKTREE_WAY_OUT)
+        # git under a runner is not read at all.
+        self.refused(self.bash("pnpm exec git rm .githooks/pre-push"), "mutation targets could not be resolved")
+        result = self.invoke(
+            self.claude,
+            tool_name="MultiEdit",
+            tool_input={"file_path": str(self.claude / ".githooks" / "pre-push"), "edits": []},
+            env=self.env,
+        )
+        self.refused(result, "unsupported mutation event")
+
+    def test_a_command_naming_the_root_is_refused(self) -> None:
+        """The root is exempt from holding a fence, since every command run
+        there counts it; one that names it as what it writes is not."""
+
+        for command in (
+            "rm -rf .",
+            "chmod -R a-x .",
+            "find . -name pre-push -delete",
+            "cp -R ../manual-task/. .",
+            "cp ../manual-task/tracked.txt .",
+            "ln -s tracked.txt .",
+            "sh -c 'chmod -R a-x .'",
+        ):
+            with self.subTest(command=command):
+                self.refused(self.bash(command), "the checkout's root", "(.githooks/)", WORKTREE_WAY_OUT)
+        for command in (
+            "cp ../manual-task/tracked.txt ./copy.txt",
+            "find .tmp -delete",
+            "git add .",
+            "chmod -R a-x docs",
+        ):
+            with self.subTest(command=command):
+                result = self.bash(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_a_case_spelling_or_a_link_reaches_the_same_hook(self) -> None:
         (self.claude / "hooks-link").symlink_to(self.claude / ".githooks")
@@ -1580,7 +1630,6 @@ class ProtectedPathsTest(BoundaryFixture):
         for label, target in (
             ("a tracked file", self.claude / "tracked.txt"),
             ("a script beside a protected one", self.claude / "scripts" / "other.mjs"),
-            ("a package beside .bin", self.claude / "node_modules" / "pkg" / "index.js"),
             ("a name that only starts like the folder", self.claude / ".githooks-notes.md"),
         ):
             with self.subTest(label):

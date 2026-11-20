@@ -632,6 +632,8 @@ class Guards(Repo):
         self.assertEqual((result.returncode, result.stdout), (2, ""))
         self.assertTrue(result.stderr.startswith(f"BLOCKED: `cd {other}` moves the shell"), result.stderr)
         self.assertIn("(kavach rule cd-out-of-worktree)", result.stderr)
+        # The rule's refusal is all it says: no second line about how the check ended.
+        self.assertEqual(result.stderr.count("BLOCKED"), 1, result.stderr)
         (row,) = self.rows()
         self.assertEqual((row["guard"], row["rule"], row["mode"]), ("command", "cd-out-of-worktree", "refuse"))
 
@@ -762,6 +764,77 @@ class Guards(Repo):
                     (result.returncode, result.stdout, result.stderr),
                     (2, "", "BLOCKED: the tool guard %s, so it cannot judge this call.\n" % said),
                 )
+
+    def copy_with_a_label_that_raises(self) -> Path:
+        directory = Path(tempfile.mkdtemp(dir=self.work), "kavach")
+        shutil.copytree(KAVACH, directory, ignore=shutil.ignore_patterns("__pycache__"))
+        with open(directory / "refusal_log.py", "a", encoding="utf-8") as handle:
+            handle.write("\n\ndef label(rule, mode):\n    raise RuntimeError('planted')\n")
+        return directory
+
+    def test_a_logging_error_leaves_the_rules_own_refusal(self) -> None:
+        directory = self.copy_with_a_label_that_raises()
+        for guard, tool, tool_input, rule, said in (
+            (
+                "tool_guard.py",
+                "RemoteTrigger",
+                {"action": "create", "body": RoutineSourcesShape.body([{"url": "u"}])},
+                "routine-sources-shape",
+                "has no `git_repository` object",
+            ),
+            ("command_guard.py", "Bash", {"command": f"cd {self.work}"}, "cd-out-of-worktree", "moves the shell"),
+        ):
+            with self.subTest(guard=guard):
+                settings = self.settings({"rules": {rule: "refuse"}})
+                result = self.run_guard(directory / guard, tool, tool_input, settings)
+                self.assertEqual((result.returncode, result.stdout), (2, ""))
+                self.assertIn(said, result.stderr)
+                self.assertEqual(result.stderr.count("BLOCKED"), 1, result.stderr)
+
+    def planted(self, *names: str) -> str:
+        """A folder of modules named like the guard's own and the standard
+        library's, each of which fails as it loads."""
+        folder = tempfile.mkdtemp(dir=self.work)
+        for name in names:
+            Path(folder, name + ".py").write_text("raise RuntimeError('planted %s')\n" % name, encoding="utf-8")
+        return folder
+
+    GUARD_MODULES = ("config", "rules", "refusal_log", "bash_guard", "git_safety")
+
+    def calls(self) -> tuple[tuple[Path, str, object], ...]:
+        """A call each guard allows, saying nothing."""
+        return (
+            (COMMAND_GUARD, "Bash", {"command": "ls"}),
+            (TOOL_GUARD, "Write", {"file_path": os.path.join(self.repo, "c.txt"), "content": "x"}),
+        )
+
+    def run_isolated(self, guard: Path, tool: str, tool_input: object, args: list[str], cwd: str, env: dict[str, str]) -> tuple[int, str, str]:
+        event = json.dumps({"tool_name": tool, "tool_input": tool_input, "cwd": self.repo})
+        result = subprocess.run(
+            [sys.executable, *args], input=event, cwd=cwd, env=env, capture_output=True, text=True, timeout=120, check=False
+        )
+        return result.returncode, result.stdout, result.stderr
+
+    def test_modules_in_the_cwd_do_not_stand_in_when_run_through_c(self) -> None:
+        # Run through `-c`, Python puts the cwd first on sys.path: the guard
+        # puts its own folder there instead, so neither its modules nor the
+        # standard library's load from the cwd.
+        cwd = self.planted(*self.GUARD_MODULES, "json", "shlex", "dataclasses", "subprocess", "pathlib")
+        launch = 'import sys\np = sys.argv[1]\nexec(compile(open(p).read(), p, "exec"), {"__name__": "__main__", "__file__": p})'
+        for guard, tool, tool_input in self.calls():
+            with self.subTest(guard=guard.name):
+                self.assertEqual(
+                    self.run_isolated(guard, tool, tool_input, ["-c", launch, str(guard)], cwd, dict(ENV)), (0, "", "")
+                )
+
+    def test_modules_on_pythonpath_do_not_stand_in_under_safe_path(self) -> None:
+        # Under -P Python puts no folder of the guard's first, but PYTHONPATH
+        # still comes before the standard library: the guard's own folder goes
+        # in front of it.
+        env = dict(ENV, PYTHONPATH=self.planted(*self.GUARD_MODULES))
+        for guard, tool, tool_input in self.calls():
+            with self.subTest(guard=guard.name):
+                self.assertEqual(self.run_isolated(guard, tool, tool_input, ["-P", str(guard)], self.repo, env), (0, "", ""))
 
     def test_a_refusing_rule_that_fails_refuses(self) -> None:
         directory = Path(self.work, "kavach")

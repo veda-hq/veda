@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -390,6 +391,28 @@ class ParseTest(unittest.TestCase):
         parsed = config.parse({})
         with self.assertRaises(AttributeError):
             setattr(parsed, "trusted_commands", ())
+        pattern = re.compile("x")
+        subcommand = config.ReviewedSubcommand(("run",), (), False)
+        for value, name in (
+            (config.TrustedCommand("s", pattern), "script"),
+            (config.ReadOnlyCommand(pattern, (), "r"), "reason"),
+            (config.OwnCheckout((), "r"), "reason"),
+            (subcommand, "path_operands"),
+            (config.ReviewedCLI("p", (subcommand,), "r"), "program"),
+            (config.PairedChange("a", "b", "r"), "requires"),
+            (config.RuleMode("warn"), "mode"),
+        ):
+            with self.subTest(kind=type(value).__name__):
+                with self.assertRaises(dataclasses.FrozenInstanceError):
+                    setattr(value, name, "changed")
+
+    def test_a_day_or_a_reason_that_is_not_a_string_is_a_config_error(self) -> None:
+        # Compared with "" by equality, which any value allows, not by order,
+        # which raises TypeError for a number.
+        self.refused({"rules": {"pipe-masks-exit": {"mode": "warn", "refusesFrom": 5}}}, "must be a day, YYYY-MM-DD")
+        self.refused(
+            {"worktree": {"protectedPathsReason": 5}}, "worktree.protectedPathsReason needs worktree.protectedPaths"
+        )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,153 @@
+name: cosmic-ray fail-closed proof
+
+# Slice #317 (work item #238): cosmic-ray 8.9.0 kills every mutant on the
+# six fail-closed branches of kavach's tool and command guards. It lives only
+# on its draft pull request, closed once the result is on #317, and never
+# merges. Its test command runs only the guard tests the slice adds to, so a
+# mutant costs seconds: a kill by these tests is a kill by the whole suite.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/cosmic-ray-proof.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cosmic-ray-proof-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prove:
+    # A fixed name: GitHub adds the matrix values to it.
+    name: cosmic-ray proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { module: tool_guard, lines: "54 55 63 64 85 86" }
+          - { module: command_guard, lines: "106 107 110 111 117 118 119 163 166 168" }
+    env:
+      MODULE: ${{ matrix.module }}
+      LINES: ${{ matrix.lines }}
+      SUITE: python3 -B -m unittest -f tests.test_rules.Guards tests.test_command_guard.Loading tests.test_command_guard.HookInput
+      TEST_COMMAND: sh -c 'cd python && python3 -B -m unittest -f tests.test_rules.Guards tests.test_command_guard.Loading tests.test_command_guard.HookInput 2>>../unittest.log; s=$?; echo === exit $s >>../unittest.log; exit $s'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Add cosmic-ray 8.9.0 (this job only)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet cosmic-ray==8.9.0
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          echo "WORKERS=$(nproc)" >> "$GITHUB_ENV"
+      - name: One copy per worker
+        # cosmic-ray mutates the file in place, so each worker runs in a copy.
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 "$WORKERS"); do
+            mkdir -p "$RUNNER_TEMP/w$i"
+            cp -R packages/kavach "$RUNNER_TEMP/w$i/kavach"
+          done
+      - name: The unmutated tests in every copy at once
+        run: |
+          set -euo pipefail
+          pids=""
+          for i in $(seq 1 "$WORKERS"); do
+            # SUITE is a command line, split on spaces on purpose.
+            # shellcheck disable=SC2086
+            (cd "$RUNNER_TEMP/w$i/kavach/python" && $SUITE > "$RUNNER_TEMP/load-w$i.txt" 2>&1; echo "exit $?" >> "$RUNNER_TEMP/load-w$i.txt") &
+            pids="$pids $!"
+          done
+          # shellcheck disable=SC2086
+          wait $pids || true
+          tail -n 4 "$RUNNER_TEMP"/load-w*.txt
+          if grep -L '^exit 0$' "$RUNNER_TEMP"/load-w*.txt | grep -q .; then
+            echo "- The unmutated tests failed under load" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Workers and config
+        run: |
+          set -euo pipefail
+          urls=""
+          for i in $(seq 1 "$WORKERS"); do
+            port=$(( 9875 + i ))
+            (cd "$RUNNER_TEMP/w$i/kavach" && nohup cosmic-ray --verbosity INFO http-worker --port "$port" > "$RUNNER_TEMP/w$i.log" 2>&1 &)
+            urls="${urls:+$urls, }\"http://localhost:$port\""
+          done
+          {
+            echo '[cosmic-ray]'
+            echo "module-path = \"python/kavach/${MODULE}.py\""
+            echo 'timeout = 300.0'
+            echo 'excluded-modules = []'
+            echo "test-command = \"${TEST_COMMAND}\""
+            echo
+            echo '[cosmic-ray.distributor]'
+            echo 'name = "http"'
+            echo
+            echo '[cosmic-ray.distributor.http]'
+            echo "worker-urls = [${urls}]"
+          } > "$RUNNER_TEMP/cr.toml"
+          cat "$RUNNER_TEMP/cr.toml"
+          for i in $(seq 1 "$WORKERS"); do
+            port=$(( 9875 + i ))
+            for _ in $(seq 1 60); do
+              curl -s -o /dev/null "http://localhost:$port/" && break
+              sleep 1
+            done
+            curl -s -o /dev/null "http://localhost:$port/" || { cat "$RUNNER_TEMP/w$i.log"; exit 1; }
+          done
+      - name: cosmic-ray init and exec
+        working-directory: ${{ runner.temp }}/w1/kavach
+        run: |
+          set -euo pipefail
+          cosmic-ray init "$RUNNER_TEMP/cr.toml" "$RUNNER_TEMP/${MODULE}.sqlite"
+          start=$(date +%s)
+          cosmic-ray --verbosity INFO exec "$RUNNER_TEMP/cr.toml" "$RUNNER_TEMP/${MODULE}.sqlite" > "$RUNNER_TEMP/exec-log.txt" 2>&1
+          echo "- ${MODULE}.py, ${WORKERS} workers, exec $(( $(date +%s) - start )) s" >> "$GITHUB_STEP_SUMMARY"
+      - name: The fail-closed lines
+        # Fails the job when any mutant on the slice's lines survived, or
+        # when any mutant there has no result.
+        run: |
+          set -euo pipefail
+          db="$RUNNER_TEMP/${MODULE}.sqlite"
+          out="$RUNNER_TEMP/${MODULE}"
+          cosmic-ray dump "$db" > "${out}.jsonl"
+          lines=$(printf '%s\n' $LINES | jq -R 'tonumber' | jq -s -c .)
+          jq -c --argjson lines "$lines" \
+            'select(.[0].mutations[0].start_pos[0] as $l | $lines | index($l)) | {line: .[0].mutations[0].start_pos[0], operator: .[0].mutations[0].operator_name, outcome: (.[1].test_outcome // "none"), diff: (.[1].diff // "")}' \
+            "${out}.jsonl" > "${out}-target.jsonl"
+          total=$(jq -s 'length' "${out}-target.jsonl")
+          killed=$(jq -s '[.[] | select(.outcome == "killed")] | length' "${out}-target.jsonl")
+          all_survived=$(jq -s '[.[] | select(.[1] != null and .[1].test_outcome == "survived")] | length' "${out}.jsonl")
+          {
+            echo "- Lines ${LINES}: ${total} mutants, ${killed} killed"
+            echo "- Survivors anywhere in the module, under these tests only: ${all_survived}"
+            echo
+            echo '| Line | Operator | Outcome |'
+            echo '|---|---|---|'
+            jq -r '"| \(.line) | \(.operator) | \(.outcome) |"' "${out}-target.jsonl"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # A test command that cannot run kills every mutant. So the proof
+          # also needs a run that passed (some mutants elsewhere in the
+          # module survive these tests, the `__main__` comparison among them).
+          passed=$(cat "$RUNNER_TEMP"/w*/kavach/unittest.log | grep -c '^=== exit 0$' || true)
+          echo "- Mutant runs the tests passed: ${passed}" >> "$GITHUB_STEP_SUMMARY"
+          [ "$passed" -gt 0 ] && [ "$all_survived" -gt 0 ]
+          [ "$total" -gt 0 ] && [ "$total" -eq "$killed" ]
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: cosmic-ray-proof-${{ matrix.module }}
+          path: |
+            ${{ runner.temp }}/*.sqlite
+            ${{ runner.temp }}/*.jsonl
+            ${{ runner.temp }}/*.txt
+            ${{ runner.temp }}/*.log
+            ${{ runner.temp }}/w*/kavach/unittest.log
+          if-no-files-found: ignore

@@ -19,7 +19,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path, PurePath
-from typing import Mapping, NamedTuple, Protocol, Sequence
+from typing import Any, Mapping, NamedTuple, Protocol, Sequence
 
 
 # Admission to this set means one thing: NO invocation of the command mutates
@@ -528,6 +528,48 @@ def is_session_target(target: Path, root: Path, primary: Path) -> bool:
 
 def is_claude_managed(root: Path, primary: Path) -> bool:
     return is_inside(root.resolve(), (primary / ".claude" / "worktrees").resolve())
+
+
+def owns_plain_checkout(
+    own: Any, root: Path, environ: Mapping[str, str]
+) -> bool:
+    """Whether the plain (unlinked) checkout at ``root`` is this session's own.
+
+    Only with the consumer's `worktree.ownCheckout`, only where the hook's own
+    environment holds one of its values for every variable it names, and only
+    for the checkout the session was started in (``CLAUDE_PROJECT_DIR``), so a
+    session that changes directory into another clone gains nothing there. The
+    environment is the hook's, which no tool call can change.
+    """
+
+    if own is None:
+        return False
+    if not all(environ.get(name) in values for name, values in own.env):
+        return False
+    project = environ.get("CLAUDE_PROJECT_DIR", "")
+    if not project:
+        return False
+    try:
+        return Path(project).resolve(strict=True) == root.resolve()
+    except OSError:
+        return False
+
+
+def ownable_checkout(
+    folder: Path, own: Any, environ: Mapping[str, str]
+) -> Path | None:
+    """The checkout holding ``folder`` when the worktree guard would take it as
+    a session's own: a linked worktree under its repository's
+    ``.claude/worktrees``, or the plain clone `worktree.ownCheckout` names.
+    ``None`` for any other checkout, and for a folder in none."""
+
+    state = checkout_state(folder)
+    if state is None:
+        return None
+    root, linked, primary = state
+    if linked:
+        return root if is_claude_managed(root, primary) else None
+    return root if owns_plain_checkout(own, root, environ) else None
 
 
 def deny(message: str) -> None:

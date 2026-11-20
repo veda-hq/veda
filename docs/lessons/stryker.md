@@ -35,6 +35,20 @@ without suppressing them, and the traps of a gate scoped to a diff.
   `pnpm exec agnipariksha --lane <name> --files <repo-relative paths> --no-reuse`. Naming the lane
   judges it whatever the cut-off. Without `--files`, it judges what the branch changed. The
   reports land in `reports/agnipariksha/`, which git ignores.
+- **veda's cut-off, and the times it came from.** A run that names no lane (pre-push) leaves a
+  lane to CI when its files hold more lines than `maxLines`: 1,500, sarathi 1,000, pariksha
+  400. It was timed on 2026-11-20 on an 18-core M5 Max: load was 1.9 and 2.9 before the two
+  batches, and 2.95 of 4 GiB of swap was in use. The aim was about 3 minutes per lane, below
+  #238's 5, so a push still finishes when the Mac is busy. Seconds per line: kavach 0.04,
+  shuddhi 0.05, agnipariksha 0.01 (with `cli.ts` left out), dvara 0.11, sarathi 0.18,
+  pariksha 0.54. Timeout retries are much of the slow lanes' time:
+  - kavach, shuddhi and agnipariksha retried none;
+  - dvara retried 9, in about 22 s;
+  - sarathi retried 3, one of them 41 of its 57 s, so its 1,000 rests on that one mutant;
+  - pariksha retried 25, in 2.7 of its 6.6 minutes.
+
+  Under load the same pariksha pair took 24 minutes, so a busy Mac can still hold a push
+  past its budget. Re-time with `--lane <name> --files …` when a lane's suites get slower.
 
 ## Speed and incremental mode
 

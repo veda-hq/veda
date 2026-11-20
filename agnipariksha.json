@@ -1,6 +1,7 @@
 {
   "upstream": "origin/main",
   "ignore": ["\\.test\\.tsx?$", "\\.d\\.ts$", "(^|/)fixtures?/"],
+  "maxLines": 1500,
   "unsetEnv": [
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -58,6 +59,7 @@
       "reuse": false,
       "include": ["^packages/pariksha/src/"],
       "extensions": [".ts"],
+      "maxLines": 400,
       "env": { "AGNIPARIKSHA_SUITES": "{suites}" }
     },
     {
@@ -67,6 +69,7 @@
       "reuse": false,
       "include": ["^packages/sarathi/src/"],
       "extensions": [".ts"],
+      "maxLines": 1000,
       "env": { "AGNIPARIKSHA_SUITES": "{suites}" }
     }
   ],

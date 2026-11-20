@@ -2,12 +2,18 @@ name: cosmic-ray survivors proof
 
 # Slice #328 (work item #238): cosmic-ray 8.9.0 runs every mutant of
 # kavach's tool guard, command guard, config and refusal log, against the
-# whole Python suite, the run the slice's lists were read from (about 70 s a
-# surviving mutant; a kill stops at the first failure). It lives only on its
-# draft pull request, closed
-# once the result is on #328, and never merges. The job fails when:
+# whole Python suite, the run the slice's lists were read from. Each mutant
+# first meets the test files that kill most of that module's mutants
+# (`first`), then the whole suite, both failfast: test_boundary, first in
+# the suite, takes about 285 s of its 670 s with every core busy, and the
+# first run spent that before nearly every kill. A survivor still passes
+# every test. It lives only on its draft pull request, closed once the
+# result is on #328, and never merges. The job fails when:
 #   - a mutant the slice names (by line and operator) has no result or survives;
 #   - any other mutant survives that is not on the slice's equivalent list;
+#   - a listed equivalent is killed, or has no mutant;
+#   - any mutant times out: cosmic-ray scores a timeout as killed, so a
+#     survivor slower than the timeout would pass as one;
 #   - a rewritten annotation line still yields a `|` mutant.
 
 on:
@@ -27,12 +33,19 @@ jobs:
     # A fixed name: GitHub adds the matrix values to it.
     name: cosmic-ray proof
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 350
     strategy:
       fail-fast: false
       matrix:
         include:
+          # `first`: where the first run's kills landed (test module, kills):
+          # tool_guard test_rules 108, test_command_guard 7; command_guard
+          # test_command_guard 148, test_rules 23, test_refusal_hints 2;
+          # config test_config 67, test_command_guard 51, test_shell_expansion
+          # 4, test_rules 3; refusal_log test_refusal_log 90, test_rules 4,
+          # test_command_guard 1. The rest died in test_boundary within 3 s.
           - module: tool_guard
+            first: tests.test_rules tests.test_command_guard
             targets: >-
               26:AddNot 27:NumberReplacer 29:NumberReplacer 46:ExceptionReplacer
               90:ReplaceComparisonOperator_Eq_GtE
@@ -40,6 +53,7 @@ jobs:
               42:ReplaceComparisonOperator_Eq_LtE 90:ReplaceComparisonOperator_Eq_LtE
             annotations: ""
           - module: command_guard
+            first: tests.test_command_guard tests.test_rules tests.test_refusal_hints
             targets: >-
               73:AddNot 74:NumberReplacer 76:NumberReplacer 86:NumberReplacer
               91:ReplaceComparisonOperator_Eq_GtE 133:ExceptionReplacer 134:ReplaceFalseWithTrue
@@ -52,6 +66,7 @@ jobs:
               86:ReplaceComparisonOperator_Is_Eq
             annotations: ""
           - module: config
+            first: tests.test_config tests.test_command_guard tests.test_shell_expansion tests.test_rules
             targets: >-
               33:ReplaceTrueWithFalse 43:ReplaceTrueWithFalse 55:ReplaceTrueWithFalse
               71:ReplaceTrueWithFalse 82:ReplaceTrueWithFalse 94:ReplaceTrueWithFalse
@@ -60,6 +75,7 @@ jobs:
             equivalents: ""
             annotations: "129 416"
           - module: refusal_log
+            first: tests.test_refusal_log tests.test_rules tests.test_command_guard
             targets: >-
               30:NumberReplacer 59:NumberReplacer 60:ReplaceFalseWithTrue
               65:ReplaceComparisonOperator_NotEq_Lt 65:ReplaceComparisonOperator_NotEq_Gt
@@ -77,8 +93,8 @@ jobs:
       # The guard tests start Python children, which -B does not reach: a
       # stale .pyc of a same-size mutant must never be read.
       PYTHONDONTWRITEBYTECODE: "1"
-      SUITE: python3 -B -m unittest discover -f -s tests -t .
-      TEST_COMMAND: sh -c 'cd python && python3 -B -m unittest discover -f -s tests -t . 2>>../unittest.log; s=$?; echo === exit $s >>../unittest.log; exit $s'
+      # Run from a worker's kavach copy; it logs to unittest.log there.
+      TEST_COMMAND: sh -c 'cd python && python3 -B -m unittest -f ${{ matrix.first }} 2>>../unittest.log && python3 -B -m unittest discover -f -s tests -t . 2>>../unittest.log; s=$?; echo === exit $s >>../unittest.log; exit $s'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -101,23 +117,25 @@ jobs:
           done
       - name: The unmutated tests in every copy at once
         # Every mutant of config.py should be killed, so no mutant run there
-        # shows the test command passing: this step is what does.
+        # shows the test command passing: this step is what does. It runs
+        # the mutants' own test command, both parts, then moves its log
+        # aside, so no exit here counts as a mutant run's.
         run: |
           set -euo pipefail
           pids=""
           for i in $(seq 1 "$WORKERS"); do
-            # SUITE is a command line, split on spaces on purpose.
-            # shellcheck disable=SC2086
-            (cd "$RUNNER_TEMP/w$i/kavach/python" && $SUITE > "$RUNNER_TEMP/load-w$i.txt" 2>&1; echo "exit $?" >> "$RUNNER_TEMP/load-w$i.txt") &
+            (cd "$RUNNER_TEMP/w$i/kavach" && { sh -c "$TEST_COMMAND" || true; } && mv unittest.log "$RUNNER_TEMP/load-w$i.txt") &
             pids="$pids $!"
           done
           # shellcheck disable=SC2086
           wait $pids || true
           tail -n 4 "$RUNNER_TEMP"/load-w*.txt
-          if grep -L '^exit 0$' "$RUNNER_TEMP"/load-w*.txt | grep -q .; then
-            echo "- The unmutated tests failed under load" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          for i in $(seq 1 "$WORKERS"); do
+            if [ -e "$RUNNER_TEMP/w$i/kavach/unittest.log" ] || ! grep -qx '=== exit 0' "$RUNNER_TEMP/load-w$i.txt"; then
+              echo "- The unmutated tests failed under load in copy $i" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          done
           grep -h '^Ran ' "$RUNNER_TEMP"/load-w1.txt | sed 's/^/- Unmutated: /' >> "$GITHUB_STEP_SUMMARY"
       - name: Workers and config
         run: |
@@ -131,7 +149,7 @@ jobs:
           {
             echo '[cosmic-ray]'
             echo "module-path = \"python/kavach/${MODULE}.py\""
-            echo 'timeout = 600.0'
+            echo 'timeout = 2400.0'
             echo 'excluded-modules = []'
             echo "test-command = \"${TEST_COMMAND}\""
             echo
@@ -171,7 +189,9 @@ jobs:
           equivalents=$(words "$EQUIVALENTS")
           # shellcheck disable=SC2086
           annotations=$(printf '%s\n' $ANNOTATIONS | jq -R 'select(. != "") | tonumber' | jq -s -c .)
-          jq -c '{line: .[0].mutations[0].start_pos[0], operator: (.[0].mutations[0].operator_name | sub("^core/"; "")), outcome: (.[1].test_outcome // "none"), diff: (.[1].diff // "")} | .key = "\(.line):\(.operator)"' \
+          # cosmic-ray scores a timeout as killed, with the output "timeout":
+          # it is its own outcome here, never a kill.
+          jq -c '{line: .[0].mutations[0].start_pos[0], operator: (.[0].mutations[0].operator_name | sub("^core/"; "")), outcome: (if .[1].output == "timeout" then "timeout" else (.[1].test_outcome // "none") end), diff: (.[1].diff // "")} | .key = "\(.line):\(.operator)"' \
             "${out}.jsonl" > "${out}-all.jsonl"
           jq -c --argjson t "$targets" 'select(.key as $k | $t | index($k))' "${out}-all.jsonl" > "${out}-target.jsonl"
           total=$(jq -s 'length' "${out}-all.jsonl")
@@ -181,13 +201,18 @@ jobs:
           jq -c --argjson e "$equivalents" 'select(.outcome != "killed" and (.key as $k | $e | index($k) | not))' "${out}-all.jsonl" > "${out}-unexpected.jsonl"
           unexpected=$(jq -s 'length' "${out}-unexpected.jsonl")
           equivalent=$(jq -s --argjson e "$equivalents" '[.[] | select(.outcome != "killed" and (.key as $k | $e | index($k)))] | length' "${out}-all.jsonl")
+          timeouts=$(jq -s '[.[] | select(.outcome == "timeout")] | length' "${out}-all.jsonl")
+          # A listed equivalent that dies, or has no mutant, means the list is wrong.
+          equivalent_killed=$(jq -s --argjson e "$equivalents" '[.[] | select(.outcome == "killed" and (.key as $k | $e | index($k)))] | length' "${out}-all.jsonl")
+          equivalent_missing=$(jq -s -r --argjson e "$equivalents" '[.[].key] as $seen | $e - $seen | join(" ")' "${out}-all.jsonl")
           bitor=$(jq -s --argjson a "$annotations" '[.[] | select((.operator | startswith("ReplaceBinaryOperator_BitOr")) and (.line as $l | $a | index($l)))] | length' "${out}-all.jsonl")
           passed=$(cat "$RUNNER_TEMP"/w*/kavach/unittest.log | grep -c '^=== exit 0$' || true)
           {
             echo "- Mutants in ${MODULE}.py: ${total}"
             echo "- The slice's mutants: ${target_total}, killed ${target_killed}; keys with no mutant: ${missing:-none}"
-            echo "- Equivalents left, all on the list: ${equivalent}"
+            echo "- Equivalents left, all on the list: ${equivalent}; listed but killed: ${equivalent_killed}; listed keys with no mutant: ${equivalent_missing:-none}"
             echo "- Any other mutant not killed: ${unexpected}"
+            echo "- Mutants that timed out: ${timeouts}"
             echo "- \`|\` mutants on the rewritten annotation lines: ${bitor}"
             echo "- Mutant runs the tests passed: ${passed}"
             echo
@@ -204,6 +229,8 @@ jobs:
           [ -z "$missing" ]
           [ "$target_total" -gt 0 ] && [ "$target_total" -eq "$target_killed" ]
           [ "$unexpected" -eq 0 ]
+          [ "$timeouts" -eq 0 ]
+          [ "$equivalent_killed" -eq 0 ] && [ -z "$equivalent_missing" ]
           [ "$bitor" -eq 0 ]
           # A test command that cannot run kills every mutant: where the
           # list expects equivalents, some runs must pass.

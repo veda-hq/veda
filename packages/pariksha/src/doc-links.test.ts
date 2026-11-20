@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -188,13 +188,29 @@ describe('findLinkProblems with a recorded report', () => {
     assert.deepEqual(found, [{ check: 'DOC-DRIFT-01', file: 'docs/a.md', line: 3, ref: 'b.md', reason: 'Cannot find file `b.md`' }]);
   });
 
-  it('a bare marker is no opt-out, and an in-doc anchor has no target to ignore', () => {
+  it('a bare marker is no opt-out, and an in-doc anchor or a target outside the repository has none to ignore', () => {
     const repo = createTestRepo({ 'docs/a.md': '# A\n[x](#y) doc-ref-ok:\n' });
-    const found = findLinkProblems(CONFIG, repo.snapshot(), ['docs/a.md'], (dir) => lycheeReport(dir, [{ file: 'docs/a.md', line: 2, target: '', hash: '#y' }]));
+    const snapshot = repo.snapshot();
+    const asked: string[][] = [];
+    const watched: RepoSnapshot = {
+      ...snapshot,
+      ignored: (paths) => {
+        asked.push([...paths]);
+        return snapshot.ignored(paths);
+      },
+    };
+    const found = findLinkProblems(CONFIG, watched, ['docs/a.md'], (dir) =>
+      lycheeReport(dir, [
+        { file: 'docs/a.md', line: 2, target: '', hash: '#y' },
+        { file: 'docs/a.md', line: 1, target: '../x.md' },
+      ]),
+    );
     assert.deepEqual(
       found.map((p) => p.ref),
-      ['#y'],
+      ['../../x.md', '#y'],
     );
+    // Neither the in-doc anchor nor the target outside the repository is asked about.
+    assert.deepEqual(asked, [[]]);
   });
 
   it('drops an ignored target, a directory one or behind an anchor; keeps an in-doc anchor', () => {
@@ -329,11 +345,29 @@ describe('treeFor', () => {
     assert.equal(existsSync(seen), false);
   });
 
-  it('fails when the ref cannot be extracted', () => {
+  it("fails with git's own error when the ref cannot be extracted, leaving nothing behind", (t) => {
     const repo = createTestRepo({ 'docs/a.md': '# A\n' });
     repo.commit();
     const bad: RepoSnapshot = { ...repo.snapshot(), source: { kind: 'ref', ref: 'no-such-ref' } };
-    assert.throws(() => treeFor(bad));
+    // A stand-in temp folder, so what treeFor leaves there can be counted.
+    const temp = join(repo.root, 'temp');
+    mkdirSync(temp);
+    const stderr = t.mock.method(process.stderr, 'write', () => true);
+    const saved = process.env['TMPDIR'];
+    process.env['TMPDIR'] = temp;
+    try {
+      assert.throws(() => treeFor(bad), (e: unknown) => {
+        assert.equal((e as { status?: unknown }).status, 128);
+        assert.match((e as Error).message, /^Command failed: git .*archive[^\n]*\n.*no-such-ref/s);
+        return true;
+      });
+    } finally {
+      if (saved === undefined) Reflect.deleteProperty(process.env, 'TMPDIR');
+      else process.env['TMPDIR'] = saved;
+    }
+    // git's complaint is in the error, never copied to this process's stderr.
+    assert.equal(stderr.mock.callCount(), 0);
+    assert.deepEqual(readdirSync(temp), []);
   });
 
   it('reads a pushed ref, not the worktree', () => {

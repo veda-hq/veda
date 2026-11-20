@@ -57,7 +57,8 @@ export type Side = { readonly kind: 'index' } | { readonly kind: 'commit'; reado
 
 /**
  * `git grep -n` output as hits. A grep of a commit starts every line with
- * `prefix` (`<rev>:`), which is dropped; any other grep has none.
+ * `prefix` (`<rev>:`), which is dropped; any other grep has none. A line
+ * from a CRLF file ends in a carriage return, and one is dropped too.
  */
 export const parseGrep = (out: string, prefix?: string): GrepHit[] =>
   out.split('\n').flatMap((raw) => {

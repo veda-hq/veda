@@ -346,6 +346,28 @@ test('ask-gate on Stop: only a choice-shaped question near the end counts', () =
   }
 });
 
+test('ask-gate on Stop: a question in double quotes is someone else\'s, not the session\'s choice', () => {
+  const t = transcript(owner());
+  const asked = 'Which fruit should the test use: apple or pear?';
+  // The report that was held (veda-hq/veda#341), a test session's question quoted.
+  const report = (open: string, close: string): string =>
+    `Checked in two sessions.\n\n- **Plain-text nudge:** a session that ended on ${open}${asked}${close} with no \`wrap_up\` was nudged and then called \`wrap_up\`.`;
+  for (const [why, message] of [
+    ['straight quotes', report('"', '"')],
+    ['curly quotes', report('“', '”')],
+  ] as const) {
+    assert.equal(holds(t, message), false, why);
+  }
+  for (const [why, message] of [
+    ['the same question, unquoted', `Checked in two sessions.\n\n${asked}`],
+    ['a quoted question and the session\'s own on one line', `The test session ended on "${asked}" Should I keep that test or drop it?`],
+    ['a curly-quoted question and the session\'s own on one line', `The test session ended on “${asked}” Should I keep that test or drop it?`],
+    ['the session\'s own choice between quoted words', 'Rename the flag to "fast" or "quick"?'],
+  ] as const) {
+    assert.equal(holds(t, message), true, why);
+  }
+});
+
 test('ask-gate on Stop: anything it cannot read lets the turn end', () => {
   const t = transcript(owner());
   for (const [why, input] of [

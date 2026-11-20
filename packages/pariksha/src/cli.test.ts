@@ -126,6 +126,7 @@ const USAGE = [
   '       pariksha aggregate-gate-needs [--config <file>] [--root <dir>]',
   '       pariksha boundary [--root <dir>] [--deny <file>]',
   '       pariksha codec-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
+  '       pariksha codeql-baseline (--check <results.sarif> | --write <results.sarif>) [--baseline <file>] [--root <dir>]',
   '       pariksha coverage-by-type [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha coverage-exemptions --config <file> [--package <dir>] [--root <dir>]',
   '       pariksha doc-budgets --table <file> [--section <name>] [--root <dir>]',
@@ -138,6 +139,7 @@ const USAGE = [
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
   '       pariksha fault-injection-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
   '       pariksha flaky-tests [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--runs <n>] [--root <dir>]',
+  '       pariksha license-check --config <file> [--report <file.json>] [--root <dir>]',
   '       pariksha masked-exit-codes [--config <file>] [--staged] [--root <dir>]',
   '       pariksha non-synced-resources [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha pnpm-settings [--config <file>] [--root <dir>]',
@@ -217,6 +219,7 @@ describe('run: what no command takes', () => {
       'aggregate-gate-needs',
       'authority-citations',
       'codec-registry',
+      'codeql-baseline',
       'coverage-by-type',
       'coverage-exemptions',
       'doc-budgets',
@@ -228,6 +231,7 @@ describe('run: what no command takes', () => {
       'eslint-targets',
       'fault-injection-registry',
       'flaky-tests',
+      'license-check',
       'masked-exit-codes',
       'non-synced-resources',
       'pnpm-settings',
@@ -289,6 +293,8 @@ describe('run: the flags each command takes', () => {
     ['boundary', '--root', NOWHERE, '--deny', 'x'],
     ['codec-registry', '--config', 'x', '--base', 'b', '--root', NOWHERE],
     ['codec-registry', '--config', 'x', '--no-base', '--root', NOWHERE],
+    ['codeql-baseline', '--check', 'x', '--baseline', 'b', '--root', NOWHERE],
+    ['codeql-baseline', '--write', 'x', '--baseline', 'b', '--root', NOWHERE],
     ['coverage-by-type', '--config', 'x', '--files-from', 'x', '--base', 'b', '--head', 'h', '--root', NOWHERE, '--staged', '--all'],
     ['coverage-exemptions', '--config', 'x', '--package', 'p', '--root', NOWHERE],
     ['doc-budgets', '--table', 'x', '--section', 's', '--root', NOWHERE],
@@ -304,6 +310,7 @@ describe('run: the flags each command takes', () => {
     ['fault-injection-registry', '--config', 'x', '--base', 'b', '--root', NOWHERE],
     ['fault-injection-registry', '--config', 'x', '--no-base', '--root', NOWHERE],
     ['flaky-tests', '--config', 'x', '--files-from', 'x', '--base', 'b', '--head', 'h', '--runs', '2', '--root', NOWHERE, '--staged', '--all'],
+    ['license-check', '--config', 'x', '--report', 'r', '--root', NOWHERE],
     ['masked-exit-codes', '--config', 'x', '--root', NOWHERE, '--staged'],
     ['non-synced-resources', '--config', 'x', '--files-from', 'x', '--base', 'b', '--head', 'h', '--root', NOWHERE, '--staged', '--all'],
     ['pnpm-settings', '--config', 'x', '--root', NOWHERE],
@@ -465,7 +472,7 @@ describe('.pariksha.json', () => {
     assert.equal(unknown.code, 2);
     assert.match(
       unknown.err[0] ?? '',
-      / \(pariksha 0\): unknown check "boundary" in "checks"; this version reads settings for absolute-paths, aggregate-gate-needs, authority-citations, codec-registry, coverage-by-type, coverage-exemptions, doc-budgets, doc-references, duplicate-tests, enforcement-claims, env-gate-switches, eslint-by-workspace, eslint-targets, fault-injection-registry, flaky-tests, masked-exit-codes, non-synced-resources, pnpm-settings, regression-controls, repo-rules, shell-gates; nothing was checked, so this is not a pass$/,
+      / \(pariksha 0\): unknown check "boundary" in "checks"; this version reads settings for absolute-paths, aggregate-gate-needs, authority-citations, codec-registry, codeql-baseline, coverage-by-type, coverage-exemptions, doc-budgets, doc-references, duplicate-tests, enforcement-claims, env-gate-switches, eslint-by-workspace, eslint-targets, fault-injection-registry, flaky-tests, license-check, masked-exit-codes, non-synced-resources, pnpm-settings, regression-controls, repo-rules, shell-gates; nothing was checked, so this is not a pass$/,
     );
     const gone = absolute(project({ 'absolute-paths': 'gone.json' }).env);
     assert.equal(gone.code, 2);

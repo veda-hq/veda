@@ -147,7 +147,8 @@ owner: his approval of the slice, state or work item is the review. The
 files that run the required checks (`.github/workflows/ci.yml`,
 `.github/workflows/niyam.yml`, `.github/niyam.json`) have no owner either:
 niyam's shared Guard judges a change to them against the approved slice, as
-it does any other `.github/` change.
+it does any other `.github/` change. It runs on `pull_request_target`, from
+main's copy, so the pull request's own copy cannot weaken it.
 
 Leave auto-merge off only to hold a pull request on purpose (say why in it),
 or for a change that needs Alok's yes first, such as a major release

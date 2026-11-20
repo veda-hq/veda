@@ -105,6 +105,8 @@ class CdOutOfWorktree(Repo):
         path = os.path.join(self.work, name)
         os.mkdir(path)
         git(path, "init", "-q", ".")
+        git(path, "config", "user.email", "t@example.com")
+        git(path, "config", "user.name", "t")
         git(path, "commit", "-q", "--allow-empty", "-m", "init")
         return path
 
@@ -121,6 +123,10 @@ class CdOutOfWorktree(Repo):
                 self.assertIsNone(rules.cd_out_of_worktree(self.bash(command, other)))
         # And into the ownCheckout clone, the other checkout a session can own.
         self.assertIsNone(rules.cd_out_of_worktree(self.bash(f"cd {self.repo}", other)))
+        # A later cd is judged from the checkout the first one entered.
+        found = rules.cd_out_of_worktree(self.bash(f"cd {session} && cd {other}", other)) or ""
+        self.assertIn(f"outside this session's checkout ({session} is this session's)", found)
+        self.assertIn(f"until `cd {session}` brings it back", found)
 
     def test_from_a_main_checkout_the_cd_into_its_managed_worktree_passes(self) -> None:
         other = self.repository("other")

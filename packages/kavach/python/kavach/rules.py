@@ -22,9 +22,9 @@ The rules (README, "Rules that hold a lesson"):
 - ``cd-out-of-worktree``: a ``cd`` or ``pushd`` that leaves the session's
   checkout strands every later call of the turn outside it. One to a folder
   in no git repository refuses even on trial: from there the worktree guard
-  runs reads only. From a checkout no session can own (another repository, a
-  main checkout), the ``cd`` back into one a session can own passes
-  (veda#339).
+  runs reads only. From a checkout no session can own (another repository, or
+  a main checkout other than the ``worktree.ownCheckout`` clone), the ``cd``
+  back into one a session can own passes (veda#339).
 - ``stryker-inplace``: ``stryker run --inPlace``, or a Stryker config written
   with ``inPlace: true``, mutates the real files and restores them only after
   a run that finishes.
@@ -350,9 +350,11 @@ def cd_out_of_worktree(call: Call) -> str | None:
             # The shell is in a checkout no session owns, so this rule has no
             # checkout of the session's to keep it in. A cd into one a session
             # can own is the way back, and refusing it strands the session
-            # where the worktree guard refuses every write (veda#339).
+            # where the worktree guard refuses every write (veda#339). A later
+            # cd in the same command is judged from the checkout it entered.
+            root, owned = session_checkout(target) or target, True
             continue
-        moves = f"`{command.words[0].text} {target}` moves the shell"
+        moves =f"`{command.words[0].text} {target}` moves the shell"
         whose = "this session's" if owned else "its"
         if owned:
             mine = f" ({root} is this session's)"

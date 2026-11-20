@@ -10,8 +10,9 @@ session at once: its mode is "warn" until the consumer's settings say
 "refuse" (config.py, ``rules``). Warning, the call runs and the agent reads
 the reason; refusing, the guard exits 2 with it. Each fire is a row of the
 refusal log naming the rule and its mode, so a trial's fires can be read for
-wrong ones before the switch. While a rule warns, an error in its detector
-allows the call and logs a row naming the error's type; once it refuses, the
+wrong ones before the switch. A finding whose call would leave the session
+where a warning cannot help in time is a ``Refuses``, which refuses whatever
+the mode. While a rule warns, an error in its detector allows the call and logs a row naming the error's type; once it refuses, the
 error refuses too, as every other check does.
 
 The rules (README, "Rules that hold a lesson"):
@@ -19,7 +20,9 @@ The rules (README, "Rules that hold a lesson"):
 - ``pipe-masks-exit``: ``cmd | tail && git push`` pushes even when ``cmd``
   failed, since a pipeline exits with its last command's status.
 - ``cd-out-of-worktree``: a ``cd`` or ``pushd`` that leaves the session's
-  checkout strands every later call of the turn outside it.
+  checkout strands every later call of the turn outside it. One to a folder
+  in no git repository refuses even on trial: from there the worktree guard
+  runs reads only.
 - ``stryker-inplace``: ``stryker run --inPlace``, or a Stryker config written
   with ``inPlace: true``, mutates the real files and restores them only after
   a run that finishes.
@@ -79,6 +82,12 @@ class Rule:
     id: str
     tools: tuple[str, ...]
     detect: Callable[[Call], "str | None"]
+
+
+class Refuses(str):
+    """A finding that refuses whatever its rule's mode: its call would leave
+    the session where a warning cannot help in time (a shell in a folder from
+    which only reads run). A detector returns it in place of a plain ``str``."""
 
 
 @dataclass(frozen=True)
@@ -313,6 +322,20 @@ def cd_out_of_worktree(call: Call) -> str | None:
                 return None
         if inside(target, root):
             continue
+        stay = (
+            "Stay in the checkout: read elsewhere with absolute paths, `git -C <dir>` or `ls <dir>`."
+        )
+        moves = f"`{command.words[0].text} {target}` moves the shell"
+        if os.path.isdir(target) and git_toplevel(target) is None:
+            # From a folder no repository holds, the worktree guard finds no
+            # checkout and runs reads only (veda#335): a session whose shell
+            # Claude Code keeps there can write nothing until it returns.
+            return Refuses(
+                f"{moves} outside this session's checkout ({root} is this session's), to a folder "
+                "in no git repository. Where the shell keeps that folder for later calls, the guards "
+                f"run only reads from there: no write, Edit or Write until `cd {root}` brings it back. "
+                f"This refuses even while the rule is on trial. {stay}"
+            )
         peer = peer_worktree(target, root)
         where = (
             f"another worktree, {peer}, which another session may own"
@@ -320,10 +343,9 @@ def cd_out_of_worktree(call: Call) -> str | None:
             else "outside this session's checkout"
         )
         return (
-            f"`{command.words[0].text} {target}` moves the shell to {where} ({root} is this session's). "
+            f"{moves} to {where} ({root} is this session's). "
             "Where the shell keeps that folder for later calls, each of them runs outside the checkout, "
-            "where the guards refuse every write, the `cd` back included. Stay in the checkout: read "
-            "elsewhere with absolute paths, `git -C <dir>` or `ls <dir>`."
+            f"where the guards refuse every write until `cd {root}` brings it back. {stay}"
         )
     return None
 
@@ -730,6 +752,8 @@ def judge(call: Call, settings: Any, fired: Callable[[str, str, str], None] | No
             continue
         if message is None:
             continue
+        if isinstance(message, Refuses):
+            mode = "refuse"
         if fired is not None:
             fired(rule.id, mode, message)
         fire = Fire(rule.id, mode, message, refuses_from)

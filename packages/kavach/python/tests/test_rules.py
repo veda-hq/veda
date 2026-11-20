@@ -127,6 +127,40 @@ class CdOutOfWorktree(Repo):
         found = rules.cd_out_of_worktree(self.bash(f"cd {self.repo}", peer))
         self.assertIn("another worktree", found or "")
 
+    def test_only_a_folder_in_no_repository_refuses_whatever_the_mode(self) -> None:
+        other = os.path.join(self.work, "other")
+        os.mkdir(other)
+        git(other, "init", "-q", ".")
+        peer = os.path.join(self.work, "peer")
+        git(self.repo, "worktree", "add", "-q", peer)
+        elsewhere = os.path.join(self.work, "elsewhere")
+        for command, refuses in (
+            (f"cd {elsewhere}", True),
+            (f"pushd {elsewhere}", True),
+            ("cd ..", True),
+            (f"cd {other}", False),
+            (f"cd {peer}", False),
+            # A folder that is not there: the `cd` fails and the shell stays.
+            (f"cd {os.path.join(self.work, 'missing')}", False),
+        ):
+            with self.subTest(command=command):
+                found = rules.cd_out_of_worktree(self.bash(command))
+                self.assertIsNotNone(found)
+                self.assertIs(isinstance(found, rules.Refuses), refuses)
+                self.assertIs("in no git repository" in (found or ""), refuses)
+        found = rules.cd_out_of_worktree(self.bash(f"cd {other}"))
+        self.assertIn(f"until `cd {self.repo}` brings it back", found or "")
+        self.assertNotIn("the `cd` back included", found or "")
+
+    def test_judge_files_a_refusing_finding_with_the_refusals(self) -> None:
+        settings = config.parse({"rules": {"cd-out-of-worktree": "warn"}})
+        fires: list[tuple[str, str, str]] = []
+        call = self.bash(f"cd {os.path.join(self.work, 'elsewhere')}")
+        outcome = rules.judge(call, settings, lambda *fire: fires.append(fire))
+        self.assertEqual([fire.mode for fire in outcome.refusals], ["refuse"])
+        self.assertEqual(outcome.warnings, [])
+        self.assertEqual([(rule, mode) for rule, mode, _ in fires], [("cd-out-of-worktree", "refuse")])
+
     def test_outside_any_checkout_nothing_is_judged(self) -> None:
         self.assertIsNone(rules.cd_out_of_worktree(self.bash("cd /", os.path.join(self.work, "elsewhere"))))
 
@@ -492,19 +526,56 @@ class Guards(Repo):
             [("commit-body-ref-line-length", "warn"), ("commit-message-shell-expansion", "warn")],
         )
 
+    def other_repository(self) -> str:
+        other = os.path.join(self.work, "other")
+        os.mkdir(other)
+        git(other, "init", "-q", ".")
+        return other
+
     def test_the_command_guard_warns_on_a_command_with_no_git(self) -> None:
-        result = self.run_guard(COMMAND_GUARD, "Bash", {"command": f"cd {self.work}"})
+        other = self.other_repository()
+        result = self.run_guard(COMMAND_GUARD, "Bash", {"command": f"cd {other}"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("rule cd-out-of-worktree", json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"])
 
     def test_the_command_guard_refuses_once_told_to(self) -> None:
+        other = self.other_repository()
         settings = self.settings({"rules": {"cd-out-of-worktree": "refuse"}})
-        result = self.run_guard(COMMAND_GUARD, "Bash", {"command": f"cd {self.work}"}, settings)
+        result = self.run_guard(COMMAND_GUARD, "Bash", {"command": f"cd {other}"}, settings)
         self.assertEqual((result.returncode, result.stdout), (2, ""))
-        self.assertTrue(result.stderr.startswith(f"BLOCKED: `cd {self.work}` moves the shell"), result.stderr)
+        self.assertTrue(result.stderr.startswith(f"BLOCKED: `cd {other}` moves the shell"), result.stderr)
         self.assertIn("(kavach rule cd-out-of-worktree)", result.stderr)
         (row,) = self.rows()
         self.assertEqual((row["guard"], row["rule"], row["mode"]), ("command", "cd-out-of-worktree", "refuse"))
+
+    def test_a_cd_to_a_folder_in_no_repository_refuses_on_trial(self) -> None:
+        """veda#335: from there the worktree guard runs reads only, so the
+        rule refuses whatever its mode, with no setting or a warn one."""
+
+        warn = self.settings({"rules": {"cd-out-of-worktree": {"mode": "warn", "refusesFrom": "2099-01-01"}}})
+        for settings in (None, warn):
+            with self.subTest(settings=settings):
+                result = self.run_guard(COMMAND_GUARD, "Bash", {"command": f"cd {self.work} && cat *.md"}, settings)
+                self.assertEqual((result.returncode, result.stdout), (2, ""))
+                self.assertEqual(
+                    result.stderr,
+                    f"BLOCKED: `cd {self.work}` moves the shell outside this session's checkout "
+                    f"({self.repo} is this session's), to a folder in no git repository. Where the shell "
+                    "keeps that folder for later calls, the guards run only reads from there: no write, "
+                    f"Edit or Write until `cd {self.repo}` brings it back. This refuses even while the rule is on trial. "
+                    "Stay in the checkout: read elsewhere with absolute paths, `git -C <dir>` or `ls <dir>`. "
+                    "(kavach rule cd-out-of-worktree)\n",
+                )
+        modes = [(row["rule"], row["mode"]) for row in self.rows()]
+        self.assertEqual(modes, [("cd-out-of-worktree", "refuse")] * 2)
+
+    def test_from_a_folder_in_no_repository_the_cd_back_passes(self) -> None:
+        event = json.dumps({"tool_name": "Bash", "tool_input": {"command": f"cd {self.repo}"}, "cwd": self.work})
+        result = subprocess.run(
+            [sys.executable, str(COMMAND_GUARD)], input=event, cwd=self.work, env=dict(ENV),
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
 
     def test_a_clean_command_prints_nothing(self) -> None:
         result = self.run_guard(COMMAND_GUARD, "Bash", {"command": "ls"})

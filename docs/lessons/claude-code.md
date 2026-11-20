@@ -140,6 +140,13 @@ undoing another.
 - **The sync tool's default base can be stale.** In a reused worktree, the sync-with-base-branch
   tool defaults to the branch the worktree was first cut from, which may since have been
   deleted, and fails at fetch; always pass base `main`.
+- **A `cd` into an additional working directory lasts.** Claude Code keeps the shell's folder
+  for later calls when it ends inside a working directory, and the session's additional
+  working directories count, not only its worktree. Subagents start there too. In a folder no
+  git repository holds, kavach finds no checkout. Before kavach 0.7.14 it refused every call
+  from there, the `cd` back included, and the session lost its shell, Edit and Write for good
+  (veda#335). Read other folders with absolute paths, and never `cd` out of the worktree.
+  <!-- held by: kavach command guard, rule cd-out-of-worktree (warns, then refuses, a cd out of the checkout; refuses at once one to a folder in no git repository) -->
 - **Syncing append-only files.** Conflicts on append-only files are append/append: keep both
   sides.
 - **Named workflows resolve from the main checkout.** From a git worktree, `Workflow({name})`

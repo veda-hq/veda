@@ -67,6 +67,11 @@ cannot prove a command, it treats it as writing, and from outside an owned
 worktree that refuses. An expansion that could become an option (`git log
 $X`, where `X=--output=/elsewhere`) leaves the command unproven.
 
+A proven read also passes from a folder no git repository holds, where the
+guard finds no checkout at all, such as `pwd`, `cat *.md` or a bare
+`cd <worktree>`, the way back for a shell left there. Everything else from such a folder is
+refused, Edit and Write included, quoting git's reason and naming the folder.
+
 `pnpm exec` and `pnpm run` run in the folder one selector before them names:
 `--dir`/`-C <folder>`, or `--filter`/`-F` with a folder (`./apps/server`)
 or one workspace package's name, with or without its scope. So a path after
@@ -563,13 +568,14 @@ session at once: in `"warn"` the call runs and the agent reads the reason
 warnings share one answer), and once the project sets `"refuse"` the guard
 exits 2 with it. Every fire, in either mode, is a row of the refusal log
 naming the rule and the mode, so a trial's rows can be read for wrong fires
-before the switch. While a rule warns, an error in its own detection allows
+before the switch. A finding whose call would leave the session where a
+warning cannot help in time refuses in either mode, and its row says `refuse`. While a rule warns, an error in its own detection allows
 the call and logs a row naming the error's type; refusing, it fails closed.
 
 | Rule | Guard | Fires on |
 | --- | --- | --- |
 | `pipe-masks-exit` | command | A pipeline ending in `tail` or `head` joined by `&&` to `git push` (`pnpm test \| tail && git push` pushes after a failure), unless the line sets `pipefail`. |
-| `cd-out-of-worktree` | command | A literal top-level `cd` or `pushd` to a folder outside the session's checkout (the git work tree of the call's folder; a clone nested inside it counts as inside), naming a peer worktree when it is one. The shell keeps that folder, and the guards then refuse every write, the `cd` back included. A `cd` in a subshell or a pipeline, `cd -` and a computed target are not judged. |
+| `cd-out-of-worktree` | command | A literal top-level `cd` or `pushd` to a folder outside the session's checkout (the git work tree of the call's folder; a clone nested inside it counts as inside), naming a peer worktree when it is one. The shell keeps that folder, and the guards then refuse every write until a `cd` back. A target folder in no git repository refuses whatever the rule's mode: from there the worktree guard runs reads only. A `cd` in a subshell or a pipeline, `cd -` and a computed target are not judged. |
 | `stryker-inplace` | command, tool | `stryker` run with `--inPlace`, and a Write or Edit that sets `inPlace: true` in a Stryker config (`stryker[.<name>].conf[ig].{js,mjs,cjs,ts,mts,cts,json}`). |
 | `checkout-discards-uncommitted` | command | `git checkout -- <path>`, `git checkout <ref> -- <path>`, `git checkout --ours\|--theirs <path>` and `git restore <path>` (not `--staged` alone) when `git status` shows the path with uncommitted changes. |
 | `commit-body-ref-line-length` | command | A `git commit` whose message (`-m` paragraphs, or the `-F` file) has a body line over 100 characters holding `#<number>`: commitlint reads it as a footer and fails `footer-max-line-length`. |

@@ -61,7 +61,9 @@ export type Side = { readonly kind: 'index' } | { readonly kind: 'commit'; reado
  */
 export const parseGrep = (out: string, prefix?: string): GrepHit[] =>
   out.split('\n').flatMap((raw) => {
-    const match = /^(.*?):(\d+):(.*)$/.exec(prefix === undefined ? raw : raw.slice(prefix.length));
+    // A CRLF file's lines end in a carriage return, which `.` does not match: drop one.
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    const match = /^(.*?):(\d+):(.*)$/.exec(prefix === undefined ? line : line.slice(prefix.length));
     return match === null ? [] : [{ file: match[1] as string, line: Number(match[2]), text: match[3] as string }];
   });
 

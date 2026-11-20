@@ -368,17 +368,26 @@ def closing(message):
     """The choice-shaped questions in the last paragraphs of a closing
     message, the paragraphs that hold them, code, URLs and quoted text kept
     (the words read for repository state, one paragraph each), and for each
-    question the index of its paragraph. The questions themselves are read
-    with code, URLs and quoted text left out."""
+    question the index of its paragraph. A question is judged with code,
+    URLs and quoted text left out, and kept with its quoted text, the words
+    the log and the relabel check compare."""
     found, holding, where = [], [], []
     for paragraph in closing_paragraphs(message):
         here = []
-        for sentence in SENTENCE.split(QUOTES.sub(" ", URL.sub(" ", INLINE_CODE.sub(" ", paragraph)))):
+        kept = URL.sub(" ", INLINE_CODE.sub(" ", paragraph))
+        # Quoted text blanked to its own length, so a span of one is a span
+        # of the other.
+        read = QUOTES.sub(lambda quote: " " * len(quote.group(0)), kept)
+        start = 0
+        for cut in [*SENTENCE.finditer(read), None]:
+            end = cut.start() if cut else len(read)
+            sentence, at = read[start:end], start
+            start = cut.end() if cut else end
             if "?" not in sentence:
                 continue
-            question = sentence[: sentence.rindex("?") + 1].strip()
-            if names_alternatives(OR_NOT.sub(" ", question), False):
-                here.append(question)
+            stop_at = at + sentence.rindex("?") + 1
+            if names_alternatives(OR_NOT.sub(" ", read[at:stop_at]), False):
+                here.append(kept[at:stop_at].strip())
         if here:
             found += here
             where += [len(holding)] * len(here)

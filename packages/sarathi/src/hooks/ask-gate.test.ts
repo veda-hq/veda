@@ -366,6 +366,11 @@ test('ask-gate on Stop: a question in double quotes is someone else\'s, not the 
   ] as const) {
     assert.equal(holds(t, message), true, why);
   }
+  // The held question keeps its quoted words: the log and the relabel check
+  // compare them, so "fast" or "quick" is not "slow" or "late".
+  const run = gate(stopEvent(t, 'Done.\n\nRename the flag to "fast" or “quick”?'));
+  const context = (JSON.parse(run.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+  assert.match(context, /\(Rename the flag to "fast" or “quick”\?\)/);
 });
 
 test('ask-gate on Stop: anything it cannot read lets the turn end', () => {

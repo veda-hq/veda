@@ -17,7 +17,7 @@ export const isQuiet = (
  * turn the pass into an unqualified one.
  */
 export const successNotices = (text: string): string[] => {
-  const kept: string[] = [];
+  const kept: Array<string> = [];
   let inNotice = false;
   for (const line of text.split("\n")) {
     if (line.trimStart().startsWith("⚠")) {

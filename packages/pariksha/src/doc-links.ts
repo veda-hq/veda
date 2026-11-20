@@ -43,8 +43,8 @@ const isLineNumber = (v: unknown): v is number => Number.isSafeInteger(v) && (v 
 const errorMap = (report: string): Array<[string, LycheeEntry[]]> => {
   const parsed: unknown = JSON.parse(report);
   if (!isRecord(parsed)) throw new Error("lychee's report is not a JSON object");
-  // A clean run may leave error_map out.
-  const map = parsed['error_map'] ?? {};
+  // A clean run may leave error_map out; a null one is out of shape.
+  const { error_map: map = {} } = parsed;
   if (!isRecord(map)) throw new Error("lychee's report: error_map is not an object");
   return Object.entries(map).map(([source, entries]) => {
     if (!Array.isArray(entries)) throw new Error(`lychee's report: error_map["${source}"] is not a list`);

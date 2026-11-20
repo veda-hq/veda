@@ -141,6 +141,7 @@ describe('parseLycheeReport', () => {
     for (const [report, message] of [
       ['[]', "lychee's report is not a JSON object"],
       ['{"error_map":[]}', "lychee's report: error_map is not an object"],
+      ['{"error_map":null}', "lychee's report: error_map is not an object"],
       ['{"error_map":{"a.md":{}}}', 'lychee\'s report: error_map["a.md"] is not a list'],
       ['{"error_map":{"a.md":[3]}}', `lychee's report: ${where} is not an object`],
       ['{"error_map":{"a.md":[{"status":"x"}]}}', `lychee's report: ${where}.status is not an object`],

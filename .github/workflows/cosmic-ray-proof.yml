@@ -1,0 +1,221 @@
+name: cosmic-ray survivors proof
+
+# Slice #328 (work item #238): cosmic-ray 8.9.0 runs every mutant of
+# kavach's tool guard, command guard, config and refusal log, against the
+# whole Python suite, the run the slice's lists were read from (about 70 s a
+# surviving mutant; a kill stops at the first failure). It lives only on its
+# draft pull request, closed
+# once the result is on #328, and never merges. The job fails when:
+#   - a mutant the slice names (by line and operator) has no result or survives;
+#   - any other mutant survives that is not on the slice's equivalent list;
+#   - a rewritten annotation line still yields a `|` mutant.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/cosmic-ray-proof.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cosmic-ray-proof-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prove:
+    # A fixed name: GitHub adds the matrix values to it.
+    name: cosmic-ray proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - module: tool_guard
+            targets: >-
+              26:AddNot 27:NumberReplacer 29:NumberReplacer 46:ExceptionReplacer
+              90:ReplaceComparisonOperator_Eq_GtE
+            equivalents: >-
+              42:ReplaceComparisonOperator_Eq_LtE 90:ReplaceComparisonOperator_Eq_LtE
+            annotations: ""
+          - module: command_guard
+            targets: >-
+              73:AddNot 74:NumberReplacer 76:NumberReplacer 86:NumberReplacer
+              91:ReplaceComparisonOperator_Eq_GtE 133:ExceptionReplacer 134:ReplaceFalseWithTrue
+              155:ExceptionReplacer 204:NumberReplacer 217:ExceptionReplacer 219:NumberReplacer
+              234:ReplaceBinaryOperator_Mod_Add 240:ReplaceComparisonOperator_Eq_GtE
+            equivalents: >-
+              149:ReplaceComparisonOperator_Eq_LtE 240:ReplaceComparisonOperator_Eq_LtE
+              172:ReplaceComparisonOperator_Eq_GtE 175:ReplaceComparisonOperator_Eq_GtE
+              187:ReplaceComparisonOperator_Eq_GtE 91:ReplaceComparisonOperator_Eq_Is
+              86:ReplaceComparisonOperator_Is_Eq
+            annotations: ""
+          - module: config
+            targets: >-
+              33:ReplaceTrueWithFalse 43:ReplaceTrueWithFalse 55:ReplaceTrueWithFalse
+              71:ReplaceTrueWithFalse 82:ReplaceTrueWithFalse 94:ReplaceTrueWithFalse
+              104:ReplaceTrueWithFalse 321:ReplaceComparisonOperator_NotEq_Gt
+              387:ReplaceComparisonOperator_NotEq_Gt
+            equivalents: ""
+            annotations: "129 416"
+          - module: refusal_log
+            targets: >-
+              30:NumberReplacer 59:NumberReplacer 60:ReplaceFalseWithTrue
+              65:ReplaceComparisonOperator_NotEq_Lt 65:ReplaceComparisonOperator_NotEq_Gt
+              65:ReplaceOrWithAnd 134:ReplaceTrueWithFalse 136:ReplaceFalseWithTrue
+              183:ReplaceComparisonOperator_Eq_LtE 183:ReplaceComparisonOperator_Eq_GtE
+              183:ReplaceAndWithOr 188:ReplaceComparisonOperator_Eq_GtE
+            equivalents: >-
+              183:ReplaceComparisonOperator_Is_Eq 188:ReplaceComparisonOperator_Is_Eq
+            annotations: "50 99 100 159"
+    env:
+      MODULE: ${{ matrix.module }}
+      TARGETS: ${{ matrix.targets }}
+      EQUIVALENTS: ${{ matrix.equivalents }}
+      ANNOTATIONS: ${{ matrix.annotations }}
+      # The guard tests start Python children, which -B does not reach: a
+      # stale .pyc of a same-size mutant must never be read.
+      PYTHONDONTWRITEBYTECODE: "1"
+      SUITE: python3 -B -m unittest discover -f -s tests -t .
+      TEST_COMMAND: sh -c 'cd python && python3 -B -m unittest discover -f -s tests -t . 2>>../unittest.log; s=$?; echo === exit $s >>../unittest.log; exit $s'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Add cosmic-ray 8.9.0 (this job only)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet cosmic-ray==8.9.0
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          echo "WORKERS=$(nproc)" >> "$GITHUB_ENV"
+          python3 --version >> "$GITHUB_STEP_SUMMARY"
+      - name: One copy per worker
+        # cosmic-ray mutates the file in place, so each worker runs in a copy.
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 "$WORKERS"); do
+            mkdir -p "$RUNNER_TEMP/w$i"
+            cp -R packages/kavach "$RUNNER_TEMP/w$i/kavach"
+          done
+      - name: The unmutated tests in every copy at once
+        # Every mutant of config.py should be killed, so no mutant run there
+        # shows the test command passing: this step is what does.
+        run: |
+          set -euo pipefail
+          pids=""
+          for i in $(seq 1 "$WORKERS"); do
+            # SUITE is a command line, split on spaces on purpose.
+            # shellcheck disable=SC2086
+            (cd "$RUNNER_TEMP/w$i/kavach/python" && $SUITE > "$RUNNER_TEMP/load-w$i.txt" 2>&1; echo "exit $?" >> "$RUNNER_TEMP/load-w$i.txt") &
+            pids="$pids $!"
+          done
+          # shellcheck disable=SC2086
+          wait $pids || true
+          tail -n 4 "$RUNNER_TEMP"/load-w*.txt
+          if grep -L '^exit 0$' "$RUNNER_TEMP"/load-w*.txt | grep -q .; then
+            echo "- The unmutated tests failed under load" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          grep -h '^Ran ' "$RUNNER_TEMP"/load-w1.txt | sed 's/^/- Unmutated: /' >> "$GITHUB_STEP_SUMMARY"
+      - name: Workers and config
+        run: |
+          set -euo pipefail
+          urls=""
+          for i in $(seq 1 "$WORKERS"); do
+            port=$(( 9875 + i ))
+            (cd "$RUNNER_TEMP/w$i/kavach" && nohup cosmic-ray --verbosity INFO http-worker --port "$port" > "$RUNNER_TEMP/w$i.log" 2>&1 &)
+            urls="${urls:+$urls, }\"http://localhost:$port\""
+          done
+          {
+            echo '[cosmic-ray]'
+            echo "module-path = \"python/kavach/${MODULE}.py\""
+            echo 'timeout = 600.0'
+            echo 'excluded-modules = []'
+            echo "test-command = \"${TEST_COMMAND}\""
+            echo
+            echo '[cosmic-ray.distributor]'
+            echo 'name = "http"'
+            echo
+            echo '[cosmic-ray.distributor.http]'
+            echo "worker-urls = [${urls}]"
+          } > "$RUNNER_TEMP/cr.toml"
+          cat "$RUNNER_TEMP/cr.toml"
+          for i in $(seq 1 "$WORKERS"); do
+            port=$(( 9875 + i ))
+            for _ in $(seq 1 60); do
+              curl -s -o /dev/null "http://localhost:$port/" && break
+              sleep 1
+            done
+            curl -s -o /dev/null "http://localhost:$port/" || { cat "$RUNNER_TEMP/w$i.log"; exit 1; }
+          done
+      - name: cosmic-ray init and exec
+        working-directory: ${{ runner.temp }}/w1/kavach
+        run: |
+          set -euo pipefail
+          cosmic-ray init "$RUNNER_TEMP/cr.toml" "$RUNNER_TEMP/${MODULE}.sqlite"
+          start=$(date +%s)
+          cosmic-ray --verbosity INFO exec "$RUNNER_TEMP/cr.toml" "$RUNNER_TEMP/${MODULE}.sqlite" > "$RUNNER_TEMP/exec-log.txt" 2>&1
+          echo "- ${MODULE}.py, ${WORKERS} workers, exec $(( $(date +%s) - start )) s" >> "$GITHUB_STEP_SUMMARY"
+      - name: Every mutant killed, or on the equivalent list
+        run: |
+          set -euo pipefail
+          db="$RUNNER_TEMP/${MODULE}.sqlite"
+          out="$RUNNER_TEMP/${MODULE}"
+          cosmic-ray dump "$db" > "${out}.jsonl"
+          # Each list is space-separated words, split on purpose.
+          # shellcheck disable=SC2086
+          words() { printf '%s\n' $1 | jq -R 'select(. != "")' | jq -s -c .; }
+          targets=$(words "$TARGETS")
+          equivalents=$(words "$EQUIVALENTS")
+          # shellcheck disable=SC2086
+          annotations=$(printf '%s\n' $ANNOTATIONS | jq -R 'select(. != "") | tonumber' | jq -s -c .)
+          jq -c '{line: .[0].mutations[0].start_pos[0], operator: (.[0].mutations[0].operator_name | sub("^core/"; "")), outcome: (.[1].test_outcome // "none"), diff: (.[1].diff // "")} | .key = "\(.line):\(.operator)"' \
+            "${out}.jsonl" > "${out}-all.jsonl"
+          jq -c --argjson t "$targets" 'select(.key as $k | $t | index($k))' "${out}-all.jsonl" > "${out}-target.jsonl"
+          total=$(jq -s 'length' "${out}-all.jsonl")
+          target_total=$(jq -s 'length' "${out}-target.jsonl")
+          target_killed=$(jq -s '[.[] | select(.outcome == "killed")] | length' "${out}-target.jsonl")
+          missing=$(jq -s -r --argjson t "$targets" '[.[].key] as $seen | $t - $seen | join(" ")' "${out}-target.jsonl")
+          jq -c --argjson e "$equivalents" 'select(.outcome != "killed" and (.key as $k | $e | index($k) | not))' "${out}-all.jsonl" > "${out}-unexpected.jsonl"
+          unexpected=$(jq -s 'length' "${out}-unexpected.jsonl")
+          equivalent=$(jq -s --argjson e "$equivalents" '[.[] | select(.outcome != "killed" and (.key as $k | $e | index($k)))] | length' "${out}-all.jsonl")
+          bitor=$(jq -s --argjson a "$annotations" '[.[] | select((.operator | startswith("ReplaceBinaryOperator_BitOr")) and (.line as $l | $a | index($l)))] | length' "${out}-all.jsonl")
+          passed=$(cat "$RUNNER_TEMP"/w*/kavach/unittest.log | grep -c '^=== exit 0$' || true)
+          {
+            echo "- Mutants in ${MODULE}.py: ${total}"
+            echo "- The slice's mutants: ${target_total}, killed ${target_killed}; keys with no mutant: ${missing:-none}"
+            echo "- Equivalents left, all on the list: ${equivalent}"
+            echo "- Any other mutant not killed: ${unexpected}"
+            echo "- \`|\` mutants on the rewritten annotation lines: ${bitor}"
+            echo "- Mutant runs the tests passed: ${passed}"
+            echo
+            echo '| Line | Operator | Outcome |'
+            echo '|---|---|---|'
+            jq -r '"| \(.line) | \(.operator) | \(.outcome) |"' "${out}-target.jsonl"
+            if [ "$unexpected" -gt 0 ]; then
+              echo
+              echo '**Not killed, and not on the list:**'
+              echo
+              jq -r '"- \(.key) (\(.outcome)): `\(.diff | split("\n") | map(select(startswith("+") and (startswith("+++") | not))) | .[0] // "" | sub("^\\+ *"; ""))`"' "${out}-unexpected.jsonl"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ -z "$missing" ]
+          [ "$target_total" -gt 0 ] && [ "$target_total" -eq "$target_killed" ]
+          [ "$unexpected" -eq 0 ]
+          [ "$bitor" -eq 0 ]
+          # A test command that cannot run kills every mutant: where the
+          # list expects equivalents, some runs must pass.
+          if [ -n "$EQUIVALENTS" ]; then [ "$passed" -gt 0 ]; fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: cosmic-ray-proof-${{ matrix.module }}
+          path: |
+            ${{ runner.temp }}/*.sqlite
+            ${{ runner.temp }}/*.jsonl
+            ${{ runner.temp }}/*.txt
+            ${{ runner.temp }}/*.log
+            ${{ runner.temp }}/w*/kavach/unittest.log
+          if-no-files-found: ignore

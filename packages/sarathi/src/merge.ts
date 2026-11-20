@@ -8,6 +8,8 @@
  * one hook, so it combines them the same way:
  *
  * - any handler that blocks makes the answer block, with every blocker's reason;
+ *   on Stop and SubagentStop the other handlers' block reasons and context
+ *   follow it, since an exit 2 drops every JSON answer;
  * - a fail-closed handler (a guard) that ends any other way than exit 0 blocks too;
  * - JSON answers merge field by field, the strictest decision winning
  *   (deny over ask over allow; block over none; continue false over true);
@@ -127,10 +129,35 @@ function mergeJson(event: string, answers: readonly Json[], extraContext: readon
   return merged;
 }
 
+/**
+ * Events whose exit-2 answer carries the other handlers' texts too. Claude Code
+ * gives the model a blocked Stop's stderr and, beside it, each hook's block
+ * reason and context; sarathi's one exit 2 would drop the JSON answers, so
+ * their texts follow the blockers' stderr instead (veda#307).
+ */
+const TEXTS_ON_BLOCK = new Set(['Stop', 'SubagentStop']);
+
+/** The other handlers' block reasons, then their context, as one block's stderr. */
+function othersTexts(outcomes: readonly Outcome[]): string[] {
+  const answers = outcomes
+    .filter(outcome => outcome.code === 0)
+    .map(outcome => parseJson(outcome.stdout))
+    .filter((answer): answer is Json => answer !== undefined);
+  const reasons = answers.filter(answer => answer.decision === 'block').map(answer => answer.reason);
+  const context = answers.map(answer => answer.hookSpecificOutput).filter(isRecord).map(specific => specific.additionalContext);
+  return strings([...reasons, ...context]).map(text => text.trim());
+}
+
 /** Combines the outcomes of `event`'s handlers into the one answer sarathi gives. */
 export function merge(event: string, outcomes: readonly Outcome[]): Answer {
   const blockers = outcomes.filter(blocks);
-  if (blockers.length > 0) return { code: 2, stdout: '', stderr: blockers.map(blockReason).join('') };
+  if (blockers.length > 0) {
+    const reasons = blockers.map(blockReason).join('');
+    const others = TEXTS_ON_BLOCK.has(event) ? othersTexts(outcomes.filter(outcome => !blocks(outcome))) : [];
+    if (others.length === 0) return { code: 2, stdout: '', stderr: reasons };
+    const texts = [reasons.trimEnd(), ...others].filter(text => text !== '');
+    return { code: 2, stdout: '', stderr: `${texts.join('\n\n')}\n` };
+  }
 
   const failed = outcomes.filter(outcome => outcome.code !== 0);
   const passed = outcomes.filter(outcome => outcome.code === 0);

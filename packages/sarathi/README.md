@@ -62,7 +62,10 @@ settings' own `hooks` block, one entry per handler:
 `sarathi hook <Event>` runs the matching handlers side by side and answers
 Claude Code once, as Claude Code combines several hooks' answers: any exit 2
 blocks with every blocker's reason; a fail-closed handler that crashes or
-runs out of time blocks too; JSON answers merge with the strictest decision
+runs out of time blocks too. sarathi blocks with exit 2 either way, which
+drops every JSON answer, so on `Stop` and `SubagentStop` the other handlers'
+`decision: "block"` reasons, then their `additionalContext`, follow the
+blockers' reasons on stderr, each after a blank line. JSON answers merge with the strictest decision
 winning (deny over ask over allow, block over none, `continue: false` over
 true) and every handler's context kept; a handler that failed without
 blocking is named in `systemMessage`, or on stderr with exit 1. A hook list
@@ -265,10 +268,15 @@ settled a question, so it checks that a look happened, not what it found.
   runs; the feedback tells the model to research and end again, and not to
   repeat an owner-only question. The transcript can lag, so research in the
   turn's last moments may not be in it yet; the cost is one extra
-  continuation. A Stop
-  handler that exits 2 beside it wins, and sarathi answers with that
-  handler's reason alone: the gate's feedback is not shown, and its once
-  for the turn is spent.
+  continuation. Beside another Stop handler that blocks, the model still
+  gets the gate's feedback with that handler's reason. A handler that
+  answers JSON `decision: "block"` merges with it. Claude Code 2.1.326 gives
+  the model the reason as `Stop hook feedback` and the gate's text beside
+  it. One that exits 2 gets the gate's text after its own reason on stderr
+  (0.7.13 and later). Before 0.7.13 sarathi answered such a Stop with that
+  handler's reason alone. On 2026-11-19 a project's session lost the
+  gate's feedback that way, beside a hook that exits 2 for a pull request's
+  Auto-fix, and its once for the turn was spent anyway (veda#307).
 
 **An ask the app does not see (Stop).** The desktop app and the needs-you
 plugin show that a session waits on its owner from the `ask` of its

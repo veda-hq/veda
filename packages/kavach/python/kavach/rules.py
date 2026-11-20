@@ -10,9 +10,9 @@ session at once: its mode is "warn" until the consumer's settings say
 "refuse" (config.py, ``rules``). Warning, the call runs and the agent reads
 the reason; refusing, the guard exits 2 with it. Each fire is a row of the
 refusal log naming the rule and its mode, so a trial's fires can be read for
-wrong ones before the switch. A finding no later call could undo is a
-``Refuses``, which refuses whatever the mode. While a rule warns, an error in its detector
-allows the call and logs a row naming the error's type; once it refuses, the
+wrong ones before the switch. A finding whose call would leave the session
+where a warning cannot help in time is a ``Refuses``, which refuses whatever
+the mode. While a rule warns, an error in its detector allows the call and logs a row naming the error's type; once it refuses, the
 error refuses too, as every other check does.
 
 The rules (README, "Rules that hold a lesson"):
@@ -85,9 +85,9 @@ class Rule:
 
 
 class Refuses(str):
-    """A finding that refuses whatever its rule's mode: one no later call
-    could undo, so warning about it first would teach nothing in time. A
-    detector returns it in place of a plain ``str``."""
+    """A finding that refuses whatever its rule's mode: its call would leave
+    the session where a warning cannot help in time (a shell in a folder from
+    which only reads run). A detector returns it in place of a plain ``str``."""
 
 
 @dataclass(frozen=True)

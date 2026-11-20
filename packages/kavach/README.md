@@ -568,8 +568,8 @@ session at once: in `"warn"` the call runs and the agent reads the reason
 warnings share one answer), and once the project sets `"refuse"` the guard
 exits 2 with it. Every fire, in either mode, is a row of the refusal log
 naming the rule and the mode, so a trial's rows can be read for wrong fires
-before the switch. A finding no later call could undo refuses in either
-mode, and its row says `refuse`. While a rule warns, an error in its own detection allows
+before the switch. A finding whose call would leave the session where a
+warning cannot help in time refuses in either mode, and its row says `refuse`. While a rule warns, an error in its own detection allows
 the call and logs a row naming the error's type; refusing, it fails closed.
 
 | Rule | Guard | Fires on |

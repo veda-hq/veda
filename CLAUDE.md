@@ -150,7 +150,9 @@ itself; a change to any one of them alone waits too. Until he approves, it
 is open, not done. Every other path, the other workflows included, has no
 owner: his approval of the slice, state or work item is the review. The
 check files stay owned until veda runs niyam's shared Guard, which judges a
-change to them from main's copy.
+change to them from main's copy. The sources the gate mutates are not
+owned, and nothing yet refuses a `// Stryker disable` comment in them, so
+only review catches one.
 
 Leave auto-merge off only to hold a pull request on purpose (say why in it),
 or for a change that needs Alok's yes first, such as a major release

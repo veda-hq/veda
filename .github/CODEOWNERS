@@ -19,8 +19,10 @@
 /.github/niyam.json                 @AlokBansal8
 
 # What the mutation gate judges: its lanes, their Stryker configs, and the
-# planner that picks the lanes with work. A pull request runs its own copy, so
-# it could drop or narrow the lane that would judge it.
+# script that plans the lanes with work. A pull request runs its own copy, so
+# it could drop or narrow the lane that would judge it. Not covered: the
+# @veda-hq/agnipariksha pin in package.json, whose planner the script calls.
+# Pins stay agents' work, and released-pins.mjs holds each to an exact release.
 /agnipariksha.json                  @AlokBansal8
 /stryker/                           @AlokBansal8
 /packages/*/stryker.config.mjs      @AlokBansal8

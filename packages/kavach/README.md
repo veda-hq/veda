@@ -68,8 +68,8 @@ worktree that refuses. An expansion that could become an option (`git log
 $X`, where `X=--output=/elsewhere`) leaves the command unproven.
 
 A proven read also passes from a folder no git repository holds, where the
-guard finds no checkout at all: `ls`, `cat`, and `cd <worktree>` alone, the
-way back for a shell left there. Everything else from such a folder is
+guard finds no checkout at all, such as `pwd`, `cat *.md` or a bare
+`cd <worktree>`, the way back for a shell left there. Everything else from such a folder is
 refused, Edit and Write included, quoting git's reason and naming the folder.
 
 `pnpm exec` and `pnpm run` run in the folder one selector before them names:

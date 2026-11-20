@@ -562,7 +562,7 @@ class Guards(Repo):
                     f"BLOCKED: `cd {self.work}` moves the shell outside this session's checkout "
                     f"({self.repo} is this session's), to a folder in no git repository. Where the shell "
                     "keeps that folder for later calls, the guards run only reads from there: no write, "
-                    "Edit or Write until a bare `cd` back. This refuses even while the rule is on trial. "
+                    f"Edit or Write until `cd {self.repo}` brings it back. This refuses even while the rule is on trial. "
                     "Stay in the checkout: read elsewhere with absolute paths, `git -C <dir>` or `ls <dir>`. "
                     "(kavach rule cd-out-of-worktree)\n",
                 )

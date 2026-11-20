@@ -333,8 +333,8 @@ def cd_out_of_worktree(call: Call) -> str | None:
             return Refuses(
                 f"{moves} outside this session's checkout ({root} is this session's), to a folder "
                 "in no git repository. Where the shell keeps that folder for later calls, the guards "
-                "run only reads from there: no write, Edit or Write until a bare `cd` back. This "
-                f"refuses even while the rule is on trial. {stay}"
+                f"run only reads from there: no write, Edit or Write until `cd {root}` brings it back. "
+                f"This refuses even while the rule is on trial. {stay}"
             )
         peer = peer_worktree(target, root)
         where = (

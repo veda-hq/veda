@@ -14,7 +14,7 @@ export function afterEdit(tool: string, given: Readonly<Record<string, unknown>>
     return typeof value === 'string' ? value : '';
   };
   if (tool === 'Write') return text('content');
-  const before = current ?? "";
+  const before = current ?? '';
   const old = text('old_string');
   const next = text('new_string');
   if (old === '' || !before.includes(old)) return `${before}\n${next}`;

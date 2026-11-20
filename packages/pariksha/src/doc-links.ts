@@ -186,8 +186,8 @@ export const findLinkProblems = (config: Config, snapshot: RepoSnapshot, files: 
     return !config.placeholder.test(finding.ref);
   });
   // What the ignore rules are asked about for a finding: its target as a file
-  // and as a directory. An anchor in its own doc has no target, and a target
-  // outside the repository no rule of its, so none.
+  // and as a directory. An anchor in its own doc has no target, and no ignore
+  // rule covers a target outside the repository, so neither is asked about.
   const askedFor = (finding: LinkFinding): string[] => {
     const path = finding.ref.replace(/#.*/, '');
     if (path === '') return [];

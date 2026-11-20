@@ -30,6 +30,52 @@ describe('merge', () => {
     assert.deepEqual(answer, { code: 2, stdout: '', stderr: 'BLOCKED: one\nBLOCKED: two\n' });
   });
 
+  it('keeps the other handlers’ block reasons, then their context, in a blocked Stop’s stderr', () => {
+    const context = (text: unknown): string => JSON.stringify({ hookSpecificOutput: { hookEventName: 'Stop', additionalContext: text } });
+    const others = [
+      outcome({ stdout: context('research before you ask.\n') }),
+      outcome({ stdout: JSON.stringify({ decision: 'block', reason: '  push the branch  ', systemMessage: 'for the user' }) }),
+      outcome({ stdout: JSON.stringify({ decision: 'approve', reason: 'not a block' }) }),
+      outcome({ stdout: JSON.stringify({ decision: 'block', reason: 7 }) }),
+      outcome({ stdout: context('  ') }),
+      outcome({ stdout: JSON.stringify({ hookSpecificOutput: 'not a record' }) }),
+      outcome({ stdout: 'plain text, not context on Stop' }),
+      outcome({ label: 'broke', code: 1, stdout: context('from a failed handler'), stderr: 'oops' }),
+    ];
+    for (const event of ['Stop', 'SubagentStop']) {
+      assert.deepEqual(merge(event, [outcome({ code: 2, stderr: 'keep going' }), ...others, outcome({ code: 2, stderr: 'and merge\n' })]), {
+        code: 2,
+        stdout: '',
+        stderr: 'keep going\nand merge\n\npush the branch\n\nresearch before you ask.\n',
+      });
+    }
+    const guard = merge('Stop', [outcome({ label: 'guard', code: 1, failClosed: true }), outcome({ stdout: context('ctx') })]);
+    assert.equal(guard.stderr, 'BLOCKED: guard exited 1 instead of giving a verdict, so the call is refused.\n\nctx\n');
+    assert.deepEqual(merge('Stop', [outcome({ code: 2 })]), { code: 2, stdout: '', stderr: '' });
+    assert.deepEqual(merge('Stop', [outcome({ code: 2, stderr: 'kept as it is\n\n' })]), { code: 2, stdout: '', stderr: 'kept as it is\n\n' });
+    const silent = merge('Stop', [outcome({ code: 2 }), outcome({ stdout: context('ctx') })]);
+    assert.deepEqual(silent, { code: 2, stdout: '', stderr: 'ctx\n' });
+    assert.deepEqual(merge('Stop', [outcome({ code: 2, stderr: 'keep going\n' }), outcome({ stdout: '{"systemMessage":"only"}' })]), {
+      code: 2,
+      stdout: '',
+      stderr: 'keep going\n',
+    });
+  });
+
+  it('keeps only the blockers’ reasons when another event blocks', () => {
+    const others = [
+      outcome({ stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'lessons' } }) }),
+      outcome({ stdout: JSON.stringify({ decision: 'block', reason: 'stop' }) }),
+    ];
+    for (const event of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit']) {
+      assert.deepEqual(merge(event, [outcome({ code: 2, stderr: 'BLOCKED: one\n' }), ...others]), {
+        code: 2,
+        stdout: '',
+        stderr: 'BLOCKED: one\n',
+      });
+    }
+  });
+
   it('turns a fail-closed handler’s crash, timeout or failed start into a refusal', () => {
     const crash = merge('PreToolUse', [outcome({ label: 'guard', code: 1, stderr: 'Traceback', failClosed: true })]);
     assert.equal(crash.code, 2);

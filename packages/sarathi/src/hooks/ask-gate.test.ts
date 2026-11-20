@@ -399,10 +399,13 @@ test('ask-gate on Stop: through sarathi hook Stop, alone and beside a handler th
   assert.equal(answer.hookSpecificOutput.hookEventName, 'Stop');
   assert.match(answer.hookSpecificOutput.additionalContext, /^research before you ask\./);
 
-  // A handler that exits 2 wins, and sarathi answers with its reason alone
-  // (README, "Research before you ask"): the held question's feedback is not shown.
+  // A handler that exits 2 blocks, and the gate's feedback follows its reason
+  // after a blank line (README, "Limits on Stop"; veda#307).
   const beside = through([gateEntry, { command: 'cat >/dev/null; echo "keep going" >&2; exit 2' }]);
-  assert.deepEqual(beside, { status: 2, stdout: '', stderr: 'keep going\n' });
+  assert.equal(beside.status, 2);
+  assert.equal(beside.stdout, '');
+  assert.match(beside.stderr, /^keep going\n\nresearch before you ask\. /);
+  assert.ok(beside.stderr.endsWith('\n') && !beside.stderr.endsWith('\n\n'), beside.stderr);
 });
 
 // --- repo and state research, for repo and state questions ---------------------------

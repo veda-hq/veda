@@ -24,7 +24,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, TextIO
+from typing import Any, Callable, Optional, TextIO
 
 FILE = "refusals.jsonl"
 EXCERPT = 200
@@ -47,7 +47,7 @@ class _Tee(io.TextIOBase):
         self.target.flush()
 
 
-def log_dir(cwd: str) -> Path | None:
+def log_dir(cwd: str) -> Optional[Path]:
     """``<git common dir>/kavach`` for ``cwd``, or None when git cannot say."""
 
     try:
@@ -96,8 +96,8 @@ def record(
     stderr_text: str,
     now: Callable[[], float] = time.time,
     *,
-    rule: str | None = None,
-    mode: str | None = None,
+    rule: Optional[str] = None,
+    mode: Optional[str] = None,
 ) -> None:
     """Append one row for a refusal, or for a warning (``mode`` "warn");
     never raises. ``rule`` and ``mode`` are written only when given, so the
@@ -156,7 +156,7 @@ class _ReadTee:
         return getattr(self.source, name)
 
 
-def guarded(guard: str, body: Callable[[], Any], raw_input: Callable[[], str] | None = None) -> Any:
+def guarded(guard: str, body: Callable[[], Any], raw_input: Optional[Callable[[], str]] = None) -> Any:
     """Run ``body``; when it refuses (exit 2 raised, or 2 returned), log it.
 
     The verdict passes through unchanged. ``raw_input`` returns the event

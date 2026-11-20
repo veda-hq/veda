@@ -4,13 +4,14 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import {
   isEntry,
   ownVersion,
@@ -20,6 +21,18 @@ import {
   USAGE,
 } from "./cli.ts";
 import { repo } from "./records/fixture.test.ts";
+
+/** Every folder the tests made, removed once they are done. */
+const dirs: string[] = [];
+after(() => {
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+});
+
+const scratch = (prefix: string): string => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  dirs.push(dir);
+  return dir;
+};
 
 const capture = () => {
   const out: string[] = [];
@@ -51,7 +64,7 @@ describe("dvara", () => {
   });
 
   it("lists a hook stages from the config, and none for an unlisted hook", async () => {
-    const root = mkdtempSync(join(tmpdir(), "dvara-cli-"));
+    const root = scratch("dvara-cli-");
     writeFileSync(
       join(root, ".dvara.json"),
       JSON.stringify({ stages: { "pre-push": ["lint", "test"] } }),
@@ -73,7 +86,7 @@ describe("dvara", () => {
   });
 
   it("lists a hook stages from the stage list file, and refuses one it cannot read", async () => {
-    const root = mkdtempSync(join(tmpdir(), "dvara-cli-"));
+    const root = scratch("dvara-cli-");
     writeFileSync(
       join(root, ".dvara.json"),
       JSON.stringify({ stageList: "stages.json" }),
@@ -96,7 +109,7 @@ describe("dvara", () => {
   });
 
   it("hands a run to the supervisor with the config", async () => {
-    const root = mkdtempSync(join(tmpdir(), "dvara-cli-"));
+    const root = scratch("dvara-cli-");
     writeFileSync(join(root, ".dvara.json"), '{"historyDir": "h"}');
     const { io } = capture();
     let seen: unknown;
@@ -114,7 +127,7 @@ describe("dvara", () => {
   });
 
   it("runs a real hook through the supervisor by default", async () => {
-    const root = mkdtempSync(join(tmpdir(), "dvara-cli-"));
+    const root = scratch("dvara-cli-");
     writeFileSync(join(root, "pre-push"), "exit 5");
     const { io } = capture();
     assert.equal(
@@ -133,7 +146,7 @@ describe("dvara", () => {
   });
 
   it("refuses a config it cannot read", async () => {
-    const root = mkdtempSync(join(tmpdir(), "dvara-cli-"));
+    const root = scratch("dvara-cli-");
     writeFileSync(join(root, ".dvara.json"), "{");
     const { io, err } = capture();
     assert.equal(
@@ -232,7 +245,7 @@ describe("dvara records and dvara frozen", () => {
       err[0] ?? "",
       /^dvara records: dvara: .*unknown field records\.typo$/,
     );
-    const elsewhere = mkdtempSync(join(tmpdir(), "dvara-cli-none-"));
+    const elsewhere = scratch("dvara-cli-none-");
     err.length = 0;
     assert.equal(
       await run(["records", "--staged"], { io, cwd: elsewhere, env: r.env }),
@@ -272,7 +285,7 @@ describe("dvara trailers", () => {
   const MESSAGE = "feat: x\n\nSlice: L-04\n\nCo-Authored-By: A <a@a>\n";
 
   it("passes a message whose trailers are all in its last paragraph", async () => {
-    const root = mkdtempSync(join(tmpdir(), "dvara-cli-trailers-"));
+    const root = scratch("dvara-cli-trailers-");
     writeFileSync(
       join(root, "msg"),
       "feat: x\n\nSlice: L-04\nCo-Authored-By: A\n",
@@ -283,7 +296,7 @@ describe("dvara trailers", () => {
   });
 
   it("refuses a known trailer above a blank line, with the config's keys", async () => {
-    const root = mkdtempSync(join(tmpdir(), "dvara-cli-trailers-"));
+    const root = scratch("dvara-cli-trailers-");
     writeFileSync(join(root, "msg"), MESSAGE);
     const { io, err } = capture();
     // Without the repository's key, Slice is prose.
@@ -301,7 +314,7 @@ describe("dvara trailers", () => {
   });
 
   it("takes a repository's keys from --key too, with no config field", async () => {
-    const root = mkdtempSync(join(tmpdir(), "dvara-cli-trailers-"));
+    const root = scratch("dvara-cli-trailers-");
     writeFileSync(join(root, "msg"), MESSAGE);
     const { io, err } = capture();
     assert.equal(
@@ -316,7 +329,7 @@ describe("dvara trailers", () => {
   });
 
   it("refuses a --key with no key or a key git would not read", async () => {
-    const root = mkdtempSync(join(tmpdir(), "dvara-cli-trailers-"));
+    const root = scratch("dvara-cli-trailers-");
     for (const args of [["msg", "--key"], ["--key", "Bad key", "msg"]]) {
       const { io, err } = capture();
       assert.equal(
@@ -331,7 +344,7 @@ describe("dvara trailers", () => {
   });
 
   it("refuses bad arguments, a bad config and a file it cannot read", async () => {
-    const root = mkdtempSync(join(tmpdir(), "dvara-cli-trailers-"));
+    const root = scratch("dvara-cli-trailers-");
     for (const args of [[], ["a", "b"]]) {
       const { io, err } = capture();
       assert.equal(
@@ -368,7 +381,7 @@ describe("isEntry", () => {
 
   it("is true for the module itself, through a symlink too", () => {
     assert.equal(isEntry(self, pathToFileURL(self).href), true);
-    const link = join(mkdtempSync(join(tmpdir(), "dvara-link-")), "cli.ts");
+    const link = join(scratch("dvara-link-"), "cli.ts");
     symlinkSync(self, link);
     assert.equal(isEntry(link, pathToFileURL(self).href), true);
   });

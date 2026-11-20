@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import {
   checkBuild,
   checkPackage,
@@ -25,8 +25,14 @@ const loaded = loadTypescript();
 if (typeof loaded === 'string') throw new Error(loaded);
 const ts: Ts = loaded;
 
+const temps: string[] = [];
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
+/** A folder holding these files, removed when this file's tests end. */
 const tree = (files: Record<string, string>): string => {
   const root = mkdtempSync(join(tmpdir(), 'pariksha-exempt-'));
+  temps.push(root);
   for (const [path, body] of Object.entries(files)) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     writeFileSync(join(root, path), body);

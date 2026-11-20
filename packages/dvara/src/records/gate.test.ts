@@ -769,12 +769,11 @@ describe("CI: the branch and the whole tree", () => {
     assert.equal(gate(r, { mode: "all" }).code, 0);
   });
 
-  it("refuses to write the baseline through a symlink", () => {
+  it("refuses to write the baseline through a symlink", (t) => {
     const r = feature();
-    const outside = join(
-      mkdtempSync(join(tmpdir(), "dvara-outside-")),
-      "kept.json",
-    );
+    const kept = mkdtempSync(join(tmpdir(), "dvara-outside-"));
+    t.after(() => rmSync(kept, { recursive: true, force: true }));
+    const outside = join(kept, "kept.json");
     writeFileSync(outside, "kept\n");
     rmSync(join(r.root, BASELINE));
     symlinkSync(outside, join(r.root, BASELINE));

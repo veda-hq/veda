@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { forbidOutcome, main, matchTarget, runsSarathiFor, VERSION, type Io } from './cli.ts';
@@ -15,8 +15,20 @@ interface Result {
   readonly err: string;
 }
 
+/** Every scratch folder the suite makes, removed when it ends. */
+const scratchDirs: string[] = [];
+after(() => {
+  for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
+});
+
+function scratch(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  scratchDirs.push(dir);
+  return dir;
+}
+
 function project(hooks: unknown, extra: Record<string, unknown> = {}): string {
-  const dir = mkdtempSync(join(tmpdir(), 'sarathi-cli-'));
+  const dir = scratch('sarathi-cli-');
   execFileSync('mkdir', ['-p', join(dir, '.claude')]);
   writeFileSync(join(dir, '.claude', 'sarathi.json'), JSON.stringify({ ...extra, hooks }));
   return dir;
@@ -76,7 +88,7 @@ describe('sarathi hook', () => {
   });
 
   it('refuses a guarded event it cannot judge, and only warns on others', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sarathi-none-'));
+    const dir = scratch('sarathi-none-');
     const missing = await run(['hook', 'PreToolUse'], { dir, stdin: bash('ls') });
     assert.equal(missing.code, 2);
     assert.match(missing.err, /^BLOCKED: sarathi cannot use its hook list: cannot read .*sarathi\.json \(ENOENT\)\. No PreToolUse handler ran\./);
@@ -264,7 +276,7 @@ describe('sarathi check', () => {
     const dir = project(hooks);
     assert.match((await run(['check', '--settings', join(dir, 'none.json')], { dir })).err, /cannot read/);
     assert.match((await run(['check', '--settings', settingsFile(dir, '{')], { dir })).err, /is not JSON/);
-    const empty = mkdtempSync(join(tmpdir(), 'sarathi-empty-'));
+    const empty = scratch('sarathi-empty-');
     assert.match((await run(['check'], { dir: empty })).err, /cannot read/);
     assert.equal((await run(['check', 'extra'], { dir })).code, 1);
   });

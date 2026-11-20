@@ -185,11 +185,11 @@ importers:
         specifier: 0.7.5
         version: 0.7.5
       '@veda-hq/pariksha':
-        specifier: 0.5.20
-        version: 0.5.20(eslint@9.39.1(supports-color@7.2.0))(typescript@5.9.3)
+        specifier: 0.7.10
+        version: 0.7.10(eslint@9.39.1(supports-color@7.2.0))(typescript@5.9.3)
       '@veda-hq/sarathi':
-        specifier: 0.7.8
-        version: 0.7.8
+        specifier: 0.7.12
+        version: 0.7.12
       eslint:
         specifier: 9.39.1
         version: 9.39.1(supports-color@7.2.0)
@@ -583,8 +583,8 @@ packages:
       typescript:
         optional: true
 
-  '@veda-hq/kavach@0.7.6':
-    resolution: {integrity: sha512-pTRvbnfEpNralRaA8kVEiYOjseXIJN9Vp+TSxOBNTqiIyjnUp9VIYKNk7atGxQourXp/idLge92jDxv3leWCiA==}
+  '@veda-hq/kavach@0.7.11':
+    resolution: {integrity: sha512-KRW9GnuDBDU02TmGhfG943tmLWW1GeYaE8SBYJT0FJRmSGiNS36HFLYzhc2hNTQmk2rWGOytftxWBAqoebYp8w==}
     engines: {node: '>=24.15'}
     hasBin: true
 
@@ -593,8 +593,8 @@ packages:
     engines: {node: '>=24.15'}
     hasBin: true
 
-  '@veda-hq/pariksha@0.5.20':
-    resolution: {integrity: sha512-QyHkXK9YJv/Ur+O9yLtljb1NcqXxZCQCXSu2wjhoM26+1ZIRNz/XOyDo/VJyddBVXl9cnMlx2H4OO7Cyly/x1w==}
+  '@veda-hq/pariksha@0.7.10':
+    resolution: {integrity: sha512-afSy23xax5nmvbSeylcd6tVOGft6pnISBPym1YAQCzyT+yFeZOfnrbQjWpwdLGWdirApiQOKBC4sR+5OPT45rw==}
     engines: {node: '>=24.15'}
     hasBin: true
     peerDependencies:
@@ -606,8 +606,8 @@ packages:
       typescript:
         optional: true
 
-  '@veda-hq/sarathi@0.7.8':
-    resolution: {integrity: sha512-qzdLtA4oDMeq6kKwOZTUaXqR69CBhjnHmbHnosHLKNwNRWCLksvKE+epvklBhYnVvf9mvpxYqIQFVJBp5Rk13Q==}
+  '@veda-hq/sarathi@0.7.12':
+    resolution: {integrity: sha512-33CG7DqJL2v/wOKbIFI+eI+JunYm2qRwF/eswmZ+YfrOqhPZCc9aVVbn6MiAHPGK/R8pBHefedlQ0zwNMlEK2w==}
     engines: {node: '>=24.15'}
     hasBin: true
 
@@ -1348,7 +1348,7 @@ snapshots:
     optionalDependencies:
       typescript: 5.9.3
 
-  '@veda-hq/kavach@0.7.6': {}
+  '@veda-hq/kavach@0.7.11': {}
 
   '@veda-hq/niyam@0.7.5':
     dependencies:
@@ -1356,16 +1356,16 @@ snapshots:
       libsodium-wrappers: 0.8.4
       yaml: 2.9.1
 
-  '@veda-hq/pariksha@0.5.20(eslint@9.39.1(supports-color@7.2.0))(typescript@5.9.3)':
+  '@veda-hq/pariksha@0.7.10(eslint@9.39.1(supports-color@7.2.0))(typescript@5.9.3)':
     dependencies:
       js-yaml: 4.3.2
     optionalDependencies:
       eslint: 9.39.1(supports-color@7.2.0)
       typescript: 5.9.3
 
-  '@veda-hq/sarathi@0.7.8':
+  '@veda-hq/sarathi@0.7.12':
     dependencies:
-      '@veda-hq/kavach': 0.7.6
+      '@veda-hq/kavach': 0.7.11
 
   acorn-jsx@5.3.2(acorn@8.19.0):
     dependencies:

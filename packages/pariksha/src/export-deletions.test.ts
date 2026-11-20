@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import {
   checkExportDeletions,
   declaredExports,
@@ -22,6 +22,17 @@ const sh = (cwd: string, ...args: string[]) =>
     env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
   });
 
+const temps: string[] = [];
+/** A fresh temporary directory, removed when this file's tests end. */
+const temp = (prefix: string): string => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  temps.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
+
 const write = (root: string, files: Record<string, string | null>) => {
   for (const [path, body] of Object.entries(files)) {
     const full = join(root, path);
@@ -35,11 +46,14 @@ const write = (root: string, files: Record<string, string | null>) => {
 
 /** A repository whose `main` holds `before`, with HEAD one commit later holding `after`. */
 const branch = (before: Record<string, string>, after: Record<string, string | null>, message = 'change'): string => {
-  const root = mkdtempSync(join(tmpdir(), 'pariksha-exports-'));
+  const root = temp('pariksha-exports-');
   sh(root, 'init', '-q', '-b', 'main');
   sh(root, 'config', 'user.email', 'a@example.com');
   sh(root, 'config', 'user.name', 'a');
   sh(root, 'config', 'commit.gpgsign', 'false');
+  // No detached auto-maintenance after a commit: it could write into the fixture as it is removed.
+  sh(root, 'config', 'maintenance.auto', 'false');
+  sh(root, 'config', 'gc.auto', '0');
   write(root, before);
   sh(root, 'add', '-A');
   sh(root, 'commit', '-q', '-m', 'base');
@@ -249,7 +263,7 @@ describe('gitAtTop and must', () => {
     const top = gitAtTop(join(root, 'src'));
     assert.ok(top);
     assert.deepEqual(checkExportDeletions(top, 'main').violations, [{ symbol: 'gone', file: 'src/a.ts' }]);
-    assert.equal(gitAtTop(mkdtempSync(join(tmpdir(), 'pariksha-norepo-'))), undefined);
+    assert.equal(gitAtTop(temp('pariksha-norepo-')), undefined);
   });
 
   it('returns output, or throws naming the command', () => {

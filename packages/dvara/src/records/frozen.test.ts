@@ -350,7 +350,7 @@ describe("--staged: a merge commit", () => {
     rmSync(file);
   });
 
-  it("keeps a path only when every merged commit differs from the index there", () => {
+  it("keeps a path only when every merged commit differs from the index there", (t) => {
     const one = "a".repeat(40);
     const two = "b".repeat(64);
     // Against the index: EVIDENCE matches `one`, NOTE matches neither.
@@ -361,10 +361,9 @@ describe("--staged: a merge commit", () => {
     };
     // A clean merge under way: AUTO_MERGE names `tree`, the index matches it.
     const tree = "c".repeat(40);
-    const auto = join(
-      mkdtempSync(join(tmpdir(), "dvara-frozen-auto-")),
-      "AUTO_MERGE",
-    );
+    const merging = mkdtempSync(join(tmpdir(), "dvara-frozen-auto-"));
+    t.after(() => rmSync(merging, { recursive: true, force: true }));
+    const auto = join(merging, "AUTO_MERGE");
     mkdirSync(dirname(auto), { recursive: true });
     writeFileSync(auto, `${tree}\n`);
     const git: GitRun = (args) => {

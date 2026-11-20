@@ -399,10 +399,13 @@ test('ask-gate on Stop: through sarathi hook Stop, alone and beside a handler th
   assert.equal(answer.hookSpecificOutput.hookEventName, 'Stop');
   assert.match(answer.hookSpecificOutput.additionalContext, /^research before you ask\./);
 
-  // A handler that exits 2 wins, and sarathi answers with its reason alone
-  // (README, "Research before you ask"): the held question's feedback is not shown.
+  // A handler that exits 2 blocks, and the gate's feedback follows its reason
+  // after a blank line (README, "Limits on Stop"; veda#307).
   const beside = through([gateEntry, { command: 'cat >/dev/null; echo "keep going" >&2; exit 2' }]);
-  assert.deepEqual(beside, { status: 2, stdout: '', stderr: 'keep going\n' });
+  assert.equal(beside.status, 2);
+  assert.equal(beside.stdout, '');
+  assert.match(beside.stderr, /^keep going\n\nresearch before you ask\. /);
+  assert.ok(beside.stderr.endsWith('\n') && !beside.stderr.endsWith('\n\n'), beside.stderr);
 });
 
 // --- repo and state research, for repo and state questions ---------------------------
@@ -526,6 +529,95 @@ test('ask-gate: a look counts only when the ask names repository or session stat
   }
 });
 
+test('ask-gate: a look counts question by question, and not for a question about something outside', () => {
+  const looked = (): string => transcript(owner(), toolUse('Read'), toolResult());
+  const asking = (...questions: (string | { question: string; descriptions: string[] })[]): Entry => ({
+    questions: questions.map((q) => ({
+      question: typeof q === 'string' ? q : q.question,
+      header: 'Q',
+      options: (typeof q === 'string' ? ['a', 'b'] : q.descriptions).map((description, n) => ({ label: `option ${n}`, description })),
+      multiSelect: false,
+    })),
+  });
+  assert.equal(exit(looked(), ASK, asking('Which branch?', 'Rebase the PR or merge main in?')), 0, 'every question names state');
+  assert.equal(exit(looked(), ASK, asking('Which branch?', 'Which name?')), 2, 'one question names none');
+  // The owner's log, 2026-11-19: four questions on credits, spend and scope,
+  // with one option's description naming a file.
+  const batch = asking('Which credits are these, and where does the key live?', 'Which fallback order?', 'How should it run?', {
+    question: 'How far should it be enforced?',
+    descriptions: ['Hook on Agent', 'As process.md says'],
+  });
+  assert.equal(exit(looked(), ASK, batch), 2, 'a file named in one option passes no other question');
+  for (const [why, question] of [
+    ['an API', 'Which branch should call the API?'],
+    ['an api, lower case', 'Which branch should call the api?'],
+    ['an SDK', 'Bump the SDK in package.json or pin it?'],
+    ['an sdk, lower case', 'Bump the sdk in package.json or pin it?'],
+    ['a price', 'PR #12 wants the larger runner at $0.08 a minute: take it or wait?'],
+    ['pricing', 'Which pricing tier does the CI job need?'],
+    ['credits', 'Spend the credits on the PR review or keep them?'],
+    ['a quota', 'CI hit its quota: wait or move the workflow?'],
+    ['a rate limit', 'The branch push hit a rate limit: retry now or later?'],
+    ['credentials', 'Where should the workflow get its credentials?'],
+    ['Keychain', 'Does the CI job read the key from Keychain or an env var?'],
+    ['an API key', 'Which api key should the workflow use?'],
+    ['Claude Code', 'Does Claude Code read .claude/settings.json from this branch?'],
+    ['Anthropic', 'Which Anthropic plan covers the PR bot?'],
+    ['a marketplace', 'Which plugin marketplace should README.md name?'],
+    ['the documentation', 'What does the documentation say README.md should hold?'],
+    ['release notes', 'Do the release notes of the pinned action change the workflow?'],
+    ['the latest version', 'Is the latest version of the action safe for the workflow?'],
+  ] as const) {
+    assert.equal(exit(looked(), ASK, asking(question)), 2, why);
+    assert.equal(exit(transcript(owner(), toolUse('WebSearch'), toolResult()), ASK, asking(question)), 0, `${why}, after research`);
+  }
+  for (const [why, question] of [
+    ['a changelog file', 'Edit CHANGELOG.md or README.md?'],
+    ['a credentials file', 'Move credentials.json to another branch or delete it?'],
+    ['a docs path', 'Edit docs/lessons/testing.md or the PR body?'],
+    ['what a choice costs', 'Make the PR docs-only, or fix the parser too at the cost of a CI run?'],
+    ['a login in the repo', 'Should the login form in src/login.tsx validate on blur or on submit?'],
+    ['an api folder', 'Split src/api/client.ts or keep it?'],
+  ] as const) {
+    assert.equal(exit(looked(), ASK, asking(question)), 0, why);
+  }
+  const wrapUp = { recap: 'r', ask: 'PR #12 hit the API rate limit: retry it or revert?', actions: [{ label: 'Retry' }, { label: 'Revert' }] };
+  assert.equal(exit(looked(), WRAP_UP, wrapUp), 2, 'a wrap_up ask');
+  assert.equal(holds(looked(), 'Done.\n\nPR #12 failed CI on the API quota. Retry it or revert?'), true, 'a closing question');
+  assert.equal(holds(looked(), 'Done.\n\nPR #12 failed CI. Retry it or revert?'), false, 'a closing question about the state alone');
+  const two = 'PR #12 failed CI. Retry it or revert?\n\nWhich name next, kebab or camel?';
+  assert.equal(holds(looked(), two), true, 'state named in one closing paragraph passes no question in another');
+  const { run, lines } = logged();
+  run({ ...stopEvent(looked(), two), session_id: 'two-paragraphs' });
+  assert.deepEqual((lines()[0]?.['questions'] as Entry[]).map((q) => [q['question'], q['names_state']]), [
+    ['Retry it or revert?', true],
+    ['Which name next, kebab or camel?', false],
+  ]);
+  assert.equal(holds(looked(), 'PR #12 failed CI. Retry it or revert?\n\nOn branch next, keep the commit or drop it?'), false, 'every paragraph names state');
+});
+
+test('ask-gate log: names_state and names_outside, per question and for the ask', () => {
+  const { run, lines } = logged();
+  const looked = transcript(owner(), toolUse('Read'), toolResult());
+  const batch = {
+    questions: [
+      { question: 'Which branch?', header: 'Q', options: [{ label: 'main' }, { label: 'next' }], multiSelect: false },
+      { question: 'Which name?', header: 'Q', options: [{ label: 'a' }, { label: 'b' }], multiSelect: false },
+      { question: 'Does the PR need the API key?', header: 'Q', options: [{ label: 'yes, it does' }, { label: 'no' }], multiSelect: false },
+    ],
+  };
+  run({ tool_name: ASK, tool_input: batch, transcript_path: looked, session_id: 'scope' });
+  run({ tool_name: ASK, tool_input: STATE_ASK, transcript_path: looked, session_id: 'scope-2' });
+  const [held, passed] = lines();
+  assert.deepEqual((held?.['questions'] as Entry[]).map((q) => [q['names_state'], q['names_outside']]), [
+    [true, false],
+    [false, false],
+    [true, true],
+  ]);
+  assert.deepEqual([held?.['names_state'], held?.['names_outside'], held?.['looked'], held?.['outcome']], [false, true, true, 'held']);
+  assert.deepEqual([passed?.['names_state'], passed?.['names_outside'], passed?.['outcome']], [true, false, 'passed: look']);
+});
+
 // --- the ask log -------------------------------------------------------------------
 let logs = 0;
 /** A fresh log file and a runner that writes to it. */
@@ -554,14 +646,16 @@ test('ask-gate log: every gated ask is a line, with what came first and what the
     turn,
     via: ASK,
     tool_use_id: 'toolu_1',
-    questions: [{ question: 'Which name?', options: ['a', 'b'], kind: null }],
+    questions: [{ question: 'Which name?', options: ['a', 'b'], kind: null, names_state: false, names_outside: false }],
     researched: false,
     looked: false,
     names_state: false,
+    names_outside: false,
     kind: null,
     outcome: 'held',
   });
   assert.equal(second?.['outcome'], 'passed: second ask');
+  assert.equal(second?.['relabelled'], false);
   assert.equal(second?.['tool_use_id'], 'toolu_2');
   assert.equal(lines().length, 2);
 
@@ -583,8 +677,8 @@ test('ask-gate log: a wrap_up ask and a closing question are logged too; asks th
   run({ ...stopEvent(t, 'Done, nothing to ask.'), session_id: 'st2' });
   run({ ...stopEvent(t, CLOSING), session_id: 'st3', stop_hook_active: true });
   const [wrap, stop, ...rest] = lines();
-  assert.deepEqual([wrap?.['via'], wrap?.['questions'], wrap?.['outcome']], [WRAP_UP, [{ question: 'Which fix first?', options: ['The parser', 'The lexer'], kind: null }], 'held']);
-  assert.deepEqual([stop?.['via'], stop?.['questions'], stop?.['tool_use_id'], stop?.['outcome']], ['Stop', [{ question: 'Fix the parser first or the lexer?', options: [], kind: null }], null, 'held']);
+  assert.deepEqual([wrap?.['via'], wrap?.['questions'], wrap?.['outcome']], [WRAP_UP, [{ question: 'Which fix first?', options: ['The parser', 'The lexer'], kind: null, names_state: false, names_outside: false }], 'held']);
+  assert.deepEqual([stop?.['via'], stop?.['questions'], stop?.['tool_use_id'], stop?.['outcome']], ['Stop', [{ question: 'Fix the parser first or the lexer?', options: [], kind: null, names_state: false, names_outside: false }], null, 'held']);
   assert.deepEqual(rest, [], 'a go-ahead, another tool, a closing message with no question and a Stop already continuing are not logged');
 });
 
@@ -635,7 +729,7 @@ test('ask-gate log: where it goes, how it is turned off, and that it never chang
   const c = logged();
   const rupee = { questions: [{ question: 'Pay ₹90k or ₹60k?', header: 'Pay', options: [{ label: '₹90k' }, { label: '₹60k' }], multiSelect: false }] };
   assert.equal(c.run({ tool_name: ASK, tool_input: rupee, transcript_path: t, session_id: 'c-locale' }, { LC_ALL: 'C', LANG: 'C' }).status, 2);
-  assert.deepEqual(c.lines()[0]?.['questions'], [{ question: 'Pay ₹90k or ₹60k?', options: ['₹90k', '₹60k'], kind: null }], 'UTF-8 under the C locale');
+  assert.deepEqual(c.lines()[0]?.['questions'], [{ question: 'Pay ₹90k or ₹60k?', options: ['₹90k', '₹60k'], kind: null, names_state: false, names_outside: false }], 'UTF-8 under the C locale');
 
   const unreadable = join(TMP, 'log-unreadable');
   mkdirSync(join(unreadable, 'c-state'), { recursive: true });
@@ -697,24 +791,61 @@ const asking = (...questions: (string | [string, string])[]): Entry => ({
 const wrapAsking = (ask: string): Entry => ({ recap: 'r', ask, actions: [{ label: 'The parser' }, { label: 'The lexer' }] });
 
 test('ask-gate: an ask that declares an owner-only kind passes the first time', () => {
+  const look = (): string => transcript(owner(), toolUse('Read', { file_path: '/x' }));
+  for (const question of [
+    'Merge now or wait?\n**Kind:** approval',
+    'Merge now or wait? Kind: decision',
+    'Which key?\nKind: money or credentials',
+    'Delete the old tag or keep it?\nKind: irreversible',
+    'Delete the old tag or keep it? (Kind: shared system)',
+  ]) {
+    assert.equal(exit(transcript(owner()), ASK, asking(question)), 0, `${question}, with no look`);
+  }
   for (const question of [
     'Which name?\nKind: preference',
     'Which name? Kind: preference',
     'Which name? (Kind: taste)',
-    'Merge now or wait?\n**Kind:** approval',
     'Which deploy step?\n- kind: Private fact.',
-    'Which key?\nKind: money or credentials',
-    'Delete the old tag or keep it?\nKind: irreversible',
     'Which name?\nKind: Preference or taste',
     'Which name?\nKind: preference\nKind: approval',
   ]) {
-    assert.equal(exit(transcript(owner()), ASK, asking(question)), 0, question);
+    assert.equal(exit(look(), ASK, asking(question)), 0, `${question}, after a look`);
   }
   assert.equal(exit(transcript(owner()), ASK, asking(['Which name?', 'Kind: money'])), 0, 'in the header');
-  assert.equal(exit(transcript(owner()), WRAP_UP, wrapAsking('Which fix first? Kind: preference.')), 0, 'a wrap_up ask');
-  assert.equal(exit(transcript(owner()), ASK, asking('Which name?\nKind: preference', ['Which tone?', 'Kind: taste'])), 0, 'every question declares');
-  assert.equal(holds(transcript(owner()), `${CLOSING}\n\nKind: preference`), false, 'on Stop, a Kind: line of its own');
+  assert.equal(exit(look(), WRAP_UP, wrapAsking('Which fix first? Kind: preference.')), 0, 'a wrap_up ask');
+  assert.equal(exit(look(), ASK, asking('Which name?\nKind: preference', ['Which tone?', 'Kind: taste'])), 0, 'every question declares');
+  assert.equal(holds(look(), `${CLOSING}\n\nKind: preference`), false, 'on Stop, a Kind: line of its own');
   assert.equal(holds(transcript(owner()), 'The parser and the lexer both fail.\n\nFix the parser first or the lexer? Kind: approval.'), false, 'on Stop, in the question');
+});
+
+test('ask-gate: a bare preference or private fact, with no research or look, is held once', () => {
+  const { run, lines } = logged();
+  const t = transcript(owner());
+  const ask = (toolInput: Entry, session: string, tool = ASK): Run => run({ tool_name: tool, tool_input: toolInput, transcript_path: t, session_id: session });
+  // The owner's log, 2026-11-19: a credential choice the official docs settle, declared a preference.
+  const credential = { recap: 'r', ask: 'Build it on a login profile or a Keychain API key?\nKind: preference', actions: [{ label: 'Login profile' }, { label: 'Keychain key' }] };
+  assert.equal(ask(credential, 'bare-w', WRAP_UP).status, 2, 'a wrap_up');
+  assert.equal(ask(credential, 'bare-w', WRAP_UP).status, 0, 'asked again unchanged, it goes through');
+  for (const [n, question] of ['Which name?\nKind: preference', 'Which name? (Kind: taste)', 'Which deploy step?\nKind: private', 'Which fix?\nKind: ambiguity'].entries()) {
+    assert.equal(ask(asking(question), `bare-${n}`).status, 2, question);
+  }
+  assert.equal(holds(t, `${CLOSING}\n\nKind: private`), true, 'on Stop');
+  assert.equal(exit(transcript(owner(), toolUse('WebFetch', { url: 'https://example.com' })), WRAP_UP, credential), 0, 'after research');
+  assert.equal(exit(transcript(owner(), toolUse('Bash', { command: 'git status' })), ASK, asking('Which deploy step?\nKind: private')), 0, 'after a look');
+  assert.equal(exit(t, ASK, asking('Which name?\nKind: preference', 'Ship it?\nKind: approval')), 2, 'beside an approval');
+  // About something outside, a look is not enough: it takes research.
+  const outside = asking('Which credits pay for the API tier?\nKind: preference', 'Where does the Keychain key live?\nKind: private');
+  assert.equal(exit(transcript(owner(), toolUse('Read'), toolResult()), ASK, outside), 2, 'outside, after a look');
+  assert.equal(exit(transcript(owner(), toolUse('WebSearch'), toolResult()), ASK, outside), 0, 'outside, after research');
+  assert.equal(exit(transcript(owner(), toolUse('Read'), toolResult()), ASK, asking('Which credits pay for the API tier?\nKind: money')), 0, 'money about something outside still passes at once');
+  assert.deepEqual(lines().map((l) => [l['kind'], l['outcome']]), [
+    ['preference', 'held'],
+    ['preference', 'passed: second ask'],
+    ['preference', 'held'],
+    ['preference', 'held'],
+    ['private', 'held'],
+    ['ambiguity', 'held'],
+  ]);
 });
 
 test('ask-gate: a researchable, unknown, loose or partial declaration stays held', () => {
@@ -765,7 +896,7 @@ test('ask-gate: a declared pass spends nothing; the second-ask escape stays', ()
   const state = join(TMP, 'state-declared');
   const t = transcript(owner());
   const run = (toolInput: Entry): number | null => gate({ tool_name: ASK, tool_input: toolInput, transcript_path: t, session_id: 'declared' }, {}, state).status;
-  assert.equal(run(asking('Which name?\nKind: preference')), 0);
+  assert.equal(run(asking('Merge now or wait?\nKind: approval')), 0);
   assert.equal(run(QUESTION), 2, 'an undeclared ask after it is still held once');
   assert.equal(run(asking('Which version?\nKind: version')), 0, 'and the next ask goes through, declared or not');
   assert.equal(exit(transcript(owner()), WRAP_UP, { recap: 'r', ask: 'Ship it? Kind: approval', actions: [{ label: 'Yes' }, { label: 'Not now' }] }), 0, 'a go-ahead still passes');
@@ -775,15 +906,19 @@ test('ask-gate: the refusal and the Stop feedback say how to declare', () => {
   const refusal = gate({ tool_name: ASK, tool_input: QUESTION, transcript_path: transcript(owner()), session_id: 'how' }).stderr;
   const feedback = gate(stopEvent(transcript(owner()), CLOSING)).stdout;
   for (const text of [refusal, feedback]) {
-    assert.match(text, /Kind: preference \(or approval, private, money, irreversible, ambiguity\)/);
-    assert.match(text, /ambiguity only after a look/);
+    assert.match(text, /When you first ask such a question, declare it on a line of its own, Kind: approval \(or money, irreversible\), and it goes through/);
+    assert.match(text, /Kind: preference \(or private, ambiguity\) goes through only after research or a look at the sources/);
+    assert.match(text, /A Kind: line added once a question is held does not pass it/);
+    assert.match(text, /there was none either, and a question about an outside tool, service, API, price or credentials needs that research/);
   }
+  const lookedRefusal = gate({ tool_name: ASK, tool_input: QUESTION, transcript_path: transcript(owner(), toolUse('Read')), session_id: 'how-looked' }).stderr;
+  assert.match(lookedRefusal, /there was a look, but a question about an outside tool/);
 });
 
 test('ask-gate log: the declared kind, per question and for the ask', () => {
   const { run, lines } = logged();
   const t = transcript(owner());
-  run({ tool_name: ASK, tool_input: asking('Which name?\nKind: taste', ['Which key?', 'Kind: money']), transcript_path: t, session_id: 'k1' });
+  run({ tool_name: ASK, tool_input: asking('Which name?\nKind: taste', ['Which key?', 'Kind: money']), transcript_path: transcript(owner(), toolUse('Read')), session_id: 'k1' });
   run({ tool_name: ASK, tool_input: asking('Which default?\nKind: defaults'), transcript_path: t, session_id: 'k2' });
   run({ tool_name: ASK, tool_input: asking('Which name?\nKind: Urgent'), transcript_path: t, session_id: 'k3' });
   run({ ...stopEvent(t, `${CLOSING}\n\nKind: approval`), session_id: 'k4' });
@@ -804,4 +939,257 @@ test("ask-gate: every word and row in research-first's table declares", () => {
     assert.equal(exit(transcript(owner(), look), ASK, asking(`Which one?\nKind: ${word}`)), 0, String(word));
     assert.equal(exit(transcript(owner(), look), ASK, asking(`Which one?\nKind: ${name}`)), 0, String(name));
   }
+});
+
+// --- a relabel after a hold ------------------------------------------------------
+interface Session {
+  readonly path: string;
+  readonly state: string;
+  readonly ask: (tool: string, toolInput: Entry) => Run;
+  readonly stop: (message: string, extra?: Entry) => Run;
+  readonly lines: () => Entry[];
+}
+/** A runner in one session over one transcript, with its own log and state. */
+function session(name: string, path = transcript(owner())): Session {
+  const { run, lines } = logged();
+  const state = join(TMP, `state-relabel-${name}`);
+  return {
+    path,
+    state,
+    ask: (tool, toolInput) => run({ tool_name: tool, tool_input: toolInput, transcript_path: path, session_id: name }, {}, state),
+    stop: (message, extra = {}) => run({ ...stopEvent(path, message), session_id: name, ...extra }, {}, state),
+    lines,
+  };
+}
+const outcomes = (lines: Entry[]): unknown[][] => lines.map((l) => [l['via'], l['kind'], l['outcome'], l['relabelled']]);
+const firstTurn = (path: string): string => String((JSON.parse(readFileSync(path, 'utf8').split('\n')[0] ?? '{}') as Entry)['uuid']);
+
+test('ask-gate: a Kind: line added after a hold is held once more, then the turn passes', () => {
+  // The owner's log, 2026-11-19: a wrap_up ask held, then asked again with only Kind: private added.
+  const s = session('relabel-wrap', transcript(owner(), toolUse('Read'), toolResult()));
+  const ask = 'Have you cloned the repository and added the key?';
+  const buttons = [{ label: 'Both done' }, { label: 'Clone done, key later' }];
+  assert.equal(s.ask(WRAP_UP, { recap: 'r', ask, actions: buttons }).status, 2, 'held');
+  const relabel = s.ask(WRAP_UP, { recap: 'r', ask: `${ask}\nKind: private`, actions: buttons });
+  assert.equal(relabel.status, 2, 'the relabel is held');
+  assert.match(relabel.stderr, /^BLOCKED: research before you ask\. This question was held earlier in this turn, and only its Kind: line is new: a label added after a hold passes nothing, and the relabel is logged\./);
+  assert.match(relabel.stderr, /asked once more, it goes through\.\n$/);
+  assert.equal(s.ask(WRAP_UP, { recap: 'r', ask: `${ask}\nKind: private`, actions: buttons }).status, 0, 'asked once more, it goes through');
+  assert.equal(s.ask(ASK, QUESTION).status, 0, 'and so does anything after it in the turn');
+  assert.deepEqual(outcomes(s.lines()), [
+    [WRAP_UP, null, 'held', undefined],
+    [WRAP_UP, 'private', 'held: relabelled', undefined],
+    [WRAP_UP, 'private', 'passed: second ask', true],
+    [ASK, null, 'passed: second ask', false],
+  ]);
+
+  writeFileSync(s.path, `${readFileSync(s.path, 'utf8')}${owner('next task')}\n${toolUse('Read')}\n`);
+  assert.equal(s.ask(WRAP_UP, { recap: 'r', ask: `${ask}\nKind: private`, actions: buttons }).status, 0, 'in a new turn it is a first ask, declared after a look');
+  assert.equal(s.lines().at(-1)?.['outcome'], 'passed: declared private');
+});
+
+test('ask-gate: what a relabel is, and what it is not', () => {
+  const relabelled = (held: Entry, again: Entry, tool = ASK): number | null => {
+    const s = session(`relabel-${sessions++}`);
+    assert.equal(s.ask(tool, held).status, 2, 'held first');
+    return s.ask(tool, again).status;
+  };
+  assert.equal(relabelled(QUESTION, asking(['Which name?', 'Kind: money'])), 2, 'a kind added in the header');
+  assert.equal(relabelled(asking('Which default?\nKind: default'), asking('Which default?\nKind: approval')), 2, 'a kind changed');
+  assert.equal(relabelled(asking('Which  name?'), asking('which name ?\n**Kind:** approval')), 2, 'case, spacing and markup aside');
+  assert.equal(relabelled(asking('Which name?', 'Which tone?'), asking('Which name?\nKind: approval', 'Which tone?\nKind: approval')), 2, 'a batch');
+  assert.equal(relabelled(QUESTION, asking('Merge now or wait?\nKind: approval')), 0, 'another question, declared, passes as declared');
+  assert.equal(relabelled(QUESTION, asking('Which name, given the README uses kebab case?\nKind: approval')), 0, 'a question with what was found');
+  assert.equal(relabelled(QUESTION, QUESTION), 0, 'the same question unchanged');
+  assert.equal(relabelled(asking('Which name?\nKind: preference'), asking('Which name?\nKind: preference')), 0, 'the same declaration again');
+  assert.equal(relabelled(wrapAsking('Which fix first?'), wrapAsking('Which fix first?\nKind: approval'), WRAP_UP), 2, 'a wrap_up ask');
+  // Research after the hold passes before the relabel is read.
+  const s = session('relabel-research');
+  assert.equal(s.ask(ASK, QUESTION).status, 2);
+  writeFileSync(s.path, `${readFileSync(s.path, 'utf8')}${toolUse('WebSearch')}\n`);
+  assert.equal(s.ask(ASK, asking('Which name?\nKind: preference')).status, 0, 'research after the hold');
+  assert.equal(s.lines().at(-1)?.['outcome'], 'passed: research');
+});
+
+test('ask-gate on Stop: a relabel across the PreToolUse and Stop paths', () => {
+  const s = session('relabel-stop');
+  assert.equal(s.ask(WRAP_UP, wrapAsking('Fix the parser first or the lexer?')).status, 2, 'a wrap_up ask held');
+  const feedback = s.stop(`${CLOSING}\n\nKind: preference`);
+  assert.equal(feedback.status, 0);
+  const context = (JSON.parse(feedback.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+  assert.match(context, /^research before you ask\. This question was held earlier in this turn, and only its Kind: line is new/);
+  assert.match(context, /ended again, the turn ends\.$/);
+  assert.equal(s.stop(`${CLOSING}\n\nKind: preference`, { stop_hook_active: true }).stdout, '', 'the continuation ends');
+  assert.equal(s.stop(`${CLOSING}\n\nKind: preference`).stdout, '', 'and any later Stop in the turn');
+
+  const t = session('relabel-stop-2');
+  assert.notEqual(t.stop(CLOSING).stdout, '', 'a closing question held');
+  assert.equal(t.ask(WRAP_UP, wrapAsking('Fix the parser first or the lexer?\nKind: approval')).status, 2, 'the same question as a wrap_up ask, relabelled');
+  assert.deepEqual(outcomes([...s.lines(), ...t.lines()]), [
+    [WRAP_UP, null, 'held', undefined],
+    ['Stop', 'preference', 'held: relabelled', undefined],
+    ['Stop', 'preference', 'passed: second ask', true],
+    ['Stop', null, 'held', undefined],
+    [WRAP_UP, 'approval', 'held: relabelled', undefined],
+  ]);
+});
+
+test('ask-gate: the state file, old and new, and what it cannot read', () => {
+  const s = session('state-file');
+  assert.equal(s.ask(ASK, QUESTION).status, 2);
+  const [key, kept] = readFileSync(join(s.state, 'state-file'), 'utf8').split('\n');
+  assert.equal(key, firstTurn(s.path), 'the turn first, as before');
+  assert.deepEqual(JSON.parse(kept ?? '{}'), { held: [{ question: 'which name', kind: [] }], relabel_held: false });
+
+  const old = session('state-old');
+  mkdirSync(old.state, { recursive: true });
+  writeFileSync(join(old.state, 'state-old'), `${firstTurn(old.path)}\n`);
+  assert.equal(old.ask(ASK, asking(['Which name?', 'Kind: money'])).status, 0, "0.7.8's state, the turn alone, holds no question to relabel");
+  assert.equal(old.ask(ASK, QUESTION).status, 0, '... and still spends the turn');
+
+  const bad = session('state-bad');
+  mkdirSync(bad.state, { recursive: true });
+  writeFileSync(join(bad.state, 'state-bad'), `${firstTurn(bad.path)}\n{not json`);
+  assert.equal(bad.ask(ASK, QUESTION).status, 0, 'a held list it cannot read passes');
+  assert.equal(bad.ask(ASK, asking('Merge now or wait?\nKind: approval')).status, 0, 'a declared ask passes as declared');
+  assert.deepEqual(bad.lines().map((l) => l['outcome']), ['passed: state unreadable', 'passed: declared approval']);
+
+  for (const [n, kept] of [
+    '{"held": 5, "relabel_held": false}',
+    '{"held": [{"question": "which name", "kind": 5}], "relabel_held": false}',
+    '{"held": [{"question": "which name", "kind": [1]}], "relabel_held": false}',
+    '{"held": ["which name"], "relabel_held": false}',
+    '{"held": [], "relabel_held": "yes"}',
+    '[]',
+  ].entries()) {
+    const shape = session(`state-shape-${n}`);
+    mkdirSync(shape.state, { recursive: true });
+    writeFileSync(join(shape.state, `state-shape-${n}`), `${firstTurn(shape.path)}\n${kept}\n`);
+    const answer = shape.ask(ASK, asking(['Which name?', 'Kind: money']));
+    assert.deepEqual([answer.status, answer.stderr], [0, ''], kept);
+    assert.equal(shape.ask(ASK, QUESTION).status, 0, `${kept}: an undeclared ask passes too`);
+    assert.deepEqual(shape.lines().map((l) => l['outcome']), ['passed: declared money', 'passed: state unreadable'], kept);
+  }
+});
+
+// --- Stop: an ask to the owner that no wrap_up carries -----------------------------
+/** The desktop app names its wrap_up for the session's hooks. */
+const DESKTOP = { CLAUDE_CODE_TERMINAL_MCP_TOOLS: WRAP_UP };
+/** Two closing messages of a real side session that waited on the owner and was never filed (2026-11-19). */
+const NEEDS_YOU_259 =
+  '**Needs you:** to let the sarathi fix ship, please 👍 the [Proposal on veda-hq/veda#259](https://github.com/veda-hq/veda/issues/259#issuecomment-7008691971). Until you do, veda\'s rules refuse the push.\n' +
+  '**Done:** the veda session committed the skill fix and the bump to sarathi 0.7.7 on its own branch (6faba89), and tests pass. Nothing is pushed or on npm yet.\n' +
+  '**Next:** after your 👍 it pushes, merges and publishes the release.';
+const NEEDS_YOU_261 =
+  '**Needs you:** to unblock the second sarathi fix, please 👍 the [Proposal on veda-hq/veda#261](https://github.com/veda-hq/veda/issues/261#issuecomment-7008845476). The working-rules session needs it before it can edit anything.\n' +
+  '**Done:** veda-hq/veda#260 is set to auto-merge but hasn\'t merged yet.\n' +
+  '**Next:** once it merges, the veda session tags `v0.7.7` and checks npm.';
+/** A side session's turn: another session's message starts it, and it works. */
+const sideTurn = (...more: string[]): string => transcript(peer(), toolUse('Bash', { command: 'git status' }), toolResult(), ...more);
+
+/** The feedback a Stop gives, or '' when the turn ends. */
+function stopFeedbackOf(path: string, message: unknown, env: NodeJS.ProcessEnv = DESKTOP, extra: Entry = {}): string {
+  const run = gate(stopEvent(path, message, extra), env);
+  assert.equal(run.status, 0, 'Stop never exits 2');
+  assert.equal(run.stderr, '');
+  if (run.stdout === '') return '';
+  return (JSON.parse(run.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+}
+
+test('ask-gate on Stop: a plain-text ask with no wrap_up ask goes on once, to make the ask', () => {
+  for (const message of [NEEDS_YOU_259, NEEDS_YOU_261]) {
+    const feedback = stopFeedbackOf(sideTurn(), message);
+    assert.match(feedback, /^file the ask\. Your closing message asks the owner something \(\*\*Needs you:\*\* /);
+    assert.match(feedback, /Call wrap_up now with the question as ask, reply buttons as actions, and blocked: true if your work stops/);
+    assert.match(feedback, /If the turn does not wait on the owner, end it again as it is\./);
+  }
+  assert.equal(stopFeedbackOf(sideTurn(), NEEDS_YOU_259, DESKTOP, { stop_hook_active: true }), '', 'once: a Stop already going on ends');
+  for (const [why, message] of [
+    ['a question that ends its line', 'The parser is fixed.\n\nShall I tag v0.7.11 now?'],
+    ['a plain "Needs you:"', 'Needs you: add the approved label to #289.'],
+    ['a bulleted question', 'Two open points:\n- Should old files go by age, by size, or both?'],
+    ['a question that ends on a URL', 'The page is published. Should we open https://example.com/page?'],
+  ] as const) {
+    assert.match(stopFeedbackOf(sideTurn(), message), /^file the ask\./, why);
+  }
+});
+
+test('ask-gate on Stop: what is no ask to the owner ends the turn', () => {
+  for (const [why, message] of [
+    ['no question', 'Merged as 5bdcdd6, and v0.7.9 is on npm.'],
+    ['a question answered on its own line', '**Can 0117 close?** Yes, once #2303 merges.'],
+    ['a quoted title', 'I archived the leftover side session, "btw: How?".'],
+    ['a question in code', 'Run `which node?` to see.'],
+    ['a quoted line', 'You asked:\n> Which one first?\n\nThe parser, done.'],
+    ['a URL with a query', 'See https://example.com/a?b=c for the run.'],
+    ['a question four paragraphs back', 'Ship it?\n\nOne.\n\nTwo.\n\nThree.'],
+  ] as const) {
+    assert.equal(stopFeedbackOf(sideTurn(), message), '', why);
+  }
+});
+
+test('ask-gate on Stop: a wrap_up ask this turn, or no wrap_up at all, ends the turn', () => {
+  const wrapUp = (input: Entry): string => toolUse(WRAP_UP, input);
+  assert.equal(stopFeedbackOf(sideTurn(wrapUp({ recap: 'r', ask: 'Approve #259?', actions: [{ label: 'Approved' }] })), NEEDS_YOU_259), '', 'the ask is filed');
+  assert.match(stopFeedbackOf(sideTurn(wrapUp({ recap: 'r' })), NEEDS_YOU_259), /^file the ask\./, 'a wrap_up without an ask');
+  assert.match(stopFeedbackOf(sideTurn(wrapUp({ recap: 'r', ask: '  ' })), NEEDS_YOU_259), /^file the ask\./, 'a blank ask');
+  assert.match(
+    stopFeedbackOf(transcript(peer(), wrapUp({ recap: 'r', ask: 'Approve #259?' }), toolResult(), owner('not yet'), toolUse('Read')), NEEDS_YOU_259),
+    /^file the ask\./,
+    'an ask in an earlier turn does not count',
+  );
+  assert.equal(
+    stopFeedbackOf(transcript(peer(), wrapUp({ recap: 'r', ask: 'Approve #259?' }), stopFeedback()), NEEDS_YOU_259),
+    '',
+    "a Stop hook's feedback starts no turn",
+  );
+  for (const [why, report] of [['a marked task report', handBack()], ['an unmarked one', handBackUnmarked()]] as const) {
+    assert.equal(
+      stopFeedbackOf(transcript(peer(), wrapUp({ recap: 'r', ask: 'Approve #259?' }), toolResult(), report, toolUse('Read')), NEEDS_YOU_259),
+      '',
+      `${why} starts no new ask: the wrap_up ask before it stands`,
+    );
+  }
+  // Many reminders ahead of a row cost one pass each, not a backtrack that doubles with every block.
+  const reminders = line({ type: 'user', uuid: next(), message: { role: 'user', content: `${'<system-reminder>r</system-reminder>\n'.repeat(40)}<side-sessions-event>done` } });
+  const started = Date.now();
+  assert.match(stopFeedbackOf(transcript(peer(), wrapUp({ recap: 'r', ask: 'Approve #259?' }), reminders), NEEDS_YOU_261), /^file the ask\./, 'an app event behind reminders starts a turn');
+  assert.ok(Date.now() - started < 3000, '40 leading reminders read in well under the hook timeout');
+  // In a side session the answer comes relayed: another session's message, or an app event, starts the next turn.
+  for (const [why, next] of [['a peer message', peer()], ['an app event', appEvent()]] as const) {
+    assert.match(
+      stopFeedbackOf(transcript(peer(), wrapUp({ recap: 'r', ask: 'Approve #259?' }), toolResult(), next, toolUse('Read')), NEEDS_YOU_261),
+      /^file the ask\./,
+      `an ask before ${why} does not count`,
+    );
+  }
+  assert.equal(
+    stopFeedbackOf(transcript(peer(), wrapUp({ recap: 'r', ask: 'Approve #259?' }), reminderOnly()), NEEDS_YOU_259),
+    '',
+    'a row of reminders alone starts no turn',
+  );
+  // A terminal session that only read a file naming wrap_up has no wrap_up: its research hold is as before.
+  const readSettings = line({
+    type: 'user',
+    uuid: next(),
+    toolUseResult: { ok: true },
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: `"matcher": "AskUserQuestion|${WRAP_UP}"` }] },
+  });
+  assert.match(stopFeedbackOf(transcript(owner(), toolUse('Read', { file_path: '.claude/settings.json' }), readSettings), CLOSING, {}), /^research before you ask\./, 'a mention is no call');
+  // A terminal session has no wrap_up: the research hold is as before.
+  assert.equal(stopFeedbackOf(sideTurn(), NEEDS_YOU_259, {}), '', 'no wrap_up, no plain choice: the turn ends');
+  assert.match(stopFeedbackOf(transcript(owner()), CLOSING, {}), /^research before you ask\./, 'no wrap_up: a choice is held for research');
+  // A session that has called wrap_up has it, whatever the environment says.
+  assert.match(stopFeedbackOf(sideTurn(wrapUp({ recap: 'r' })), NEEDS_YOU_259, {}), /^file the ask\./);
+  assert.match(stopFeedbackOf(transcript(owner()), CLOSING, { CLAUDE_CODE_TERMINAL_MCP_TOOLS: `mcp__other__tool,${WRAP_UP}` }), /^file the ask\./, 'a list naming it');
+});
+
+test('ask-gate log: a nudge is a line, with the asking line', () => {
+  const state = join(TMP, 'state-nudge');
+  gate({ ...stopEvent(sideTurn(), NEEDS_YOU_259), session_id: 'nudge' }, DESKTOP, state);
+  const lines = readFileSync(join(state, 'ask-log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Entry);
+  assert.deepEqual(
+    lines.map((l) => [l['via'], l['outcome'], (l['questions'] as Entry[])[0]?.['question']]),
+    [['Stop', 'nudged: no wrap_up ask', NEEDS_YOU_259.split('\n')[0]?.slice(0, 300)]],
+  );
 });

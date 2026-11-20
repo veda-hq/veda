@@ -9,6 +9,7 @@ import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, r
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative } from 'node:path';
 import { after, before, beforeEach, describe, it } from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { hash } from './boundary.ts';
 import { CONFIGURABLE, consoleIo, DENY_FILE, flags, main, ownVersion, run, splitFiles, trackedFiles, type Io } from './cli.ts';
 import type { LinkRunner } from './doc-links.ts';
@@ -58,7 +59,8 @@ const capture = () => {
   return { io: { out: (l: string) => out.push(l), err: (l: string) => err.push(l) }, out, err };
 };
 
-const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+// No detached auto-maintenance: it could write into a fixture as it is removed.
+const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0', ...args], { cwd, stdio: 'pipe' });
 
 /** A folder with these files written; tracked by a fresh git repository unless `tracked` is false. */
 const tree = (files: Record<string, string | Uint8Array>, tracked = true): string => {
@@ -256,16 +258,6 @@ describe('main and the console', () => {
     assert.equal(await main([process.execPath], other.io), undefined);
     assert.deepEqual(other.out, []);
     assert.deepEqual(other.err, []);
-  });
-
-  it('leaves an importer’s exit code as it is', async () => {
-    process.exitCode = 7;
-    try {
-      await import(`./cli.ts?import=${Date.now()}`);
-      assert.equal(process.exitCode, 7);
-    } finally {
-      process.exitCode = undefined;
-    }
   });
 
   it('follows a link to this file, as node names a bin', async () => {
@@ -1188,7 +1180,8 @@ describe('run doc-references', () => {
 
   it('runs lychee from PATH when it is given no runner', () => {
     const bin = temp();
-    writeFileSync(join(bin, 'lychee'), '#!/bin/sh\nexit 3\n');
+    // It reads the list pariksha writes before it exits: one that exits first can close the pipe mid-write (EPIPE).
+    writeFileSync(join(bin, 'lychee'), '#!/bin/sh\ncat > /dev/null\nexit 3\n');
     chmodSync(join(bin, 'lychee'), 0o755);
     assert.deepEqual(w1WithPath(`${bin}${delimiter}${process.env['PATH'] ?? ''}`, () => docRefs('links.json', ['--all'])), {
       code: 2,
@@ -2319,7 +2312,7 @@ describe('run coverage-by-type', () => {
   });
 
   it('exits 2 outside a repository, without TypeScript, or on a bad config', () => {
-    const outside = mkdtempSync(join(tmpdir(), 'pariksha-none-'));
+    const outside = temp('pariksha-none-');
     const a = capture();
     assert.equal(run(['coverage-by-type', '--root', outside], a.io, '0'), 2);
     assert.match(a.err[0] ?? '', /is not in a git repository$/);
@@ -2374,7 +2367,7 @@ describe('run coverage-exemptions', () => {
     assert.equal(run(['coverage-exemptions'], usage.io, '0'), 2);
     assert.match(usage.err[0] ?? '', /^usage:/);
     const outside = capture();
-    assert.equal(run(['coverage-exemptions', '--root', mkdtempSync(join(tmpdir(), 'pariksha-none-')), '--config', 'cov.json'], outside.io, '0'), 2);
+    assert.equal(run(['coverage-exemptions', '--root', temp('pariksha-none-'), '--config', 'cov.json'], outside.io, '0'), 2);
     assert.match(outside.err[0] ?? '', /is not in a git repository$/);
     const root = repo(files);
     const pkg = capture();
@@ -2490,7 +2483,7 @@ describe('run export-deletions', () => {
 
   it('stops outside a repository, and when git cannot read the branch', () => {
     const outside = capture();
-    const dir = mkdtempSync(join(tmpdir(), 'pariksha-norepo-'));
+    const dir = temp('pariksha-norepo-');
     assert.equal(run(['export-deletions', '--root', dir], outside.io, '0'), 2);
     assert.match(outside.err[0] ?? '', /is not in a git repository$/);
     const root = work();
@@ -2634,7 +2627,7 @@ describe('run env-gate-switches', () => {
       assert.equal(run(['env-gate-switches', ...args], c.io, '0'), 2);
       assert.match(c.err[0] ?? '', /^usage: pariksha authority-citations/);
     }
-    const outside = check(mkdtempSync(join(tmpdir(), 'pariksha-none-')));
+    const outside = check(temp('pariksha-none-'));
     assert.equal(outside.code, 2);
     assert.match(outside.err[0] ?? '', /^pariksha env-gate-switches: .* is not in a git repository$/);
     const missing = check(repo({ 'scripts/a.sh': '' }));
@@ -2804,14 +2797,21 @@ describe('run env-gate-switches under fault injection', () => {
   }
 });
 
-// Last: the only test that starts node, so the cheap tests above stop a
-// mutant before it pays for the start.
+// Last: the only tests that start node, so the cheap tests above stop a
+// mutant before it pays for a start.
 describe('the command', () => {
   it('runs as a script, its arguments after the script, and exits with the code', () => {
     const pkg = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { version: string };
     const script = join(import.meta.dirname, 'cli.ts');
     assert.equal(execFileSync(process.execPath, [script, '--version'], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }), `${pkg.version}\n`);
     assert.throws(() => execFileSync(process.execPath, [script, 'nope'], { stdio: 'pipe', timeout: 30_000, killSignal: 'SIGKILL' }), { status: 2 });
+  });
+
+  // In a process of its own: a second instance of cli.ts in this one would
+  // stand in for the first in the coverage report.
+  it('leaves an importer’s exit code as it is', () => {
+    const importer = `process.exitCode = 7; await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, 'cli.ts')).href)});`;
+    assert.throws(() => execFileSync(process.execPath, ['--input-type=module', '-e', importer], { stdio: 'pipe', timeout: 30_000, killSignal: 'SIGKILL' }), { status: 7 });
   });
 });
 

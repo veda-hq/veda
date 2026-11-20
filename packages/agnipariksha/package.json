@@ -33,7 +33,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts src/**/*.test.ts",
+    "test": "node ../../scripts/fresh-tmpdir.mjs node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts src/**/*.test.ts",
     "smoke": "out=$(node dist/cli.js --files none); code=$?; echo \"$out\"; case \"$out\" in *'REFUSED: no agnipariksha.json at '*) [ $code = 2 ] ;; *) false ;; esac && node --input-type=module -e \"const m = await import('@veda-hq/agnipariksha/arid-nodes'); const [p] = m.strykerPlugins; if (m.strykerPlugins.length !== 1 || p.kind !== 'Ignore' || p.name !== 'agnipariksha-arid-nodes' || typeof new p.injectableClass().shouldIgnore !== 'function') throw new Error('arid-nodes is not a Stryker Ignore plugin');\"",
     "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
   },

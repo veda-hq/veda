@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -68,11 +68,12 @@ interface Stub {
   cwd(): string;
 }
 
-const stub = ({ report = '{"error_map":{}}', status = 0, stderr = '', mode = 0o755 }: { report?: string; status?: number; stderr?: string; mode?: number } = {}): Stub => {
+/** `reads: false` leaves stdin unread, as a lychee that exits at once does. */
+const stub = ({ report = '{"error_map":{}}', status = 0, stderr = '', mode = 0o755, reads = true }: { report?: string; status?: number; stderr?: string; mode?: number; reads?: boolean } = {}): Stub => {
   const dir = mkdtempSync(join(tmpdir(), 'lychee-stub-'));
   stubDirs.push(dir);
   const command = join(dir, 'lychee');
-  writeFileSync(command, SCRIPT);
+  writeFileSync(command, reads ? SCRIPT : SCRIPT.replace('cat > "$here/stdin"\n', ''));
   chmodSync(command, mode);
   const put = (name: string, text: string): void => writeFileSync(join(dir, name), text);
   put('report', report);
@@ -140,6 +141,7 @@ describe('parseLycheeReport', () => {
     for (const [report, message] of [
       ['[]', "lychee's report is not a JSON object"],
       ['{"error_map":[]}', "lychee's report: error_map is not an object"],
+      ['{"error_map":null}', "lychee's report: error_map is not an object"],
       ['{"error_map":{"a.md":{}}}', 'lychee\'s report: error_map["a.md"] is not a list'],
       ['{"error_map":{"a.md":[3]}}', `lychee's report: ${where} is not an object`],
       ['{"error_map":{"a.md":[{"status":"x"}]}}', `lychee's report: ${where}.status is not an object`],
@@ -187,13 +189,29 @@ describe('findLinkProblems with a recorded report', () => {
     assert.deepEqual(found, [{ check: 'DOC-DRIFT-01', file: 'docs/a.md', line: 3, ref: 'b.md', reason: 'Cannot find file `b.md`' }]);
   });
 
-  it('a bare marker is no opt-out, and an in-doc anchor has no target to ignore', () => {
+  it('a bare marker is no opt-out, and an in-doc anchor or a target outside the repository has none to ignore', () => {
     const repo = createTestRepo({ 'docs/a.md': '# A\n[x](#y) doc-ref-ok:\n' });
-    const found = findLinkProblems(CONFIG, repo.snapshot(), ['docs/a.md'], (dir) => lycheeReport(dir, [{ file: 'docs/a.md', line: 2, target: '', hash: '#y' }]));
+    const snapshot = repo.snapshot();
+    const asked: string[][] = [];
+    const watched: RepoSnapshot = {
+      ...snapshot,
+      ignored: (paths) => {
+        asked.push([...paths]);
+        return snapshot.ignored(paths);
+      },
+    };
+    const found = findLinkProblems(CONFIG, watched, ['docs/a.md'], (dir) =>
+      lycheeReport(dir, [
+        { file: 'docs/a.md', line: 2, target: '', hash: '#y' },
+        { file: 'docs/a.md', line: 1, target: '../x.md' },
+      ]),
+    );
     assert.deepEqual(
       found.map((p) => p.ref),
-      ['#y'],
+      ['../../x.md', '#y'],
     );
+    // Neither the in-doc anchor nor the target outside the repository is asked about.
+    assert.deepEqual(asked, [[]]);
   });
 
   it('drops an ignored target, a directory one or behind an anchor; keeps an in-doc anchor', () => {
@@ -328,11 +346,29 @@ describe('treeFor', () => {
     assert.equal(existsSync(seen), false);
   });
 
-  it('fails when the ref cannot be extracted', () => {
+  it("fails with git's own error when the ref cannot be extracted, leaving nothing behind", (t) => {
     const repo = createTestRepo({ 'docs/a.md': '# A\n' });
     repo.commit();
     const bad: RepoSnapshot = { ...repo.snapshot(), source: { kind: 'ref', ref: 'no-such-ref' } };
-    assert.throws(() => treeFor(bad));
+    // A stand-in temp folder, so what treeFor leaves there can be counted.
+    const temp = join(repo.root, 'temp');
+    mkdirSync(temp);
+    const stderr = t.mock.method(process.stderr, 'write', () => true);
+    const saved = process.env['TMPDIR'];
+    process.env['TMPDIR'] = temp;
+    try {
+      assert.throws(() => treeFor(bad), (e: unknown) => {
+        assert.equal((e as { status?: unknown }).status, 128);
+        assert.match((e as Error).message, /^Command failed: git .*archive[^\n]*\n.*no-such-ref/s);
+        return true;
+      });
+    } finally {
+      if (saved === undefined) Reflect.deleteProperty(process.env, 'TMPDIR');
+      else process.env['TMPDIR'] = saved;
+    }
+    // git's complaint is in the error, never copied to this process's stderr.
+    assert.equal(stderr.mock.callCount(), 0);
+    assert.deepEqual(readdirSync(temp), []);
   });
 
   it('reads a pushed ref, not the worktree', () => {
@@ -467,6 +503,27 @@ describe('lycheeRunner, on a stand-in executable', () => {
     const lychee = stub({ status: 1, report: '', stderr: 'Error: Cannot read input docs/absent.md\n' });
     assert.throws(() => lycheeRunner(lychee.command)(repo.root, ['docs/absent.md']), { message: 'lychee exited 1: Error: Cannot read input docs/absent.md\n' });
   });
+
+  // A list past any pipe's buffer: a lychee that never reads it closes the
+  // pipe mid-write, so every run hits EPIPE.
+  const longList = Array.from({ length: 20_000 }, (_, i) => `docs/${String(i).padStart(50, '0')}.md`);
+
+  it('reports why lychee exited, not the pipe, when it exits before reading its list', () => {
+    const repo = createTestRepo({});
+    const lychee = stub({ status: 1, stderr: 'Error: bad config\n', reads: false });
+    assert.throws(() => lycheeRunner(lychee.command)(repo.root, longList), { message: 'lychee exited 1: Error: bad config\n' });
+    assert.equal(lychee.ran(), true);
+  });
+
+  for (const status of [0, 2]) {
+    it(`fails when lychee exits ${String(status)} before reading its list: it did not see every file`, () => {
+      const repo = createTestRepo({});
+      const lychee = stub({ status, stderr: 'partial\n', reads: false });
+      assert.throws(() => lycheeRunner(lychee.command)(repo.root, longList), {
+        message: `lychee exited ${String(status)} before it read its file list, so not every file was checked: partial\n`,
+      });
+    });
+  }
 
   it('fails loudly when lychee is not installed', () => {
     const repo = createTestRepo({ 'docs/a.md': '# A\n' });

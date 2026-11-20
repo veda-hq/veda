@@ -1452,13 +1452,27 @@ def main() -> None:
     cwd = Path(data.get("cwd") or Path.cwd()).resolve()
     state = boundary.checkout_state(cwd)
     if not state:
+        # A proven read needs no checkout: it already runs from any checkout,
+        # owned or not, before ownership is asked. Admitting it here keeps
+        # the way back open for a shell Claude Code left in a folder no
+        # repository holds (an additional working directory, after a `cd`
+        # there): `cd <worktree>` is a read. Before this, every call from such
+        # a folder was refused, the `cd` back included, for the rest of the
+        # session (veda#335).
+        if data.get("tool_name") == "Bash":
+            values = data.get("tool_input")
+            command = boundary.tool_command(values) if isinstance(values, dict) else ""
+            if command and boundary.shell_is_read_only(command):
+                return
         # Quote git rather than paraphrase it. This denial fires for every
         # Bash, Edit and Write call, so a git that is broken for an unrelated
         # reason presents as a total ownership failure and sends the session
         # after its worktree instead of after the actual fault.
         boundary.deny(
             "cannot determine this session's repository checkout: "
-            f"{boundary.checkout_failure(cwd)}"
+            f"{boundary.checkout_failure(cwd)}. The shell is in {cwd}; reads still "
+            "run from there, and only they. If that folder is outside your "
+            "worktree, run `cd <your worktree>` alone to return, then retry"
         )
     root, linked, primary = state
     tool = data.get("tool_name")

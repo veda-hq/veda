@@ -14,6 +14,7 @@
 # copy of them, so it could weaken the checks that judge it. They stay owned
 # until veda runs niyam's shared Guard, which judges them from main's copy.
 /.github/workflows/ci.yml           @AlokBansal8
+/.github/workflows/mutation.yml     @AlokBansal8
 /.github/workflows/niyam.yml        @AlokBansal8
 /.github/niyam.json                 @AlokBansal8
 

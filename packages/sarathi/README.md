@@ -62,10 +62,10 @@ settings' own `hooks` block, one entry per handler:
 `sarathi hook <Event>` runs the matching handlers side by side and answers
 Claude Code once, as Claude Code combines several hooks' answers: any exit 2
 blocks with every blocker's reason; a fail-closed handler that crashes or
-runs out of time blocks too. An exit 2 drops every JSON answer, so on `Stop`
-and `SubagentStop` the other handlers' `decision: "block"` reasons, then
-their `additionalContext`, follow the blockers' reason on stderr, each after
-a blank line. JSON answers merge with the strictest decision
+runs out of time blocks too. sarathi blocks with exit 2 either way, which
+drops every JSON answer, so on `Stop` and `SubagentStop` the other handlers'
+`decision: "block"` reasons, then their `additionalContext`, follow the
+blockers' reasons on stderr, each after a blank line. JSON answers merge with the strictest decision
 winning (deny over ask over allow, block over none, `continue: false` over
 true) and every handler's context kept; a handler that failed without
 blocking is named in `systemMessage`, or on stderr with exit 1. A hook list

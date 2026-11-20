@@ -303,6 +303,37 @@ class Loading(unittest.TestCase):
         guard = os.path.join(self.copy("bash_guard.py", "git_safety.py"), "command_guard.py")
         self.assert_blocks(guard, "could not load config.py")
 
+    def assert_refuses_with(self, guard: str, reason: str) -> None:
+        actual, stderr = Guard.run(make_input("ls"), PLAIN_REPO, guard=guard)
+        self.assertEqual(
+            (actual, stderr), (2, "BLOCKED: the command guard %s, so it cannot judge this command.\n" % reason)
+        )
+
+    def test_a_settings_module_that_fails_to_import_blocks_and_names_the_error(self) -> None:
+        # A module config.py itself lacks is not config.py missing. The two
+        # names sort before and after "config", so only equal to it passes.
+        for source, error in (
+            ("raise RuntimeError('planted')", "RuntimeError: planted"),
+            ("import a_missing_dependency", "ModuleNotFoundError: No module named 'a_missing_dependency'"),
+            ("import z_missing_dependency", "ModuleNotFoundError: No module named 'z_missing_dependency'"),
+        ):
+            with self.subTest(source=source):
+                directory = self.copy("bash_guard.py", "git_safety.py")
+                Path(directory, "config.py").write_text(source + "\n", encoding="utf-8")
+                self.assert_refuses_with(
+                    os.path.join(directory, "command_guard.py"), "could not load its settings (%s)" % error
+                )
+
+    def test_settings_that_fail_to_load_without_a_config_error_block(self) -> None:
+        directory = self.copy("bash_guard.py", "git_safety.py")
+        Path(directory, "config.py").write_text(
+            "class ConfigError(Exception):\n    pass\n\n\ndef load():\n    raise RuntimeError('planted')\n",
+            encoding="utf-8",
+        )
+        self.assert_refuses_with(
+            os.path.join(directory, "command_guard.py"), "could not load its settings (RuntimeError: planted)"
+        )
+
     def test_run_by_a_relative_path_it_still_loads_its_module(self) -> None:
         actual, stderr = Guard.run(make_input("git push --force origin main"), str(KAVACH), guard="command_guard.py")
         self.assertEqual(actual, 2, stderr)
@@ -388,6 +419,28 @@ class HookInput(unittest.TestCase):
         fixture("git init -q . && git remote add origin https://example.com/x.git", repo)
         command = "git push origin main # " + self.BIG_WORD
         self.case.raw(0, "big plain push", "", json.dumps({"tool_input": {"command": command}}), cwd=repo)
+
+    def test_hook_input_that_cannot_be_read_blocks(self) -> None:
+        # Open for writing only, so reading it fails (OSError).
+        path = os.path.join(tempfile.mkdtemp(dir=WORK), "input")
+        stdin = os.open(path, os.O_WRONLY | os.O_CREAT)
+        self.addCleanup(os.close, stdin)
+        result = subprocess.run(
+            [sys.executable, str(GUARD)],
+            stdin=stdin,
+            cwd=PLAIN_REPO,
+            env=BASE_ENV,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+        self.assertEqual(
+            (result.returncode, result.stderr.decode("utf-8", "replace")),
+            (
+                2,
+                "BLOCKED: the git-command check could not read its hook input (OSError), so it cannot judge this command.\n",
+            ),
+        )
 
     def test_hook_input_that_is_not_utf8_blocks_as_unreadable(self) -> None:
         self.case.raw(2, "not UTF-8", "could not read a command in its hook input", b"not json \xff")

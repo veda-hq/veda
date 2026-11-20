@@ -540,6 +540,40 @@ class Guards(Repo):
                 self.assertTrue(result.stderr.startswith("BLOCKED: the tool guard "), result.stderr)
                 self.assertIn(said, result.stderr)
 
+    def test_the_tool_guard_refuses_input_it_cannot_read(self) -> None:
+        # Open for writing only, so reading it fails (OSError): a guard that
+        # cannot read the call must refuse it, not crash with exit 1, which
+        # Claude Code lets through.
+        stdin = os.open(os.path.join(self.work, "input"), os.O_WRONLY | os.O_CREAT)
+        self.addCleanup(os.close, stdin)
+        result = subprocess.run(
+            [sys.executable, str(TOOL_GUARD)], stdin=stdin, cwd=self.repo, env=ENV, capture_output=True, text=True, timeout=120, check=False
+        )
+        self.assertEqual(
+            (result.returncode, result.stdout, result.stderr),
+            (2, "", "BLOCKED: the tool guard could not read its hook input (OSError), so it cannot judge this call.\n"),
+        )
+
+    def test_the_tool_guard_refuses_when_a_module_does_not_load(self) -> None:
+        for name, source, said in (
+            ("rules.py", None, "could not load rules.py (ModuleNotFoundError)"),
+            ("rules.py", "raise RuntimeError('planted')", "could not load rules.py (RuntimeError)"),
+            ("refusal_log.py", None, "could not load refusal_log.py (ModuleNotFoundError)"),
+            ("refusal_log.py", "raise RuntimeError('planted')", "could not load refusal_log.py (RuntimeError)"),
+        ):
+            with self.subTest(said=said):
+                directory = Path(tempfile.mkdtemp(dir=self.work), "kavach")
+                shutil.copytree(KAVACH, directory, ignore=shutil.ignore_patterns("__pycache__"))
+                if source is None:
+                    (directory / name).unlink()
+                else:
+                    (directory / name).write_text(source + "\n", encoding="utf-8")
+                result = self.run_guard(directory / "tool_guard.py", "Write", {"file_path": os.path.join(self.repo, "c.txt"), "content": "x"})
+                self.assertEqual(
+                    (result.returncode, result.stdout, result.stderr),
+                    (2, "", "BLOCKED: the tool guard %s, so it cannot judge this call.\n" % said),
+                )
+
     def test_a_refusing_rule_that_fails_refuses(self) -> None:
         directory = Path(self.work, "kavach")
         shutil.copytree(KAVACH, directory, ignore=shutil.ignore_patterns("__pycache__"))

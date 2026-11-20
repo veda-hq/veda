@@ -81,7 +81,7 @@ describe('run license-check', () => {
     const root = repo({ '.pariksha.json': JSON.stringify({ checks: { 'license-check': { allow: [] } } }) });
     const bad = capture(root, () => CLEAN);
     assert.equal(run(['license-check'], bad.io, '1.0.0', {}), 2);
-    assert.match(bad.err[0] ?? '', /^pariksha license-check: "allow" must be a non-empty list of licence names; nothing was checked, so this is not a pass$/);
+    assert.match(bad.err[0] ?? '', /^pariksha license-check: "allow" must be a non-empty list of licence names, none blank or with surrounding spaces; nothing was checked, so this is not a pass$/);
     const good = repo({ '.pariksha.json': JSON.stringify({ checks: { 'license-check': SETTINGS } }) });
     const empty = capture(good, () => '{}');
     assert.equal(run(['license-check'], empty.io, '1.0.0', {}), 2);
@@ -126,6 +126,16 @@ describe('run codeql-baseline', () => {
     assert.deepEqual(wrote.out, ['Wrote 1 alert(s) to security/baseline.json']);
     assert.equal(run(['codeql-baseline', '--check', join(root, 'scan.sarif'), '--root', root], capture(root).io, '1.0.0', {}), 0);
     assert.equal(run(['codeql-baseline', '--check', join(root, 'scan.sarif'), '--baseline', 'empty.json', '--root', root], capture(root).io, '1.0.0', {}), 1);
+  });
+
+  it('resolves the baseline entry from a config file in another folder than --root', () => {
+    const root = repo({ 'scan.sarif': scan([['js/sql-injection', 'a.ts', 'h1']]), 'cfg/settings.json': JSON.stringify({ checks: { 'codeql-baseline': { baseline: 'security/baseline.json' } } }) });
+    const env = { PARIKSHA_CONFIG: join(root, 'cfg/settings.json') };
+    const wrote = capture(root);
+    assert.equal(run(['codeql-baseline', '--write', join(root, 'scan.sarif'), '--root', root], wrote.io, '1.0.0', env), 0);
+    assert.deepEqual(wrote.out, ['Wrote 1 alert(s) to cfg/security/baseline.json']);
+    assert.match(readFileSync(join(root, 'cfg/security/baseline.json'), 'utf8'), /"fingerprint": "js\/sql-injection\|a\.ts\|h1"/);
+    assert.equal(run(['codeql-baseline', '--check', join(root, 'scan.sarif'), '--root', root], capture(root).io, '1.0.0', env), 0);
   });
 
   it('exits 2 with no baseline to read', () => {

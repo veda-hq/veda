@@ -70,7 +70,11 @@ interface SarifRun {
  * `// codeql[rule-id]` comment, but only when `AlertSuppression.ql` is part
  * of the analysis: add ALERT_SUPPRESSION to the suite.
  */
-const isSuppressed = (result: SarifResult): boolean => (result.suppressions ?? []).some((suppression) => suppression.status === undefined || suppression.status === 'accepted');
+const isSuppressed = (result: SarifResult): boolean => {
+  const suppressions = result.suppressions ?? [];
+  // Every one accepted: a rejected or under-review suppression beside an accepted one keeps the alert.
+  return suppressions.length > 0 && suppressions.every((suppression) => suppression.status === undefined || suppression.status === 'accepted');
+};
 
 /** The query that turns `// codeql[rule-id]` comments into SARIF suppressions. */
 export const ALERT_SUPPRESSION = 'codeql/javascript-queries:AlertSuppression.ql';

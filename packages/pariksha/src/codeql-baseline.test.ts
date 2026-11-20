@@ -69,6 +69,15 @@ describe('errorAlerts', () => {
     );
   });
 
+  it('keeps a result one of whose suppressions is rejected or under review, beside an accepted one', () => {
+    const mixed = (status: string) => ({ ...result('js/request-forgery', `${status}.ts`, 1, 'h1:1'), suppressions: [{ kind: 'inSource' }, { kind: 'external', status }] });
+    const alerts = errorAlerts(sarif([mixed('rejected'), mixed('underReview'), mixed('accepted')]));
+    assert.deepEqual(
+      alerts.map((alert) => alert.path),
+      ['rejected.ts', 'underReview.ts'],
+    );
+  });
+
   it('skips a result with an accepted in-source suppression, but not a rejected one', () => {
     const suppressed = (status?: string) => ({
       ...result('js/request-forgery', `${status ?? 'none'}.ts`, 1, 'h1:1'),
@@ -228,6 +237,8 @@ describe('runCodeqlBaseline', () => {
     assert.throws(() => runCodeqlBaseline({ mode: 'write', sarif: join(root, 'empty.sarif'), root, baseline: 'b.json' }, out.io.out), {
       message: 'no baseline was written to b.json: CodeQL SARIF has no runs; the analysis output is unusable',
     });
+    writeFileSync(join(root, 'blocker'), 'a file where a folder must go');
+    assert.throws(() => runCodeqlBaseline({ mode: 'write', sarif: file, root, baseline: 'blocker/b.json' }, out.io.out), /^Error: no baseline was written to blocker\/b\.json: E(EXIST|NOTDIR)/);
     assert.deepEqual(out.out, []);
   });
 

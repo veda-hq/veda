@@ -116,6 +116,7 @@ describe('parseLicenseConfig', () => {
     ['no allow list', '{}', /"allow" must be a non-empty list of licence names/],
     ['an empty allow list', '{"allow": []}', /"allow" must be a non-empty list/],
     ['a blank licence name', '{"allow": ["MIT", " "]}', /"allow" must be a non-empty list/],
+    ['a licence name with surrounding spaces', '{"allow": [" MIT "]}', /none blank or with surrounding spaces/],
     ['a licence name that is not text', '{"allow": ["MIT", 1]}', /"allow" must be a non-empty list/],
     ['packages that are a list', '{"allow": ["MIT"], "packages": ["a"]}', /"packages" must be an object/],
     ['a package with no reason', '{"allow": ["MIT"], "packages": {"a": ""}}', /"packages": "a" must be a package name with a reason/],
@@ -253,6 +254,8 @@ describe('fromPnpm', () => {
     ['an entry with an empty version list', { MIT: [{ name: 'a', versions: [] }] }],
     ['a version that is not text', { MIT: [{ name: 'a', versions: [1] }] }],
     ['a null entry', { MIT: [null] }],
+    ['an entry with a blank name', { MIT: [{ name: ' ', versions: ['1.0.0'] }] }],
+    ['an entry with a blank version', { MIT: [{ name: 'a', versions: ['1.0.0', ''] }] }],
   ] as const) {
     it(`reads ${label} as unreadable`, () => {
       assert.equal(fromPnpm(output), null);

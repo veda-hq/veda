@@ -46,7 +46,10 @@ export const parseLicenseConfig = (text: string): LicenseConfig => {
   if (unknown !== undefined) throw new Error(`unknown key "${unknown}"; license-check reads allow, packages`);
   const allow = raw['allow'];
   // An empty list would refuse every package; a missing one is a config that names no policy.
-  if (!Array.isArray(allow) || allow.length === 0 || allow.some((name) => typeof name !== 'string' || name.trim() === '')) throw new Error('"allow" must be a non-empty list of licence names');
+  // A name with surrounding spaces would never equal a reported licence, which is trimmed.
+  if (!Array.isArray(allow) || allow.length === 0 || allow.some((name) => typeof name !== 'string' || name.trim() === '' || name !== name.trim())) {
+    throw new Error('"allow" must be a non-empty list of licence names, none blank or with surrounding spaces');
+  }
   const packages = 'packages' in raw ? raw['packages'] : {};
   if (!isRecord(packages)) throw new Error('"packages" must be an object of package names to reasons');
   const unreasoned = Object.entries(packages).find(([name, reason]) => name === '' || typeof reason !== 'string' || reason.trim() === '');
@@ -130,7 +133,8 @@ export const fromPnpm = (output: unknown): Record<string, { licenses: string }> 
     if (!Array.isArray(entries)) return null;
     for (const entry of entries as unknown[]) {
       const { name, versions } = (entry ?? {}) as { name?: unknown; versions?: unknown };
-      if (typeof name !== 'string' || !Array.isArray(versions) || versions.length === 0 || !versions.every((version) => typeof version === 'string')) return null;
+      // A blank name or version is not a package pnpm installed: an inventory of them would pass unjudged.
+      if (typeof name !== 'string' || name.trim() === '' || !Array.isArray(versions) || versions.length === 0 || !versions.every((version) => typeof version === 'string' && version.trim() !== '')) return null;
       for (const version of versions as string[]) {
         const key = `${name}@${version}`;
         // Listed under two licences, a package must pass both: neither

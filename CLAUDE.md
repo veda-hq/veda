@@ -140,8 +140,8 @@ also waits for his approving review, then merges by itself. Those paths are
 the release rules (`.github/workflows/release.yml`,
 `.github/workflows/version-rule.yml`, `scripts/version-rule.mjs`,
 `README.md`), the files that run the required checks
-(`.github/workflows/ci.yml`, `.github/workflows/niyam.yml`,
-`.github/niyam.json`), the lint rules and their suppressions
+(`.github/workflows/ci.yml`, `.github/workflows/mutation.yml`,
+`.github/workflows/niyam.yml`, `.github/niyam.json`), the lint rules and their suppressions
 (`eslint.config.js`, `eslint-suppressions.json`), and `.github/CODEOWNERS`
 itself; a change to any one of them alone waits too. Until he approves, it
 is open, not done. Every other path, the other workflows included, has no

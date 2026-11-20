@@ -22,7 +22,9 @@ The rules (README, "Rules that hold a lesson"):
 - ``cd-out-of-worktree``: a ``cd`` or ``pushd`` that leaves the session's
   checkout strands every later call of the turn outside it. One to a folder
   in no git repository refuses even on trial: from there the worktree guard
-  runs reads only.
+  runs reads only. From a checkout no session can own (another repository, or
+  a main checkout other than the ``worktree.ownCheckout`` clone), the ``cd``
+  back into one a session can own passes (veda#339).
 - ``stryker-inplace``: ``stryker run --inPlace``, or a Stryker config written
   with ``inPlace: true``, mutates the real files and restores them only after
   a run that finishes.
@@ -52,7 +54,8 @@ import os
 import posixpath
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Callable, Sequence
 
 def parse(command: str) -> list[Any]:
@@ -75,6 +78,8 @@ class Call:
     tool: str
     tool_input: dict[str, Any]
     cwd: str
+    # The consumer's settings, which ``judge`` hands every detector.
+    settings: Any = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -304,11 +309,26 @@ def peer_worktree(target: str, root: str) -> str | None:
     return max(holding, key=len) if holding else None
 
 
+def ownable(folder: str, settings: Any) -> bool:
+    """Whether the checkout holding ``folder`` is one the worktree guard takes
+    as a session's own: a linked worktree under its repository's
+    ``.claude/worktrees``, or the ``worktree.ownCheckout`` clone. The guard's
+    own test (``boundary.ownable_checkout``), so the two cannot disagree."""
+
+    if __package__:
+        from . import boundary
+    else:
+        import boundary  # type: ignore[no-redef]
+    own = getattr(settings, "own_checkout", None)
+    return boundary.ownable_checkout(Path(folder), own, os.environ) is not None
+
+
 def cd_out_of_worktree(call: Call) -> str | None:
     script = bash_command(call)
     if not re.search(r"\b(?:cd|pushd)\b", script):
         return None
     root: str | None = None
+    owned: bool | None = None
     for step in steps(script, call.cwd):
         command = step.command
         if command.depth != 0 or step.pipes_on or command.piped_from is not None:
@@ -322,30 +342,50 @@ def cd_out_of_worktree(call: Call) -> str | None:
                 return None
         if inside(target, root):
             continue
-        stay = (
-            "Stay in the checkout: read elsewhere with absolute paths, `git -C <dir>` or `ls <dir>`."
-        )
-        moves = f"`{command.words[0].text} {target}` moves the shell"
+        if owned is None:
+            # Only for a cd that leaves the checkout: one inside it costs no
+            # git starts, and an error here cannot refuse it.
+            owned = ownable(root, call.settings)
+        if not owned and os.path.isdir(target) and ownable(target, call.settings):
+            # The shell is in a checkout no session owns, so this rule has no
+            # checkout of the session's to keep it in. A cd into one a session
+            # can own is the way back, and refusing it strands the session
+            # where the worktree guard refuses every write (veda#339). A later
+            # cd in the same command is judged from the checkout it entered.
+            root, owned = session_checkout(target) or target, True
+            continue
+        moves =f"`{command.words[0].text} {target}` moves the shell"
+        whose = "this session's" if owned else "its"
+        if owned:
+            mine = f" ({root} is this session's)"
+            back = f"`cd {root}` brings it back"
+            stay = "Stay in the checkout: read elsewhere with absolute paths, `git -C <dir>` or `ls <dir>`."
+        else:
+            # Which checkout is this session's, the hook input does not say:
+            # the message names none.
+            mine = f" (the shell is in {root}, which the worktree guard takes as no session's own)"
+            back = "a `cd` into your own worktree brings it back"
+            stay = "Read elsewhere with absolute paths, `git -C <dir>` or `ls <dir>`."
         if os.path.isdir(target) and git_toplevel(target) is None:
             # From a folder no repository holds, the worktree guard finds no
             # checkout and runs reads only (veda#335): a session whose shell
             # Claude Code keeps there can write nothing until it returns.
             return Refuses(
-                f"{moves} outside this session's checkout ({root} is this session's), to a folder "
-                "in no git repository. Where the shell keeps that folder for later calls, the guards "
-                f"run only reads from there: no write, Edit or Write until `cd {root}` brings it back. "
+                f"{moves} outside {whose} checkout{mine}, to a "
+                "folder in no git repository. Where the shell keeps that folder for later calls, the "
+                f"guards run only reads from there: no write, Edit or Write until {back}. "
                 f"This refuses even while the rule is on trial. {stay}"
             )
         peer = peer_worktree(target, root)
         where = (
             f"another worktree, {peer}, which another session may own"
             if peer is not None
-            else "outside this session's checkout"
+            else f"outside {whose} checkout"
         )
         return (
-            f"{moves} to {where} ({root} is this session's). "
+            f"{moves} to {where}{mine}. "
             "Where the shell keeps that folder for later calls, each of them runs outside the checkout, "
-            f"where the guards refuse every write until `cd {root}` brings it back. {stay}"
+            f"where the guards refuse every write until {back}. {stay}"
         )
     return None
 
@@ -733,6 +773,7 @@ def judge(call: Call, settings: Any, fired: Callable[[str, str, str], None] | No
     warning rule's error is reported to ``fired`` and allows."""
 
     outcome = Outcome([], [])
+    call = replace(call, settings=settings)
     for rule in RULES:
         if call.tool not in rule.tools:
             continue

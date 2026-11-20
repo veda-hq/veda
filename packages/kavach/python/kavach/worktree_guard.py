@@ -1212,31 +1212,6 @@ def refuse_during_push(tool: object, targets: list[Path], root: Path) -> None:
     )
 
 
-def owns_plain_checkout(
-    own: Any, root: Path, environ: Mapping[str, str]
-) -> bool:
-    """Whether the plain (unlinked) checkout at ``root`` is this session's own.
-
-    Only with the consumer's `worktree.ownCheckout`, only where the hook's own
-    environment holds one of its values for every variable it names, and only
-    for the checkout the session was started in (``CLAUDE_PROJECT_DIR``), so a
-    session that changes directory into another clone gains nothing there. The
-    environment is the hook's, which no tool call can change.
-    """
-
-    if own is None:
-        return False
-    if not all(environ.get(name) in values for name, values in own.env):
-        return False
-    project = environ.get("CLAUDE_PROJECT_DIR", "")
-    if not project:
-        return False
-    try:
-        return Path(project).resolve(strict=True) == root.resolve()
-    except OSError:
-        return False
-
-
 # A place inside an owned plain clone that stays refused, and what to say.
 Fence = tuple[Path, str]
 
@@ -1514,7 +1489,7 @@ def main() -> None:
     # that a worktree session finds outside its own (`clone_fences`) stay
     # refused as targets.
     fences: tuple[Fence, ...] = ()
-    clone = not linked and owns_plain_checkout(loaded.own_checkout, root, os.environ)
+    clone = not linked and boundary.owns_plain_checkout(loaded.own_checkout, root, os.environ)
     if clone:
         fences = clone_fences(root, loaded.own_checkout, os.environ)
     elif not linked or not boundary.is_claude_managed(root, primary):

@@ -49,6 +49,11 @@ without suppressing them, and the traps of a gate scoped to a diff.
 
   Under load the same pariksha pair took 24 minutes, so a busy Mac can still hold a push
   past its budget. Re-time with `--lane <name> --files …` when a lane's suites get slower.
+- **CI judges every lane with work.** `.github/workflows/mutation.yml` runs one job per lane
+  that has a file to judge, by name, so the cut-off does not apply there. The lanes come from
+  `scripts/mutation-lanes.mjs`, which calls the pinned agnipariksha's own planner rather than
+  copying its matching, so a lane CI skips is one the gate would judge nothing in. The
+  "Mutation" job is the one to require.
 
 ## Speed and incremental mode
 

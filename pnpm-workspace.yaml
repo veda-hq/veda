@@ -1,9 +1,9 @@
 packages:
   - packages/*
 
-# A package's peer is the consumer's to install. agnipariksha's
-# @stryker-mutator/core would otherwise bring Stryker's whole tree into veda,
-# which never runs it.
+# A package's peer is the consumer's to install, at the version it chooses.
+# veda pins agnipariksha's peer, @stryker-mutator/core, at the root itself,
+# beside the tap runner, for its own mutation gate (agnipariksha.json, #272).
 autoInstallPeers: false
 
 # A package version must be a day old before it installs: a hijacked release is

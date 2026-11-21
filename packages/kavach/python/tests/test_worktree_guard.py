@@ -2562,12 +2562,31 @@ class OtherSessionsWorktreeTest(GuardFixture):
         row = json.loads(self.log.read_text(encoding="utf-8").splitlines()[-1])
         self.assertEqual((row["rule"], row["mode"]), ("other-sessions-worktree", "refuse"))
 
-    def test_refuse_judges_reviewed_and_trusted_commands_too(self) -> None:
-        settings = {**self.REFUSE, **REVIEWED_SETTINGS}
-        result = self.guard(self.theirs, {"command": "niyam pr-signals 12"}, settings=settings)
-        self.assertEqual(result.returncode, 2, result.stderr)
-        self.assertIn("other-sessions-worktree", result.stderr)
-        self.assert_silent(self.guard(self.mine, {"command": "niyam pr-signals 12"}, settings=settings))
+    def test_reviewed_and_trusted_commands_are_judged_too(self) -> None:
+        for folder in (self.mine, self.theirs):
+            (folder / "scripts").mkdir()
+            (folder / WORKTREE_SCRIPT).write_text("", encoding="utf-8")
+        settings = {"worktree": {**WORKTREE_SETTINGS["worktree"], **REVIEWED_SETTINGS["worktree"]}}
+        for command in ("niyam pr-signals 12", f"python3 {WORKTREE_SCRIPT} status"):
+            with self.subTest(command=command):
+                values = {"command": command}
+                # Each returns early, and warns as it does.
+                self.assert_warns(self.guard(self.theirs, values, settings=settings))
+                refused = self.guard(self.theirs, values, settings={**settings, **self.REFUSE})
+                self.assertEqual(refused.returncode, 2, refused.stderr)
+                self.assertIn("(kavach rule other-sessions-worktree)", refused.stderr)
+                self.assert_silent(self.guard(self.mine, values, settings={**settings, **self.REFUSE}))
+
+    def test_an_error_in_the_check_allows_on_trial_and_refuses_once_it_refuses(self) -> None:
+        data = {"session_id": SESSION, "cwd": str(self.theirs), "tool_name": "Bash", "tool_input": {}}
+        failing = mock.patch.object(ADAPTER, "other_sessions_worktree", side_effect=RuntimeError("boom"))
+        with failing, mock.patch.object(ADAPTER.refusal_log, "record") as record:
+            self.assertIsNone(ADAPTER.judge_other_sessions_worktree(data, self.theirs, ADAPTER.config.parse({}), {}))
+        reason = record.call_args.args[2]
+        self.assertIn("the other-sessions-worktree check failed (RuntimeError)", reason)
+        self.assertEqual(record.call_args.kwargs, {"rule": "other-sessions-worktree", "mode": "warn"})
+        with failing, self.assertRaises(RuntimeError):
+            ADAPTER.judge_other_sessions_worktree(data, self.theirs, ADAPTER.config.parse(self.REFUSE), {})
 
     def test_a_refusesfrom_day_is_shown(self) -> None:
         settings = {"rules": {"other-sessions-worktree": {"mode": "warn", "refusesFrom": "2026-12-01"}}}
@@ -2630,6 +2649,16 @@ class OtherSessionsWorktreeTest(GuardFixture):
         (self.records / f"{STARTER}.json").unlink()
         self.write_record(STARTER, OTHER_SESSION, self.theirs)
         self.assertEqual(self.guard(self.theirs, settings=self.REFUSE).returncode, 2)
+
+    def test_a_cwd_past_the_head_still_counts(self) -> None:
+        # The head is read first; a record whose `cwd` lies past it is read whole.
+        record = {"padding": "x" * (2 * MODULE.RECORD_HEAD), "sessionId": STARTER, "cwd": str(self.theirs), "isArchived": False}
+        (self.records / f"{STARTER}.json").write_text(json.dumps(record), encoding="utf-8")
+        self.assert_warns(self.guard(self.theirs))
+        # And one whose head names another folder is skipped unread.
+        record = {"sessionId": STARTER, "cwd": str(self.made), "note": str(self.theirs), "isArchived": False}
+        (self.records / f"{STARTER}.json").write_text(json.dumps(record), encoding="utf-8")
+        self.assert_silent(self.guard(self.theirs))
 
     def test_this_sessions_own_record_is_no_owner(self) -> None:
         # Only another record makes a worktree another session's.

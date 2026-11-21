@@ -580,6 +580,10 @@ HOST_SESSION = re.compile(r"local_" + SESSION_ID.pattern)
 # The desktop app's record of a session is a few hundred KB; past this it is
 # not read.
 RECORD_LIMIT = 8 * 1024 * 1024
+# How much of a record `worktree_owners` reads before deciding whether to read
+# it all, and the first complete `"cwd"` string value in it.
+RECORD_HEAD = 4096
+HEAD_CWD = re.compile(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"')
 
 
 def claude_app_root() -> Path:
@@ -651,12 +655,17 @@ def worktree_owners(root: Path, host: str) -> tuple[str, ...]:
     """The desktop app sessions, other than ``host``, whose record names
     ``root`` as their ``cwd`` and is not archived (veda#363).
 
-    Every record is read, so this is for the rare call whose shell is in a
-    worktree that this session's record does not name. A record is parsed
-    only when its text holds the worktree's folder name. One that is a
-    symlink, too large, unreadable or of the wrong shape names nobody, and so
-    does a missing app folder. Never raises: a failure counts as no owner, so
-    the caller can only stay quiet."""
+    Every record is looked at, for each call whose shell is in a worktree
+    that this session's record does not name: a subagent's ``agent-*``
+    worktree or one the session made, as well as another session's. So only
+    each record's head is read first (``RECORD_HEAD``): the app writes
+    ``cwd`` third. A head whose first ``"cwd"`` value is another folder is
+    skipped. The whole record is read and parsed only when that value is the
+    worktree, or when the head holds no complete ``cwd`` and the text holds
+    the worktree's folder name. One that is a symlink, too large, unreadable
+    or of the wrong shape names nobody, and so does a missing app folder.
+    Never raises: a failure counts as no owner, so the caller can only stay
+    quiet."""
 
     try:
         app = claude_app_root()
@@ -670,6 +679,20 @@ def worktree_owners(root: Path, host: str) -> tuple[str, ...]:
             try:
                 if path.is_symlink() or not path.is_file() or path.stat().st_size > RECORD_LIMIT:
                     continue
+                with path.open("rb") as handle:
+                    head = handle.read(RECORD_HEAD).decode("utf-8", errors="replace")
+                found = HEAD_CWD.search(head)
+                if found is not None:
+                    # Only a false skip can come of a nested `cwd` met first,
+                    # and a skip keeps the caller quiet.
+                    named = json.loads(f'"{found.group(1)}"')
+                    if not (
+                        isinstance(named, str)
+                        and named.startswith("/")
+                        and Path(named).name == wanted.name
+                        and Path(named).resolve() == wanted
+                    ):
+                        continue
                 text = path.read_text(encoding="utf-8")
                 if needle not in text:
                     continue

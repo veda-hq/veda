@@ -872,8 +872,8 @@ Docker every hour: the reaper's step (in-process, through the same `docker`),
 stopped containers, unused images the primary checkout's code does not name,
 anonymous volumes, worktree volumes whose labelled root is gone, build cache
 (one-off layers after an hour, reused ones after three days, 40 GB at most)
-and networks. Anything touched in the last hour is kept, and an image whose
-build or tag time does not read as a time.
+and networks. Anything touched in the last hour is kept, and so is an image
+whose build or tag time does not read as a time.
 
 ```sh
 sarathi services prune install      # copy the runtime out, snapshot the settings, register the agent

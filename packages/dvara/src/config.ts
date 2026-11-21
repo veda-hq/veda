@@ -38,7 +38,11 @@ export interface Config {
   readonly historyDir: string;
   /** Hooks whose passing output is reduced to one line. */
   readonly quietHooks: readonly string[];
-  /** A watchdog module to attach to each run (see Watchdog in supervisor.ts), relative to the root; none by default. */
+  /**
+   * The watchdog to attach to each run: `"dvara"` for the built-in one
+   * (watchdog.ts), else a watchdog module's path relative to the root (see
+   * Watchdog in supervisor.ts); none by default.
+   */
   readonly watchdog: string | null;
   /**
    * Refs tried in order for the base a run is judged against. To the record
@@ -78,6 +82,9 @@ export const DEFAULTS: Config = {
 };
 
 export const CONFIG_FILE = ".dvara.json";
+
+/** The `watchdog` value that names dvara's built-in watchdog; any other string is a path. */
+export const BUILT_IN_WATCHDOG = "dvara";
 
 /** The config file's name relative to the root, as `loadConfig` reads it. */
 export const configName = (env: NodeJS.ProcessEnv): string =>
@@ -221,7 +228,9 @@ export const parseConfig = (text: string): Config => {
     config.quietHooks = strings(entries.quietHooks, "quietHooks");
   if ("watchdog" in entries) {
     if (entries.watchdog !== null && typeof entries.watchdog !== "string")
-      throw new Error("watchdog must be a path or null");
+      throw new Error(
+        `watchdog must be "${BUILT_IN_WATCHDOG}", a path or null`,
+      );
     config.watchdog = entries.watchdog;
   }
   if ("baseRefs" in entries)

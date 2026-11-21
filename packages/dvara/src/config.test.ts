@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import {
+  BUILT_IN_WATCHDOG,
   CONFIG_FILE,
   configName,
   DEFAULTS,
@@ -51,6 +52,14 @@ describe("parseConfig", () => {
     );
     assert.deepEqual(parseConfig("{}"), DEFAULTS);
     assert.equal(parseConfig('{"watchdog": null}').watchdog, null);
+  });
+
+  it('reads "dvara" as the built-in watchdog, and any other string as a path', () => {
+    assert.equal(BUILT_IN_WATCHDOG, "dvara");
+    assert.equal(parseConfig('{"watchdog": "dvara"}').watchdog, "dvara");
+    for (const path of ["./dvara", "dvara.mjs", "tools/dvara"])
+      assert.equal(parseConfig(JSON.stringify({ watchdog: path })).watchdog, path);
+    assert.equal(DEFAULTS.watchdog, null);
   });
 
   it("reads a stage list path, or none", () => {
@@ -160,7 +169,7 @@ describe("parseConfig", () => {
       ['{"historyDir": 3}', /historyDir/],
       ['{"quietHooks": "pre-commit"}', /quietHooks must be a list/],
       ['{"baseRefs": [1]}', /baseRefs must be a list/],
-      ['{"watchdog": 1}', /watchdog must be a path/],
+      ['{"watchdog": 1}', /watchdog must be "dvara", a path or null/],
       ['{"stages": []}', /stages must map/],
       ['{"stages": null}', /stages must map/],
       ['{"stages": {"pre-push": "lint"}}', /stages.pre-push must be a list/],

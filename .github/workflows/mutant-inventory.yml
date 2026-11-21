@@ -138,7 +138,8 @@ jobs:
           retention-days: 90
 
   ts:
-    name: Stryker ${{ matrix.label }}
+    # A fixed name: GitHub adds the matrix values to it.
+    name: Stryker
     needs: ts-plan
     runs-on: ubuntu-latest
     timeout-minutes: 350
@@ -420,7 +421,8 @@ jobs:
           if-no-files-found: ignore
 
   py:
-    name: cosmic-ray ${{ matrix.module }} ${{ matrix.shard }}
+    # A fixed name: GitHub adds the matrix values to it.
+    name: cosmic-ray
     needs: py-plan
     runs-on: ubuntu-latest
     timeout-minutes: 350

@@ -4,6 +4,7 @@ claude-code.md#a-session-cannot-grant-itself-permissions	content	\x22(permission
 claude-code.md#capturing-a-mod-for-evidence	command	\bscreencapture\b		screencapture -x -o -l 4242 .tmp/band.png
 claude-code.md#claude--p---cloud-only-sends	command	claude -p .*--cloud\b		claude -p "rebase on main" --cloud 01HXYZ
 claude-code.md#dev-mod-hot-reload-needs-the-skill	command	\bln -s.*\.claude/dev-mods/		ln -s "$PWD/mods/band" ~/.claude/dev-mods/abc123/band
+claude-code.md#function-hook-mods	content	\$\.(tool\.register|clock\.(after|every))\(	**/hooks/*.ts*	packages/band/hooks/register.tsx $.clock.every(5_000, () => poll($))
 claude-code.md#hook-wiring-edits-read-as-self-modification	content	\x22(hooks|matcher|PreToolUse|PostToolUse|PostToolUseFailure|Stop|SessionStart|UserPromptSubmit)\x22	.claude/settings.json	.claude/settings.json "PreToolUse": [{ "matcher": "Bash", "hooks": [] }]
 claude-code.md#no-do-not-merge-label-holds	command	gh pr edit .*--(add|remove)-label[ =]do-not-merge		gh pr edit 3640 --add-label do-not-merge
 claude-code.md#sendmessage-from-an-untrusted-device	error	elevated_session_untrusted_device		{"error":{"type":"elevated_session_untrusted_device","message":"This device is not trusted"}}
@@ -32,6 +33,7 @@ review-bots.md#a-green-pr-that-never-queues	command	@[Mm]ergifyio (refresh|queue
 review-bots.md#behind-means-unqueued	command	--json[ =]\S*mergeStateStatus		gh pr view 3640 --json mergeStateStatus,reviewDecision
 review-bots.md#checks-timed-out-needs-a-requeue-command	error	checks timed out		Exit code 1 Queue: Embarked in merge queue  fail  The pull request has been removed from the queue: checks timed out
 review-bots.md#re-triggering-a-review	command	gh pr comment .*@cubic		gh pr comment 3640 --body "@cubic review"
+review-bots.md#require-branches-up-to-date-re-bills-the-reviewer	content	strict_required_status_checks_policy\x22\s*:\s*true	**/*.json	.tmp/ruleset-main.json "strict_required_status_checks_policy": true
 review-bots.md#the-review-allowance	error	line limit reached		Exit code 8 cubic · AI code reviewer  neutral  0  https://cubic.dev  AI review line limit reached
 stryker.md#source-text-inside-the-sandbox-is-instrumented	error	stryNS_		AssertionError: expected 'function stryNS_9fa48() {' to match /^import/
 testing.md#a-server-freeze-not-a-lock-leak	error	Can't reach database server		PrismaClientInitializationError: Can't reach database server at localhost:5432

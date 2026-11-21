@@ -803,6 +803,29 @@ or it is an hour old. It skips a stopped OrbStack rather than waking it, and
 records each sweep that did something in
 `<git common dir>/<worktree.name>-services-reaper.log`.
 
+**The hourly Docker prune** (macOS). `sarathi services prune install`
+registers a launchd agent, `com.<worktree.name>.docker-prune`, that sweeps
+Docker every hour: the reaper's step (in-process, through the same `docker`),
+stopped containers, unused images the primary checkout's code does not name,
+anonymous volumes, worktree volumes whose labelled root is gone, build cache
+(one-off layers after an hour, reused ones after three days, 40 GB at most)
+and networks. Anything touched in the last hour is kept.
+
+```sh
+sarathi services prune install      # copy the runtime out, snapshot the settings, register the agent
+sarathi services prune run --dry-run   # print what one sweep would remove; only reads reach Docker
+sarathi services prune run-now|status|uninstall
+```
+
+launchd runs a copy, in `~/Library/Application Support/<Name>/DockerPrune`
+(`<Name>` is `worktree.name` capitalised), never the checkout: the compiled
+modules the sweep needs, which use Node built-ins only, and `settings.json`,
+a snapshot of `worktree.name`, the services file's `project` and `rootLabel`,
+and the primary checkout. A change to any of them needs another `install`.
+Each sweep is a JSON line in that folder's `prune.log` (moved to `.1` past
+1 MB); a sweep with no Docker daemon is logged as skipped. `--docker` names
+the binary, and `--settings` a snapshot to read instead of the checkout.
+
 The live-service tests start real containers, so they run only with
 `SARATHI_LIVE_SERVICES=required` and a Docker daemon.
 

@@ -1,25 +1,43 @@
 /**
  * `sarathi services <action>`: finds the worktree, its settings and its
- * services file, then runs the action (`runner.ts`) or the sweep
- * (`reaper.ts`). Errors are one line on stderr and exit 1.
+ * services file, then runs the action (`runner.ts`), the sweep
+ * (`reaper.ts`) or the hourly Docker prune (`prune.ts`). Errors are one line
+ * on stderr and exit 1.
  */
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
 import { readSettings } from '../worktree/settings.ts';
 import { BUILT_IN_ACTIONS, loadServicesFile, servicesPath, ServicesError, type ServicesFile } from './file.ts';
+import { cli as pruneCli, defaultEnv as defaultPruneEnv, type Env as PruneEnv } from './prune.ts';
 import { nodeSweepHost, sweep, type SweepHost } from './reaper.ts';
+import { runChild } from './run-child.ts';
 import { reapSettings, services, type ServicesIo } from './runner.ts';
 
 export const USAGE = `usage: sarathi services up|down|status|web|server|<action> [args]
        sarathi services run -- <command>
        sarathi services reap
+       sarathi services prune install|run|run-now|status|uninstall [--dry-run] [--docker <path>] [--settings <file>]
 `;
 
 export interface Io extends ServicesIo {
   readonly cwd: string;
   /** Builds the sweep's host; replaced in tests. */
   readonly sweepHost?: (write: (text: string) => void) => SweepHost;
+  /** Replaces parts of the Docker prune's environment; for tests. */
+  readonly prune?: Partial<PruneEnv>;
+}
+
+/** The hourly Docker prune's environment: this checkout's directory and variables. */
+function pruneEnv(io: Io): PruneEnv {
+  return {
+    ...defaultPruneEnv(),
+    run: (command, args, timeoutMs) => runChild(command, args, { timeoutMs, cwd: io.cwd, env: { ...io.env } }),
+    variables: io.env,
+    stdout: line => io.out(`${line}\n`),
+    stderr: line => io.err(`${line}\n`),
+    ...io.prune,
+  };
 }
 
 function toplevel(io: Io): string {
@@ -42,6 +60,8 @@ export async function servicesMain(args: readonly string[], io: Io): Promise<num
     io.err(USAGE);
     return 1;
   }
+  // The prune finds its own checkout (the primary one), or reads launchd's snapshot.
+  if (action === 'prune') return pruneCli(rest, pruneEnv(io));
   try {
     if (action === 'reap') {
       if (rest.length > 0) {

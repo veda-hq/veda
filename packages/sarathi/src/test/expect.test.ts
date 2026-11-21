@@ -14,6 +14,7 @@ export interface Mock<F extends (...args: never[]) => unknown> {
   (...args: Parameters<F>): ReturnType<F>;
   mock: { calls: Parameters<F>[]; lastCall: Parameters<F> | undefined };
   mockReturnValue: (value: ReturnType<F>) => Mock<F>;
+  mockImplementation: (impl: F) => Mock<F>;
   mockRestore: () => void;
 }
 
@@ -34,6 +35,10 @@ function record<F extends AnyFn>(impl: F | undefined, restore: () => void = () =
   };
   fn.mockReturnValue = value => {
     body = () => value;
+    return fn;
+  };
+  fn.mockImplementation = next => {
+    body = next;
     return fn;
   };
   fn.mockRestore = restore;
@@ -186,6 +191,8 @@ function matchers(actual: unknown, negate: boolean, message: string | undefined)
     toBeGreaterThanOrEqual: (bound: number) => number(value => value >= bound, `to be at least ${bound}`),
     toBeLessThan: (bound: number) => number(value => value < bound, `to be less than ${bound}`),
     toBeLessThanOrEqual: (bound: number) => number(value => value <= bound, `to be at most ${bound}`),
+    /** vitest's: within half a unit of the `digits`th decimal place. */
+    toBeCloseTo: (expected: number, digits = 2) => number(value => Math.abs(value - expected) < 10 ** -digits / 2, `to be close to ${expected}`),
     toHaveLength: (length: number) => check((typeof actual === 'string' || Array.isArray(actual)) && actual.length === length, `to have length ${length}`),
     toHaveProperty: (key: string) => check(typeof actual === 'object' && actual !== null && key in actual, `to have property ${key}`),
     toThrow: (expected?: Expected) => {
@@ -245,14 +252,17 @@ export const it = Object.assign(
   {
     each:
       <const T>(table: readonly T[]) =>
-      (name: string, fn: (...args: T extends readonly unknown[] ? [...T] : [T]) => void) => {
+      (name: string, fn: (...args: T extends readonly unknown[] ? [...T] : [T]) => void | Promise<void>) => {
         for (const row of table) {
           const args = (Array.isArray(row) ? row : [row]) as T extends readonly unknown[] ? [...T] : [T];
           let used = 0;
-          const title = name.replace(/%s/g, () => String(args[used++]));
-          nodeIt(title, () => {
-            fn(...args);
+          // `%s` is the value as text, `%j` as JSON.
+          const title = name.replace(/%[sj]/g, token => {
+            const value: unknown = args[used++];
+            return token === '%j' ? show(value) : String(value);
           });
+          // Returned, so an async row's failure fails its test.
+          nodeIt(title, () => fn(...args));
         }
       },
   },

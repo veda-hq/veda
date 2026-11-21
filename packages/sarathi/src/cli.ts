@@ -15,7 +15,8 @@
  * `sarathi worktree pick`, the interactive picker (`worktree/pick.ts`).
  *
  * `sarathi services`: the worktree's local services (`services/main.ts`), and
- * `sarathi services reap`, the sweep of deleted worktrees' services.
+ * `sarathi services reap`, the sweep of deleted worktrees' services, and
+ * `sarathi services prune`, the hourly Docker sweep (`services/prune.ts`).
  */
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -63,6 +64,7 @@ const USAGE = `usage: sarathi hook <Event> [--config <file>]
        sarathi services up|down|status|web|server|<action> [args]
        sarathi services run -- <command>
        sarathi services reap
+       sarathi services prune install|run|run-now|status|uninstall [--dry-run] [--docker <path>] [--settings <file>]
        sarathi --version
 `;
 

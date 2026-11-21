@@ -1,0 +1,6 @@
+{
+  "name": "smoke",
+  "project": "smoke-wt",
+  "rootLabel": "smoke.worktree-services.root",
+  "primary": "/nonexistent/smoke-checkout"
+}

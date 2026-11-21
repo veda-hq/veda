@@ -28,6 +28,7 @@ import {
   USAGE as RECORDS_USAGE,
 } from "./records/gate.ts";
 import { runner } from "./records/git.ts";
+import { slot, type SlotWiring } from "./slot.ts";
 import { listFor, readStageLists } from "./stages.ts";
 import { supervise, type Options } from "./supervisor.ts";
 import { GIT_TRAILER_KEYS, misplacedTrailers, refusal } from "./trailers.ts";
@@ -51,6 +52,8 @@ export const USAGE = [
   "                                            warn on (or refuse) a dropped executable bit (pre-commit)",
   "       dvara review-size --cap N [--ignore GLOB]… [--base REF]",
   "                                            warn when the branch is over a reviewer's line cap (pre-push)",
+  "       dvara slot --name <name> [--dir <dir>] [--set NAME=VALUE]… [--unset NAME]… -- <command> [args…]",
+  "                                            run a command, with the variables set while it holds the machine's slot",
   "       dvara --version",
 ].join("\n");
 
@@ -73,6 +76,8 @@ export interface Context {
   readonly env: NodeJS.ProcessEnv;
   readonly supervise?: typeof supervise;
   readonly options?: Partial<Options>;
+  /** What `dvara slot` spawns and listens on, replaced in tests. */
+  readonly slot?: SlotWiring;
 }
 
 type CheckName = "records" | "frozen" | "trailers";
@@ -256,6 +261,8 @@ export const run = async (
     return checkCommand(command, rest, context);
   if (command === "exec-bits") return execBits(rest, context);
   if (command === "review-size") return reviewSize(rest, context);
+  if (command === "slot")
+    return slot(rest, { ...context.slot, err: io.err, env, cwd });
   if (
     (command === "run" && rest.length > 0) ||
     (command === "stages" && rest.length === 1)

@@ -1,0 +1,63 @@
+{
+  "machine": "apple-m5-max-18c",
+  "brand": "Apple M5 Max",
+  "cpus": 18,
+  "perfLevels": [
+    {
+      "name": "Super",
+      "cpus": 6
+    },
+    {
+      "name": "Performance",
+      "cpus": 12
+    }
+  ],
+  "memoryBytes": 38654705664,
+  "osVersion": "27.0",
+  "node": "v24.19.0",
+  "capturedAt": "2026-09-13T11:46:49.174Z",
+  "scenarios": [
+    {
+      "name": "deadlock",
+      "rootPid": 40467,
+      "supervisorPid": 40375,
+      "treePids": [40467, 40479],
+      "note": "spawnSync parent and bash reader on a never-closed socketpair"
+    },
+    {
+      "name": "deadlock-later",
+      "rootPid": 40467,
+      "supervisorPid": 40375,
+      "treePids": [40467, 40479],
+      "note": "same tree 10 s later, for CPU drift"
+    },
+    {
+      "name": "tcp-external",
+      "rootPid": 41032,
+      "supervisorPid": 40375,
+      "treePids": [41032],
+      "note": "leaf with ESTABLISHED TCP to a server outside the tree"
+    },
+    {
+      "name": "tcp-internal",
+      "rootPid": 41084,
+      "supervisorPid": 40375,
+      "treePids": [41084, 41085],
+      "note": "server parent and client leaf inside the tree"
+    },
+    {
+      "name": "sleep",
+      "rootPid": 41135,
+      "supervisorPid": 40375,
+      "treePids": [41135],
+      "note": "bash waiting on sleep"
+    },
+    {
+      "name": "docker-client",
+      "rootPid": 41173,
+      "supervisorPid": 40375,
+      "treePids": [41173],
+      "note": "docker events streaming from the daemon socket"
+    }
+  ]
+}

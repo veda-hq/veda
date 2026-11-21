@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { DEFAULT_SETTINGS, parseSettings, readSettings } from './settings.ts';
+import { cleanupOf, DEFAULT_CLEANUP, DEFAULT_SETTINGS, parseSettings, readSettings } from './settings.ts';
 
 describe('worktree settings', () => {
   it('default every field', () => {
@@ -42,6 +42,57 @@ describe('worktree settings', () => {
       [{ cloudCheck: '' }, /"cloudCheck" must be a path/],
     ] as const) {
       assert.throws(() => parseSettings(value, 'f', '/r'), message);
+    }
+  });
+
+  it('leave cleanup off until set, and default each of its fields', () => {
+    assert.equal(parseSettings({}, 'f', '/r').cleanup, undefined);
+    assert.deepEqual(cleanupOf(parseSettings({}, 'f', '/r')), DEFAULT_CLEANUP);
+    assert.deepEqual(parseSettings({ cleanup: {} }, 'f', '/r').cleanup, DEFAULT_CLEANUP);
+    assert.deepEqual(parseSettings({ cleanup: { machine: {} } }, 'f', '/r').cleanup, DEFAULT_CLEANUP);
+  });
+
+  it('read every cleanup field', () => {
+    const cleanup = {
+      primaryBuilt: ['.turbo', 'apps/mobile/android/build'],
+      nestedCopies: '^\\.wt\\/preflight(?:-\\d{15}-\\d{8})?$',
+      machine: { dockerDesktopUpdate: true, androidNdk: 'apps/mobile/android/build.gradle', gradleCaches: true, simulators: true, brew: true },
+    };
+    const parsed = parseSettings({ cleanup }, 'f', '/r');
+    assert.deepEqual(parsed.cleanup, cleanup);
+    assert.equal(cleanupOf(parsed), parsed.cleanup);
+    assert.deepEqual(parseSettings({ cleanup: { machine: { brew: true } } }, 'f', '/r').cleanup?.machine, {
+      dockerDesktopUpdate: false,
+      gradleCaches: false,
+      simulators: false,
+      brew: true,
+    });
+  });
+
+  it('refuse a cleanup setting they cannot use safely', () => {
+    for (const [cleanup, message] of [
+      [[], /"cleanup" must be an object/],
+      [{ extra: 1 }, /cleanup: unknown key "extra"/],
+      [{ primaryBuilt: '.turbo' }, /"primaryBuilt" must be a list/],
+      [{ primaryBuilt: [3] }, /"primaryBuilt" must be a list/],
+      [{ primaryBuilt: [''] }, /"primaryBuilt" must be a list/],
+      [{ primaryBuilt: ['.'] }, /"primaryBuilt" must be a list/],
+      [{ primaryBuilt: ['/abs'] }, /"primaryBuilt" must be a list/],
+      [{ primaryBuilt: ['a/../..'] }, /"primaryBuilt" must be a list/],
+      [{ primaryBuilt: ['build/'] }, /"primaryBuilt" must be a list/],
+      [{ primaryBuilt: ['.git/objects'] }, /"primaryBuilt" must be a list/],
+      [{ primaryBuilt: ['.GIT/objects'] }, /"primaryBuilt" must be a list/],
+      [{ machine: { androidNdk: '.Git' } }, /"androidNdk" must be a path/],
+      [{ nestedCopies: '' }, /"nestedCopies" must be a regular expression/],
+      [{ nestedCopies: 1 }, /"nestedCopies" must be a regular expression/],
+      [{ nestedCopies: '(' }, /"nestedCopies" must be a regular expression/],
+      [{ machine: [] }, /"machine" must be an object/],
+      [{ machine: { docker: true } }, /machine: unknown key "docker"/],
+      [{ machine: { brew: 'yes' } }, /"brew" must be true or false/],
+      [{ machine: { androidNdk: true } }, /"androidNdk" must be a path/],
+      [{ machine: { androidNdk: '../build.gradle' } }, /"androidNdk" must be a path/],
+    ] as const) {
+      assert.throws(() => parseSettings({ cleanup }, 'f', '/r'), message);
     }
   });
 

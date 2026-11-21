@@ -90,7 +90,7 @@ describe('sarathi services', () => {
 
   test('names the actions when given another', async () => {
     expect(await servicesMain(['restart'], io(root))).toBe(1);
-    expect(err).toContain('unknown action restart; the actions are up, down, status, run, web, server, reap, database-init, database-snapshot');
+    expect(err).toContain('unknown action restart; the actions are up, down, status, run, web, server, reap, prune, database-init, database-snapshot');
   });
 
   test('takes no object built-in for an action', async () => {
@@ -184,9 +184,33 @@ describe('sarathi services reap', () => {
     expect(err).toContain('sarathi services reap');
   });
 
+  test('names prune in the usage', async () => {
+    expect(await servicesMain([], io(root))).toBe(1);
+    expect(err).toContain('sarathi services prune install|run|run-now|status|uninstall [--dry-run] [--docker <path>] [--settings <file>]');
+  });
+
   test('the default host is the real one', async () => {
     // Stubs that answer nothing: OrbStack "runs", the engine "answers", nothing is found.
     expect(await servicesMain(['reap'], io(root))).toBe(0);
     expect(out).toBe('No services of deleted worktrees found\n');
+  });
+});
+
+describe('sarathi services prune', () => {
+  test('previews a sweep from this checkout, with its names, through the given docker', async () => {
+    expect(await servicesMain(['prune', 'run', '--dry-run', '--docker', join(root, 'bin', 'docker')], io(join(root, 'bin')))).toBe(0);
+    expect(err).toBe('');
+    // The "would run" lines come first, then the plan.
+    expect(out).toContain('would run: docker container prune -f --filter until=1h\n');
+    const plan = JSON.parse(out.slice(out.indexOf('{\n'))) as { planned: Array<{ step: string; ok: boolean }> };
+    expect(plan.planned.map(step => step.ok)).toEqual(Array.from({ length: 8 }, () => true));
+    // Every docker call ran in this checkout's directory; the reap's listing used the services file's label.
+    expect(calls()).toContain(`docker volume ls --filter label=acme.worktree-services.root --format {{.Label "com.docker.compose.project"}}\t{{.Label "acme.worktree-services.root"}}|${join(root, 'bin')}`);
+    expect(calls().some(line => line.startsWith('docker volume rm') || line.startsWith('docker container prune'))).toBe(false);
+  });
+
+  test('refuses an unknown action with its usage, one line on stderr', async () => {
+    expect(await servicesMain(['prune', 'bogus'], io(root, { prune: { run: async () => ({ kind: 'ok', code: 0, stdout: '', stderrTail: '' }) } }))).toBe(1);
+    expect(err).toBe('usage: sarathi services prune install|run|run-now|status|uninstall [--dry-run] [--docker <path>] [--settings <file>]\n');
   });
 });

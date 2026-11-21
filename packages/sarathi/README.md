@@ -98,6 +98,7 @@ folder, which holds handlers any TypeScript repository can list:
 | `autofix-watch.sh` | PostToolUse `Bash\|mcp__ccd_pr__set_monitor\|mcp__ccd_pr__get_status\|mcp__ccd_turn__wrap_up`; PostToolUseFailure `mcp__ccd_pr__set_monitor` | Lists every pull request the session opens and tells the model, in its context, about each open one that Auto-fix is not on for ("Auto-fix for every pull request"). Never blocks. |
 | `worktree-archive.sh` | PreToolUse `ExitWorktree` (and Codex's `set_thread_archived`) | Denies removing or archiving the session's worktree while `sarathi worktree archive-check` finds work that would be lost ("Worktrees"). List it with `"failClosed": true`. |
 | `services-reap.sh` | SessionStart | Starts `sarathi services reap` detached, output discarded, when `docker` is on PATH: deleted worktrees' services go ("Services"). Never blocks; always exits 0. |
+| `worktree-hooks-path.sh` | SessionStart | Clears a worktree-scoped `core.hooksPath` in the session's checkout, which tools that create worktrees write as an absolute path to another checkout's hooks, so the repository's shared value applies again ("Worktrees"). Acts only when `extensions.worktreeConfig` is on, since without it there is no scoped value. Says what it cleared; always exits 0. |
 
 They act on the session's checkout, the git toplevel of the event's `cwd`:
 the desktop app runs a worktree session's hooks with `$CLAUDE_PROJECT_DIR`
@@ -693,6 +694,11 @@ recovery ref first, and moves commits made after the merge to a successor
 branch. `archive-check` lists every blocker: changes, a git operation,
 ignored files other than rebuildable caches, work not in origin/main.
 
+`sarathi worktree pick` lists the worktrees whose folders still exist on
+stderr, asks for a number and prints only the chosen path, since no
+subprocess can `cd` its shell;
+`sarathi worktree pick --shell` prints the `wt` shell function that does.
+
 Settings are the `worktree` object of `.claude/sarathi.json`:
 
 ```json
@@ -703,7 +709,69 @@ Settings are the `worktree` object of `.claude/sarathi.json`:
 recovery refs (`refs/<name>/lifecycle/…`); `owner` is who may discard
 scratch files; `cloudCheck` confirms a cloud session (exit 0), else
 `CLAUDE_CODE_REMOTE=true` alone does; `services` names the services file
-("Services"). All four are optional.
+("Services"); `cleanup` says what `sarathi worktree cleanup` may touch
+(below). All are optional.
+
+### Cleanup
+
+`sarathi worktree cleanup [--dry-run]` frees the disk that worktrees and
+their tooling leave behind, from any checkout of the repository. It runs
+nine steps in turn; a failed step is reported and the next one still runs.
+`--dry-run` prints what each step would remove and removes nothing. It
+exits 0 when every step succeeded or was skipped, 1 when any failed, 2 for
+a bad flag. It reads the primary checkout's settings first; settings it
+cannot read stop it before any step.
+
+1. **Leftover worktrees**: only those Claude Code made (a `CLAUDE_BASE`
+   marker in the gitdir), idle three days, unlocked, with nothing
+   uncommitted or untracked, HEAD on a remote branch, and no process or
+   running services in them. Ignored files no other checkout holds are
+   copied to `.git/<name>/worktree-archive/<worktree>` first. The desktop
+   app's own session worktrees and other agents' are never removed.
+2. **The worktree archive**: folders 30 days past their last copy go, then
+   the oldest while it holds over 10 GB.
+3. **`git worktree prune`**: registrations whose folder is gone.
+4. **git-ai folders** for worktrees nothing names any more.
+5. **Idle app worktrees**: after 14 idle days, only their rebuildable
+   output (`node_modules`, build folders, `ios/Pods`) goes; folder and
+   branch stay.
+6. **Docker**: the hourly sweep of `sarathi services prune`, run in-process
+   (it needs `worktree.services`; without one only this part is skipped),
+   then every unused build-cache record. No daemon: skipped.
+7. **Docker Desktop's staged update**, when no Docker Desktop process runs.
+8. **Android NDKs** no listed checkout's build.gradle pins.
+9. **Caches**: `pnpm store prune`, unavailable simulators, `brew cleanup`,
+   the primary checkout's build output and Gradle's caches.
+
+Steps 1 to 6 and the pnpm store run for every project. The rest is off
+until `worktree.cleanup` turns it on; an off step or part is reported as
+skipped, "off in .claude/sarathi.json", never failed:
+
+| Setting | Switches on |
+| --- | --- |
+| `primaryBuilt` | step 9 deletes these paths of the primary checkout, when no process works in it and no Gradle runs |
+| `nestedCopies` | a regular expression for a worktree's nested copies (paths from it), which steps 1 and 5 remove with it; without one, a worktree inside another keeps its parent |
+| `machine.dockerDesktopUpdate` | step 7 |
+| `machine.androidNdk` | step 8, reading the pins from this build.gradle in each checkout |
+| `machine.gradleCaches` | step 9's `~/.gradle/caches`, when no Gradle daemon or build runs |
+| `machine.simulators` | step 9's `xcrun simctl delete unavailable`, on macOS |
+| `machine.brew` | step 9's `brew cleanup` |
+
+Paths are relative, inside the checkout and outside `.git`. For example:
+
+```json
+{
+  "worktree": {
+    "name": "acme",
+    "services": "services.json",
+    "cleanup": {
+      "primaryBuilt": [".turbo", "android/app/build"],
+      "nestedCopies": "^\\.wt\\/copy$",
+      "machine": { "androidNdk": "android/build.gradle", "gradleCaches": true, "brew": true }
+    }
+  }
+}
+```
 
 ## Services
 
@@ -797,6 +865,30 @@ counts as gone once the process named in its `fixture-owner.json` has died
 or it is an hour old. It skips a stopped OrbStack rather than waking it, and
 records each sweep that did something in
 `<git common dir>/<worktree.name>-services-reaper.log`.
+
+**The hourly Docker prune** (macOS). `sarathi services prune install`
+registers a launchd agent, `com.<worktree.name>.docker-prune`, that sweeps
+Docker every hour: the reaper's step (in-process, through the same `docker`),
+stopped containers, unused images the primary checkout's code does not name,
+anonymous volumes, worktree volumes whose labelled root is gone, build cache
+(one-off layers after an hour, reused ones after three days, 40 GB at most)
+and networks. Anything touched in the last hour is kept, and so is an image
+whose build or tag time does not read as a time.
+
+```sh
+sarathi services prune install      # copy the runtime out, snapshot the settings, register the agent
+sarathi services prune run --dry-run   # print what one sweep would remove; only reads reach Docker
+sarathi services prune run-now|status|uninstall
+```
+
+launchd runs a copy, in `~/Library/Application Support/<Name>/DockerPrune`
+(`<Name>` is `worktree.name` capitalised), never the checkout: the compiled
+modules the sweep needs, which use Node built-ins only, and `settings.json`,
+a snapshot of `worktree.name`, the services file's `project` and `rootLabel`,
+and the primary checkout. A change to any of them needs another `install`.
+Each sweep is a JSON line in that folder's `prune.log` (moved to `.1` past
+1 MB); a sweep with no Docker daemon is logged as skipped. `--docker` names
+the binary, and `--settings` a snapshot to read instead of the checkout.
 
 The live-service tests start real containers, so they run only with
 `SARATHI_LIVE_SERVICES=required` and a Docker daemon.

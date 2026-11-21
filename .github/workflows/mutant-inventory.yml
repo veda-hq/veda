@@ -33,11 +33,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # `smoke`: one small TypeScript file, and one Python module in two shards,
-  # to prove the plumbing. `plan`: the same TypeScript file, every Python
-  # module timed and counted, and only tool_guard's shards run, so the full
-  # run's cost is read before it starts. `full`: everything.
-  SCOPE: plan
+  # `smoke`: one small TypeScript file, and tool_guard in two shards, to
+  # prove the plumbing. `full`: every TypeScript file. Every Python module is
+  # always timed and counted; PY_MODULES names the ones whose mutants run, so
+  # a costly module's run is decided from its measured cost.
+  SCOPE: full
+  PY_MODULES: tool_guard command_guard rules bash_guard config refusal_log
   # #287's head (claude/prepush-gate-272), pinned.
   LANES_SHA: 3fca3c140911467257eeb859b1468e0443d40271
   COSMIC_RAY: cosmic-ray==8.9.0
@@ -328,6 +329,7 @@ jobs:
           # `Importing`). Lines beyond the import only order the subset.
           touched = {m: {} for m in modules}
           beyond = {m: {} for m in modules}
+          cover = {m: {} for m in modules}
           test_runs = {}
           for t in tests:
               found, seconds, code = measure([python, "-B", "-m", "unittest", f"tests.{t}"], f"cov-{t}")
@@ -336,6 +338,7 @@ jobs:
                   if found.get(m):
                       touched[m][t] = len(found[m])
                       beyond[m][t] = len(found[m] - base[m])
+                      cover[m][t] = found[m]
           os.remove(pth)
           json.dump({"touched": touched, "beyond": beyond, "base": {m: sorted(v) for m, v in base.items()}, "test_runs": test_runs}, open(f"{out_dir}/reach.json", "w"), indent=1)
           summary.write("| Module | Test files that run its lines (lines beyond its import) |\n|---|---|\n")
@@ -360,7 +363,7 @@ jobs:
               raise SystemExit(1)
 
           scope = ["tool_guard"] if os.environ["SCOPE"] == "smoke" else modules
-          run = modules if os.environ["SCOPE"] == "full" else ["tool_guard"]
+          run = ["tool_guard"] if os.environ["SCOPE"] == "smoke" else os.environ["PY_MODULES"].split()
           # Four suites at once ran 665 s against 269 s alone (#328): 2.5.
           workers, load, budget = 4, 2.5, 15000
           plan = {"modules": {}, "test_runs": test_runs, "workers": workers, "load": load, "budget": budget}
@@ -385,6 +388,21 @@ jobs:
               subprocess.run(["cosmic-ray", "init", cfg, db], cwd=kavach, check=True)
               dump = subprocess.run(["cosmic-ray", "dump", db], cwd=kavach, capture_output=True, text=True, check=True).stdout
               entry["mutants"] = sum(1 for line in dump.splitlines() if line.strip())
+              # The cost if each mutant ran only the test files that run a
+              # line of its span (measured, not used to select): an upper
+              # bound like the other, with each file's time under coverage.
+              per_line, unreached = 0.0, 0
+              for line in dump.splitlines():
+                  if not line.strip():
+                      continue
+                  mu = json.loads(line)[0]["mutations"][0]
+                  span = set(range(mu["start_pos"][0], mu.get("end_pos", mu["start_pos"])[0] + 1))
+                  files = [t for t, lines in cover[m].items() if lines & span]
+                  if not files:
+                      unreached += 1
+                  per_line += sum(test_runs[t]["seconds"] for t in files)
+              entry["per_line_hours"] = round(per_line * load / workers / 3600, 1)
+              entry["unreached"] = unreached
               if reach:
                   shards = math.ceil(entry["mutants"] * entry["subset_seconds"] * load / workers / budget)
                   if os.environ["SCOPE"] == "smoke":
@@ -392,7 +410,8 @@ jobs:
                   entry["shards"] = shards
                   entry["run"] = m in run
                   entry["projected_hours"] = round(entry["mutants"] * entry["subset_seconds"] * load / workers / 3600, 1)
-                  timeout = max(600, math.ceil(entry["subset_seconds"] * load * 5))
+                  # A hang costs a worker this long; the shards are sized for none.
+                  timeout = max(600, math.ceil(entry["subset_seconds"] * load * 2))
                   for k in range(shards if m in run else 0):
                       rest = " ".join(f"tests.{t}" for t in reach[1:])
                       rest = f" && python3 -B -m unittest -f {rest} 2>>../unittest.log" if rest else ""
@@ -402,9 +421,9 @@ jobs:
                   entry["run"] = False
               plan["modules"][m] = entry
           json.dump(plan, open(f"{out_dir}/plan.json", "w"), indent=1)
-          summary.write("\n| Module | Lines | Reach | Subset run | Mutants | Shards | Upper bound |\n|---|---|---|---|---|---|---|\n")
+          summary.write("\n| Module | Lines | Reach | Subset run | Mutants | Shards | Upper bound | Per line | No test runs its line | Runs here |\n|---|---|---|---|---|---|---|---|---|---|\n")
           for m, e in plan["modules"].items():
-              summary.write(f"| {m} | {e['lines']} | {', '.join(e['reach']) or 'none'} | {e.get('subset_seconds', '-')} s | {e['mutants']} | {e['shards']} | {e.get('projected_hours', '-')} h |\n")
+              summary.write(f"| {m} | {e['lines']} | {', '.join(e['reach']) or 'none'} | {e.get('subset_seconds', '-')} s | {e['mutants']} | {e['shards']} | {e.get('projected_hours', '-')} h | {e['per_line_hours']} h | {e['unreached']} | {e['run']} |\n")
           total_shards = sum(e["shards"] for e in plan["modules"].values())
           total_hours = round(sum(e.get("projected_hours", 0) for e in plan["modules"].values()), 1)
           summary.write(f"\n- All modules: {total_shards} shards, at most {total_hours} job-hours of exec; this run: {len(matrix)} shards\n")
@@ -680,7 +699,7 @@ jobs:
               hours = e.get("projected_hours", "-")
               if not e.get("run"):
                   reach = ", ".join(f"`{t}`" for t in e["reach"]) or "none"
-                  md.append(f'| `{m}.py` | {e["lines"]} | {reach} | {e.get("subset_seconds", "-")} s | {e["mutants"]} | not run | | | | {e["shards"]} planned, ≤ {hours} h | |')
+                  md.append(f'| `{m}.py` | {e["lines"]} | {reach} | {e.get("subset_seconds", "-")} s | {e["mutants"]} | not run | | | | {e["shards"]} planned, ≤ {hours} h ({e.get("per_line_hours", "-")} h per line) | |')
                   continue
               if got != list(range(e["shards"])):
                   faults.append(f"{m}: shards {got} of {e['shards']}")

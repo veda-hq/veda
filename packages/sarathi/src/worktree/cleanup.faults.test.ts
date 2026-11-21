@@ -328,12 +328,15 @@ describe('cleanup under fault injection', () => {
     expect(await run(twice)).toBe(0);
     expect(twice).toEqual(once);
     const diverged: string[] = [];
+    const failedRerun: string[] = [];
     for (const fault of await faults()) {
       const world = setup();
       await run(world, fault);
-      await run(world);
+      // The rerun has no fault, so it must succeed, not only leave the same state.
+      if ((await run(world)) !== 0) failedRerun.push(`${fault.mode} at ${fault.index}`);
       if (JSON.stringify(world) !== JSON.stringify(once)) diverged.push(`${fault.mode} at ${fault.index}`);
     }
     expect(diverged).toEqual([]);
+    expect(failedRerun).toEqual([]);
   });
 });

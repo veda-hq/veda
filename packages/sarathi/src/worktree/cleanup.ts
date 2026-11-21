@@ -597,7 +597,11 @@ async function ignoredLoss(env: Env, root: string, at: Checkouts) {
   // files; only the folders that are not REBUILT get listed file by file.
   const top = await ignored(['--directory']);
   const folders = top.filter(path => path.endsWith('/'));
-  const inner = folders.length === 0 ? [] : await ignored(['--', ...folders]);
+  // `:(literal)`: a folder named with `*`, `?` or `[` is that folder, not a glob.
+  const inner =
+    folders.length === 0
+      ? []
+      : await ignored(['--', ...folders.map(folder => `:(literal)${folder}`)]);
   const paths = [...top.filter(path => !path.endsWith('/')), ...inner];
   return {
     files: paths.filter(
@@ -1684,7 +1688,21 @@ export function defaultEnv(io: Io): Env {
         if (!sameBytes(from, to))
           throw new Error(`${to} already holds other bytes`);
       } else {
-        mkdirSync(dirname(to), { recursive: true });
+        // A link in a folder above `to` would aim the copy outside the
+        // archive: the nearest folder that exists, and then the parent once
+        // made, must be reached by their own paths.
+        const ownPath = (folder: string): void => {
+          if (realpathSync(folder) !== folder)
+            throw new Error(
+              `${folder} is reached through a symbolic link: nothing is archived into it`,
+            );
+        };
+        const parent = dirname(to);
+        let existing = parent;
+        while (!existsSync(existing)) existing = dirname(existing);
+        ownPath(existing);
+        mkdirSync(parent, { recursive: true });
+        ownPath(parent);
         copyFileSync(from, to, fsConstants.COPYFILE_EXCL);
       }
       const copied = new Date();
@@ -1721,7 +1739,17 @@ export function defaultEnv(io: Io): Env {
     // Not existsSync: it reads a path it cannot check (an unreadable folder
     // above it, a link loop) as missing, and a step would take it for gone.
     exists: path => statSync(path, { throwIfNoEntry: false }) !== undefined,
-    names: dir => (existsSync(dir) ? readdirSync(dir) : []),
+    names: dir => {
+      try {
+        return readdirSync(dir);
+      } catch (error) {
+        // Only a folder that is not there names nothing. One it cannot read
+        // throws, so a step that keeps what it names keeps everything.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') return [];
+        throw error;
+      }
+    },
     freeBytes: path => {
       const stats = statfsSync(path);
       return stats.bavail * stats.bsize;

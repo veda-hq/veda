@@ -440,7 +440,7 @@ describe('keepReason', () => {
         `git --no-optional-locks -C ${WT}/x ls-files --others --ignored --exclude-standard -z --directory @${COMMAND_TIMEOUT_MS}`,
       );
       expect(calls).toContain(
-        `git --no-optional-locks -C ${WT}/x ls-files --others --ignored --exclude-standard -z -- .local/ .wt/ @${COMMAND_TIMEOUT_MS}`,
+        `git --no-optional-locks -C ${WT}/x ls-files --others --ignored --exclude-standard -z -- :(literal).local/ :(literal).wt/ @${COMMAND_TIMEOUT_MS}`,
       );
       expect(losslessCalls).toEqual([
         `${WT}/x/apps/server/.env ${PRIMARY}/apps/server/.env`,

@@ -29,6 +29,12 @@ export const EXIT_DRAIN_MS = 1000;
 /** The deadline's stop signal. */
 const STOP_SIGNAL: NodeJS.Signals = 'SIGTERM';
 
+/**
+ * How a child ended. `stdout` is kept whole, since callers parse it (the
+ * sweep reads `docker image inspect`'s JSON), so it is unbounded: run only
+ * commands whose output fits in memory. `stderrTail` keeps the last
+ * STDERR_TAIL_BYTES.
+ */
 export type ChildOutcome =
   | { kind: 'ok'; code: 0; stdout: string; stderrTail: string }
   | { kind: 'exit'; code: number; stdout: string; stderrTail: string }

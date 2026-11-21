@@ -12,8 +12,11 @@ const readStdin = async (): Promise<string> => {
 /** One line from the terminal, the prompt on stderr so stdout stays the answer. */
 const ask = async (prompt: string): Promise<string> => {
   const lines = createInterface({ input: process.stdin, output: process.stderr });
+  // Input that ends first (Ctrl-D) closes the interface, and a pending
+  // question never settles then: the close answers it with nothing.
+  const closed = new Promise<string>(resolve => lines.once('close', () => resolve('')));
   try {
-    return await lines.question(prompt);
+    return await Promise.race([lines.question(prompt), closed]);
   } catch {
     // fail-open: input that ended before a line answers nothing, an invalid selection.
     return '';

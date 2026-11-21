@@ -171,11 +171,19 @@ export interface ImageRecord {
 /**
  * Tags of images no container uses, older than an hour by both build and tag
  * time. Removing a tag without force deletes the image once its last tag is
- * gone. An unreadable time reads as old (NaN is never within the hour).
+ * gone. A time Docker gives that does not read as one counts as recent, so
+ * the image is kept: nothing proves it outside the hour, and a missing build
+ * time alike. An image with no tag time is judged by its build time alone.
  */
 export function staleImageTags(images: ImageRecord[], inUse: Set<string>, now: number): string[] {
-  const recent = (stamp: string | undefined): boolean => now - Date.parse(String(stamp)) < HOUR_MS;
-  return images.filter(image => !inUse.has(image.Id) && !recent(image.Created) && !recent(image.Metadata?.LastTagTime)).flatMap(image => image.RepoTags ?? []);
+  const recent = (stamp: unknown): boolean => {
+    const at = typeof stamp === 'string' ? Date.parse(stamp) : Number.NaN;
+    return Number.isNaN(at) || now - at < HOUR_MS;
+  };
+  const tagTime = (image: ImageRecord): string | undefined => image.Metadata?.LastTagTime;
+  return images
+    .filter(image => !inUse.has(image.Id) && !recent(image.Created) && (tagTime(image) === undefined || !recent(tagTime(image))))
+    .flatMap(image => image.RepoTags ?? []);
 }
 
 /** The space a prune command says it freed ("Total:" from `buildx prune`), if any. */
@@ -384,7 +392,8 @@ async function pruneImages(deps: SweepDependencies): Promise<StepOutput> {
   const ids = [...new Set(lines(await docker(['image', 'ls', '-a', '-q', '--no-trunc'])))];
   const images = ids.length ? (JSON.parse(await docker(['image', 'inspect', ...ids])) as ImageRecord[]) : [];
   const candidates = staleImageTags(images, inUse, deps.now());
-  const verdicts = await Promise.all(candidates.map(tag => deps.referenced(tag)));
+  // One `git grep` at a time: a first sweep can have hundreds of candidates.
+  const verdicts = await inSequence(candidates, tag => deps.referenced(tag));
   const removed = await removeEach(
     docker,
     ['image', 'rm'],

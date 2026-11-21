@@ -5,10 +5,11 @@
  * the chosen path on stdout. A shell function does the `cd`; `--shell` prints
  * it.
  *
- * One `git worktree list --porcelain` call feeds both the menu and the paths,
- * so a worktree added or removed meanwhile cannot shift a choice onto another
- * path. Its `worktree <path>` line is the path to the end of the line, so a
- * path with spaces stays whole.
+ * One `git worktree list --porcelain -z` call feeds both the menu and the
+ * paths, so a worktree added or removed meanwhile cannot shift a choice onto
+ * another path. Each field ends in NUL, so a path with spaces or a newline
+ * stays whole. A worktree whose folder is gone (`prunable`) is not offered:
+ * there is nowhere to `cd`.
  */
 import { execFileSync } from 'node:child_process';
 
@@ -41,21 +42,34 @@ Reload your shell (\`source ~/.zshrc\` or a new tab), then run:
 
 export const PICK_USAGE = 'usage: sarathi worktree pick [--shell]\n';
 
-/** The worktrees `git worktree list --porcelain` prints, each with its menu row. */
+/**
+ * The worktrees `git worktree list --porcelain -z` prints, each with its menu
+ * row: fields end in NUL and an empty field ends a record. Gone ones are left
+ * out.
+ */
 export function parsePorcelain(porcelain: string): Listed[] {
   const listed: Listed[] = [];
-  for (const block of porcelain.split(/\n\n+/)) {
+  let fields: string[] = [];
+  const record = (): void => {
     let path: string | undefined;
     let head = '';
     let branch = '';
-    for (const line of block.split('\n')) {
-      if (line.startsWith('worktree ')) path = line.slice('worktree '.length);
-      else if (line.startsWith('HEAD ')) head = line.slice('HEAD '.length);
-      else if (line.startsWith('branch ')) branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
-      else if (line === 'detached') branch = 'detached';
+    let gone = false;
+    for (const field of fields) {
+      if (field.startsWith('worktree ')) path = field.slice('worktree '.length);
+      else if (field.startsWith('HEAD ')) head = field.slice('HEAD '.length);
+      else if (field.startsWith('branch ')) branch = field.slice('branch '.length).replace(/^refs\/heads\//, '');
+      else if (field === 'detached') branch = 'detached';
+      else if (field === 'prunable' || field.startsWith('prunable ')) gone = true;
     }
-    if (path !== undefined) listed.push({ path, row: `${path}  ${head.slice(0, 7)} [${branch}]` });
+    if (path !== undefined && !gone) listed.push({ path, row: `${path}  ${head.slice(0, 7)} [${branch}]` });
+    fields = [];
+  };
+  for (const field of porcelain.split('\0')) {
+    if (field === '') record();
+    else fields.push(field);
   }
+  record();
   return listed;
 }
 
@@ -69,7 +83,7 @@ export function chosen(listed: readonly Listed[], answer: string): Listed | unde
 
 function porcelain(io: PickIo): string | undefined {
   try {
-    return execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: io.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...io.env } });
+    return execFileSync('git', ['worktree', 'list', '--porcelain', '-z'], { cwd: io.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...io.env } });
   } catch {
     // fail-open: no listing reads as no worktrees, which the caller reports and exits 1.
     return undefined;

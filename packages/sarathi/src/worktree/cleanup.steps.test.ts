@@ -5,8 +5,10 @@
  */
 import {
   lstatSync,
+  mkdirSync,
   rmSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   statfsSync,
@@ -966,6 +968,17 @@ describe('defaultEnv', () => {
       `${planted} is a symbolic link: nothing is archived over it`,
     );
     expect(lstatSync(copy).mtimeMs).toBe(old.getTime());
+    // A link in a folder above the destination is refused too, before any
+    // folder is made where it points.
+    const outside = join(dir, 'outside');
+    mkdirSync(outside);
+    const linked = join(dir, 'archive', 'linked');
+    symlinkSync(outside, linked);
+    expect(() => env.archive(file, join(linked, 'sub', 'f'))).toThrow(
+      `${linked} is reached through a symbolic link: nothing is archived into it`,
+    );
+    expect(readdirSync(outside)).toEqual([]);
+    rmSync(linked);
     // A folder or file is there; a missing path is not.
     expect(env.exists(dir)).toBe(true);
     expect(env.exists(file)).toBe(true);
@@ -981,6 +994,10 @@ describe('defaultEnv', () => {
     expect(env.names(dir)).toEqual(expect.arrayContaining(['f', 'archive']));
     expect(env.names(join(dir, 'archive'))).toEqual(['deep']);
     expect(env.names(join(dir, 'missing'))).toEqual([]);
+    expect(env.names(file)).toEqual([]);
+    // A folder it cannot read (here the link loop) throws rather than read as
+    // empty, so the git-ai step keeps every folder instead of deleting them.
+    expect(() => env.names(loop)).toThrow(/ELOOP/);
     // Bytes, not blocks: available blocks times the block size.
     expect(env.freeBytes(dir)).toBeGreaterThan(statfsSync(dir).bavail);
     expect(env.cwd).toBe(process.cwd());

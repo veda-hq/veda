@@ -209,9 +209,12 @@ describe('runChild', () => {
 
   test('stops descendants holding the pipes when the deadline fires', async () => {
     const started = Date.now();
-    const outcome = await runChild('sh', ['-c', 'sleep 30 & wait'], { timeoutMs: 200, killGraceMs: 100 });
+    const outcome = await runChild('sh', ['-c', 'sleep 30 & echo $!; wait'], { timeoutMs: 200, killGraceMs: 100 });
+    const pid = Number(outcome.stdout.trim());
     expect(outcome).toMatchObject({ kind: 'timeout', code: 124 });
     expect(Date.now() - started).toBeLessThan(5000);
+    expect(pid).toBeGreaterThan(1);
+    expect(await stopsWithin(pid, 2000)).toBe(true);
   });
 
   test('kills a descendant still holding the pipes when the drain ends', async () => {

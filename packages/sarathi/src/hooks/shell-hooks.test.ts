@@ -453,5 +453,18 @@ test('worktree-hooks-path names git’s default when no shared value is left', (
   git(bare, 'config', 'extensions.worktreeConfig', 'true');
   git(bare, 'config', '--worktree', 'core.hooksPath', '/elsewhere');
   const result = spawnSync('bash', [hooksPath], { cwd: bare, input: JSON.stringify({ cwd: bare }), encoding: 'utf8', env: GIT_ENV });
+  assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "Cleared worktree-scoped core.hooksPath (/elsewhere); git's default hooks folder now applies\n");
+});
+
+test('worktree-hooks-path leaves a single checkout’s shared hooksPath alone when worktreeConfig is off', () => {
+  // `git config --worktree` falls back to .git/config here, so without the
+  // extension check the project's own value would read as scoped and go.
+  const single = join(TMP, 'hp-single');
+  mkdirSync(single, { recursive: true });
+  git(single, 'init', '-q', '-b', 'main');
+  git(single, 'config', 'core.hooksPath', '.githooks');
+  const result = spawnSync('bash', [hooksPath], { cwd: single, input: JSON.stringify({ cwd: single }), encoding: 'utf8', env: GIT_ENV });
+  assert.deepEqual({ status: result.status, stdout: result.stdout, stderr: result.stderr }, { status: 0, stdout: '', stderr: '' });
+  assert.equal(git(single, 'config', '--get', 'core.hooksPath').trim(), '.githooks');
 });

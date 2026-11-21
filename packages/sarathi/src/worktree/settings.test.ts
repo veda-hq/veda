@@ -81,6 +81,8 @@ describe('worktree settings', () => {
       [{ primaryBuilt: ['a/../..'] }, /"primaryBuilt" must be a list/],
       [{ primaryBuilt: ['build/'] }, /"primaryBuilt" must be a list/],
       [{ primaryBuilt: ['.git/objects'] }, /"primaryBuilt" must be a list/],
+      [{ primaryBuilt: ['.GIT/objects'] }, /"primaryBuilt" must be a list/],
+      [{ machine: { androidNdk: '.Git' } }, /"androidNdk" must be a path/],
       [{ nestedCopies: '' }, /"nestedCopies" must be a regular expression/],
       [{ nestedCopies: 1 }, /"nestedCopies" must be a regular expression/],
       [{ nestedCopies: '(' }, /"nestedCopies" must be a regular expression/],

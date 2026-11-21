@@ -91,10 +91,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 /**
  * A path that stays inside the folder it is read from, since cleanup deletes
  * what it names: relative, every segment a name (no empty, `.` or `..`), and
- * not in or at `.git`.
+ * not in or at `.git` in any case (`.GIT` is the same folder on macOS's
+ * default case-insensitive volume).
  */
 const insidePath = (value: unknown): value is string =>
-  typeof value === 'string' && !isAbsolute(value) && value.split('/').every(part => part !== '' && part !== '.' && part !== '..') && value.split('/')[0] !== '.git';
+  typeof value === 'string' && !isAbsolute(value) && value.split('/').every(part => part !== '' && part !== '.' && part !== '..') && value.split('/')[0]?.toLowerCase() !== '.git';
 
 /** Refuses keys outside `keys`, naming them. */
 function refuseExtra(value: Record<string, unknown>, keys: Set<string>, where: string): void {

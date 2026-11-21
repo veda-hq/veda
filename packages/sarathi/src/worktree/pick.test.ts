@@ -55,26 +55,37 @@ function io(cwd: string, answer: string): { io: PickIo; seen: Seen } {
   };
 }
 
+/** `--porcelain -z` output: each field ends in NUL, each record in one more. */
+const z = (...records: string[][]): string => records.map(fields => `${fields.join('\0')}\0\0`).join('');
+
 describe('parsePorcelain', () => {
   it('keeps each path whole, with its short head and branch, a detached one named so', () => {
     const listed = parsePorcelain(
-      'worktree /a/main\nHEAD 0123456789abcdef\nbranch refs/heads/main\n\nworktree /a/with space\nHEAD fedcba9876543210\ndetached\n\nworktree /a/bare\nbare\n',
+      z(['worktree /a/main', 'HEAD 0123456789abcdef', 'branch refs/heads/main'], ['worktree /a/with space', 'HEAD fedcba9876543210', 'detached'], ['worktree /a/new\nline', 'HEAD 0000000000', 'detached'], ['worktree /a/bare', 'bare']),
     );
     assert.deepEqual(listed, [
       { path: '/a/main', row: '/a/main  0123456 [main]' },
       { path: '/a/with space', row: '/a/with space  fedcba9 [detached]' },
+      { path: '/a/new\nline', row: '/a/new\nline  0000000 [detached]' },
       { path: '/a/bare', row: '/a/bare   []' },
     ]);
   });
 
-  it('reads the last record without a trailing blank line, and nothing from empty output', () => {
-    assert.deepEqual(parsePorcelain('worktree /x\nHEAD abc\nbranch refs/heads/b'), [{ path: '/x', row: '/x  abc [b]' }]);
+  it('leaves out a worktree whose folder is gone', () => {
+    const listed = parsePorcelain(
+      z(['worktree /a/main', 'HEAD abc', 'branch refs/heads/main'], ['worktree /a/gone', 'HEAD def', 'detached', 'prunable gitdir file points to non-existent location'], ['worktree /a/also-gone', 'HEAD def', 'detached', 'prunable']),
+    );
+    assert.deepEqual(listed, [{ path: '/a/main', row: '/a/main  abc [main]' }]);
+  });
+
+  it('reads the last record without its closing NUL, and nothing from empty output', () => {
+    assert.deepEqual(parsePorcelain('worktree /x\0HEAD abc\0branch refs/heads/b'), [{ path: '/x', row: '/x  abc [b]' }]);
     assert.deepEqual(parsePorcelain(''), []);
   });
 });
 
 describe('chosen', () => {
-  const listed = parsePorcelain('worktree /one\n\nworktree /two\n');
+  const listed = parsePorcelain(z(['worktree /one'], ['worktree /two']));
 
   it('takes a 1-based number, in base 10 even with a leading zero', () => {
     assert.equal(chosen(listed, '2')?.path, '/two');
@@ -94,6 +105,15 @@ describe('sarathi worktree pick', () => {
     assert.equal(seen.out, `${linked}\n`);
     assert.match(seen.err, /^Worktrees:\n {2}1\) .*\/main {2}[0-9a-f]{7} \[main\]\n {2}2\) .*\/with space {2}[0-9a-f]{7} \[side\]\n$/);
     assert.deepEqual(seen.prompts, ['Pick a number: ']);
+  });
+
+  it('does not offer a worktree whose folder was deleted', async () => {
+    const { root, linked } = repository();
+    rmSync(linked, { recursive: true, force: true });
+    const { io: pickIo, seen } = io(root, '2');
+    assert.equal(await pickMain([], pickIo), 1);
+    assert.equal(seen.out, '');
+    assert.match(seen.err, /^Worktrees:\n {2}1\) .*\/main {2}[0-9a-f]{7} \[main\]\nInvalid selection\.\n$/);
   });
 
   it('exits 1 on an invalid choice, printing no path', async () => {

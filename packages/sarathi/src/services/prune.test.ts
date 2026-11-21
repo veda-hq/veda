@@ -205,9 +205,18 @@ describe('staleImageTags', () => {
       image('c', ['fresh:1'], recent),
       image('d', ['retagged:1'], OLD, recent),
       image('f', null),
-      image('h', ['undated:1'], 'not a date', '0001-01-01T00:00:00Z'),
+      image('h', ['never-tagged:1'], OLD, '0001-01-01T00:00:00Z'),
     ];
-    expect(staleImageTags(images, new Set(['b']), NOW)).toEqual(['old:1', 'old:2', 'undated:1']);
+    expect(staleImageTags(images, new Set(['b']), NOW)).toEqual(['old:1', 'old:2', 'never-tagged:1']);
+  });
+
+  test('keeps an image whose build or tag time does not read as a time', () => {
+    const images = [
+      image('a', ['unbuilt:1'], 'not a date'),
+      image('b', ['untimed:1'], OLD, 'not a date'),
+      { Id: 'c', RepoTags: ['no-created:1'] } as unknown as ImageRecord,
+    ];
+    expect(staleImageTags(images, new Set(), NOW)).toEqual([]);
   });
 
   test('treats a missing tag time as old, and an hour as old', () => {
@@ -981,11 +990,21 @@ describe('sweepOnce', () => {
   });
 
   test('sweeps on the real clock with a given child', async () => {
-    const before = Date.now();
-    const outcome = await sweepOnce({ docker: '/bin/docker', settings, dryRun: false, print: () => undefined, run: async () => ok() });
+    // Built two hours before the real now: stale on the real clock, never on
+    // one stuck at the epoch (or any time before it was built).
+    const built = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    const calls: string[][] = [];
+    const run = async (command: string, args: string[]): Promise<ChildOutcome> => {
+      calls.push([command, ...args]);
+      if (command === 'git') return { kind: 'exit', code: 1, stdout: '', stderrTail: '' };
+      if (args[0] === 'image' && args[1] === 'ls') return ok('sha256:a\n');
+      if (args[0] === 'image' && args[1] === 'inspect') return ok(JSON.stringify([image('sha256:a', ['built:1'], built, built)]));
+      return ok();
+    };
+    const outcome = await sweepOnce({ docker: '/bin/docker', settings, dryRun: false, print: () => undefined, run });
     expect(outcome.kind).toBe('swept');
     expect(outcome.kind === 'swept' ? outcome.results.map(result => result.ok) : []).toEqual(Array.from({ length: 8 }, () => true));
-    expect(Date.now()).toBeGreaterThanOrEqual(before);
+    expect(calls).toContainEqual(['/bin/docker', 'image', 'rm', 'built:1']);
   });
 });
 

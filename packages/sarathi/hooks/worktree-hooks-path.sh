@@ -37,8 +37,11 @@ fi
 cd "$TARGET" 2>/dev/null || exit 0
 git rev-parse --show-toplevel >/dev/null 2>&1 || exit 0
 
-# `--worktree` errors when extensions.worktreeConfig is off; that means there
-# is no scoped value.
+# With extensions.worktreeConfig off there is no scoped value. `--worktree`
+# then errors in a repository with linked worktrees, but in one with a single
+# checkout it falls back to the shared config, whose value is the project's:
+# so nothing is read or unset unless the extension is on.
+[ "$(git config --bool --get extensions.worktreeConfig 2>/dev/null)" = "true" ] || exit 0
 scoped=$(git config --worktree --get core.hooksPath 2>/dev/null || true)
 if [ -n "$scoped" ] && git config --worktree --unset-all core.hooksPath 2>/dev/null; then
   shared=$(git config --get core.hooksPath 2>/dev/null || true)

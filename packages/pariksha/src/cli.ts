@@ -46,6 +46,7 @@ import { DEFAULT_CONFIG as DEFAULT_ESLINT_BY_WORKSPACE, inheritEslint, lintByWor
 import { parseLicenseConfig, pnpmLicenses, runLicenseCheck, type LicensesRunner } from './license-check.ts';
 import { BASELINE_PATH as CODEQL_BASELINE, runCodeqlBaseline } from './codeql-baseline.ts';
 import { type Commitlint, DEFAULT_PR_TITLE_CONFIG, loadCommitlint, parsePrTitleConfig, runPrTitle } from './pr-title.ts';
+import { type BpIo, bpRules as runBpRules, DISK as BP_DISK } from './bp-rules.ts';
 import { defaultDeps as provenanceDeps, ownProvenance as runOwnProvenance, type OwnProvenanceDeps } from './own-provenance.ts';
 
 export interface Io {
@@ -79,6 +80,14 @@ export interface Io {
   readonly commitlint?: (root: string) => Promise<Commitlint | string>;
   /** How own-provenance reads files, loads Sigstore and asks the registry; the disk, the peers and npm's registry by default. */
   readonly provenance?: Partial<Pick<OwnProvenanceDeps, 'readFile' | 'loadSigstore' | 'fetchJson'>>;
+  /** How bp-rules reads the corpus and the clock; the disk and the clock by default. */
+  readonly bp?: Partial<Pick<BpIo, 'reader' | 'exists' | 'now'>>;
+  /**
+   * Text written as it is, no line ending added: bp-rules' output, which
+   * `--regenerate-index > index.md` must give back byte for byte. Without
+   * it, the text goes to `out` and `err` a line at a time.
+   */
+  readonly write?: (stream: 'out' | 'err', text: string) => void;
 }
 
 /**
@@ -162,6 +171,7 @@ const USAGE = [
   '       pariksha absolute-paths [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha aggregate-gate-needs [--config <file>] [--root <dir>]',
   '       pariksha boundary [--root <dir>] [--deny <file>]',
+  '       pariksha bp-rules (--inventory | --gaps | --due [--within <0..3650>] [--today <YYYY-MM-DD>] | --next-id <PREFIX> | --corpus-fingerprint | --check-wiring [--ids <a,b>] | --regenerate-index | --check-index) [--config <file>] [--root <dir>]',
   '       pariksha codec-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
   '       pariksha codeql-baseline (--check <results.sarif> | --write <results.sarif>) [--baseline <file>] [--root <dir>]',
   '       pariksha coverage-by-type [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
@@ -1098,6 +1108,38 @@ const prTitle = async (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv): 
   return report.code;
 };
 
+/** `text` on `stream` as it is; through `out` or `err` a line at a time when the Io writes no raw text. */
+const writeText = (io: Io, stream: 'out' | 'err', text: string): void => {
+  if (io.write !== undefined) {
+    io.write(stream, text);
+    return;
+  }
+  const lines = text.split('\n');
+  // The line ending `out` and `err` add stands in for the last one.
+  if (text.endsWith('\n')) lines.pop();
+  if (text !== '') lines.forEach(stream === 'out' ? io.out : io.err);
+};
+
+/**
+ * bp-rules: one mode over the best-practice rule corpus and its index, both
+ * named by the settings. Exit 1 on a failed check (--check-wiring,
+ * --check-index) or rules --regenerate-index could not place; 2 on a usage
+ * error, no settings or bad ones, or a read that failed.
+ */
+const bpRules = (f: Map<string, string>, io: Io): number => {
+  if (!f.has('--config')) {
+    io.err(`pariksha bp-rules: no settings: name a settings file with --config or set checks.bp-rules in ${CONFIG_FILE}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+  const root = rootOf(f);
+  const settings = unchecked('pariksha bp-rules:', io, () => configText(f, root));
+  if (settings === undefined) return 2;
+  const result = runBpRules(f, settings, { reader: BP_DISK, exists: existsSync, now: () => new Date(), ...io.bp, root });
+  writeText(io, 'out', result.stdout);
+  writeText(io, 'err', result.stderr);
+  return result.code;
+};
+
 /**
  * own-provenance: each package of the settings' scope the lockfile under
  * `--root` resolves, against its npm provenance. Its lines carry the
@@ -1231,6 +1273,7 @@ const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly
   'regression-controls': { allowed: ['--config', '--root'], switches: ['--staged'], run: regressionControls },
   'authority-citations': { allowed: ['--mode', '--authority', '--issue-prefix', '--adr-dir', '--root'], run: authorityCitations },
   boundary: { allowed: ['--root', '--deny'], run: boundary },
+  'bp-rules': { allowed: ['--within', '--today', '--next-id', '--ids', '--config', '--root'], switches: ['--inventory', '--gaps', '--due', '--corpus-fingerprint', '--check-wiring', '--regenerate-index', '--check-index'], run: bpRules },
   'coverage-by-type': { allowed: ['--config', '--files-from', '--base', '--head', '--root'], switches: ['--staged', '--all'], run: coverageByType },
   'doc-budgets': { allowed: ['--table', '--section', '--root'], run: docBudgets },
   'doc-references': { allowed: ['--config', '--base', '--head', '--checks', '--root'], switches: ['--staged', '--all', '--update-baseline', '--write-baseline'], run: docReferences },
@@ -1351,6 +1394,9 @@ export const run = (args: readonly string[], io: Io, version: string = ownVersio
 export const consoleIo: Io = {
   out: (line) => console.info(line),
   err: (line) => console.error(line),
+  write: (stream, text) => {
+    (stream === 'out' ? process.stdout : process.stderr).write(text);
+  },
 };
 
 /**

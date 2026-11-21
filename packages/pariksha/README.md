@@ -220,6 +220,48 @@ the repository's deny list.
 - Binary files (any NUL byte) are skipped. Untracked files are not read.
   Line 0 in a finding is the file's path.
 
+## `bp-rules`
+
+```sh
+pariksha bp-rules <mode> [--config <file>] [--root <dir>]
+```
+
+The mechanical half of a best-practice rule corpus: one Markdown file per
+rule, with YAML-like frontmatter (`id`, `title`, `category`, `severity`,
+`enforcement`, `enforcement_script`, `verified`, `verify_by`, `sources`,
+`applies_to`, `status`, `deprecated_at`), and an index document with a table
+per section and a Summary table derived from them. Judging a rule stays with
+people and agents; this parses, filters, compares dates and counts, each with
+one right answer. A rule is enforced when a hook or CI checks it
+(`enforcement: eslint-rule` or `validator`) and guidance otherwise; one that
+names no tier is guidance. A `README` file in the corpus is not a rule.
+
+```json
+{ "rules": "docs/standards/best-practices", "index": "docs/standards/BEST_PRACTICES.md", "idPrefix": "BP" }
+```
+
+All three are required (pariksha ships no corpus): the corpus folder and the
+index, under `--root`, and the id family, so ids read `BP-SEC-001`. A rule's
+section is the first folder under `rules`; index links are relative to the
+index's folder.
+
+| Mode | Prints | Exits 1 when |
+| ---- | ------ | ------------ |
+| `--inventory` | every rule, projected, with counts by tier | |
+| `--gaps` | active guidance rules, critical first | |
+| `--due [--within <days>] [--today <YYYY-MM-DD>]` | rules whose `verify_by` has passed, falls within the window (30 days), or is missing | |
+| `--next-id <PREFIX>` | the next `<idPrefix>-<PREFIX>-NNN` | |
+| `--corpus-fingerprint` | a sha1 over every rule file's path and bytes | |
+| `--check-wiring [--ids <a,b>]` | each `validator` rule and each rule naming an `enforcement_script`, and the scripts missing under `--root` | a script is missing, or an id names no rule |
+| `--regenerate-index` | the index with its rows, `(N rules)` counts and Summary rebuilt, everything else kept | a rule has no section to go in (named on stderr) |
+| `--check-index` | the Summary as written against the one the rows give | they differ (with the command that recomputes it) |
+
+Every mode prints JSON except `--regenerate-index`, which prints the index
+itself, written as it is so `pariksha bp-rules --regenerate-index >
+.tmp/index.md` round-trips byte for byte. Exit 2 on a usage error (no mode,
+two modes, an option outside its mode, a `--today` that is no real date),
+no settings or bad ones, or a read that fails.
+
 ## `codec-registry`
 
 ```sh

@@ -125,6 +125,7 @@ const USAGE = [
   '       pariksha absolute-paths [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha aggregate-gate-needs [--config <file>] [--root <dir>]',
   '       pariksha boundary [--root <dir>] [--deny <file>]',
+  '       pariksha bp-rules (--inventory | --gaps | --due [--within <0..3650>] [--today <YYYY-MM-DD>] | --next-id <PREFIX> | --corpus-fingerprint | --check-wiring [--ids <a,b>] | --regenerate-index | --check-index) [--config <file>] [--root <dir>]',
   '       pariksha codec-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
   '       pariksha codeql-baseline (--check <results.sarif> | --write <results.sarif>) [--baseline <file>] [--root <dir>]',
   '       pariksha coverage-by-type [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
@@ -220,6 +221,7 @@ describe('run: what no command takes', () => {
       'absolute-paths',
       'aggregate-gate-needs',
       'authority-citations',
+      'bp-rules',
       'codec-registry',
       'codeql-baseline',
       'coverage-by-type',
@@ -295,6 +297,7 @@ describe('run: the flags each command takes', () => {
     ['aggregate-gate-needs', '--config', 'x', '--root', NOWHERE],
     ['authority-citations', '--mode', 'tree', '--authority', 'a', '--issue-prefix', 'A', '--adr-dir', 'd', '--root', NOWHERE],
     ['boundary', '--root', NOWHERE, '--deny', 'x'],
+    ['bp-rules', '--config', 'x', '--within', '1', '--today', '2026-01-01', '--next-id', 'P', '--ids', 'a', '--root', NOWHERE, '--inventory', '--gaps', '--due', '--corpus-fingerprint', '--check-wiring', '--regenerate-index', '--check-index'],
     ['codec-registry', '--config', 'x', '--base', 'b', '--root', NOWHERE],
     ['codec-registry', '--config', 'x', '--no-base', '--root', NOWHERE],
     ['codeql-baseline', '--check', 'x', '--baseline', 'b', '--root', NOWHERE],
@@ -478,7 +481,7 @@ describe('.pariksha.json', () => {
     assert.equal(unknown.code, 2);
     assert.match(
       unknown.err[0] ?? '',
-      / \(pariksha 0\): unknown check "boundary" in "checks"; this version reads settings for absolute-paths, aggregate-gate-needs, authority-citations, codec-registry, codeql-baseline, coverage-by-type, coverage-exemptions, doc-budgets, doc-references, duplicate-tests, enforcement-claims, env-gate-switches, eslint-by-workspace, eslint-targets, fault-injection-registry, flaky-tests, license-check, masked-exit-codes, non-synced-resources, own-provenance, pnpm-settings, pr-title, regression-controls, repo-rules, shell-gates; nothing was checked, so this is not a pass$/,
+      / \(pariksha 0\): unknown check "boundary" in "checks"; this version reads settings for absolute-paths, aggregate-gate-needs, authority-citations, bp-rules, codec-registry, codeql-baseline, coverage-by-type, coverage-exemptions, doc-budgets, doc-references, duplicate-tests, enforcement-claims, env-gate-switches, eslint-by-workspace, eslint-targets, fault-injection-registry, flaky-tests, license-check, masked-exit-codes, non-synced-resources, own-provenance, pnpm-settings, pr-title, regression-controls, repo-rules, shell-gates; nothing was checked, so this is not a pass$/,
     );
     const gone = absolute(project({ 'absolute-paths': 'gone.json' }).env);
     assert.equal(gone.code, 2);

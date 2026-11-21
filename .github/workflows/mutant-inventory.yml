@@ -11,8 +11,9 @@ name: Mutant inventory
 #   configs, and runs Stryker on one file at a time against the suite that
 #   owns it, as agnipariksha would.
 # - Python: for each module of packages/kavach/python/kavach, coverage.py
-#   finds the test files that run its lines (beyond what importing it runs),
-#   one run of those files is timed, and cosmic-ray 8.9.0 runs every mutant
+#   finds the test files that run any of its lines (those that run the most
+#   beyond its import first), one run of those files is timed, and
+#   cosmic-ray 8.9.0 runs every mutant
 #   against that subset, sharded so no job nears GitHub's 6-hour cap.
 #
 # Jobs fail only on a fault in the measurement itself: an unmutated run that
@@ -287,12 +288,12 @@ jobs:
           with open(pth, "w") as f:
               f.write(f"import os, coverage; os.environ.setdefault('COVERAGE_PROCESS_START', {rc!r}); coverage.process_startup()\n")
 
-          def measure(argv, label):
+          def measure(argv, label, cwd=py):
               shutil.rmtree(data_dir, ignore_errors=True)
               os.makedirs(data_dir)
               start = time.monotonic()
               with open(f"{out_dir}/{label}.log", "w") as log:
-                  code = subprocess.run(argv, cwd=py, stdout=log, stderr=subprocess.STDOUT, timeout=3600).returncode
+                  code = subprocess.run(argv, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, timeout=3600).returncode
               seconds = time.monotonic() - start
               cov = coverage.Coverage(data_file=f"{data_dir}/.coverage", config_file=False)
               try:
@@ -312,21 +313,32 @@ jobs:
 
           base = {}
           for m in modules:
-              found, _, code = measure([python, "-B", "-c", f"import kavach.{m}"], f"import-{m}")
+              # The modules import their siblings by bare name, as the guards
+              # run them: from the package folder.
+              found, _, code = measure([python, "-B", "-c", f"import {m}"], f"import-{m}", cwd=f"{py}/kavach")
               if code != 0 or not found.get(m):
-                  summary.write(f"- Importing kavach.{m} under coverage failed (exit {code})\n")
+                  summary.write(f"- Importing {m} under coverage failed (exit {code})\n")
                   raise SystemExit(1)
               base[m] = found[m]
+          # A test file reaches a module when it runs any of its lines: one
+          # that only imports it can still kill an import-time mutant (#351's
+          # `Importing`). Lines beyond the import only order the subset.
+          touched = {m: {} for m in modules}
           beyond = {m: {} for m in modules}
           test_runs = {}
           for t in tests:
               found, seconds, code = measure([python, "-B", "-m", "unittest", f"tests.{t}"], f"cov-{t}")
               test_runs[t] = {"seconds": round(seconds, 1), "exit": code}
               for m in modules:
-                  extra = found.get(m, set()) - base[m]
-                  if extra:
-                      beyond[m][t] = len(extra)
+                  if found.get(m):
+                      touched[m][t] = len(found[m])
+                      beyond[m][t] = len(found[m] - base[m])
           os.remove(pth)
+          json.dump({"touched": touched, "beyond": beyond, "base": {m: sorted(v) for m, v in base.items()}, "test_runs": test_runs}, open(f"{out_dir}/reach.json", "w"), indent=1)
+          summary.write("| Module | Test files that run its lines (lines beyond its import) |\n|---|---|\n")
+          for m in modules:
+              summary.write(f"| {m} | " + ", ".join(f"{t} ({beyond[m][t]})" for t in sorted(touched[m], key=lambda t: -beyond[m][t])) + " |\n")
+          summary.write("\n")
 
           # Control: the files #333's run saw kill these modules' mutants.
           control = {
@@ -335,14 +347,13 @@ jobs:
               "config": ["test_config", "test_command_guard", "test_shell_expansion", "test_rules"],
               "refusal_log": ["test_refusal_log", "test_rules", "test_command_guard"],
           }
-          missed = {m: [t for t in ts if t not in beyond[m]] for m, ts in control.items()}
+          missed = {m: [t for t in ts if t not in touched[m]] for m, ts in control.items()}
           missed = {m: ts for m, ts in missed.items() if ts}
           summary.write("| Test file | Alone under coverage | Exit |\n|---|---|---|\n")
           for t, r in test_runs.items():
               summary.write(f"| {t} | {r['seconds']} s | {r['exit']} |\n")
           if missed:
               summary.write(f"\n- **Control failed:** the reach map misses {missed}\n")
-              json.dump({"beyond": beyond, "test_runs": test_runs}, open(f"{out_dir}/reach.json", "w"), indent=1)
               raise SystemExit(1)
 
           scope = ["tool_guard"] if os.environ["SCOPE"] == "smoke" else modules
@@ -352,7 +363,7 @@ jobs:
           plan = {"modules": {}, "test_runs": test_runs, "workers": workers, "load": load, "budget": budget}
           matrix = []
           for m in scope:
-              reach = sorted(beyond[m], key=lambda t: -beyond[m][t])
+              reach = sorted(touched[m], key=lambda t: (-beyond[m][t], -touched[m][t], t))
               entry = {"lines": sum(1 for _ in open(f"{py}/kavach/{m}.py")), "reach": {t: beyond[m][t] for t in reach}}
               if reach:
                   argv = [python, "-B", "-m", "unittest", "-f", *(f"tests.{t}" for t in reach)]
@@ -388,7 +399,6 @@ jobs:
                   entry["run"] = False
               plan["modules"][m] = entry
           json.dump(plan, open(f"{out_dir}/plan.json", "w"), indent=1)
-          json.dump({"beyond": beyond, "base": {m: sorted(v) for m, v in base.items()}}, open(f"{out_dir}/reach.json", "w"), indent=1)
           summary.write("\n| Module | Lines | Reach | Subset run | Mutants | Shards | Upper bound |\n|---|---|---|---|---|---|---|\n")
           for m, e in plan["modules"].items():
               summary.write(f"| {m} | {e['lines']} | {', '.join(e['reach']) or 'none'} | {e.get('subset_seconds', '-')} s | {e['mutants']} | {e['shards']} | {e.get('projected_hours', '-')} h |\n")

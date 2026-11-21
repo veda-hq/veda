@@ -280,6 +280,7 @@ class RecordedWorktree(Repo):
         return rules.cd_out_of_worktree(rules.Call("Bash", {"command": command}, cwd, session_id=session))
 
     def test_from_another_sessions_worktree_the_cd_back_passes(self) -> None:
+        os.mkdir(os.path.join(self.mine, "sub"))
         for command in (f"cd {self.mine}", f"cd {self.mine} && pwd", f"pushd {self.mine}/sub"):
             with self.subTest(command=command):
                 self.assertIsNone(self.find(command, self.theirs))

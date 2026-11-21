@@ -1,0 +1,838 @@
+name: Mutant inventory
+
+# Slice #330 (work item #238): take stock of every surviving mutant in veda
+# before the one-time sweep. It lives only on its draft pull request, closed
+# unmerged once the inventory is posted on #238, and never merges. Every tool
+# installs in its job; no source or test changes.
+#
+# - TypeScript: every source file of every lane in #287's agnipariksha.json
+#   (slice #272, unmerged), whatever the cut-off. Each job merges #287's
+#   pinned head into the checkout, so main's sources meet #287's lane
+#   configs, and runs Stryker on one file at a time against the suite that
+#   owns it, as agnipariksha would.
+# - Python: for each module of packages/kavach/python/kavach, coverage.py
+#   finds the test files that run any of its lines (those that run the most
+#   beyond its import first), one run of those files is timed, and
+#   cosmic-ray 8.9.0 runs every mutant
+#   against that subset, sharded so no job nears GitHub's 6-hour cap.
+#
+# Jobs fail only on a fault in the measurement itself: an unmutated run that
+# fails, a shard that loses a mutant, or a control that does not hold.
+# Survivors are the result, never a failure.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/mutant-inventory.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutant-inventory-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # TypeScript: `smoke` runs one small file, `full` every file. Every Python
+  # module is always timed and counted; PY_MODULES names the ones whose
+  # mutants run, so a costly module's run is decided from its measured cost,
+  # and PY_SHARDS, when set, keeps only the named shards (module:index).
+  SCOPE: full
+  # Run A of two: boundary's 233 shards take a run of their own, so each
+  # run's matrix stays under GitHub's 256 jobs.
+  PY_MODULES: tool_guard command_guard rules bash_guard config refusal_log git_safety worktree_guard clone_writers
+  PY_SHARDS: ""
+  # #287's head (claude/prepush-gate-272), pinned.
+  LANES_SHA: 3fca3c140911467257eeb859b1468e0443d40271
+  COSMIC_RAY: cosmic-ray==8.9.0
+  COVERAGE: coverage==7.17.4
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  ts-plan:
+    name: TypeScript plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Merge #287's lane configs
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$LANES_SHA"
+          git -c user.name=inventory -c user.email=inventory@invalid merge --no-edit FETCH_HEAD
+      - name: Files, owners and buckets
+        id: plan
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ts-plan"
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          tmp = os.environ["RUNNER_TEMP"]
+          config = json.load(open("agnipariksha.json"))
+          ignore = [re.compile(p) for p in config["ignore"]]
+          tracked = subprocess.run(["git", "ls-files", "-z"], capture_output=True, text=True, check=True).stdout.split("\0")
+          tracked = [f for f in tracked if f]
+          tracked_set = set(tracked)
+          def lines(path):
+              with open(path, encoding="utf-8") as f:
+                  return sum(1 for _ in f)
+          def owner(path):
+              stem = re.sub(r"\.[^./]+$", "", path)
+              for suffix in (".test.ts", ".test.tsx"):
+                  if stem + suffix in tracked_set:
+                      return stem + suffix
+              return None
+          files, no_owner, laned = [], [], set()
+          for lane in config["lanes"]:
+              include = [re.compile(p) for p in lane["include"]]
+              for path in tracked:
+                  if not any(p.search(path) for p in include):
+                      continue
+                  if not any(path.endswith(e) for e in lane["extensions"]):
+                      continue
+                  if any(p.search(path) for p in ignore):
+                      continue
+                  laned.add(path)
+                  entry = {"lane": lane["name"], "cwd": lane["cwd"], "file": path, "lines": lines(path)}
+                  o = owner(path)
+                  if o is None:
+                      no_owner.append(entry)
+                  else:
+                      files.append({**entry, "owner": o})
+          # Sources no lane takes: needs-you's hooks and the root scripts.
+          unlaned = []
+          for path in tracked:
+              if path in laned or any(p.search(path) for p in ignore) or re.search(r"\.test\.m?[jt]sx?$", path):
+                  continue
+              if re.match(r"^packages/needs-you/hooks/.*\.tsx?$", path) or re.match(r"^scripts/[^/]+\.mjs$", path):
+                  unlaned.append({"file": path, "lines": lines(path)})
+          if os.environ["SCOPE"] != "full":
+              # #238 measured 15 mutants and 1 blocking here.
+              files = [f for f in files if f["file"] == "packages/kavach/src/rule-checks/cli-entry.ts"]
+          # Greedy buckets of about 2,500 lines each, the largest files first;
+          # a file over that is a bucket of its own.
+          budget = 2500
+          buckets = []
+          for f in sorted(files, key=lambda f: -f["lines"]):
+              for b in buckets:
+                  if b["lines"] + f["lines"] <= budget:
+                      b["files"].append(f)
+                      b["lines"] += f["lines"]
+                      break
+              else:
+                  buckets.append({"files": [f], "lines": f["lines"]})
+          for i, b in enumerate(buckets):
+              b["id"] = i
+          json.dump({"buckets": buckets, "no_owner": no_owner, "unlaned": unlaned}, open(f"{tmp}/ts-plan/plan.json", "w"), indent=1)
+          matrix = {"include": [{"bucket": b["id"], "label": f'{b["files"][0]["lane"]} {b["id"]}'} for b in buckets]}
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write("matrix=" + json.dumps(matrix) + "\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+              s.write(f"- {len(files)} files with an owning suite, in {len(buckets)} buckets; {len(no_owner)} lane files with no owner; {len(unlaned)} sources in no lane\n")
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ts-plan
+          path: ${{ runner.temp }}/ts-plan
+          retention-days: 90
+
+  ts:
+    # A fixed name: GitHub adds the matrix values to it.
+    name: Stryker
+    needs: ts-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      # The org's plan runs 20 jobs at once; leave room for other pull requests.
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.ts-plan.outputs.matrix) }}
+    env:
+      BUCKET: ${{ matrix.bucket }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Merge #287's lane configs
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$LANES_SHA"
+          git -c user.name=inventory -c user.email=inventory@invalid merge --no-edit FETCH_HEAD
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ts-plan
+          path: ${{ runner.temp }}/ts-plan
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        timeout-minutes: 3
+        with:
+          node-version-file: .nvmrc
+      - name: Install
+        run: |
+          set -euo pipefail
+          # The merge may leave the lockfile behind main's pins.
+          if ! pnpm install --frozen-lockfile; then
+            echo "- The merged lockfile was not current: installed without --frozen-lockfile" >> "$GITHUB_STEP_SUMMARY"
+            pnpm install --no-frozen-lockfile
+          fi
+          pnpm -r build
+      - name: Stryker, one file at a time
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ts"
+          python3 - <<'PY'
+          import json, os, shutil, subprocess, tempfile, time
+          tmp = os.environ["RUNNER_TEMP"]
+          bucket = json.load(open(f"{tmp}/ts-plan/plan.json"))["buckets"][int(os.environ["BUCKET"])]
+          root = os.getcwd()
+          rows = open(f"{tmp}/ts/rows-{os.environ['BUCKET']}.jsonl", "w")
+          for f in bucket["files"]:
+              cwd = os.path.join(root, f["cwd"])
+              rel = os.path.relpath(f["file"], f["cwd"])
+              safe = f["file"].replace("/", "__")
+              report = os.path.join(cwd, "reports", "mutation", "mutation.json")
+              if os.path.exists(report):
+                  os.remove(report)
+              scratch = tempfile.mkdtemp(prefix="inventory-", dir=tmp)
+              env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_ACTIONS", "GITHUB_STEP_SUMMARY")}
+              env.update({"AGNIPARIKSHA_SUITES": f["owner"], "TMPDIR": scratch})
+              log = f"{tmp}/ts/{safe}.log"
+              start = time.monotonic()
+              with open(log, "w") as out:
+                  try:
+                      code = subprocess.run(
+                          ["pnpm", "exec", "stryker", "run", "stryker.config.mjs", "--mutate", rel, "--concurrency", str(os.cpu_count())],
+                          cwd=cwd, env=env, stdout=out, stderr=subprocess.STDOUT, timeout=150 * 60,
+                      ).returncode
+                  except subprocess.TimeoutExpired:
+                      code = "timeout"
+              seconds = round(time.monotonic() - start)
+              row = {**f, "seconds": seconds, "exit": code, "statuses": {}, "survivors": []}
+              # A mutant that deletes TMPDIR (#287) would make later mutants die for want of it.
+              row["scratch_gone"] = not os.path.isdir(scratch)
+              if code == 0 and not os.path.exists(report):
+                  row["exit"] = "no report"
+              if code == 0 and os.path.exists(report):
+                  shutil.move(report, f"{tmp}/ts/{safe}.json")
+                  data = json.load(open(f"{tmp}/ts/{safe}.json"))
+                  for path, entry in data["files"].items():
+                      for m in entry["mutants"]:
+                          row["statuses"][m["status"]] = row["statuses"].get(m["status"], 0) + 1
+                          if m["status"] in ("Survived", "NoCoverage", "Timeout"):
+                              row["survivors"].append({"line": m["location"]["start"]["line"], "mutator": m["mutatorName"], "status": m["status"], "replacement": (m.get("replacement") or "")[:80]})
+              else:
+                  with open(log) as l:
+                      row["log_tail"] = l.read()[-1500:]
+                  # The owning suite alone, in the same env and a fresh TMPDIR:
+                  # does it fail outside Stryker's sandbox too?
+                  alone = tempfile.mkdtemp(prefix="inventory-alone-", dir=tmp)
+                  suite = subprocess.run(
+                      ["node", "--test", os.path.relpath(f["owner"], f["cwd"])],
+                      cwd=cwd, env={**env, "TMPDIR": alone}, capture_output=True, text=True, timeout=30 * 60,
+                  )
+                  shutil.rmtree(alone, ignore_errors=True)
+                  row["suite_alone"] = {"exit": suite.returncode, "tail": (suite.stdout + suite.stderr)[-3000:]}
+              rows.write(json.dumps(row) + "\n")
+              rows.flush()
+              shutil.rmtree(scratch, ignore_errors=True)
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+                  s.write(f"- `{f['file']}`: exit {code}, {seconds} s, {row['statuses']}\n")
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: ts-${{ matrix.bucket }}
+          path: ${{ runner.temp }}/ts
+          retention-days: 90
+          if-no-files-found: ignore
+
+  py-plan:
+    name: Python plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Add coverage.py and cosmic-ray (this job only)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "$COVERAGE" "$COSMIC_RAY"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          python3 --version >> "$GITHUB_STEP_SUMMARY"
+      - name: Reach, subset times, mutants and shards
+        id: plan
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/py-plan/dbs"
+          "$RUNNER_TEMP/venv/bin/python" - <<'PY'
+          import glob, json, math, os, shutil, subprocess, sys, sysconfig, time
+          import coverage
+          from coverage.exceptions import NoDataError
+          tmp = os.environ["RUNNER_TEMP"]
+          root = os.getcwd()
+          kavach = os.path.join(root, "packages/kavach")
+          py = os.path.join(kavach, "python")
+          out_dir = f"{tmp}/py-plan"
+          summary = open(os.environ["GITHUB_STEP_SUMMARY"], "a")
+          modules = sorted(os.path.basename(p)[:-3] for p in glob.glob(f"{py}/kavach/*.py") if not p.endswith("__init__.py"))
+          tests = sorted(os.path.basename(p)[:-3] for p in glob.glob(f"{py}/tests/test_*.py"))
+          python = os.path.join(tmp, "venv/bin/python")
+
+          # Coverage follows every Python child through a .pth file, which
+          # runs even when a test hands its child a bare env or -I. A guard
+          # copied into a temp folder is still its module: files map by name.
+          data_dir = f"{tmp}/cov"
+          rc = f"{tmp}/coveragerc"
+          with open(rc, "w") as f:
+              f.write("[run]\nparallel = true\n")
+              f.write(f"data_file = {data_dir}/.coverage\n")
+              f.write("include =\n    */kavach/*.py\n" + "".join(f"    */{m}.py\n" for m in modules))
+              f.write("disable_warnings = no-data-collected, module-not-imported, module-not-measured, include-ignored, couldnt-parse\n")
+          pth = os.path.join(sysconfig.get_paths()["purelib"], "zz_inventory_coverage.pth")
+          with open(pth, "w") as f:
+              f.write(f"import os, coverage; os.environ.setdefault('COVERAGE_PROCESS_START', {rc!r}); coverage.process_startup()\n")
+
+          def measure(argv, label, cwd=py):
+              shutil.rmtree(data_dir, ignore_errors=True)
+              os.makedirs(data_dir)
+              start = time.monotonic()
+              with open(f"{out_dir}/{label}.log", "w") as log:
+                  code = subprocess.run(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, timeout=3600).returncode
+              seconds = time.monotonic() - start
+              cov = coverage.Coverage(data_file=f"{data_dir}/.coverage", config_file=False)
+              try:
+                  cov.combine([data_dir], strict=True)
+              except NoDataError:
+                  return {}, seconds, code
+              data = cov.get_data()
+              found = {}
+              for path in data.measured_files():
+                  name = os.path.basename(path)[:-3]
+                  # A same-named file of Python's own or an installed package is not kavach's.
+                  if "/site-packages/" in path or path.startswith(sys.base_prefix + "/lib/"):
+                      continue
+                  if path.endswith(".py") and name in modules:
+                      found.setdefault(name, set()).update(data.lines(path) or [])
+              return found, seconds, code
+
+          base = {}
+          for m in modules:
+              # The modules import their siblings by bare name, as the guards
+              # run them: from the package folder. bash_guard and the like run
+              # their guard as they load and refuse an empty stdin, so any exit
+              # will do: the baseline only orders the subset.
+              found, _, code = measure([python, "-B", "-c", f"import {m}"], f"import-{m}", cwd=f"{py}/kavach")
+              if not found.get(m):
+                  summary.write(f"- Importing {m} under coverage failed (exit {code})\n")
+                  raise SystemExit(1)
+              base[m] = found[m]
+          # A test file reaches a module when it runs any of its lines: one
+          # that only imports it can still kill an import-time mutant (#351's
+          # `Importing`). Lines beyond the import only order the subset.
+          touched = {m: {} for m in modules}
+          beyond = {m: {} for m in modules}
+          cover = {m: {} for m in modules}
+          test_runs = {}
+          for t in tests:
+              found, seconds, code = measure([python, "-B", "-m", "unittest", f"tests.{t}"], f"cov-{t}")
+              test_runs[t] = {"seconds": round(seconds, 1), "exit": code}
+              for m in modules:
+                  if found.get(m):
+                      touched[m][t] = len(found[m])
+                      beyond[m][t] = len(found[m] - base[m])
+                      cover[m][t] = found[m]
+          os.remove(pth)
+          json.dump({"touched": touched, "beyond": beyond, "base": {m: sorted(v) for m, v in base.items()}, "test_runs": test_runs}, open(f"{out_dir}/reach.json", "w"), indent=1)
+          summary.write("| Module | Test files that run its lines (lines beyond its import) |\n|---|---|\n")
+          for m in modules:
+              summary.write(f"| {m} | " + ", ".join(f"{t} ({beyond[m][t]})" for t in sorted(touched[m], key=lambda t: -beyond[m][t])) + " |\n")
+          summary.write("\n")
+
+          # Control: the files #333's run saw kill these modules' mutants.
+          control = {
+              "tool_guard": ["test_rules", "test_command_guard"],
+              "command_guard": ["test_command_guard", "test_rules", "test_refusal_hints"],
+              "config": ["test_config", "test_command_guard", "test_shell_expansion", "test_rules"],
+              "refusal_log": ["test_refusal_log", "test_rules", "test_command_guard"],
+          }
+          missed = {m: [t for t in ts if t not in touched[m]] for m, ts in control.items()}
+          missed = {m: ts for m, ts in missed.items() if ts}
+          summary.write("| Test file | Alone under coverage | Exit |\n|---|---|---|\n")
+          for t, r in test_runs.items():
+              summary.write(f"| {t} | {r['seconds']} s | {r['exit']} |\n")
+          if missed:
+              summary.write(f"\n- **Control failed:** the reach map misses {missed}\n")
+              raise SystemExit(1)
+
+          scope = modules
+          run = os.environ["PY_MODULES"].split()
+          # PY_SHARDS, when set, keeps only the named shards (module:index).
+          shard_filter = set(os.environ.get("PY_SHARDS", "").split())
+          # Four suites at once ran 665 s against 269 s alone (#328): 2.5.
+          workers, load, budget = 4, 2.5, 15000
+          plan = {"modules": {}, "test_runs": test_runs, "workers": workers, "load": load, "budget": budget}
+          matrix = []
+          for m in scope:
+              reach = sorted(touched[m], key=lambda t: (-beyond[m][t], -touched[m][t], t))
+              entry = {"lines": sum(1 for _ in open(f"{py}/kavach/{m}.py")), "reach": {t: beyond[m][t] for t in reach}}
+              if reach:
+                  argv = [python, "-B", "-m", "unittest", "-f", *(f"tests.{t}" for t in reach)]
+                  start = time.monotonic()
+                  with open(f"{out_dir}/subset-{m}.log", "w") as log:
+                      code = subprocess.run(argv, cwd=py, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, timeout=3600).returncode
+                  seconds = time.monotonic() - start
+                  if code != 0:
+                      summary.write(f"- The unmutated subset of {m} failed (exit {code})\n")
+                      raise SystemExit(1)
+                  entry["subset_seconds"] = round(seconds, 1)
+              cfg = f"{out_dir}/{m}.toml"
+              with open(cfg, "w") as f:
+                  f.write(f'[cosmic-ray]\nmodule-path = "python/kavach/{m}.py"\ntimeout = 600.0\nexcluded-modules = []\ntest-command = "true"\n\n[cosmic-ray.distributor]\nname = "local"\n')
+              db = f"{out_dir}/dbs/{m}.sqlite"
+              subprocess.run(["cosmic-ray", "init", cfg, db], cwd=kavach, check=True)
+              dump = subprocess.run(["cosmic-ray", "dump", db], cwd=kavach, capture_output=True, text=True, check=True).stdout
+              entry["mutants"] = sum(1 for line in dump.splitlines() if line.strip())
+              # The cost if each mutant ran only the test files that run a
+              # line of its span (measured, not used to select): an upper
+              # bound like the other, with each file's time under coverage.
+              per_line, unreached = 0.0, 0
+              for line in dump.splitlines():
+                  if not line.strip():
+                      continue
+                  mu = json.loads(line)[0]["mutations"][0]
+                  span = set(range(mu["start_pos"][0], mu.get("end_pos", mu["start_pos"])[0] + 1))
+                  files = [t for t, lines in cover[m].items() if lines & span]
+                  if not files:
+                      unreached += 1
+                  per_line += sum(test_runs[t]["seconds"] for t in files)
+              entry["per_line_hours"] = round(per_line * load / workers / 3600, 1)
+              entry["unreached"] = unreached
+              if reach:
+                  shards = math.ceil(entry["mutants"] * entry["subset_seconds"] * load / workers / budget)
+                  entry["shards"] = shards
+                  entry["run"] = m in run
+                  entry["projected_hours"] = round(entry["mutants"] * entry["subset_seconds"] * load / workers / 3600, 1)
+                  # A hang costs a worker this long; the shards are sized for none.
+                  timeout = max(600, math.ceil(entry["subset_seconds"] * load * 2))
+                  for k in range(shards if m in run else 0):
+                      rest = " ".join(f"tests.{t}" for t in reach[1:])
+                      if shard_filter and f"{m}:{k}" not in shard_filter:
+                          continue
+                      matrix.append({"module": m, "shard": k, "shards": shards, "first": f"tests.{reach[0]}", "rest": rest, "timeout": timeout})
+              else:
+                  entry["shards"] = 0
+                  entry["run"] = False
+              plan["modules"][m] = entry
+          json.dump(plan, open(f"{out_dir}/plan.json", "w"), indent=1)
+          summary.write("\n| Module | Lines | Reach | Subset run | Mutants | Shards | Upper bound | Per line | No test runs its line | Runs here |\n|---|---|---|---|---|---|---|---|---|---|\n")
+          for m, e in plan["modules"].items():
+              summary.write(f"| {m} | {e['lines']} | {', '.join(e['reach']) or 'none'} | {e.get('subset_seconds', '-')} s | {e['mutants']} | {e['shards']} | {e.get('projected_hours', '-')} h | {e['per_line_hours']} h | {e['unreached']} | {e['run']} |\n")
+          total_shards = sum(e["shards"] for e in plan["modules"].values())
+          total_hours = round(sum(e.get("projected_hours", 0) for e in plan["modules"].values()), 1)
+          summary.write(f"\n- All modules: {total_shards} shards, at most {total_hours} job-hours of exec; this run: {len(matrix)} shards\n")
+          if len(matrix) > 250:
+              summary.write(f"- {len(matrix)} shards is over the matrix's 256\n")
+              raise SystemExit(1)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write("matrix=" + json.dumps({"include": matrix}) + "\n")
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: py-plan
+          path: ${{ runner.temp }}/py-plan
+          retention-days: 90
+          if-no-files-found: ignore
+
+  py:
+    # A fixed name: GitHub adds the matrix values to it.
+    name: cosmic-ray
+    needs: py-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix: ${{ fromJSON(needs.py-plan.outputs.matrix) }}
+    env:
+      MODULE: ${{ matrix.module }}
+      SHARD: ${{ matrix.shard }}
+      SHARDS: ${{ matrix.shards }}
+      TIMEOUT: ${{ matrix.timeout }}
+      # The module's own reach: its main killing file first, then the rest,
+      # both failfast, run by each worker copy's run-tests.sh.
+      FIRST: ${{ matrix.first }}
+      REST: ${{ matrix.rest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: py-plan
+          path: ${{ runner.temp }}/py-plan
+      - name: Add cosmic-ray (this job only)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "$COSMIC_RAY"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          echo "WORKERS=$(nproc)" >> "$GITHUB_ENV"
+      - name: One copy per worker
+        # cosmic-ray mutates the file in place, so each worker runs in a copy.
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 "$WORKERS"); do
+            mkdir -p "$RUNNER_TEMP/w$i"
+            cp -R packages/kavach "$RUNNER_TEMP/w$i/kavach"
+            # A bash_guard mutant took the whole runner down twice (#330's
+            # run 44854021155, shard 2), most likely by exhausting memory or
+            # disk. Each test run is capped at 3 GB of address space and 1 GB
+            # per file, and names its mutant in current-mutant.txt, which the
+            # exec step prints to the job log.
+            {
+              echo '#!/bin/bash'
+              echo "FIRST='${FIRST}'"
+              echo "REST='${REST}'"
+              echo "ORIG='${GITHUB_WORKSPACE}/packages/kavach/python/kavach/${MODULE}.py'"
+              echo "MODULE='${MODULE}'"
+              cat <<'SH'
+          ulimit -v 3000000
+          ulimit -f 1000000
+          diff -U0 "$ORIG" "python/kavach/$MODULE.py" | grep -E '^[-+][^-+]' | head -n 4 > current-mutant.txt
+          cd python || exit 1
+          # shellcheck disable=SC2086
+          python3 -B -m unittest -f $FIRST 2>../last.log
+          s=$?
+          if [ "$s" -eq 0 ] && [ -n "$REST" ]; then
+            # shellcheck disable=SC2086
+            python3 -B -m unittest -f $REST 2>>../last.log
+            s=$?
+          fi
+          cat ../last.log >> ../unittest.log
+          echo "=== exit $s" >> ../unittest.log
+          # A run that hit a cap is its own outcome, never a plain kill.
+          if [ "$s" -ge 128 ] || grep -q MemoryError ../last.log; then echo "=== capped $s"; fi
+          exit "$s"
+          SH
+            } > "$RUNNER_TEMP/w$i/kavach/run-tests.sh"
+          done
+          cat "$RUNNER_TEMP/w1/kavach/run-tests.sh"
+      - name: The caps hold, and the unmutated subset passes in every copy at once
+        run: |
+          set -euo pipefail
+          # The cap must stop a planted 8 GB allocation.
+          if bash -c 'ulimit -v 3000000; python3 -c "x = bytearray(8 * 2**30)"' 2>/dev/null; then
+            echo "- The 3 GB cap did not stop an 8 GB allocation" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          start=$(date +%s)
+          pids=""
+          for i in $(seq 1 "$WORKERS"); do
+            (cd "$RUNNER_TEMP/w$i/kavach" && { bash run-tests.sh || true; } && mv unittest.log "$RUNNER_TEMP/load-w$i.txt") &
+            pids="$pids $!"
+          done
+          # shellcheck disable=SC2086
+          wait $pids || true
+          echo "LOADED_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+          for i in $(seq 1 "$WORKERS"); do
+            if [ -e "$RUNNER_TEMP/w$i/kavach/unittest.log" ] || ! grep -qx '=== exit 0' "$RUNNER_TEMP/load-w$i.txt"; then
+              echo "- The unmutated subset failed under load in copy $i" >> "$GITHUB_STEP_SUMMARY"
+              tail -n 40 "$RUNNER_TEMP/load-w$i.txt"
+              exit 1
+            fi
+          done
+      - name: Keep this shard's mutants
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/out"
+          cp "$RUNNER_TEMP/py-plan/dbs/${MODULE}.sqlite" "$RUNNER_TEMP/out/${MODULE}-${SHARD}.sqlite"
+          python3 - <<'PY'
+          import json, os
+          from cosmic_ray.work_db import use_db, WorkDB
+          from cosmic_ray.work_item import WorkResult, WorkerOutcome
+          tmp = os.environ["RUNNER_TEMP"]
+          module, shard, shards = os.environ["MODULE"], int(os.environ["SHARD"]), int(os.environ["SHARDS"])
+          def key(item):
+              m = item.mutations[0]
+              return (m.start_pos[0], m.start_pos[1], m.operator_name, m.occurrence)
+          with use_db(f"{tmp}/out/{module}-{shard}.sqlite", WorkDB.Mode.open) as db:
+              items = sorted(db.pending_work_items, key=key)
+              mine = []
+              for i, item in enumerate(items):
+                  if i % shards == shard:
+                      mine.append(list(map(str, key(item))))
+                  else:
+                      db.set_result(item.job_id, WorkResult(worker_outcome=WorkerOutcome.SKIPPED))
+          json.dump({"total": len(items), "mine": mine}, open(f"{tmp}/out/{module}-{shard}-assigned.json", "w"))
+          print(f"{len(mine)} of {len(items)} mutants in shard {shard} of {shards}")
+          PY
+      - name: Workers and config
+        run: |
+          set -euo pipefail
+          urls=""
+          for i in $(seq 1 "$WORKERS"); do
+            port=$(( 9875 + i ))
+            (cd "$RUNNER_TEMP/w$i/kavach" && nohup cosmic-ray --verbosity INFO http-worker --port "$port" > "$RUNNER_TEMP/w$i.log" 2>&1 &)
+            urls="${urls:+$urls, }\"http://localhost:$port\""
+          done
+          {
+            echo '[cosmic-ray]'
+            echo "module-path = \"python/kavach/${MODULE}.py\""
+            echo "timeout = ${TIMEOUT}.0"
+            echo 'excluded-modules = []'
+            echo 'test-command = "bash run-tests.sh"'
+            echo
+            echo '[cosmic-ray.distributor]'
+            echo 'name = "http"'
+            echo
+            echo '[cosmic-ray.distributor.http]'
+            echo "worker-urls = [${urls}]"
+          } > "$RUNNER_TEMP/cr.toml"
+          cat "$RUNNER_TEMP/cr.toml"
+          for i in $(seq 1 "$WORKERS"); do
+            port=$(( 9875 + i ))
+            for _ in $(seq 1 60); do
+              curl -s -o /dev/null "http://localhost:$port/" && break
+              sleep 1
+            done
+            curl -s -o /dev/null "http://localhost:$port/" || { cat "$RUNNER_TEMP/w$i.log"; exit 1; }
+          done
+      - name: cosmic-ray exec
+        # Below the job's cap, so a shard that runs long still uploads.
+        timeout-minutes: 330
+        working-directory: ${{ runner.temp }}/w1/kavach
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          # The job log outlives a runner that dies: every 30 s it records
+          # each worker's mutant, free memory and free disk.
+          (
+            while sleep 30; do
+              echo "--- $(( $(date +%s) - start )) s"
+              for i in $(seq 1 "$WORKERS"); do
+                echo "w$i: $(tr '\n' ' ' < "$RUNNER_TEMP/w$i/kavach/current-mutant.txt" 2>/dev/null | cut -c1-200)"
+              done
+              free -m | sed -n 2p
+              df -m / | tail -n 1
+            done
+          ) &
+          watcher=$!
+          cosmic-ray --verbosity INFO exec "$RUNNER_TEMP/cr.toml" "$RUNNER_TEMP/out/${MODULE}-${SHARD}.sqlite" > "$RUNNER_TEMP/out/exec-log.txt" 2>&1
+          kill "$watcher"
+          echo "EXEC_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+      - name: Results
+        run: |
+          set -euo pipefail
+          cosmic-ray dump "$RUNNER_TEMP/out/${MODULE}-${SHARD}.sqlite" > "$RUNNER_TEMP/out/${MODULE}-${SHARD}.jsonl"
+          python3 - <<'PY'
+          import json, os
+          tmp = os.environ["RUNNER_TEMP"]
+          module, shard = os.environ["MODULE"], os.environ["SHARD"]
+          assigned = json.load(open(f"{tmp}/out/{module}-{shard}-assigned.json"))
+          rows = []
+          for line in open(f"{tmp}/out/{module}-{shard}.jsonl"):
+              if not line.strip():
+                  continue
+              item, result = json.loads(line)
+              if result and result.get("worker_outcome") == "skipped":
+                  continue
+              m = item["mutations"][0]
+              if not result:
+                  outcome = "none"
+              elif result.get("output") == "timeout":
+                  # cosmic-ray scores a timeout as killed: here it is its own outcome.
+                  outcome = "timeout"
+              elif "=== capped" in (result.get("output") or ""):
+                  # A run that hit the memory or file cap, or died by a signal.
+                  outcome = "capped"
+              elif result.get("worker_outcome") != "normal":
+                  outcome = "error:" + str(result.get("worker_outcome"))
+              else:
+                  outcome = result.get("test_outcome") or "none"
+              added = [l[1:].strip() for l in (result or {}).get("diff", "").splitlines() if l.startswith("+") and not l.startswith("+++")]
+              rows.append({"module": module, "shard": int(shard), "line": m["start_pos"][0], "col": m["start_pos"][1], "operator": m["operator_name"].removeprefix("core/"), "occurrence": m["occurrence"], "outcome": outcome, "mutated": (added[0] if added else "")[:120]})
+          with open(f"{tmp}/out/{module}-{shard}-rows.jsonl", "w") as f:
+              for r in rows:
+                  f.write(json.dumps(r) + "\n")
+          counts = {}
+          for r in rows:
+              counts[r["outcome"]] = counts.get(r["outcome"], 0) + 1
+          passed = sum(open(p).read().count("=== exit 0\n") for p in [f"{tmp}/w{i}/kavach/unittest.log" for i in range(1, int(os.environ["WORKERS"]) + 1)] if os.path.exists(p))
+          meta = {"module": module, "shard": int(shard), "assigned": len(assigned["mine"]), "total": assigned["total"], "results": len(rows), "counts": counts, "exec_seconds": int(os.environ["EXEC_SECONDS"]), "loaded_seconds": int(os.environ["LOADED_SECONDS"]), "passed_runs": passed}
+          json.dump(meta, open(f"{tmp}/out/{module}-{shard}-meta.json", "w"))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+              s.write(f"- {module} shard {shard}: {meta}\n")
+          # A lost mutant, or one with no result, is a fault in the run.
+          if len(rows) != len(assigned["mine"]) or counts.get("none", 0):
+              raise SystemExit(1)
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: py-${{ matrix.module }}-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/out
+            ${{ runner.temp }}/load-w*.txt
+            ${{ runner.temp }}/w*.log
+          retention-days: 90
+          if-no-files-found: ignore
+
+  report:
+    name: Inventory
+    needs: [ts-plan, ts, py-plan, py]
+    if: always() && needs.ts-plan.result == 'success' && needs.py-plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: ${{ runner.temp }}/a
+      - name: Assemble
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/report"
+          python3 - <<'PY'
+          import collections, glob, json, os
+          tmp = os.environ["RUNNER_TEMP"]
+          a = f"{tmp}/a"
+          faults = []
+          md = []
+          ts_plan = json.load(open(f"{a}/ts-plan/plan.json"))
+          planned = {f["file"] for b in ts_plan["buckets"] for f in b["files"]}
+          ts_rows = [json.loads(l) for p in glob.glob(f"{a}/ts-*/rows-*.jsonl") for l in open(p) if l.strip()]
+          missing = sorted(planned - {r["file"] for r in ts_rows})
+          if missing:
+              faults.append(f"TypeScript files with no result: {missing}")
+          md.append("### TypeScript\n")
+          md.append("| Lane | File | Lines | Mutants | Survived | No coverage | Timeout | Errors | Time |")
+          md.append("|---|---|---|---|---|---|---|---|---|")
+          lanes = collections.defaultdict(lambda: collections.Counter())
+          for r in sorted(ts_rows, key=lambda r: (r["lane"], r["file"])):
+              s = r["statuses"]
+              total = sum(s.values())
+              errors = s.get("RuntimeError", 0) + s.get("CompileError", 0)
+              t = f'{r["seconds"] // 60} min {r["seconds"] % 60} s' if r["seconds"] >= 60 else f'{r["seconds"]} s'
+              if r.get("scratch_gone"):
+                  t += ", **its TMPDIR was deleted**"
+              if r["exit"] != 0:
+                  md.append(f'| {r["lane"]} | `{r["file"]}` | {r["lines"]} | Stryker: {r["exit"]} | | | | | {t} |')
+              else:
+                  md.append(f'| {r["lane"]} | `{r["file"]}` | {r["lines"]} | {total} | {s.get("Survived", 0)} | {s.get("NoCoverage", 0)} | {s.get("Timeout", 0)} | {errors} | {t} |')
+              if r.get("scratch_gone"):
+                  # Its later mutants may have died for want of TMPDIR: not counted.
+                  continue
+              c = lanes[r["lane"]]
+              c["files"] += 1; c["lines"] += r["lines"]; c["mutants"] += total; c["seconds"] += r["seconds"]
+              c["survived"] += s.get("Survived", 0); c["nocoverage"] += s.get("NoCoverage", 0); c["timeout"] += s.get("Timeout", 0)
+              c["blocking_files"] += 1 if (s.get("Survived", 0) + s.get("NoCoverage", 0)) else 0
+              c["failed"] += 1 if r["exit"] != 0 else 0
+          md.append("\n| Lane | Files | Lines | Mutants | Survived | No coverage | Timeout | Files blocking | Stryker failed | Time |")
+          md.append("|---|---|---|---|---|---|---|---|---|---|")
+          for lane, c in sorted(lanes.items()):
+              md.append(f'| {lane} | {c["files"]} | {c["lines"]} | {c["mutants"]} | {c["survived"]} | {c["nocoverage"]} | {c["timeout"]} | {c["blocking_files"]} | {c["failed"]} | {c["seconds"] // 60} min |')
+          failed = [r for r in ts_rows if r["exit"] != 0]
+          if failed:
+              md.append("\n<details><summary>Where Stryker did not finish</summary>\n")
+              for r in failed:
+                  alone = r.get("suite_alone", {})
+                  md.append(f'`{r["file"]}`, exit {r["exit"]}; its suite alone exits {alone.get("exit", "-")}:\n\n```\n{r.get("log_tail", "")[-600:]}\n```\n\n```\n{alone.get("tail", "")[-1200:]}\n```\n')
+              md.append("</details>")
+          md.append("\n**Not measured:**\n")
+          for e in ts_plan["no_owner"]:
+              md.append(f'- `{e["file"]}` ({e["lines"]} lines): in the {e["lane"]} lane, no owning suite beside it')
+          for e in ts_plan["unlaned"]:
+              md.append(f'- `{e["file"]}` ({e["lines"]} lines): in no lane')
+
+          py_plan = json.load(open(f"{a}/py-plan/plan.json"))
+          metas = [json.load(open(p)) for p in glob.glob(f"{a}/py-*/out/*-meta.json")]
+          py_rows = [json.loads(l) for p in glob.glob(f"{a}/py-*/out/*-rows.jsonl") for l in open(p) if l.strip()]
+          md.append("\n### Python\n")
+          md.append("| Module | Lines | Test files that reach it | Subset run | Mutants | Killed | Survived | Timed out | Other | Shards | exec, all shards |")
+          md.append("|---|---|---|---|---|---|---|---|---|---|---|")
+          by_module = collections.defaultdict(list)
+          for r in py_rows:
+              by_module[r["module"]].append(r)
+          for m, e in py_plan["modules"].items():
+              rows = by_module.get(m, [])
+              ms = [x for x in metas if x["module"] == m]
+              got = sorted(x["shard"] for x in ms)
+              hours = e.get("projected_hours", "-")
+              if not e.get("run"):
+                  reach = ", ".join(f"`{t}`" for t in e["reach"]) or "none"
+                  md.append(f'| `{m}.py` | {e["lines"]} | {reach} | {e.get("subset_seconds", "-")} s | {e["mutants"]} | not run | | | | {e["shards"]} planned, ≤ {hours} h ({e.get("per_line_hours", "-")} h per line) | |')
+                  continue
+              if got != list(range(e["shards"])):
+                  faults.append(f"{m}: shards {got} of {e['shards']}")
+              keys = [(r["line"], r["col"], r["operator"], r["occurrence"]) for r in rows]
+              if len(keys) != len(set(keys)):
+                  faults.append(f"{m}: a mutant ran in two shards")
+              if len(rows) != e["mutants"]:
+                  faults.append(f"{m}: {len(rows)} results for {e['mutants']} mutants")
+              c = collections.Counter(r["outcome"] for r in rows)
+              other = sum(v for k, v in c.items() if k not in ("killed", "survived", "timeout"))
+              reach = ", ".join(f"`{t}`" for t in e["reach"]) or "none"
+              exec_s = sum(x["exec_seconds"] for x in ms)
+              md.append(f'| `{m}.py` | {e["lines"]} | {reach} | {e.get("subset_seconds", "-")} s | {e["mutants"]} | {c["killed"]} | {c["survived"]} | {c["timeout"]} | {other} | {e["shards"]} | {round(exec_s / 3600, 1)} h |')
+
+          # Control: the four swept modules leave exactly #351's 12 equivalents.
+          expected = {
+              "tool_guard": ["42:ReplaceComparisonOperator_Eq_LtE", "90:ReplaceComparisonOperator_Eq_LtE"],
+              "command_guard": ["149:ReplaceComparisonOperator_Eq_LtE", "240:ReplaceComparisonOperator_Eq_LtE", "172:ReplaceComparisonOperator_Eq_GtE", "175:ReplaceComparisonOperator_Eq_GtE", "187:ReplaceComparisonOperator_Eq_GtE", "91:ReplaceComparisonOperator_Eq_Is", "91:ReplaceComparisonOperator_Eq_Is", "86:ReplaceComparisonOperator_Is_Eq"],
+              "config": [],
+              "refusal_log": ["183:ReplaceComparisonOperator_Is_Eq", "188:ReplaceComparisonOperator_Is_Eq"],
+          }
+          md.append("\n**Control:** the four modules #351 swept, run on their subsets alone, must leave exactly its 12 equivalents.\n")
+          for m, keys in expected.items():
+              if not py_plan["modules"].get(m, {}).get("run"):
+                  continue
+              left = sorted(f'{r["line"]}:{r["operator"]}' for r in by_module.get(m, []) if r["outcome"] != "killed")
+              ok = collections.Counter(left) == collections.Counter(keys)
+              md.append(f'- `{m}.py`: {"holds" if ok else "FAILS"} ({len(left)} left, {len(keys)} expected)')
+              if not ok:
+                  faults.append(f"control {m}: left {left}, expected {sorted(keys)}")
+
+          md.append("\n<details><summary>Python survivors by line</summary>\n")
+          short = lambda op: op.replace("ReplaceComparisonOperator_", "").replace("ReplaceBinaryOperator_", "").replace("ReplaceUnaryOperator_", "")
+          for m in py_plan["modules"]:
+              left = [r for r in by_module.get(m, []) if r["outcome"] != "killed"]
+              if not left:
+                  continue
+              per_line = collections.defaultdict(collections.Counter)
+              for r in left:
+                  per_line[r["line"]][short(r["operator"]) + ("" if r["outcome"] == "survived" else f' ({r["outcome"]})')] += 1
+              parts = []
+              for line in sorted(per_line):
+                  ops = ", ".join(f"{op} ×{n}" if n > 1 else op for op, n in sorted(per_line[line].items()))
+                  parts.append(f"L{line} {ops}")
+              md.append(f'**{m}.py** ({len(left)}): ' + "; ".join(parts) + "\n")
+          md.append("</details>\n")
+          if faults:
+              md.append("\n**Faults in the run:**\n")
+              md.extend(f"- {f}" for f in faults)
+          text = "\n".join(md) + "\n"
+          open(f"{tmp}/report/inventory.md", "w").write(text)
+          json.dump({"ts": ts_rows, "py_plan": py_plan, "py_meta": metas}, open(f"{tmp}/report/inventory.json", "w"))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+              s.write(text)
+          print(f"{len(text)} characters")
+          if faults:
+              raise SystemExit(1)
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: inventory
+          path: ${{ runner.temp }}/report
+          retention-days: 90
+          if-no-files-found: ignore

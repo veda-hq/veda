@@ -45,6 +45,7 @@ import { DEFAULT_CONFIG as DEFAULT_ESLINT_TARGETS, parseConfig as parseEslintTar
 import { DEFAULT_CONFIG as DEFAULT_ESLINT_BY_WORKSPACE, inheritEslint, lintByWorkspace, parseConfig as parseEslintByWorkspaceConfig, type EslintRunner } from './eslint-by-workspace.ts';
 import { parseLicenseConfig, pnpmLicenses, runLicenseCheck, type LicensesRunner } from './license-check.ts';
 import { BASELINE_PATH as CODEQL_BASELINE, runCodeqlBaseline } from './codeql-baseline.ts';
+import { type Commitlint, DEFAULT_PR_TITLE_CONFIG, loadCommitlint, parsePrTitleConfig, runPrTitle } from './pr-title.ts';
 
 export interface Io {
   readonly out: (line: string) => void;
@@ -73,6 +74,8 @@ export interface Io {
   readonly licenses?: LicensesRunner;
   /** The directory `.pariksha.json` is found from; the process's own by default. */
   readonly cwd?: () => string;
+  /** How pr-title gets commitlint and the config at a root; the peers beside pariksha by default. */
+  readonly commitlint?: (root: string) => Promise<Commitlint | string>;
 }
 
 /**
@@ -174,6 +177,7 @@ const USAGE = [
   '       pariksha masked-exit-codes [--config <file>] [--staged] [--root <dir>]',
   '       pariksha non-synced-resources [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha pnpm-settings [--config <file>] [--root <dir>]',
+  '       PR_TITLE=<title> [PR_NUMBER=<n>] [HEAD_REF=<branch>] pariksha pr-title [--config <file>] [--root <dir>]',
   '       pariksha python-floor --python <interpreter> --floor-file <path> [--exclude <regex>] [--selector <path>] [--root <dir>]',
   '       pariksha regression-controls --config <file> [--staged] [--root <dir>]',
   '       pariksha repo-rules [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
@@ -1075,6 +1079,21 @@ const regressionControls = (f: Map<string, string>, io: Io): number => {
   return result.ok ? 0 : 1;
 };
 
+/**
+ * pr-title: the title in PR_TITLE, against the commitlint config found from
+ * `--root` and the shape the settings give. Exit 1 on a title that fails;
+ * 2 on no title, bad settings, or no commitlint.
+ */
+const prTitle = async (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv): Promise<number> => {
+  const root = rootOf(f);
+  const config = unchecked('pariksha pr-title:', io, () => (f.has('--config') ? parsePrTitleConfig(configText(f, root)) : DEFAULT_PR_TITLE_CONFIG));
+  if (config === undefined) return 2;
+  const report = await runPrTitle(env, config, root, io.commitlint ?? loadCommitlint);
+  report.stdout.forEach(io.out);
+  report.stderr.forEach(io.err);
+  return report.code;
+};
+
 /** `rest` split into its `--name value` pairs and the bare words around them, the files a command names. */
 export const splitFiles = (rest: readonly string[]): { flagArgs: string[]; files: string[] } => {
   const flagArgs: string[] = [];
@@ -1184,6 +1203,7 @@ const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly
   'aggregate-gate-needs': { allowed: ['--config', '--root'], run: aggregateGateNeeds },
   'non-synced-resources': { allowed: ['--config', '--files-from', '--base', '--head', '--root'], switches: ['--staged', '--all'], run: nonSyncedResources },
   'pnpm-settings': { allowed: ['--config', '--root'], run: pnpmSettings },
+  'pr-title': { allowed: ['--config', '--root'], run: prTitle },
   'python-floor': { allowed: ['--python', '--floor-file', '--exclude', '--selector', '--root'], run: pythonFloor },
   'regression-controls': { allowed: ['--config', '--root'], switches: ['--staged'], run: regressionControls },
   'authority-citations': { allowed: ['--mode', '--authority', '--issue-prefix', '--adr-dir', '--root'], run: authorityCitations },
@@ -1269,7 +1289,7 @@ const projectApplied = (command: string, f: Map<string, string>, io: Io, env: No
     return true;
   }) === true;
 
-/** The exit code; a Promise of it for the one check that is asynchronous (enforcement-claims, which loads ESLint). */
+/** The exit code; a Promise of it for the checks that are asynchronous (those that load an optional peer: enforcement-claims, pr-title). */
 export const run = (args: readonly string[], io: Io, version: string = ownVersion(), env: NodeJS.ProcessEnv = process.env): number | Promise<number> => {
   const [command, ...rest] = args;
   if (command === '--version' && rest.length === 0) {

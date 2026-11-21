@@ -1172,6 +1172,52 @@ refuse is not passed: it is printed as a selector not version-checked.
 line to stdout; a missing input file is a failure (exit 1), a bad config or
 an unreadable `package.json` exits 2.
 
+## `pr-title`
+
+```sh
+PR_TITLE=<title> [PR_NUMBER=<n>] [HEAD_REF=<branch>] pariksha pr-title [--config <file>] [--root <dir>]
+```
+
+A repository that squash-merges keeps the pull request title as the commit
+subject, with ` (#N)` appended, and never the branch's own commits. So the
+title must pass the rules a commit subject does. It is held to:
+
+1. the repository's commitlint config, found from `--root` and loaded by
+   commitlint itself, so the check cannot drift from the config every commit
+   is linted with. It lints the subject the squash writes, `<title> (#N)`,
+   with `PR_NUMBER` as `N` (a five-digit stand-in without one), so a title
+   that passes cannot become a subject over `header-max-length`. Warnings do
+   not refuse;
+2. with `shape` in the settings, the shape a commit-msg hook may enforce on
+   top: one of the listed emoji, a space, one of the listed types, an
+   optional `(scope)`, `: `, then a summary of at most `summaryMax`
+   characters (code points) that does not end with a period.
+
+The title, number and head branch come from the environment, as a workflow
+passes them (`PR_TITLE: ${{ github.event.pull_request.title }}`): a title in
+an argument would be one shell quote away from running. A workflow runs it on
+`edited` as well as on pushes, since CI does not rerun on a title edit.
+
+```json
+{
+  "shape": { "gitmoji": ["✨", "🐛", "♻️", "♻"], "types": ["feat", "fix", "refactor"], "summaryMax": 70 },
+  "skipHeadPrefixes": ["mergify/merge-queue/"],
+  "guide": "docs/COMMIT_GUIDE.md"
+}
+```
+
+- `shape` (default none: commitlint alone) lists each emoji exactly as
+  written, so list one with and without U+FE0F to accept both.
+- `skipHeadPrefixes` (default none) are head branches whose title is not
+  checked, such as a merge queue's drafts, whose titles are the queue's.
+- `guide` (default none) is named on the refusal's last line.
+
+`@commitlint/load` and `@commitlint/lint` (>=20 <21) are optional peers:
+install them beside pariksha. Exit 0 when the title passes or its branch is
+skipped, saying so on stdout; 1 when it fails, each problem on stderr; 2 when
+`PR_TITLE` is unset or empty, the settings are bad, the peers are missing,
+or the commitlint config does not load.
+
 ## `python-floor`
 
 ```sh
@@ -1533,6 +1579,31 @@ each finding as `file:line  <id> <rule>` and its message, then the
 guidance. It exits 1 on any ShellCheck or rule finding, or when ShellCheck
 is not installed; 2 on a bad config, two modes, an empty list, or a
 selection or git failure, since nothing was checked.
+
+## `baseline-ratchet`, a module
+
+```ts
+import { atMergeBase, fileAt, mergeBaseOf, parseRenames, renamedSinceMergeBase, trackedFiles } from '@veda-hq/pariksha/baseline-ratchet';
+```
+
+Not a check but the git reads a repository's own list-shaped ratchet needs,
+so its baseline can only shrink: refuse an entry the merge base's copy does
+not have, and read an entry that only moved as the same debt under a new
+name. Typed (the package ships declarations).
+
+| Export | Gives |
+| ------ | ----- |
+| `trackedFiles(root, env, pathspecs)` | the tracked paths under `pathspecs` that still exist in the working tree |
+| `mergeBaseOf(root, base?, env?)` | the merge base of HEAD and `base` as a full sha; `null` when `base` is `''` (a first push, no base branch) |
+| `fileAt(root, commit, path, env?)` | `path` as committed at `commit`; `null` only when the commit does not have it |
+| `atMergeBase(root, path, base?, env?)` | `path` as the merge base has it; `null` when it does not, or with no base |
+| `renamedSinceMergeBase(root, base?, env?)` | new path → old path for each file git sees renamed since the merge base, the working tree and index included; empty with no base |
+| `parseRenames(nameStatus)` | the renames in `git diff --name-status -z` output (a copy is not one) |
+
+`base` defaults to `BASE_BRANCH` from the environment, else `origin/main`;
+`env`, the environment git runs with, to `process.env`. A base that is named
+but does not resolve, and any other git failure, throws with git's reason
+rather than reading as an empty baseline.
 
 ## markdownlint rules
 

@@ -2549,6 +2549,7 @@ class OtherSessionsWorktreeTest(GuardFixture):
         for tool, values in (
             ("Write", {"file_path": str(self.theirs / "a.txt"), "content": "x"}),
             ("Edit", {"file_path": str(self.theirs / "tracked.txt"), "old_string": "a", "new_string": "b"}),
+            ("NotebookEdit", {"notebook_path": str(self.theirs / "n.ipynb"), "new_source": "x"}),
         ):
             with self.subTest(tool=tool):
                 self.assert_warns(self.guard(self.theirs, values, tool))

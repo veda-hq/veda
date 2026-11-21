@@ -277,18 +277,23 @@ const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\
 
 /**
  * The lines of every top-level `packages:` section, in every YAML document
- * of the lockfile (pnpm 12 writes two), each from its key to the next line
- * that is not indented.
+ * of the lockfile (pnpm 12 writes two), each from its key to the next
+ * top-level key or document marker. Line endings are read as `\n`; a blank
+ * line, an indented one and a comment end no section, and a key line may
+ * carry trailing spaces or a comment.
  */
 export const packagesSections = (lockText: string): string => {
   const kept: string[] = [];
   let inside = false;
-  for (const line of lockText.split('\n')) {
-    if (line !== '' && !line.startsWith(' ')) inside = line === 'packages:';
+  for (const line of lfOnly(lockText).split('\n')) {
+    if (line !== '' && !line.startsWith(' ') && !line.startsWith('#')) inside = line.replace(/\s+#.*$/, '').trimEnd() === 'packages:';
     if (inside) kept.push(line);
   }
   return kept.join('\n');
 };
+
+/** `text` with CRLF and lone CR line endings read as LF, as YAML reads them. */
+const lfOnly = (text: string): string => text.replace(/\r\n?/g, '\n');
 
 /**
  * The own packages a pnpm lockfile resolves, and every own key it names that
@@ -311,7 +316,7 @@ export const ownPackages = (lockText: string, config: OwnProvenanceConfig): { pa
   }
   const read = new Set(packages.map((p) => `${p.name}@${p.version}`));
   const keys = new Set<string>();
-  for (const match of lockText.matchAll(ownKey)) keys.add((match[1] as string).replace(/:$/, ''));
+  for (const match of lfOnly(lockText).matchAll(ownKey)) keys.add((match[1] as string).replace(/:$/, ''));
   return { packages, unread: [...keys].filter((key) => !read.has(key)) };
 };
 

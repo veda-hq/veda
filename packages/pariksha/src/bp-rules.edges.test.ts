@@ -9,7 +9,12 @@ const rule = (id: string, verifyBy: string): Rule => ({ id, title: id, category:
 /** A corpus `list` gives as written, `/` or `\`, under `r/`. */
 const listed = (files: Readonly<Record<string, string>>): CorpusReader => ({
   list: () => Object.keys(files),
-  read: (path) => Buffer.from(files[path.slice('r/'.length)] ?? files[path.slice('r\\'.length)] ?? ''),
+  read: (path) => {
+    // The rule is read by the path its listing gives, under `r/`; any other path is a regression, not empty text.
+    const text = files[path.slice('r/'.length)] ?? files[path.slice('r\\'.length)];
+    if (text === undefined) throw new Error(`ENOENT: ${path}`);
+    return Buffer.from(text);
+  },
 });
 
 describe('bp-rules on its edges', () => {

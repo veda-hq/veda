@@ -487,6 +487,15 @@ describe('packagesSections', () => {
     assert.equal(packagesSections(lock), ['packages:', '  a: 1', '', '  b: 2', 'packages:', '  d: 4'].join('\n'));
     assert.equal(packagesSections('importers:\n  x: 1\n'), '');
   });
+
+  it('reads a CRLF lockfile, and a section a top-level comment or a commented key line does not end', () => {
+    const entry = ["  '@veda-hq/kavach@0.6.0':", `    resolution: {integrity: ${KAVACH_PKG.integrity}}`];
+    const crlf = ['lockfileVersion: 9.0', '', 'packages:', '', ...entry, ''].join('\r\n');
+    assert.deepEqual(ownPackages(crlf, CONFIG), { packages: [KAVACH_PKG], unread: [] });
+    const commented = ['packages:  # resolved packages', '# a comment between entries', ...entry, 'snapshots:', '  x: 1'].join('\n');
+    assert.equal(packagesSections(commented), ['packages:  # resolved packages', '# a comment between entries', ...entry].join('\n'));
+    assert.deepEqual(ownPackages(commented, CONFIG), { packages: [KAVACH_PKG], unread: [] });
+  });
 });
 
 describe('defaultDeps', () => {

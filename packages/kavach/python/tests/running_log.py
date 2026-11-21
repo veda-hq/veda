@@ -15,8 +15,10 @@ Locally the log is shared with every live session of the repository, whose
 refusals land in it during a run too, so only a row a hook could not have
 written fails: one with no tool, as a test's event without ``tool_name`` or a
 refusal made before the event was read leaves it. A leaked row that names a
-tool looks like a live session's and passes. With ``CI`` set the clone is the
-run's own, so any appended row fails.
+tool looks like a live session's and passes. And a run in another checkout of
+the repository, of a branch from before this check, writes its own leaks to
+the same shared log: a row this run did not write can still fail it. With
+``CI`` set the clone is the run's own, so any appended row fails.
 """
 
 from __future__ import annotations
@@ -107,7 +109,9 @@ class RunningRepositoryLog(unittest.TestCase):
             found,
             [],
             "a test wrote to the running repository's refusal log: run its guard with "
-            f"{refusal_log.OFF_VAR} set, or from a cwd outside this repository, and give its event a cwd",
+            f"{refusal_log.OFF_VAR} set, or from a cwd outside this repository, and give its event a cwd."
+            " Locally the log is shared: a suite run at the same time in another checkout, of a branch"
+            " without this check, writes such rows too",
         )
 
 

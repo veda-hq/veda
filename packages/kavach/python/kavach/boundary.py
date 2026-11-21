@@ -580,6 +580,62 @@ HOST_SESSION = re.compile(r"local_" + SESSION_ID.pattern)
 # The desktop app's record of a session is a few hundred KB; past this it is
 # not read.
 RECORD_LIMIT = 8 * 1024 * 1024
+# How much of a record `worktree_owners` reads before deciding whether to read
+# it all.
+RECORD_HEAD = 4096
+
+
+def top_level_string(text: str, key: str) -> str | None:
+    """The raw (still escaped) string value of ``key`` in the top-level
+    object that ``text`` opens, when ``text`` holds it whole; else ``None``.
+
+    ``text`` may be only a JSON document's start. A ``key`` inside a nested
+    object or array, a value that is not a string, and one cut off by the end
+    of ``text`` give ``None``, so a caller that reads on gives no false skip.
+    """
+
+    index = len(text) - len(text.lstrip())
+    if not text.startswith("{", index):
+        return None
+    depth = 0
+    while index < len(text):
+        char = text[index]
+        if char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth -= 1
+            if depth == 0:
+                return None
+        elif char == '"':
+            end = string_end(text, index)
+            if end is None:
+                return None
+            if depth == 1 and text[index + 1 : end] == key:
+                after = len(text) - len(text[end + 1 :].lstrip())
+                if after < len(text) and text[after] == ":":
+                    value = len(text) - len(text[after + 1 :].lstrip())
+                    if value >= len(text) or text[value] != '"':
+                        return None
+                    close = string_end(text, value)
+                    return None if close is None else text[value + 1 : close]
+            index = end
+        index += 1
+    return None
+
+
+def string_end(text: str, start: int) -> int | None:
+    """The index of the quote closing the JSON string opened at ``start``,
+    or ``None`` when ``text`` ends first."""
+
+    index = start + 1
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+            continue
+        if text[index] == '"':
+            return index
+        index += 1
+    return None
 
 
 def claude_app_root() -> Path:
@@ -645,6 +701,69 @@ def session_worktree(session_id: object, own: Any, environ: Mapping[str, str]) -
         return root
     except Exception:
         return None
+
+
+def worktree_owners(root: Path, host: str) -> tuple[str, ...]:
+    """The desktop app sessions, other than ``host``, whose record names
+    ``root`` as their ``cwd`` and is not archived (veda#363).
+
+    Every record is looked at, for each call whose shell is in a worktree
+    that this session's record does not name: a subagent's ``agent-*``
+    worktree or one the session made, as well as another session's. So only
+    each record's head is read first (``RECORD_HEAD``): the app writes
+    ``cwd`` third. A head whose top-level ``cwd`` is another folder is
+    skipped. The whole record is read and parsed only when that ``cwd`` is
+    the worktree, or when the head holds no complete top-level ``cwd`` and the
+    text holds the worktree's folder name. One that is a symlink, too large,
+    unreadable or of the wrong shape names nobody, and so does a missing app
+    folder. Never raises: a failure counts as no owner, so the caller can only
+    stay quiet."""
+
+    try:
+        app = claude_app_root()
+        sessions = app / "claude-code-sessions"
+        if app.is_symlink() or sessions.is_symlink() or not sessions.is_dir():
+            return ()
+        wanted = root.resolve()
+        # The app writes JSON as JavaScript does, non-ASCII unescaped.
+        needle = json.dumps(wanted.name, ensure_ascii=False)[1:-1]
+        owners: list[str] = []
+        for path in sorted(sessions.glob("*/*/local_*.json")):
+            try:
+                if path.is_symlink() or not path.is_file() or path.stat().st_size > RECORD_LIMIT:
+                    continue
+                with path.open("rb") as handle:
+                    head = handle.read(RECORD_HEAD).decode("utf-8", errors="replace")
+                raw = top_level_string(head, "cwd")
+                if raw is not None:
+                    named = json.loads(f'"{raw}"')
+                    if not (
+                        isinstance(named, str)
+                        and named.startswith("/")
+                        and Path(named).name == wanted.name
+                        and Path(named).resolve() == wanted
+                    ):
+                        continue
+                text = path.read_text(encoding="utf-8")
+                if needle not in text:
+                    continue
+                record = json.loads(text)
+            except (OSError, ValueError, RecursionError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            name, cwd = record.get("sessionId"), record.get("cwd")
+            if not isinstance(name, str) or not HOST_SESSION.fullmatch(name) or name == host:
+                continue
+            if record.get("isArchived") is True:
+                continue
+            if not isinstance(cwd, str) or not cwd.startswith("/"):
+                continue
+            if Path(cwd).resolve() == wanted:
+                owners.append(name)
+        return tuple(dict.fromkeys(owners))
+    except Exception:
+        return ()
 
 
 def deny(message: str) -> None:

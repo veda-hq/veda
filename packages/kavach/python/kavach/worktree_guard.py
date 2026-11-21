@@ -21,6 +21,12 @@ Two more folders outside every checkout belong to one session, and from its
 owned checkout it may write them (``SessionFolders``): its scratchpad in
 Claude Code's temp folder, named by the payload's ``session_id``, and the
 side-session notes folders the desktop app granted it.
+
+A managed worktree passes the gate, but not silently when it is another live
+session's (rule ``other-sessions-worktree``, veda#363). That is the case when
+the desktop app's record of this session names a different worktree and
+another record, not archived, names this one. It warns until the consumer's
+``rules`` set it to refuse.
 """
 
 from __future__ import annotations
@@ -127,6 +133,9 @@ boundary = load_boundary(HERE / "boundary.py")
 config = load_config(HERE / "config.py")
 refusal_log = load_module("kavach_worktree_refusal_log", HERE / "refusal_log.py")
 clone_writers = load_module("kavach_worktree_clone_writers", HERE / "clone_writers.py", register=True)
+# For the trial-mode reading and warning every rule shares (`mode_of`,
+# `context`, `answer`); none of them loads a module of its own.
+rules = load_module("kavach_worktree_rules", HERE / "rules.py", register=True)
 
 
 def settings() -> Any:
@@ -1391,6 +1400,80 @@ def reviewed(
     return False
 
 
+OTHER_SESSIONS_WORKTREE = config.OTHER_SESSIONS_WORKTREE_RULE
+
+
+def other_sessions_worktree(
+    session_id: object, root: Path, loaded: Any, environ: Mapping[str, str]
+) -> str | None:
+    """Why a write from ``root`` is in another session's worktree, or None.
+
+    It fires only when both hold (veda#363):
+
+    - the desktop app's record of this session names its worktree
+      (``boundary.session_worktree``, the record #362's rule trusts), and that
+      worktree is not ``root``;
+    - another record, not archived, names ``root`` as its ``cwd``
+      (``boundary.worktree_owners``).
+
+    So a worktree shared with the session that started this one passes (this
+    session's own record names it). So do a worktree the session made itself
+    and a subagent's ``agent-*`` worktree, since no other record names them.
+    With no record, or one that does not match, nothing fires. Both readers
+    never raise, so on any failure nothing fires either."""
+
+    own = boundary.session_worktree(session_id, loaded.own_checkout, environ)
+    if own is None or own.resolve() == root.resolve():
+        return None
+    owners = boundary.worktree_owners(root, environ.get("CLAUDE_CODE_HOST_SESSION_ID", ""))
+    if not owners:
+        return None
+    if len(owners) == 1:
+        sessions, whose = "another live session works", "that session's"
+    else:
+        sessions, whose = f"{len(owners)} other live sessions work", "their"
+    return (
+        f"the shell is in worktree {root.name}, which {sessions} in; this session's is "
+        f"{own.name}. A write here changes {whose} files and branch. Run "
+        f"`cd {shlex.quote(str(own))}` alone to return, then retry (the shell is in {root})."
+    )
+
+
+def judge_other_sessions_worktree(
+    data: dict[str, object], root: Path, loaded: Any, environ: Mapping[str, str]
+) -> str | None:
+    """Run ``other_sessions_worktree`` in its mode: refusing, deny; warning,
+    log the fire and return the answer to print once the call is allowed.
+
+    While it warns, an error in it allows the call and logs a row naming the
+    error's type; once it refuses, the error refuses too (``run``)."""
+
+    mode, refuses_from = rules.mode_of(loaded, OTHER_SESSIONS_WORKTREE)
+    try:
+        message = other_sessions_worktree(data.get("session_id"), root, loaded, environ)
+    except Exception as error:
+        if mode == "refuse":
+            raise
+        message = None
+        refusal_log.record(
+            "worktree",
+            json.dumps(data),
+            f"WARNING: the {OTHER_SESSIONS_WORKTREE} check failed ({type(error).__name__}), "
+            "so it did not judge this call; the call was allowed.",
+            rule=OTHER_SESSIONS_WORKTREE,
+            mode=mode,
+        )
+    if message is None:
+        return None
+    fire = rules.Fire(OTHER_SESSIONS_WORKTREE, mode, message, refuses_from)
+    if mode == "refuse":
+        refusal_log.label(OTHER_SESSIONS_WORKTREE, mode)
+        print(rules.refusal([fire]), file=sys.stderr)
+        raise SystemExit(2)
+    refusal_log.record("worktree", json.dumps(data), f"WARNING: {message}", rule=OTHER_SESSIONS_WORKTREE, mode=mode)
+    return rules.answer([rules.context(fire)])
+
+
 def main() -> None:
     # First, so a misread settings file refuses every event, a read-only one
     # included.
@@ -1467,6 +1550,16 @@ def main() -> None:
         fences = clone_fences(root, loaded.own_checkout, os.environ)
     elif not linked or not boundary.is_claude_managed(root, primary):
         boundary.deny(not_owned(tool, values, cwd, targets, segments, loaded.push_hosts))
+    # A managed worktree passes the gate, but another live session's does not
+    # pass silently (veda#363): on trial it warns once the call is allowed,
+    # refusing it denies here. Before the trusted and reviewed returns, so it
+    # judges them too.
+    warning = None if clone else judge_other_sessions_worktree(data, root, loaded, os.environ)
+
+    def allow() -> None:
+        if warning is not None:
+            print(warning)
+
     # The consumer's `protectedPaths` hold in either kind of owned checkout.
     fences += protected_fences(root, loaded)
     way_out = CLONE_WAY_OUT if clone else WORKTREE_WAY_OUT
@@ -1477,10 +1570,12 @@ def main() -> None:
         # ownership above. What it writes is unproven, so it counts as
         # writing in the checkout while a push runs.
         refuse_during_push(tool, [root], root)
+        allow()
         return
     if tool == "Bash" and reviewed(
         boundary.tool_command(values), cwd, root, primary, loaded.reviewed_clis, fences, way_out
     ):
+        allow()
         return
     if targets is None:
         boundary.deny(unresolved(tool, values, cwd, loaded.push_hosts))
@@ -1512,6 +1607,7 @@ def main() -> None:
         if reason is not None:
             boundary.deny(reason)
     refuse_during_push(tool, targets, root)
+    allow()
 
 
 def run() -> None:

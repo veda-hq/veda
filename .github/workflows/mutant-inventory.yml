@@ -33,12 +33,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # `smoke`: one small TypeScript file, and tool_guard in two shards, to
-  # prove the plumbing. `full`: every TypeScript file. Every Python module is
-  # always timed and counted; PY_MODULES names the ones whose mutants run, so
-  # a costly module's run is decided from its measured cost.
-  SCOPE: full
+  # TypeScript: `smoke` runs one small file, `full` every file. Every Python
+  # module is always timed and counted; PY_MODULES names the ones whose
+  # mutants run, so a costly module's run is decided from its measured cost,
+  # and PY_SHARDS, when set, keeps only the named shards (module:index).
+  SCOPE: smoke
   PY_MODULES: tool_guard command_guard rules bash_guard config refusal_log
+  PY_SHARDS: bash_guard:2
   # #287's head (claude/prepush-gate-272), pinned.
   LANES_SHA: 3fca3c140911467257eeb859b1468e0443d40271
   COSMIC_RAY: cosmic-ray==8.9.0
@@ -226,6 +227,15 @@ jobs:
               else:
                   with open(log) as l:
                       row["log_tail"] = l.read()[-1500:]
+                  # The owning suite alone, in the same env and a fresh TMPDIR:
+                  # does it fail outside Stryker's sandbox too?
+                  alone = tempfile.mkdtemp(prefix="inventory-alone-", dir=tmp)
+                  suite = subprocess.run(
+                      ["node", "--test", os.path.relpath(f["owner"], f["cwd"])],
+                      cwd=cwd, env={**env, "TMPDIR": alone}, capture_output=True, text=True, timeout=30 * 60,
+                  )
+                  shutil.rmtree(alone, ignore_errors=True)
+                  row["suite_alone"] = {"exit": suite.returncode, "tail": (suite.stdout + suite.stderr)[-3000:]}
               rows.write(json.dumps(row) + "\n")
               rows.flush()
               shutil.rmtree(scratch, ignore_errors=True)
@@ -362,8 +372,10 @@ jobs:
               summary.write(f"\n- **Control failed:** the reach map misses {missed}\n")
               raise SystemExit(1)
 
-          scope = ["tool_guard"] if os.environ["SCOPE"] == "smoke" else modules
-          run = ["tool_guard"] if os.environ["SCOPE"] == "smoke" else os.environ["PY_MODULES"].split()
+          scope = modules
+          run = os.environ["PY_MODULES"].split()
+          # PY_SHARDS, when set, keeps only the named shards (module:index).
+          shard_filter = set(os.environ.get("PY_SHARDS", "").split())
           # Four suites at once ran 665 s against 269 s alone (#328): 2.5.
           workers, load, budget = 4, 2.5, 15000
           plan = {"modules": {}, "test_runs": test_runs, "workers": workers, "load": load, "budget": budget}
@@ -405,8 +417,6 @@ jobs:
               entry["unreached"] = unreached
               if reach:
                   shards = math.ceil(entry["mutants"] * entry["subset_seconds"] * load / workers / budget)
-                  if os.environ["SCOPE"] == "smoke":
-                      shards = 2
                   entry["shards"] = shards
                   entry["run"] = m in run
                   entry["projected_hours"] = round(entry["mutants"] * entry["subset_seconds"] * load / workers / 3600, 1)
@@ -414,7 +424,8 @@ jobs:
                   timeout = max(600, math.ceil(entry["subset_seconds"] * load * 2))
                   for k in range(shards if m in run else 0):
                       rest = " ".join(f"tests.{t}" for t in reach[1:])
-                      rest = f" && python3 -B -m unittest -f {rest} 2>>../unittest.log" if rest else ""
+                      if shard_filter and f"{m}:{k}" not in shard_filter:
+                          continue
                       matrix.append({"module": m, "shard": k, "shards": shards, "first": f"tests.{reach[0]}", "rest": rest, "timeout": timeout})
               else:
                   entry["shards"] = 0
@@ -456,10 +467,10 @@ jobs:
       SHARD: ${{ matrix.shard }}
       SHARDS: ${{ matrix.shards }}
       TIMEOUT: ${{ matrix.timeout }}
-      # The module's own reach, its main killing file first, both failfast.
-      # Run from a worker's kavach copy; it logs to unittest.log there.
-      # No double quote in it: it goes into cosmic-ray's TOML as a string.
-      TEST_COMMAND: sh -c 'cd python && python3 -B -m unittest -f ${{ matrix.first }} 2>>../unittest.log${{ matrix.rest }}; s=$?; echo === exit $s >>../unittest.log; exit $s'
+      # The module's own reach: its main killing file first, then the rest,
+      # both failfast, run by each worker copy's run-tests.sh.
+      FIRST: ${{ matrix.first }}
+      REST: ${{ matrix.rest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -482,14 +493,51 @@ jobs:
           for i in $(seq 1 "$WORKERS"); do
             mkdir -p "$RUNNER_TEMP/w$i"
             cp -R packages/kavach "$RUNNER_TEMP/w$i/kavach"
+            # A bash_guard mutant took the whole runner down twice (#330's
+            # run 44854021155, shard 2), most likely by exhausting memory or
+            # disk. Each test run is capped at 3 GB of address space and 1 GB
+            # per file, and names its mutant in current-mutant.txt, which the
+            # exec step prints to the job log.
+            {
+              echo '#!/bin/bash'
+              echo "FIRST='${FIRST}'"
+              echo "REST='${REST}'"
+              echo "ORIG='${GITHUB_WORKSPACE}/packages/kavach/python/kavach/${MODULE}.py'"
+              echo "MODULE='${MODULE}'"
+              cat <<'SH'
+          ulimit -v 3000000
+          ulimit -f 1000000
+          diff -U0 "$ORIG" "python/kavach/$MODULE.py" | grep -E '^[-+][^-+]' | head -n 4 > current-mutant.txt
+          cd python || exit 1
+          # shellcheck disable=SC2086
+          python3 -B -m unittest -f $FIRST 2>../last.log
+          s=$?
+          if [ "$s" -eq 0 ] && [ -n "$REST" ]; then
+            # shellcheck disable=SC2086
+            python3 -B -m unittest -f $REST 2>>../last.log
+            s=$?
+          fi
+          cat ../last.log >> ../unittest.log
+          echo "=== exit $s" >> ../unittest.log
+          # A run that hit a cap is its own outcome, never a plain kill.
+          if [ "$s" -ge 128 ] || grep -q MemoryError ../last.log; then echo "=== capped $s"; fi
+          exit "$s"
+          SH
+            } > "$RUNNER_TEMP/w$i/kavach/run-tests.sh"
           done
-      - name: The unmutated subset in every copy at once
+          cat "$RUNNER_TEMP/w1/kavach/run-tests.sh"
+      - name: The caps hold, and the unmutated subset passes in every copy at once
         run: |
           set -euo pipefail
+          # The cap must stop a planted 8 GB allocation.
+          if bash -c 'ulimit -v 3000000; python3 -c "x = bytearray(8 * 2**30)"' 2>/dev/null; then
+            echo "- The 3 GB cap did not stop an 8 GB allocation" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           start=$(date +%s)
           pids=""
           for i in $(seq 1 "$WORKERS"); do
-            (cd "$RUNNER_TEMP/w$i/kavach" && { sh -c "$TEST_COMMAND" || true; } && mv unittest.log "$RUNNER_TEMP/load-w$i.txt") &
+            (cd "$RUNNER_TEMP/w$i/kavach" && { bash run-tests.sh || true; } && mv unittest.log "$RUNNER_TEMP/load-w$i.txt") &
             pids="$pids $!"
           done
           # shellcheck disable=SC2086
@@ -541,7 +589,7 @@ jobs:
             echo "module-path = \"python/kavach/${MODULE}.py\""
             echo "timeout = ${TIMEOUT}.0"
             echo 'excluded-modules = []'
-            echo "test-command = \"${TEST_COMMAND}\""
+            echo 'test-command = "bash run-tests.sh"'
             echo
             echo '[cosmic-ray.distributor]'
             echo 'name = "http"'
@@ -565,7 +613,21 @@ jobs:
         run: |
           set -euo pipefail
           start=$(date +%s)
+          # The job log outlives a runner that dies: every 30 s it records
+          # each worker's mutant, free memory and free disk.
+          (
+            while sleep 30; do
+              echo "--- $(( $(date +%s) - start )) s"
+              for i in $(seq 1 "$WORKERS"); do
+                echo "w$i: $(tr '\n' ' ' < "$RUNNER_TEMP/w$i/kavach/current-mutant.txt" 2>/dev/null | cut -c1-200)"
+              done
+              free -m | sed -n 2p
+              df -m / | tail -n 1
+            done
+          ) &
+          watcher=$!
           cosmic-ray --verbosity INFO exec "$RUNNER_TEMP/cr.toml" "$RUNNER_TEMP/out/${MODULE}-${SHARD}.sqlite" > "$RUNNER_TEMP/out/exec-log.txt" 2>&1
+          kill "$watcher"
           echo "EXEC_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
       - name: Results
         run: |
@@ -589,6 +651,9 @@ jobs:
               elif result.get("output") == "timeout":
                   # cosmic-ray scores a timeout as killed: here it is its own outcome.
                   outcome = "timeout"
+              elif "=== capped" in (result.get("output") or ""):
+                  # A run that hit the memory or file cap, or died by a signal.
+                  outcome = "capped"
               elif result.get("worker_outcome") != "normal":
                   outcome = "error:" + str(result.get("worker_outcome"))
               else:
@@ -662,6 +727,9 @@ jobs:
                   md.append(f'| {r["lane"]} | `{r["file"]}` | {r["lines"]} | Stryker: {r["exit"]} | | | | | {t} |')
               else:
                   md.append(f'| {r["lane"]} | `{r["file"]}` | {r["lines"]} | {total} | {s.get("Survived", 0)} | {s.get("NoCoverage", 0)} | {s.get("Timeout", 0)} | {errors} | {t} |')
+              if r.get("scratch_gone"):
+                  # Its later mutants may have died for want of TMPDIR: not counted.
+                  continue
               c = lanes[r["lane"]]
               c["files"] += 1; c["lines"] += r["lines"]; c["mutants"] += total; c["seconds"] += r["seconds"]
               c["survived"] += s.get("Survived", 0); c["nocoverage"] += s.get("NoCoverage", 0); c["timeout"] += s.get("Timeout", 0)
@@ -675,7 +743,8 @@ jobs:
           if failed:
               md.append("\n<details><summary>Where Stryker did not finish</summary>\n")
               for r in failed:
-                  md.append(f'`{r["file"]}`, exit {r["exit"]}:\n\n```\n{r.get("log_tail", "")[-600:]}\n```\n')
+                  alone = r.get("suite_alone", {})
+                  md.append(f'`{r["file"]}`, exit {r["exit"]}; its suite alone exits {alone.get("exit", "-")}:\n\n```\n{r.get("log_tail", "")[-600:]}\n```\n\n```\n{alone.get("tail", "")[-1200:]}\n```\n')
               md.append("</details>")
           md.append("\n**Not measured:**\n")
           for e in ts_plan["no_owner"]:

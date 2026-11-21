@@ -24,7 +24,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kavach import git_safety
+from kavach import git_safety, refusal_log
 
 from .command_guard_cases import CASES
 
@@ -337,7 +337,15 @@ class Loading(unittest.TestCase):
         )
 
     def test_run_by_a_relative_path_it_still_loads_its_module(self) -> None:
-        actual, stderr = Guard.run(make_input("git push --force origin main"), str(KAVACH), guard="command_guard.py")
+        # Its cwd is the package's own folder, inside the running repository,
+        # so the refusal log is off: each run wrote a row to that repository's
+        # log (#368).
+        actual, stderr = Guard.run(
+            make_input("git push --force origin main"),
+            str(KAVACH),
+            guard="command_guard.py",
+            env={refusal_log.OFF_VAR: "1"},
+        )
         self.assertEqual(actual, 2, stderr)
         self.assertIn("git push --force", stderr)
 

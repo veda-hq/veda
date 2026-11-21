@@ -21,6 +21,8 @@ from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
+from kavach import refusal_log
+
 from .test_boundary import (
     ADAPTER,
     ADAPTER_PATH,
@@ -586,7 +588,11 @@ class AdapterTest(BoundaryFixture):
         )
 
     def test_unusable_settings_refuse_every_event(self) -> None:
-        """A guard that misread what it trusts must not allow, a read included."""
+        """A guard that misread what it trusts must not allow, a read included.
+
+        It refuses before it reads the event, so its refusal log takes the
+        repository from the child's own cwd, which is this suite's: the log
+        is off, or each run adds rows to the running repository's (#368)."""
 
         cases = (
             ("unreadable", None, "cannot be read"),
@@ -604,6 +610,7 @@ class AdapterTest(BoundaryFixture):
                 environment["KAVACH_CONFIG"] = str(self.external / "absent.json")
             else:
                 environment = self.settings_env(document)
+            environment[refusal_log.OFF_VAR] = "1"
             for event in (
                 {"tool_name": "Bash", "tool_input": {"command": "ls"}},
                 {"tool_name": "Write", "tool_input": {"file_path": str(self.claude / "new.txt")}},

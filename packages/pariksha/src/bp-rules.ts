@@ -1,6 +1,6 @@
 // bp-rules: deterministic queries and projections over a best-practice rule
 // corpus, a folder of Markdown files each opening with a frontmatter block,
-// and the index document that lists them in tables. Ported from athya_mono's
+// and the index document that lists them in tables. Ported from the product repository's
 // `.claude/scripts/bp-rules.ts` and `bp-rules-cli.ts`.
 //
 // WHY. A skill that asks a model to read and parse every rule's frontmatter

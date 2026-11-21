@@ -8,7 +8,7 @@
 // fork, another workflow) fails here before the push or the pull request
 // goes on.
 //
-// Ported from athya_mono's own-provenance.ts (itself from veda's
+// Ported from the product repository's own-provenance.ts (itself from veda's
 // own-provenance.mjs, veda-hq/veda#60, #64) with the same pass conditions; a
 // statement in a shape it does not read fails with one reason rather than one
 // per field. The scope, repository, workflow and lockfile are the

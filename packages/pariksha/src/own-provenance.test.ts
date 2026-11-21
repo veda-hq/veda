@@ -1,8 +1,8 @@
-// own-provenance, offline, ported case for case from athya_mono's
+// own-provenance, offline, ported case for case from the product repository's
 // own-provenance.test.ts: the registry's answers are built here, or are real
 // ones saved under fixtures/own-provenance/. The settings are veda's, so the
 // real kavach 0.6.0 attestation verifies end to end against the shipped
-// trusted root. The case that read athya's own lockfile stays there.
+// trusted root. The case that read the product repository's own lockfile stays there.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -118,8 +118,8 @@ const LOCK = [
   '',
   'packages:',
   '',
-  "  '@athya-hq/rules@https://npm.pkg.github.com/download/@athya-hq/rules/0.4.1/bfd5(@veda-hq/eslint-plugin-shuddhi@0.2.0(typescript@5.9.3))':",
-  '    resolution: {tarball: https://npm.pkg.github.com/download/@athya-hq/rules/0.4.1/bfd5}',
+  "  '@acme-hq/rules@https://npm.pkg.github.com/download/@acme-hq/rules/0.4.1/bfd5(@veda-hq/eslint-plugin-shuddhi@0.2.0(typescript@5.9.3))':",
+  '    resolution: {tarball: https://npm.pkg.github.com/download/@acme-hq/rules/0.4.1/bfd5}',
   '',
   "  '@veda-hq/kavach@0.6.0':",
   `    resolution: {integrity: ${INTEGRITY}}`,
@@ -185,7 +185,7 @@ describe('parseOwnProvenanceConfig', () => {
 });
 
 describe('ownPackages', () => {
-  it('reads each @veda-hq package once, from the packages section, past importers, a link: and an @athya-hq key that names one', () => {
+  it('reads each @veda-hq package once, from the packages section, past importers, a link: and an @acme-hq key that names one', () => {
     assert.deepEqual(ownPackages(LOCK, CONFIG), {
       packages: [
         { name: '@veda-hq/kavach', version: '0.6.0', integrity: INTEGRITY },

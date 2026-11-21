@@ -1,6 +1,6 @@
 // pr-title against a real commitlint, loaded from a fixture config written
-// the way athya_mono's .commitlintrc.js reads (its parser preset, its type
-// enum, and the config-conventional rules its titles meet), with athya's
+// the way the product repository's .commitlintrc.js reads (its parser preset, its type
+// enum, and the config-conventional rules its titles meet), with the product repository's
 // shape as the settings.
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -29,11 +29,11 @@ const TYPES = ['feat', 'fix', 'refactor', 'perf', 'test', 'docs', 'style', 'chor
 const SUMMARY_MAX = 70;
 const SHAPE: Shape = { gitmoji: GITMOJI, types: TYPES, summaryMax: SUMMARY_MAX };
 const QUEUE = 'mergify/merge-queue/';
-const GUIDE = 'node_modules/@athya-hq/rules/docs/COMMIT_GUIDE.md';
+const GUIDE = 'node_modules/@acme-hq/rules/docs/COMMIT_GUIDE.md';
 const CONFIG: PrTitleConfig = { shape: SHAPE, skipHeadPrefixes: [QUEUE], guide: GUIDE };
 const FORMAT_HINT = formatHint(SHAPE);
 
-/** athya_mono's commitlint config, with config-conventional's rules that its titles meet written out. */
+/** the product repository's commitlint config, with config-conventional's rules that its titles meet written out. */
 const COMMITLINT_CONFIG = `export default {
   parserPreset: { parserOpts: { headerPattern: /^(?:.*? )?(\\w+)(?:\\((.*)\\))?: (.*)$/, headerCorrespondence: ['type', 'scope', 'subject'] } },
   ignores: [(message) => /^(?:Merge(?:d| of) #\\d+(?:, ?#\\d+)*(?:\\s+Merged by Mergify Merge Queue)?|Merge of PR \\d+)$/.test(message.trim())],
@@ -121,7 +121,7 @@ describe('titleProblems, the commit-msg shape', () => {
     assert.deepEqual(titleProblems('x 🐛 fix(ci): keep the synced flag', SHAPE), [FORMAT_HINT]);
   });
 
-  it('holds the shape the settings give, not athya_mono’s', () => {
+  it('holds the shape the settings give, not the product repository’s', () => {
     const other: Shape = { gitmoji: ['🚀', '+'], types: ['ship'], summaryMax: 5 };
     assert.deepEqual(titleProblems('🚀 ship: go', other), []);
     // A listed emoji that is a pattern character matches only itself.

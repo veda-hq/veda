@@ -32,9 +32,9 @@ import {
   type Rule,
 } from './bp-rules.ts';
 
-/** athya_mono's layout: the values its `.pariksha.json` gives `checks.bp-rules`. */
-const ATHYA: BpRulesConfig = { rules: 'docs/standards/best-practices', index: 'docs/standards/BEST_PRACTICES.md', idPrefix: 'BP' };
-const SETTINGS = JSON.stringify(ATHYA);
+/** the product repository's layout: the values its `.pariksha.json` gives `checks.bp-rules`. */
+const PRODUCT: BpRulesConfig = { rules: 'docs/standards/best-practices', index: 'docs/standards/BEST_PRACTICES.md', idPrefix: 'BP' };
+const SETTINGS = JSON.stringify(PRODUCT);
 
 const tempRoot = (): string => mkdtempSync(join(tmpdir(), 'pariksha-bp-rules-'));
 
@@ -69,7 +69,7 @@ const ruleBody = (id: string, category: string): string => `---\nid: ${id}\ncate
 
 const json = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
 
-// ═══ ported from athya_mono .claude/scripts/bp-rules.test.ts ═══════════════════
+// ═══ ported from the product repository .claude/scripts/bp-rules.test.ts ═══════════════════
 
 describe('frontmatter parsing', () => {
   it('parseFrontmatter: tolerates CRLF line endings', () => {
@@ -291,7 +291,7 @@ describe('regenerate-index', () => {
       rule({ id: 'BP-DISC-001', title: 'Disc', category: 'campaigns', severity: 'critical', enforcement: 'validator', path: 'docs/standards/best-practices/mobile/disc.md' }),
       rule({ id: 'BP-MOB-001', title: 'M', category: 'mobile', severity: 'high', enforcement: 'guidance', path: 'docs/standards/best-practices/mobile/m.md' }),
     ];
-    const { text, unplaced } = regenerateIndex(INDEX_FIXTURE, rules, ATHYA);
+    const { text, unplaced } = regenerateIndex(INDEX_FIXTURE, rules, PRODUCT);
     assert.deepEqual(unplaced, []); // BP-DISC-001 placed via path grouping
     assert.ok(text.includes('> Curated prose blurb that must be preserved.'));
     const secIdx1 = text.indexOf('BP-SEC-001');
@@ -321,7 +321,7 @@ describe('regenerate-index', () => {
       // A rule whose directory has no section in the index -> unplaced
       rule({ id: 'BP-NEW-001', category: 'testing', path: 'docs/standards/best-practices/testing/n.md' }),
     ];
-    const { text, unplaced } = regenerateIndex(idx, rules, ATHYA);
+    const { text, unplaced } = regenerateIndex(idx, rules, PRODUCT);
     assert.deepEqual(unplaced, ['BP-NEW-001']);
     assert.ok(/BP-SEC-001 \|.*\| high \| validator \|/.test(text));
     assert.ok(text.includes('| BP-OLD-099 | [Gone](./best-practices/security/gone.md) | low | none |'));
@@ -329,13 +329,13 @@ describe('regenerate-index', () => {
 
   it('regenerateIndex: a deprecated rule shows "deprecated" in the enforcement column', () => {
     const idx = ['## Security (1 rules)', '', '| ID | Rule | Severity | Enforcement |', '| -- | ---- | -------- | ----------- |', '| BP-SEC-001 | [A](./best-practices/security/a.md) | high | validator |', ''].join('\n');
-    const { text } = regenerateIndex(idx, [rule({ id: 'BP-SEC-001', severity: 'high', enforcement: 'validator', status: 'deprecated', path: 'docs/standards/best-practices/security/a.md' })], ATHYA);
+    const { text } = regenerateIndex(idx, [rule({ id: 'BP-SEC-001', severity: 'high', enforcement: 'validator', status: 'deprecated', path: 'docs/standards/best-practices/security/a.md' })], PRODUCT);
     assert.ok(/BP-SEC-001 \|.*\| high \| deprecated \|/.test(text));
   });
 });
 
 /**
- * A miniature index carrying the invariant athya's real one carries: BP-DISC-001
+ * A miniature index carrying the invariant the product repository's real one carries: BP-DISC-001
  * is listed under BOTH Mobile and Discount, so the Total counts ROWS (4), not
  * distinct rule files (3). The Summary numbers are deliberately STALE: what a
  * hand-maintained table looks like after a rule change.
@@ -409,7 +409,7 @@ describe('derived Summary block', () => {
       rule({ id: 'BP-DISC-001', title: 'D', category: 'mobile', severity: 'critical', enforcement: 'validator', path: 'docs/standards/best-practices/mobile/disc.md' }),
       rule({ id: 'BP-DISC-002', title: 'E', category: 'discount', severity: 'high', enforcement: 'guidance', path: 'docs/standards/best-practices/discount/e.md' }),
     ];
-    const { text } = regenerateIndex(SUMMARY_FIXTURE, rules, ATHYA);
+    const { text } = regenerateIndex(SUMMARY_FIXTURE, rules, PRODUCT);
     assert.ok(text.includes('| Mobile | 2 | 1 | 1 | 1 |'), 'Mobile line recomputed from its rows');
     assert.ok(text.includes('| Discount | 2 | 1 | 1 | 1 |'), 'Discount line recomputed from its rows');
     assert.ok(text.includes('| **Total** | **4** | **2** | **2** | **2** |'), 'Total counts rows (4), not distinct rule files (3)');
@@ -430,7 +430,7 @@ describe('derived Summary block', () => {
       stale.drift.some((d) => d.category === 'Mobile' && d.column === 'critical'),
       'a per-section column is reported too',
     );
-    const { text } = regenerateIndex(SUMMARY_FIXTURE, [], ATHYA);
+    const { text } = regenerateIndex(SUMMARY_FIXTURE, [], PRODUCT);
     assert.deepEqual(checkSummaryDrift(text, 'BP').drift, []);
     assert.equal(checkSummaryDrift(text, 'BP').ok, true);
   });
@@ -457,7 +457,7 @@ describe('derived Summary block', () => {
   });
 
   it('checkSummaryDrift: a duplicate category row is rejected, never overwritten', () => {
-    const { text } = regenerateIndex(SUMMARY_FIXTURE, [], ATHYA);
+    const { text } = regenerateIndex(SUMMARY_FIXTURE, [], PRODUCT);
     assert.equal(checkSummaryDrift(text, 'BP').ok, true, 'baseline: the block is clean');
     // A STALE row above a correct one for the same category: a lookup keyed by
     // `new Map(written.map(...))` kept the LAST row, so the stale one was never compared.
@@ -477,13 +477,13 @@ describe('derived Summary block', () => {
     // --check-index fails here and tells the reader to run --regenerate-index;
     // a regenerate that left the block absent could not repair what it reported.
     assert.equal(checkSummaryDrift(NO_SUMMARY_TABLE_FIXTURE, 'BP').ok, false);
-    const { text } = regenerateIndex(NO_SUMMARY_TABLE_FIXTURE, [], ATHYA);
+    const { text } = regenerateIndex(NO_SUMMARY_TABLE_FIXTURE, [], PRODUCT);
     assert.ok(text.includes('| **Total** | **2** | **1** | **1** | **1** |'), 'the created block carries the derived totals');
     assert.ok(text.includes('| Mobile | 2 | 1 | 1 | 1 |'));
     assert.equal(checkSummaryDrift(text, 'BP').ok, true, 'the recommended command now fixes the reported failure');
     assert.ok(text.includes('> Prose after the Summary that must survive.'), 'surrounding prose survives');
     assert.equal(text.split('## Summary').length - 1, 1, 'one heading, not two');
-    assert.equal(regenerateIndex(text, [], ATHYA).text, text, 'and a second run is a no-op');
+    assert.equal(regenerateIndex(text, [], PRODUCT).text, text, 'and a second run is a no-op');
   });
 
   it('regenerateIndex: a legacy Agent-Review Summary block is replaced in place, not left beside a new one', () => {
@@ -498,13 +498,13 @@ describe('derived Summary block', () => {
       stale.drift.map((d) => d.column),
       ['header'],
     );
-    const { text } = regenerateIndex(legacy, [], ATHYA);
+    const { text } = regenerateIndex(legacy, [], PRODUCT);
     assert.equal(text.split('| Category |').length - 1, 1, 'one Summary table');
     assert.ok(!text.includes('Agent-Review'), 'the legacy header is gone');
     assert.ok(text.includes('| Category | Rules | Critical | Enforced | Guidance |'));
     assert.equal(text.split('| **Total** |').length - 1, 1, 'one Total row');
     assert.equal(checkSummaryDrift(text, 'BP').ok, true);
-    assert.equal(regenerateIndex(text, [], ATHYA).text, text, 'idempotent');
+    assert.equal(regenerateIndex(text, [], PRODUCT).text, text, 'idempotent');
   });
 
   it('regenerateIndex: creates the Summary section when even the heading is gone', () => {
@@ -512,10 +512,10 @@ describe('derived Summary block', () => {
       .filter((line) => line !== '## Summary')
       .join('\n');
     assert.equal(checkSummaryDrift(noHeading, 'BP').ok, false);
-    const { text } = regenerateIndex(noHeading, [], ATHYA);
+    const { text } = regenerateIndex(noHeading, [], PRODUCT);
     assert.ok(text.includes('## Summary'), 'a heading is created to hold it');
     assert.equal(checkSummaryDrift(text, 'BP').ok, true);
-    assert.equal(regenerateIndex(text, [], ATHYA).text, text, 'idempotent');
+    assert.equal(regenerateIndex(text, [], PRODUCT).text, text, 'idempotent');
   });
 });
 
@@ -579,7 +579,7 @@ describe('loadRules and section categories', () => {
       rule({ id: 'BP-DISC-002', title: 'Real', category: 'discount', severity: 'high', enforcement: 'guidance', path: 'docs/standards/best-practices/discount/two.md' }),
       rule({ id: 'BP-MOB-001', title: 'M', category: 'mobile', severity: 'high', enforcement: 'guidance', path: 'docs/standards/best-practices/mobile/m.md' }),
     ];
-    const { text } = regenerateIndex(idx, rules, ATHYA);
+    const { text } = regenerateIndex(idx, rules, PRODUCT);
     const discountSection = text.slice(text.indexOf('## Discount'), text.indexOf('## Mobile'));
     assert.ok(!discountSection.includes('BP-MOB-001'), 'mobile rule leaked into the Discount section');
     assert.ok(text.includes('## Discount (2 rules)'));
@@ -605,7 +605,7 @@ describe('loadRules and section categories', () => {
       rule({ id: 'BP-MOB-002', title: 'M2 renamed', category: 'mobile', severity: 'high', enforcement: 'guidance', path: 'docs/standards/best-practices/mobile/m2.md' }),
       rule({ id: 'BP-MOB-003', title: 'M3 new', category: 'mobile', severity: 'low', enforcement: 'guidance', path: 'docs/standards/best-practices/mobile/m3.md' }),
     ];
-    const { text } = regenerateIndex(idx, rules, ATHYA);
+    const { text } = regenerateIndex(idx, rules, PRODUCT);
     assert.ok(text.includes('M2 renamed'), 'majority category was not resolved');
     assert.ok(text.includes('BP-MOB-003'), 'new rule not appended to the section');
   });
@@ -819,25 +819,25 @@ describe('edges each line of the toolkit decides', () => {
   });
 
   it('regenerateIndex: a created Summary section replaces the trailing blank lines', () => {
-    assert.equal(regenerateIndex(['# T', 'Prose.', '', '', ''].join('\n'), [], ATHYA).text, ['# T', 'Prose.', '', '## Summary', '', ...EMPTY_SUMMARY, ''].join('\n'));
-    assert.equal(regenerateIndex('\n\n', [], ATHYA).text, ['', '## Summary', '', ...EMPTY_SUMMARY, ''].join('\n'));
+    assert.equal(regenerateIndex(['# T', 'Prose.', '', '', ''].join('\n'), [], PRODUCT).text, ['# T', 'Prose.', '', '## Summary', '', ...EMPTY_SUMMARY, ''].join('\n'));
+    assert.equal(regenerateIndex('\n\n', [], PRODUCT).text, ['', '## Summary', '', ...EMPTY_SUMMARY, ''].join('\n'));
   });
 
   it('regenerateIndex: a block created under the heading drops the blank lines that followed it', () => {
-    assert.equal(regenerateIndex(['# T', '## Summary', '', '', 'Prose.'].join('\n'), [], ATHYA).text, ['# T', '## Summary', '', ...EMPTY_SUMMARY, '', 'Prose.'].join('\n'));
-    assert.equal(regenerateIndex(['# T', '## Summary', '', ''].join('\n'), [], ATHYA).text, ['# T', '## Summary', '', ...EMPTY_SUMMARY, ''].join('\n'));
+    assert.equal(regenerateIndex(['# T', '## Summary', '', '', 'Prose.'].join('\n'), [], PRODUCT).text, ['# T', '## Summary', '', ...EMPTY_SUMMARY, '', 'Prose.'].join('\n'));
+    assert.equal(regenerateIndex(['# T', '## Summary', '', ''].join('\n'), [], PRODUCT).text, ['# T', '## Summary', '', ...EMPTY_SUMMARY, ''].join('\n'));
   });
 
   it('regenerateIndex: a heading of several words names the hyphenated directory', () => {
     const ci = rule({ id: 'BP-CI-001', title: 'C', category: 'ci-cd', path: 'docs/standards/best-practices/ci-cd/c.md' });
-    const result = regenerateIndex(['## CI/CD! (0 rules)', '', TABLE_HEADER, TABLE_SEP, ''].join('\n'), [ci], ATHYA);
+    const result = regenerateIndex(['## CI/CD! (0 rules)', '', TABLE_HEADER, TABLE_SEP, ''].join('\n'), [ci], PRODUCT);
     assert.deepEqual(result.unplaced, []);
     assert.ok(result.text.startsWith('## CI/CD! (1 rule)\n'));
   });
 
   it('regenerateIndex: rows of a table with no separator are rewritten and counted', () => {
     const m = rule({ id: 'BP-MOB-001', title: 'Renamed', category: 'mobile', severity: 'critical', enforcement: 'validator', path: 'docs/standards/best-practices/mobile/m.md' });
-    const lines = regenerateIndex(['## Mobile (5 rules)', TABLE_HEADER, MOB_ROW, ''].join('\n'), [m], ATHYA).text.split('\n');
+    const lines = regenerateIndex(['## Mobile (5 rules)', TABLE_HEADER, MOB_ROW, ''].join('\n'), [m], PRODUCT).text.split('\n');
     assert.deepEqual(lines.slice(0, 3), ['## Mobile (1 rule)', TABLE_HEADER, '| BP-MOB-001 | [Renamed](./best-practices/mobile/m.md) | critical | validator |']);
   });
 
@@ -845,11 +845,11 @@ describe('edges each line of the toolkit decides', () => {
     const m = rule({ id: 'BP-MOB-001', category: 'mobile', path: 'docs/standards/best-practices/mobile/m.md' });
     const d = rule({ id: 'BP-DISC-001', category: 'discount', path: 'docs/standards/best-practices/discount/e.md' });
     const text = ['## Odd (2 rules)', '', TABLE_HEADER, TABLE_SEP, MOB_ROW, DISC_ROW].join('\n');
-    assert.deepEqual(regenerateIndex(text, [m, d], ATHYA).unplaced, ['BP-DISC-001']);
+    assert.deepEqual(regenerateIndex(text, [m, d], PRODUCT).unplaced, ['BP-DISC-001']);
   });
 });
 
-// ═══ ported from athya_mono .claude/scripts/bp-rules-cli.test.ts ═══════════════
+// ═══ ported from the product repository .claude/scripts/bp-rules-cli.test.ts ═══════════════
 
 const ROOT = '/repo';
 const RULES_DIR = `${ROOT}/docs/standards/best-practices`;
@@ -1005,7 +1005,7 @@ describe('bpRules modes', () => {
   });
 
   it('--regenerate-index prints the rebuilt index and exits 0 when every rule is placed', () => {
-    const { text, unplaced } = regenerateIndex(STALE_INDEX, rules(), ATHYA);
+    const { text, unplaced } = regenerateIndex(STALE_INDEX, rules(), PRODUCT);
     assert.deepEqual(unplaced, []);
     assert.notEqual(text, STALE_INDEX);
     assert.deepEqual(main(['--regenerate-index']), { code: 0, stdout: text, stderr: '' });
@@ -1019,7 +1019,7 @@ describe('bpRules modes', () => {
     };
     assert.deepEqual(main(['--regenerate-index'], io(files)), {
       code: 1,
-      stdout: regenerateIndex(STALE_INDEX, rules(files), ATHYA).text,
+      stdout: regenerateIndex(STALE_INDEX, rules(files), PRODUCT).text,
       stderr: '\n⚠️  Rules with no matching index section (add manually): BP-GHOST-001, BP-GHOST-002\n',
     });
   });
@@ -1037,7 +1037,7 @@ describe('bpRules modes', () => {
   });
 
   it('--check-index exits 0 once the index is regenerated', () => {
-    const fresh = regenerateIndex(STALE_INDEX, rules(), ATHYA).text;
+    const fresh = regenerateIndex(STALE_INDEX, rules(), PRODUCT).text;
     assert.deepEqual(main(['--check-index'], io({ ...CORPUS, [INDEX]: fresh })), { code: 0, stdout: json(checkSummaryDrift(fresh, 'BP')), stderr: '' });
   });
 
@@ -1097,7 +1097,7 @@ describe('bpRules usage errors', () => {
 // lookup) in turn. None may end in exit 0; here every one ends in 2, with
 // nothing on stdout. The command writes no file: no artifact to tear.
 describe('ERR-09: a failed read never exits 0', () => {
-  const fresh = { ...CORPUS, [INDEX]: regenerateIndex(STALE_INDEX, rules(), ATHYA).text };
+  const fresh = { ...CORPUS, [INDEX]: regenerateIndex(STALE_INDEX, rules(), PRODUCT).text };
   for (const tokens of [['--inventory'], ['--gaps'], ['--due'], ['--next-id', 'MOB'], ['--corpus-fingerprint'], ['--check-wiring'], ['--regenerate-index'], ['--check-index']]) {
     it(`ERR-09: ${tokens.join(' ')} never exits 0 after a failed read`, () => {
       const clean = io(fresh);
@@ -1134,7 +1134,7 @@ describe('ERR-09: a failed read never exits 0', () => {
 
 describe('parseBpRulesConfig', () => {
   it('reads the three keys', () => {
-    assert.deepEqual(parseBpRulesConfig(SETTINGS), ATHYA);
+    assert.deepEqual(parseBpRulesConfig(SETTINGS), PRODUCT);
   });
 
   it('refuses text that is not a JSON object', () => {
@@ -1144,21 +1144,21 @@ describe('parseBpRulesConfig', () => {
   });
 
   it('refuses an unknown key', () => {
-    assert.throws(() => parseBpRulesConfig(JSON.stringify({ ...ATHYA, prefix: 'BP' })), { message: 'unknown key "prefix"; bp-rules reads rules, index, idPrefix' });
+    assert.throws(() => parseBpRulesConfig(JSON.stringify({ ...PRODUCT, prefix: 'BP' })), { message: 'unknown key "prefix"; bp-rules reads rules, index, idPrefix' });
   });
 
   it('refuses a missing, blank or non-string value for each key', () => {
     for (const key of ['rules', 'index', 'idPrefix'] as const) {
       for (const value of [undefined, '', '  ', 3]) {
-        assert.throws(() => parseBpRulesConfig(JSON.stringify({ ...ATHYA, [key]: value })), { message: `"${key}" must be a non-empty string` }, `${key}: ${String(value)}`);
+        assert.throws(() => parseBpRulesConfig(JSON.stringify({ ...PRODUCT, [key]: value })), { message: `"${key}" must be a non-empty string` }, `${key}: ${String(value)}`);
       }
     }
   });
 
   it('refuses a path that is not normalized and root-relative, which would never prefix a rule path', () => {
     for (const bad of ['docs/rules/', './docs/rules', '/docs/rules', '../rules', 'docs//rules', '.']) {
-      assert.throws(() => parseBpRulesConfig(JSON.stringify({ ...ATHYA, rules: bad })), { message: `"rules": "${bad}" is not a normalized root-relative path` });
-      assert.throws(() => parseBpRulesConfig(JSON.stringify({ ...ATHYA, index: bad })), { message: `"index": "${bad}" is not a normalized root-relative path` });
+      assert.throws(() => parseBpRulesConfig(JSON.stringify({ ...PRODUCT, rules: bad })), { message: `"rules": "${bad}" is not a normalized root-relative path` });
+      assert.throws(() => parseBpRulesConfig(JSON.stringify({ ...PRODUCT, index: bad })), { message: `"index": "${bad}" is not a normalized root-relative path` });
     }
   });
 
@@ -1231,13 +1231,13 @@ describe('Summary helpers', () => {
   });
 
   it('a heading count with no table under it becomes 0 rules', () => {
-    assert.ok(regenerateIndex('## Empty (4 rules)\n\nprose\n## Next\n', [], ATHYA).text.startsWith('## Empty (0 rules)\n'));
-    assert.ok(regenerateIndex('## Last (4 rules)\n', [], ATHYA).text.startsWith('## Last (0 rules)\n'));
+    assert.ok(regenerateIndex('## Empty (4 rules)\n\nprose\n## Next\n', [], PRODUCT).text.startsWith('## Empty (0 rules)\n'));
+    assert.ok(regenerateIndex('## Last (4 rules)\n', [], PRODUCT).text.startsWith('## Last (0 rules)\n'));
   });
 
   it('a table no rule folder claims stays byte-identical', () => {
     const idx = ['## Odd (1 rule)', '', TABLE_HEADER, TABLE_SEP, '| BP-ODD-001 | [O](elsewhere.md) | low | guidance |', ''].join('\n');
-    const { text } = regenerateIndex(idx, [], ATHYA);
+    const { text } = regenerateIndex(idx, [], PRODUCT);
     assert.ok(text.startsWith(`${idx}\n## Summary`), text);
   });
 });
@@ -1274,9 +1274,9 @@ describe('the configured layout is honoured', () => {
   it('under an unknown heading the rows vote by links into the configured rules folder', () => {
     const idx = ['## Misc (1 rule)', TABLE_HEADER, '| R.X-SEC-001 | [Old](../kb/rules/sec/one.md) | high | guidance |'].join('\n');
     assert.deepEqual(regenerateIndex(idx, [r1, r2], OTHER).unplaced, []);
-    // athya's link form names no folder of this layout: the section has no category.
-    const athyaLinks = ['## Misc (1 rule)', TABLE_HEADER, '| R.X-SEC-001 | [Old](./best-practices/sec/one.md) | high | guidance |'].join('\n');
-    assert.deepEqual(regenerateIndex(athyaLinks, [r1], OTHER).unplaced, ['R.X-SEC-001']);
+    // the product repository's link form names no folder of this layout: the section has no category.
+    const productLinks = ['## Misc (1 rule)', TABLE_HEADER, '| R.X-SEC-001 | [Old](./best-practices/sec/one.md) | high | guidance |'].join('\n');
+    assert.deepEqual(regenerateIndex(productLinks, [r1], OTHER).unplaced, ['R.X-SEC-001']);
   });
 
   it('a rule straight under `rules`, or outside it, falls back to its frontmatter category', () => {
@@ -1303,7 +1303,7 @@ describe('the configured layout is honoured', () => {
       assert.ok(text.includes(`| BP-SEC-001 | [A](${link}) | high | guidance |`), text);
     }
     const abs = rule({ id: 'BP-SEC-001', title: 'A', category: 'security', path: '/abs/security/a.md' });
-    assert.ok(regenerateIndex(['## Security (0 rules)', TABLE_HEADER].join('\n'), [abs], ATHYA).text.includes('| BP-SEC-001 | [A](/abs/security/a.md) | high | guidance |'));
+    assert.ok(regenerateIndex(['## Security (0 rules)', TABLE_HEADER].join('\n'), [abs], PRODUCT).text.includes('| BP-SEC-001 | [A](/abs/security/a.md) | high | guidance |'));
   });
 
   it('bpRules reads the configured folder and index on disk, names that index when stale, and round-trips --regenerate-index', () => {

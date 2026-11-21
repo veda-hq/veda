@@ -134,7 +134,9 @@ that is slow. After a quiet window (no stage marker, no process starting or
 exiting, no CPU time), it samples the hook's process tree with `ps` and its
 open descriptors with `lsof`. It acts only on positive evidence: a leaf
 process whose every open IPC channel leads to another idle process in the
-same tree. Waiting on the outside world (a network peer, a daemon, a
+same tree, where no process outside the tree holds any of those channels.
+That last part is checked against an `lsof` of every process this user can
+read, taken only once such a core is found. Waiting on the outside world (a network peer, a daemon, a
 terminal) or on a timed wait (`sleep`) is spared, and a measurement it cannot
 read is never evidence. A timer is invisible to `ps` and `lsof`, so a kill
 also needs the same processes found that way twice, one quiet window apart,
@@ -142,10 +144,14 @@ and once more just before it stops them: a process that sleeps on its own
 timer that long, holding only channels to idle processes in the tree, is
 treated as stuck.
 
-In `enforce` mode, it stops the tree (SIGTERM, then SIGKILL after the grace
-period). The run exits 124 and its row's status is `timed_out`, as is its
-last marked stage's when it marked one, and the diagnostics go under `<historyDir>/hangs/<run>/`, kept 14 days. In `report`
-mode, it writes the diagnostics and leaves the hook alone.
+In `enforce` mode, it stops the tree: SIGTERM, then SIGKILL after the grace
+period to the processes that are still the same ones by pid and start time.
+If `ps` cannot be read after the grace period, nothing is escalated, since a
+reused pid could not be told apart, and the row's warnings say so. The run
+exits 124 and its row's status is `timed_out`, as is its last marked stage's
+when it marked one. The diagnostics go under `<historyDir>/hangs/<run>/`, and
+folders older than 14 days are pruned when a later hang writes its own. In
+`report` mode, it writes the diagnostics and leaves the hook alone.
 
 | Variable                         | Default                                                  |
 | -------------------------------- | -------------------------------------------------------- |
@@ -319,7 +325,7 @@ dvara slot --name <name> [--dir <dir>] [--set NAME=VALUE]… [--unset NAME]… -
 It tries once, never waiting, to take the slot `<name>`:
 
 - If it gets the slot, it runs the command with each `--set` variable and holds the slot until the command exits.
-- If the slot is held, or anything fails, it runs the command without the `--set` variables.
+- If the slot is held, or taking it fails, it runs the command without the `--set` variables.
 
 Every run drops each `--unset` variable from the command's environment. It
 does not try in CI, when a `--set` variable is already set (an explicit value
@@ -329,7 +335,10 @@ The slot is the lock file `<dir>/<hostname>/<name>.lock` (`--dir` defaults to
 `~/.dvara/slots`; `DVARA_SLOT_DIR` replaces the whole directory). It is
 linked into place complete and removed when the command exits. A holder that
 died without releasing it, or whose pid was reused (by its start time), is
-reclaimed under `<name>.reclaim`. Each start is a JSON line in `slots.jsonl`
+reclaimed under `<name>.reclaim`. The holder recorded is `dvara slot`'s own
+process, as in the wrapper it replaces: if that process is killed outright
+(SIGKILL) while its command runs on, the next run reclaims the slot and two
+commands share the machine until the first ends. Each start is a JSON line in `slots.jsonl`
 beside it. A forwarded SIGINT or SIGTERM decides the exit status, a command
 that cannot start is 127, and bad arguments are 2.
 

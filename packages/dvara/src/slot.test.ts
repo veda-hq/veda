@@ -175,6 +175,24 @@ describe("tryTakeSlot", () => {
     assert.deepEqual(temps[0]?.[1], { force: true });
   });
 
+  it("still holds the slot it linked when removing the temporary record fails", () => {
+    const files: SlotFiles = {
+      link: (existing, path) => {
+        linkSync(existing, path);
+      },
+      rm: (path, options) => {
+        if (path.endsWith(".tmp")) throw new Error("EACCES: permission denied");
+        rmSync(path, options);
+      },
+    };
+    const attempt = tryTakeSlot({ dir, name: "mobile", cwd: "/repo", system: world.system, files });
+    assert.equal(attempt.taken, true);
+    if (!attempt.taken) return;
+    assert.equal(existsSync(lockPath()), true);
+    attempt.release();
+    assert.equal(existsSync(lockPath()), false);
+  });
+
   it("creates the slot directory when it does not exist yet", () => {
     const nested = join(dir, "slots", "host");
     const attempt = tryTakeSlot({
@@ -519,6 +537,11 @@ describe("skipReason", () => {
     assert.equal(skipReason({ B: "1" }, []), null);
     assert.equal(SLOT_SWITCH_ENV, "DVARA_SLOT");
   });
+
+  it("reads no variable through the prototype: toString and constructor are unset", () => {
+    assert.equal(skipReason({}, ["toString", "constructor", "__proto__"]), null);
+    assert.equal(skipReason({ toString: "1" }, ["toString"]), "toString already set");
+  });
 });
 
 describe("slotDirectory", () => {
@@ -677,6 +700,26 @@ describe("decide", () => {
     });
     decision.release();
     assert.equal(existsSync(lockPath()), false);
+  });
+
+  it("gives the command variables named like Object.prototype keys as its own", () => {
+    const decision = decide(
+      {
+        ...args,
+        set: [
+          ["toString", "1"],
+          ["__proto__", "2"],
+        ],
+      },
+      context({}),
+    );
+    assert.equal(decision.line, "[dvara slot] mobile: took the slot");
+    assert.ok(Object.hasOwn(decision.childEnv, "toString"));
+    assert.equal(decision.childEnv["toString"], "1");
+    assert.ok(Object.hasOwn(decision.childEnv, "__proto__"));
+    assert.equal(Object.getOwnPropertyDescriptor(decision.childEnv, "__proto__")?.value, "2");
+    assert.equal(Object.getPrototypeOf(decision.childEnv), Object.prototype);
+    decision.release();
   });
 
   it("gives no --set variables, and names the holder, when the slot is held", () => {

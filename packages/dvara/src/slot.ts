@@ -108,7 +108,10 @@ const isCi = (env: Env): boolean => {
 /** Why the slot is not even tried, or `null` when it should be. */
 export const skipReason = (env: Env, setNames: readonly string[]): string | null => {
   if (isCi(env)) return "CI";
-  const preset = setNames.find((name) => env[name] !== undefined);
+  // Own keys only: `toString` or `constructor` reached through the prototype is no variable.
+  const preset = setNames.find(
+    (name) => Object.hasOwn(env, name) && env[name] !== undefined,
+  );
   if (preset !== undefined) return `${preset} already set`;
   if (env[SLOT_SWITCH_ENV] === "off") return `${SLOT_SWITCH_ENV}=off`;
   return null;
@@ -157,7 +160,11 @@ const linkLock = (
     if (errorCode(error) === "EEXIST") return false;
     throw error;
   } finally {
-    files.rm(temp, { force: true });
+    try {
+      files.rm(temp, { force: true });
+    } catch {
+      // fail-open: a temp file left behind is litter; whether the slot was taken is what link decided.
+    }
   }
 };
 
@@ -375,7 +382,14 @@ export const decide = (args: SlotArgs, context: DecideContext): SlotDecision => 
     };
   }
   if (attempt.taken) {
-    for (const [variable, value] of args.set) childEnv[variable] = value;
+    // Defined, not assigned: assigning `__proto__` would set the prototype, not a variable.
+    for (const [variable, value] of args.set)
+      Object.defineProperty(childEnv, variable, {
+        value,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
     return {
       dir,
       childEnv,

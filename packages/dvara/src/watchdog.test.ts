@@ -13,6 +13,7 @@ import {
   advanceWindow,
   buildTree,
   classifyFds,
+  coreSharedOutside,
   createWatchdog,
   decide,
   exitDisposition,
@@ -646,6 +647,9 @@ describe("createWatchdog", () => {
       ok?: boolean;
       /** The tree listing for the n-th tree `lsof` call (1-based), over `text`. */
       textAt?: (call: number) => string | undefined;
+      /** The whole-machine listing (no `-p`): the fixture's by default. */
+      wideText?: string;
+      wideOk?: boolean;
     } = {},
     psOverrides: {
       psText?: string;
@@ -688,6 +692,12 @@ describe("createWatchdog", () => {
         return { ok: true, stdout: text, stderr: "" };
       }
       if (command === "lsof") {
+        if (!args.includes("-p"))
+          return {
+            ok: treeLsof.wideOk ?? true,
+            stdout: treeLsof.wideText ?? fixture.lsofText,
+            stderr: "",
+          };
         // The tree query passes every pid as one comma-joined argument.
         const root = String(fixture.info.rootPid);
         if (args.some((arg) => arg.split(",").includes(root))) {
@@ -1050,6 +1060,97 @@ describe("createWatchdog", () => {
           "verdict withdrawn: the deadlock's channels changed before termination",
         ),
     );
+  });
+
+  it("after a withdrawn verdict, a new kill needs two fresh confirmations", async () => {
+    // Only the re-check (third tree listing) sees the outside channel; the
+    // tree looks deadlocked again from the next check on.
+    const outside =
+      "f42\ntIPv4\nd0x5eed\nn127.0.0.1:50000->192.0.2.1:443\nTST=ESTABLISHED\n";
+    const { fixture, kills, watchdog } = harness("deadlock", "enforce", undefined, {
+      textAt: (call) =>
+        call === 3 ? `${scenario("deadlock").lsofText}${outside}` : undefined,
+    });
+    const root = fixture.info.rootPid;
+    // Withdrawn at ~11 s; the next check (~16 s) is only the first sighting.
+    await advance(19_000);
+    assert.equal(kills.length, 0);
+    // The second, ~21 s, kills.
+    await advance(6000);
+    watchdog.stop();
+    assert.ok(killed(kills, -root, "SIGTERM"));
+  });
+
+  describe("a core that shares a channel with a process outside the tree", () => {
+    const { info, lsofText } = scenario("deadlock");
+    const [, reader] = pair(info);
+    // The other end of the reader's socketpair, as its fd names it.
+    const peerEnd = /\n(?:n->)(0x[0-9a-f]+)\n/.exec(
+      lsofText.slice(lsofText.indexOf(`p${reader}\n`)),
+    )?.[1];
+    const withOutsider = `${lsofText}p77777\nf5\ntunix\nd${peerEnd ?? "missing"}\nn->0x1\n`;
+
+    it("names the shared end, so the case is real", () => {
+      assert.ok(peerEnd);
+    });
+
+    it("is not proven closed when an outside process holds an end", () => {
+      const { lsof, tree, supervisorFds } = scenario("deadlock");
+      const pids = tree.map((row) => row.pid);
+      const classes = classifyFds(lsof, pids, supervisorFds);
+      const verdict = decide({
+        tree,
+        classes,
+        cpuDeltaByPid: zeroDeltas(tree),
+        quietMs: config.idleMs,
+        config,
+      });
+      assert.equal(verdict?.kind, "internal-deadlock");
+      if (verdict?.kind !== "internal-deadlock") return;
+      assert.equal(coreSharedOutside(verdict.core, classes, lsof, pids), false);
+      assert.equal(
+        coreSharedOutside(verdict.core, classes, parseLsof(withOutsider), pids),
+        true,
+      );
+    });
+
+    it("never kills it, and reports it at the external ceiling", async () => {
+      const { kills, watchdog } = harness("deadlock", "enforce", undefined, {
+        wideText: withOutsider,
+      });
+      await advance(16_000);
+      assert.deepEqual(kills, []);
+      assert.equal(watchdog.summary().verdict, null);
+      await advance(54_000);
+      watchdog.stop();
+      assert.deepEqual(kills, []);
+      assert.equal(watchdog.summary().verdict?.kind, "idle-external");
+    });
+
+    it("never kills when the whole-machine listing fails", async () => {
+      const { kills, watchdog } = harness("deadlock", "enforce", undefined, {
+        wideOk: false,
+      });
+      await advance(16_000);
+      watchdog.stop();
+      assert.deepEqual(kills, []);
+      assert.equal(watchdog.summary().verdict, null);
+    });
+  });
+
+  it("a hook that exits during the grace period still has its verified survivors killed", async () => {
+    // stop() is what the supervisor calls when the hook exits, which SIGTERM
+    // usually causes: the kill already begun must still reach what outlived it.
+    const { fixture, kills, watchdog } = harness("deadlock", "enforce");
+    for (let waited = 0; waited < 20_000; waited += 50) {
+      if (kills.some(([, signal]) => signal === "SIGTERM")) break;
+      await advance(50);
+    }
+    assert.ok(killed(kills, -fixture.info.rootPid, "SIGTERM"));
+    assert.ok(!kills.some(([, signal]) => signal === "SIGKILL"));
+    watchdog.stop();
+    await advance(2000);
+    assert.ok(killed(kills, -fixture.info.rootPid, "SIGKILL"));
   });
 
   it("disarmed while a verdict's diagnostics run, it sends no signal", async () => {

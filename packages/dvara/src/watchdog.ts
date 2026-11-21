@@ -547,6 +547,38 @@ export function coreIdentity(tree: readonly PsRow[], core: HangCore): string {
     .join("|");
 }
 
+/**
+ * Whether a process outside the tree holds any channel the core uses.
+ *
+ * The tree listing names only tree processes, so an endpoint one of them
+ * shares with an outside process (one that left the tree, or never was in
+ * it) reads as internal there. `wideByPid` is every process `lsof` can read.
+ * An outside holder could still write, so the core is not proven closed.
+ */
+export function coreSharedOutside(
+  core: HangCore,
+  classes: ReadonlyMap<number, readonly ClassifiedFd[]>,
+  wideByPid: ReadonlyMap<number, readonly LsofFd[]>,
+  treePids: readonly number[],
+): boolean {
+  const objects = new Set<string>();
+  for (const pid of [core.leaf, ...core.peers]) {
+    for (const fd of classes.get(pid) ?? []) {
+      if (fd.class !== "internal") continue;
+      if (fd.device) objects.add(fd.device);
+      const peer = peerAddress(fd.name);
+      if (peer) objects.add(peer);
+    }
+  }
+  const inTree = new Set(treePids);
+  for (const [pid, fds] of wideByPid) {
+    if (inTree.has(pid)) continue;
+    if (fds.some((fd) => fd.device !== null && objects.has(fd.device)))
+      return true;
+  }
+  return false;
+}
+
 export type Verdict =
   | {
       readonly kind: "internal-deadlock";
@@ -802,6 +834,35 @@ export function createWatchdog({
     };
   }
 
+  /**
+   * `verdict`, unless it is a deadlock whose core shares a channel with a
+   * process outside the tree, or the listing of every process that would
+   * show that cannot be read. The whole-machine `lsof` is taken only once a
+   * core has been found; it lists the processes this user can read.
+   */
+  async function closedVerdict(
+    verdict: Verdict | null,
+    tree: readonly PsRow[],
+    classes: ReadonlyMap<number, readonly ClassifiedFd[]> | null,
+  ): Promise<Verdict | null> {
+    if (verdict?.kind !== "internal-deadlock" || classes === null)
+      return verdict;
+    const wide = await exec("lsof", LSOF_ARGS, { timeout: 20_000 });
+    const shared =
+      !wide.ok ||
+      coreSharedOutside(
+        verdict.core,
+        classes,
+        parseLsof(wide.stdout),
+        tree.map((row) => row.pid),
+      );
+    if (!shared) return verdict;
+    // Not a proven deadlock, but still a wait: the external ceiling applies.
+    return verdict.quietMs >= config.externalIdleMs
+      ? { kind: "idle-external", quietMs: verdict.quietMs }
+      : null;
+  }
+
   async function inspect(
     tree: readonly PsRow[],
   ): Promise<{ classes: Map<number, ClassifiedFd[]> | null; raw: string }> {
@@ -967,6 +1028,9 @@ export function createWatchdog({
       summary.verdict = null;
       verdictAt = null;
       window = next;
+      // A new verdict needs its own two confirmations, not one more on top of
+      // the withdrawn one's.
+      pendingCore = null;
     };
     if (!armed || !again || !settled || settled.resetReason) {
       withdraw("verdict withdrawn: activity resumed before termination", settled);
@@ -977,18 +1041,22 @@ export function createWatchdog({
     // from a fresh, complete listing, with no CPU spent since the verdict.
     const fresh = await inspect(again.tree);
     const since = settled.checkCpu ?? settled.baseCpu;
-    const recheck = decide({
-      tree: again.tree,
-      classes: fresh.classes,
-      cpuDeltaByPid: new Map(
-        again.tree.map((row) => [
-          row.pid,
-          row.cpuMs - (since.get(row.key) ?? row.cpuMs),
-        ]),
-      ),
-      quietMs: settled.lastAt - settled.quietSince,
-      config,
-    });
+    const recheck = await closedVerdict(
+      decide({
+        tree: again.tree,
+        classes: fresh.classes,
+        cpuDeltaByPid: new Map(
+          again.tree.map((row) => [
+            row.pid,
+            row.cpuMs - (since.get(row.key) ?? row.cpuMs),
+          ]),
+        ),
+        quietMs: settled.lastAt - settled.quietSince,
+        config,
+      }),
+      again.tree,
+      fresh.classes,
+    );
     if (
       !armed ||
       recheck?.kind !== "internal-deadlock" ||
@@ -1097,13 +1165,18 @@ export function createWatchdog({
       );
       const inspection = await inspect(snapshot.tree);
       if (!armed) return;
-      const verdict = decide({
-        tree: snapshot.tree,
-        classes: inspection.classes,
-        cpuDeltaByPid,
-        quietMs,
-        config,
-      });
+      const verdict = await closedVerdict(
+        decide({
+          tree: snapshot.tree,
+          classes: inspection.classes,
+          cpuDeltaByPid,
+          quietMs,
+          config,
+        }),
+        snapshot.tree,
+        inspection.classes,
+      );
+      if (!armed) return;
       if (verdict?.kind === "internal-deadlock") {
         const identity = coreIdentity(snapshot.tree, verdict.core);
         if (pendingCore !== identity) {

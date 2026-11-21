@@ -104,6 +104,12 @@ const git = (...args: string[]) =>
       'user.name=Fixture',
       '-c',
       'user.email=fixture@example.test',
+      // A commit otherwise starts a detached `git maintenance run --auto`,
+      // which can write into the fixture while afterEach removes it.
+      '-c',
+      'maintenance.auto=false',
+      '-c',
+      'gc.auto=0',
       ...args,
     ],
     {
@@ -120,11 +126,28 @@ const write = (path: string, text: string) => {
 
 const staged = () => selectStaged(repo).sources.map(source => source.path);
 
+// Every folder beforeEach makes, recorded before anything else can throw, so
+// the cleanup never depends on `repo` (an unset `repo` gives `dirname` '.').
+// afterEach removes them; one it could not remove stays recorded, and after()
+// tries it again, so a throwing afterEach strands nothing.
+const made: string[] = [];
+const removeMade = () => {
+  const failed = made.splice(0).flatMap(dir => {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      return [];
+    } catch (error) {
+      return [{ dir, error }];
+    }
+  });
+  made.push(...failed.map(({ dir }) => dir));
+  if (failed[0]) throw failed[0].error;
+};
+
 beforeEach(() => {
-  repo = join(
-    realpathSync(mkdtempSync(join(tmpdir(), 'shell-sources-'))),
-    'repo',
-  );
+  const dir = mkdtempSync(join(tmpdir(), 'shell-sources-'));
+  made.push(dir);
+  repo = join(realpathSync(dir), 'repo');
   mkdirSync(repo);
   git('init', '-q', '-b', 'main');
   write('scripts/a.sh', OK);
@@ -136,9 +159,8 @@ beforeEach(() => {
   git('commit', '-qm', 'base');
 });
 
-afterEach(() => {
-  rmSync(dirname(repo), { recursive: true, force: true });
-});
+afterEach(removeMade);
+after(removeMade);
 
 describe('selectStaged', () => {
   it('selects nothing when nothing is staged', () => {

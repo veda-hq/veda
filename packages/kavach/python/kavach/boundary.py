@@ -572,6 +572,81 @@ def ownable_checkout(
     return root if owns_plain_checkout(own, root, environ) else None
 
 
+# A Claude Code session id, as the PreToolUse payload's `session_id` carries
+# it, and a desktop app session (`CLAUDE_CODE_HOST_SESSION_ID`). Each is
+# matched whole before it names a folder, so neither can carry a `..` or a `/`.
+SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+HOST_SESSION = re.compile(r"local_" + SESSION_ID.pattern)
+# The desktop app's record of a session is a few hundred KB; past this it is
+# not read.
+RECORD_LIMIT = 8 * 1024 * 1024
+
+
+def claude_app_root() -> Path:
+    """The desktop app's support folder, where it keeps session notes."""
+
+    return Path.home() / "Library" / "Application Support" / "Claude"
+
+
+def session_record(app: Path, host: str) -> dict[str, Any] | None:
+    """The desktop app's record of session ``host``, when exactly one is
+    found (``claude-code-sessions/<account>/<org>/<host>.json``)."""
+
+    found = list((app / "claude-code-sessions").glob(f"*/*/{host}.json"))
+    if len(found) != 1:
+        return None
+    path = found[0]
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > RECORD_LIMIT:
+            return None
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    if not isinstance(record, dict) or record.get("sessionId") != host:
+        return None
+    return record
+
+
+def session_worktree(session_id: object, own: Any, environ: Mapping[str, str]) -> Path | None:
+    """The worktree the desktop app records as this session's, or ``None``.
+
+    The record counts only when the hook's environment names the app session
+    (``CLAUDE_CODE_HOST_SESSION_ID``) and its ``cliSessionId`` is the payload's
+    ``session_id``: the checks the side-session notes folders pass. Its
+    ``worktreePath`` names the worktree, or, where a record has none, its
+    ``cwd``, the folder the session started in (``shellFolders``, not
+    ``cwd``, follows the shell). The path counts only when it is absolute, a
+    real directory, and the root of a checkout a session can own
+    (``ownable_checkout``), so a record naming ``/``, a subfolder or a main
+    checkout names nothing. Never raises: anything that does not fit is
+    ``None``, and the caller keeps its behaviour without a record."""
+
+    try:
+        host = environ.get("CLAUDE_CODE_HOST_SESSION_ID", "")
+        if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
+            return None
+        if not HOST_SESSION.fullmatch(host):
+            return None
+        app = claude_app_root()
+        if app.is_symlink():
+            return None
+        record = session_record(app, host)
+        if record is None or record.get("cliSessionId") != session_id:
+            return None
+        named = record.get("worktreePath") or record.get("cwd")
+        if not isinstance(named, str) or not named.startswith("/"):
+            return None
+        path = Path(named)
+        if path.is_symlink() or not path.is_dir():
+            return None
+        root = ownable_checkout(path, own, environ)
+        if root is None or root.resolve() != path.resolve():
+            return None
+        return root
+    except Exception:
+        return None
+
+
 def deny(message: str) -> None:
     print(f"BLOCKED: {message}", file=sys.stderr)
     raise SystemExit(2)

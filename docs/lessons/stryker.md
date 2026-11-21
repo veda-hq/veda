@@ -130,6 +130,7 @@ without suppressing them, and the traps of a gate scoped to a diff.
 - **Untracked files and fixture keys.** Untracked new files are invisible to a diff-scoped
   mutation gate until committed, and a 32-hex idempotency key in a fixture trips gitleaks, so
   use a readable key.
+  <!-- held by: agnipariksha changed-files (a run judges untracked files whole, whatever their diff says); the gitleaks key stays doc -->
 - **Mirror clones have a stale or missing `origin/main`.** A clone fetched with a mirror refspec
   (`+refs/*:refs/*` or `+refs/heads/*:refs/heads/*`) has no fresh `refs/remotes/origin/*`, so a
   gate whose diff base defaults to `origin/main` fails or, worse, diffs against a stale base

@@ -59,6 +59,7 @@ undoing another.
   are deferred (load them with ToolSearch first). Dev mods hot reload only at a turn end, so a
   Stop-blocking hook delays the reload. Headless probes must use `--setting-sources user` with
   Bash, Edit and Write disallowed, or project hooks can drive the probe to push.
+  <!-- when: content "\$\.(tool\.register|clock\.(after|every))\(" path "**/hooks/*.ts*" -->
 - **Dev-mod hot reload needs the skill.** A symlink under `~/.claude/dev-mods/<session-id>/`
   never loads a desktop mod by itself: the plugin-authoring skill must load in that session
   (Skill tool) to start the watch, and at turn end the app asks "Enable hot reloading for this
@@ -140,6 +141,7 @@ undoing another.
 - **The sync tool's default base can be stale.** In a reused worktree, the sync-with-base-branch
   tool defaults to the branch the worktree was first cut from, which may since have been
   deleted, and fails at fetch; always pass base `main`.
+  <!-- held by: kavach tool guard, rule sync-base-on-origin (warns, then refuses, the sync-with-base-branch tool with no base, or a base origin lacks) -->
 - **A `cd` into an additional working directory lasts.** Claude Code keeps the shell's folder
   for later calls when it ends inside a working directory, and the session's additional
   working directories count, not only its worktree. Subagents start there too. In a folder no
@@ -153,6 +155,7 @@ undoing another.
   resolves from the main checkout's `.claude` directory, not the worktree's, so a branch-local
   script edit is silently ignored. Launch workflows with an absolute `scriptPath` into the
   worktree.
+  <!-- held by: kavach tool guard, rule workflow-name-in-worktree (warns, then refuses, a Workflow call by name from a worktree whose copy of the script differs from the main checkout's) -->
 - **Named previews resolve from the main checkout.** `preview_start({name})` reads the main
   checkout's `launch.json`, so a worktree edit is ignored, and it has no `scriptPath`
   equivalent: a worktree dev server cannot be previewed while the main checkout holds the same

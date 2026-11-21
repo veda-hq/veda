@@ -44,11 +44,11 @@ every round, why a green PR sits unqueued, and when it is safe to resolve review
   reviewed that PR (cheaper on the line allowance); otherwise comment `@cubic review`, since
   incremental needs a prior full review. Check `gh pr view <n> --json reviews,comments` for a
   Cubic author first. Both `@cubic` and the bot's full handle `@cubic-dev-ai` have been used to
-  trigger reviews.
+  trigger reviews. Cubic reports NEUTRAL when it skips a push with no new content (a pure
+  rebase). A ruleset that requires the check passes a neutral one, but Mergify's
+  `check-success` matches success only, so under Mergify such a PR parks blocked: post
+  `@cubic-dev-ai review` to force a fresh review.
   <!-- when: command "gh pr comment .*@cubic" -->
-- **NEUTRAL after a rebase.** Cubic reports NEUTRAL when it skips a push with no new content (a
-  pure rebase), and Mergify's `check-success` matches success only, so such a PR parks blocked;
-  post `@cubic-dev-ai review` to force a fresh review.
 - **Rollup state counts every check.** A non-required check still drives
   `statusCheckRollup.state`, so one failing helper check makes every consumer that requires
   rollup SUCCESS skip the PR; filter the rollup contexts by name instead.
@@ -91,7 +91,10 @@ every round, why a green PR sits unqueued, and when it is safe to resolve review
   stale verdict such as `-conflict` after a fixing push. For `-conflict`, try a clean local
   merge first: if it merges clean, comment `@mergifyio refresh` instead of pushing, since a push
   resets the queue, and if it is still unqueued, `@mergifyio queue`. After the last check goes
-  green, always confirm the PR actually entered the queue.
+  green, always confirm the PR actually entered the queue. A stacked PR goes dirty when its base
+  squash-merges: merge main in, then `@mergifyio requeue` (not refresh) if it was dequeued. A
+  subagent's "watcher armed" report can die silently with the subagent, so the coordinating
+  session keeps its own watch on each PR until it merges.
   <!-- when: command "@[Mm]ergifyio (refresh|queue)\b" -->
 - **In-place checks and self-merge.** Mergify uses in-place checks (compatible with GitHub's
   "require branches up to date" rule) only when `merge_queue.max_parallel_checks` is 1, every
@@ -123,10 +126,7 @@ every round, why a green PR sits unqueued, and when it is safe to resolve review
   it and let Mergify prove freshness on speculative merge-queue drafts. Any required status
   check that never runs on `mergify/merge-queue/*` drafts (such as an AI reviewer) then times out
   every queued PR, so gate it in Mergify's `queue_conditions`, not the ruleset.
-- **Stacked PRs and subagent watchers.** A stacked PR goes dirty when its base squash-merges:
-  merge main in, then `@mergifyio requeue` (not refresh) if it was dequeued. A subagent's
-  "watcher armed" report can die silently with the subagent, so the coordinating session keeps
-  its own watch on each PR until it merges.
+  <!-- when: content "strict_required_status_checks_policy\x22\s*:\s*true" path "**/*.json" -->
 
 ## Threads and merge timing
 

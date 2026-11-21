@@ -24,7 +24,7 @@
     "@veda-hq/eslint-plugin-shuddhi": "0.2.0",
     "@veda-hq/niyam": "0.7.5",
     "@veda-hq/pariksha": "0.7.10",
-    "@veda-hq/sarathi": "0.7.15",
+    "@veda-hq/sarathi": "0.7.18",
     "eslint": "9.39.1",
     "typescript": "5.9.3",
     "typescript-eslint": "8.48.0"

@@ -7,7 +7,7 @@ the child's own cwd. A test that runs a guard from inside this repository
 the running repository's log: in a worktree that is the main checkout's
 ``.git/kavach/refusals.jsonl``, beside the real refusals.
 
-``load_tests`` in this package notes each log's size before the suite runs
+``load_tests`` in this package marks where each log stands before the suite runs
 and adds ``RunningRepositoryLog`` after every other test, so it runs last,
 under ``-k`` too. It reads only the bytes appended during the run.
 
@@ -27,7 +27,7 @@ import json
 import os
 import unittest
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, NamedTuple, Optional
 
 from kavach import refusal_log
 
@@ -45,26 +45,46 @@ def log_paths(places: Iterable[str]) -> list[Path]:
     return paths
 
 
-def size(path: Path) -> int:
-    """The log's size in bytes; 0 when it does not exist yet."""
-
-    try:
-        return path.stat().st_size
-    except FileNotFoundError:
-        return 0
+# How many bytes before the mark are kept, to tell the same log from one
+# cleaned and written again past its old size.
+TAIL = 256
 
 
-def appended(path: Path, start: int) -> list[Any]:
-    """The rows written to ``path`` past byte ``start``. A log that shrank
-    (cleaned during the run) gives none, and so does a last line still being
-    written, with no newline yet."""
+class Mark(NamedTuple):
+    """Where a log stood before the run: its size, its file, and its last
+    bytes. A log that did not exist yet is ``Mark(0, None, b"")``."""
+
+    size: int
+    inode: Optional[int]
+    tail: bytes
+
+
+def mark(path: Path) -> Mark:
+    """Where ``path`` stands now."""
 
     try:
         with open(path, "rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() < start:
+            end = os.fstat(handle.fileno())
+            handle.seek(max(0, end.st_size - TAIL))
+            return Mark(end.st_size, end.st_ino, handle.read(end.st_size - handle.tell()))
+    except FileNotFoundError:
+        return Mark(0, None, b"")
+
+
+def appended(path: Path, since: Mark) -> list[Any]:
+    """The rows written to ``path`` after ``since``. A log cleaned during the
+    run gives none: one now shorter, another file, or one whose bytes before
+    the mark changed (emptied and written again past its old size). A last
+    line still being written, with no newline yet, is not read."""
+
+    try:
+        with open(path, "rb") as handle:
+            now = os.fstat(handle.fileno())
+            if now.st_size < since.size or (since.inode is not None and now.st_ino != since.inode):
                 return []
-            handle.seek(start)
+            handle.seek(since.size - len(since.tail))
+            if handle.read(len(since.tail)) != since.tail:
+                return []
             data = handle.read()
     except FileNotFoundError:
         return []
@@ -97,14 +117,14 @@ class RunningRepositoryLog(unittest.TestCase):
     """Run after every other test: none wrote to the running repository's
     refusal log."""
 
-    # Each log and its size before the run, set by ``load_tests``.
-    before: list[tuple[Path, int]] = []
+    # Each log and where it stood before the run, set by ``watch``.
+    before: list[tuple[Path, Mark]] = []
     # Every leaked row in full, so the failure names each one.
     maxDiff = None
 
     def test_the_suite_wrote_no_row_to_the_running_repository_log(self) -> None:
         mode = strict(os.environ)
-        found = [(path, row) for path, start in self.before for row in leaks(appended(path, start), mode)]
+        found = [(path, row) for path, since in self.before for row in leaks(appended(path, since), mode)]
         self.assertEqual(
             found,
             [],
@@ -116,6 +136,6 @@ class RunningRepositoryLog(unittest.TestCase):
 
 
 def watch(places: Iterable[str]) -> None:
-    """Note each log's size now, for ``RunningRepositoryLog``."""
+    """Mark each log now, for ``RunningRepositoryLog``."""
 
-    RunningRepositoryLog.before = [(path, size(path)) for path in log_paths(places)]
+    RunningRepositoryLog.before = [(path, mark(path)) for path in log_paths(places)]

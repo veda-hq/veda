@@ -12,7 +12,9 @@
  *
  * `sarathi worktree`: the worktree lifecycle (`worktree/lifecycle.ts`), and
  * `sarathi worktree hook`, its archive guard (`worktree/hook.ts`), and
- * `sarathi worktree pick`, the interactive picker (`worktree/pick.ts`).
+ * `sarathi worktree pick`, the interactive picker (`worktree/pick.ts`), and
+ * `sarathi worktree cleanup`, which frees the disk worktrees and their
+ * tooling leave behind (`worktree/cleanup.ts`).
  *
  * `sarathi services`: the worktree's local services (`services/main.ts`), and
  * `sarathi services reap`, the sweep of deleted worktrees' services, and
@@ -27,6 +29,7 @@ import { autofixCommand } from './hooks/autofix.ts';
 import { main as page } from './page/page.ts';
 import { runAll, type Outcome } from './run.ts';
 import { servicesMain } from './services/main.ts';
+import { cleanupMain } from './worktree/cleanup.ts';
 import { hookMain } from './worktree/hook.ts';
 import { lifecycleMain } from './worktree/lifecycle.ts';
 import { pickMain } from './worktree/pick.ts';
@@ -61,6 +64,7 @@ const USAGE = `usage: sarathi hook <Event> [--config <file>]
        sarathi worktree status|archive-check|begin --branch <name>|retire --pr <n> [--branch <successor>]
        sarathi worktree hook
        sarathi worktree pick [--shell]
+       sarathi worktree cleanup [--dry-run]
        sarathi services up|down|status|web|server|<action> [args]
        sarathi services run -- <command>
        sarathi services reap
@@ -314,6 +318,7 @@ export async function main(io: Io): Promise<number> {
         });
       return pickMain(io.argv.slice(2), { ...io, ask });
     }
+    if (io.argv[1] === 'cleanup') return cleanupMain(io.argv.slice(2), io);
     return lifecycleMain(io.argv.slice(1), io);
   }
   if (io.argv[0] === 'services') return servicesMain(io.argv.slice(1), io);

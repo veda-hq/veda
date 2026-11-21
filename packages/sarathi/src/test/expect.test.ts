@@ -4,7 +4,7 @@
 // vitest's meaning: toEqual ignores undefined properties, toThrow(text)
 // matches part of the message, toHaveBeenCalledWith compares deeply, and the
 // asymmetric matchers (stringContaining, stringMatching, any,
-// objectContaining) match at any depth.
+// objectContaining, arrayContaining) match at any depth.
 import assert from 'node:assert/strict';
 import { it as nodeIt } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -245,6 +245,9 @@ expect.any = (kind: StringConstructor | NumberConstructor | (new (...args: never
     `any ${kind.name}`,
   );
 expect.objectContaining = (part: object): Asymmetric => new Asymmetric(actual => subset(actual, part), `objectContaining ${show(part)}`);
+/** vitest's: an array holding an item equal to each of `items`, in any order, among others. */
+expect.arrayContaining = (items: readonly unknown[]): Asymmetric =>
+  new Asymmetric(actual => Array.isArray(actual) && items.every(item => actual.some(entry => equals(entry, item))), `arrayContaining ${show(items)}`);
 
 /** `it`, plus vitest's `it.each` with `%s` names. */
 export const it = Object.assign(

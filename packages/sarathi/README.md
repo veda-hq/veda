@@ -708,7 +708,69 @@ Settings are the `worktree` object of `.claude/sarathi.json`:
 recovery refs (`refs/<name>/lifecycle/…`); `owner` is who may discard
 scratch files; `cloudCheck` confirms a cloud session (exit 0), else
 `CLAUDE_CODE_REMOTE=true` alone does; `services` names the services file
-("Services"). All four are optional.
+("Services"); `cleanup` says what `sarathi worktree cleanup` may touch
+(below). All are optional.
+
+### Cleanup
+
+`sarathi worktree cleanup [--dry-run]` frees the disk that worktrees and
+their tooling leave behind, from any checkout of the repository. It runs
+nine steps in turn; a failed step is reported and the next one still runs.
+`--dry-run` prints what each step would remove and removes nothing. It
+exits 0 when every step succeeded or was skipped, 1 when any failed, 2 for
+a bad flag. It reads the primary checkout's settings first; settings it
+cannot read stop it before any step.
+
+1. **Leftover worktrees**: only those Claude Code made (a `CLAUDE_BASE`
+   marker in the gitdir), idle three days, unlocked, with nothing
+   uncommitted or untracked, HEAD on a remote branch, and no process or
+   running services in them. Ignored files no other checkout holds are
+   copied to `.git/<name>/worktree-archive/<worktree>` first. The desktop
+   app's own session worktrees and other agents' are never removed.
+2. **The worktree archive**: folders 30 days past their last copy go, then
+   the oldest while it holds over 10 GB.
+3. **`git worktree prune`**: registrations whose folder is gone.
+4. **git-ai folders** for worktrees nothing names any more.
+5. **Idle app worktrees**: after 14 idle days, only their rebuildable
+   output (`node_modules`, build folders, `ios/Pods`) goes; folder and
+   branch stay.
+6. **Docker**: the hourly sweep of `sarathi services prune`, run in-process
+   (it needs `worktree.services`; without one only this part is skipped),
+   then every unused build-cache record. No daemon: skipped.
+7. **Docker Desktop's staged update**, when no Docker Desktop process runs.
+8. **Android NDKs** no listed checkout's build.gradle pins.
+9. **Caches**: `pnpm store prune`, unavailable simulators, `brew cleanup`,
+   the primary checkout's build output and Gradle's caches.
+
+Steps 1 to 6 and the pnpm store run for every project. The rest is off
+until `worktree.cleanup` turns it on; an off step or part is reported as
+skipped, "off in .claude/sarathi.json", never failed:
+
+| Setting | Switches on |
+| --- | --- |
+| `primaryBuilt` | step 9 deletes these paths of the primary checkout, when no process works in it and no Gradle runs |
+| `nestedCopies` | a regular expression for a worktree's nested copies (paths from it), which steps 1 and 5 remove with it; without one, a worktree inside another keeps its parent |
+| `machine.dockerDesktopUpdate` | step 7 |
+| `machine.androidNdk` | step 8, reading the pins from this build.gradle in each checkout |
+| `machine.gradleCaches` | step 9's `~/.gradle/caches`, when no Gradle daemon or build runs |
+| `machine.simulators` | step 9's `xcrun simctl delete unavailable`, on macOS |
+| `machine.brew` | step 9's `brew cleanup` |
+
+Paths are relative, inside the checkout and outside `.git`. For example:
+
+```json
+{
+  "worktree": {
+    "name": "acme",
+    "services": "services.json",
+    "cleanup": {
+      "primaryBuilt": [".turbo", "android/app/build"],
+      "nestedCopies": "^\\.wt\\/copy$",
+      "machine": { "androidNdk": "android/build.gradle", "gradleCaches": true, "brew": true }
+    }
+  }
+}
+```
 
 ## Services
 

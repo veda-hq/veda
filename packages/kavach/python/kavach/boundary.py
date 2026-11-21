@@ -581,9 +581,61 @@ HOST_SESSION = re.compile(r"local_" + SESSION_ID.pattern)
 # not read.
 RECORD_LIMIT = 8 * 1024 * 1024
 # How much of a record `worktree_owners` reads before deciding whether to read
-# it all, and the first complete `"cwd"` string value in it.
+# it all.
 RECORD_HEAD = 4096
-HEAD_CWD = re.compile(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def top_level_string(text: str, key: str) -> str | None:
+    """The raw (still escaped) string value of ``key`` in the top-level
+    object that ``text`` opens, when ``text`` holds it whole; else ``None``.
+
+    ``text`` may be only a JSON document's start. A ``key`` inside a nested
+    object or array, a value that is not a string, and one cut off by the end
+    of ``text`` give ``None``, so a caller that reads on gives no false skip.
+    """
+
+    index = len(text) - len(text.lstrip())
+    if not text.startswith("{", index):
+        return None
+    depth = 0
+    while index < len(text):
+        char = text[index]
+        if char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth -= 1
+            if depth == 0:
+                return None
+        elif char == '"':
+            end = string_end(text, index)
+            if end is None:
+                return None
+            if depth == 1 and text[index + 1 : end] == key:
+                after = len(text) - len(text[end + 1 :].lstrip())
+                if after < len(text) and text[after] == ":":
+                    value = len(text) - len(text[after + 1 :].lstrip())
+                    if value >= len(text) or text[value] != '"':
+                        return None
+                    close = string_end(text, value)
+                    return None if close is None else text[value + 1 : close]
+            index = end
+        index += 1
+    return None
+
+
+def string_end(text: str, start: int) -> int | None:
+    """The index of the quote closing the JSON string opened at ``start``,
+    or ``None`` when ``text`` ends first."""
+
+    index = start + 1
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+            continue
+        if text[index] == '"':
+            return index
+        index += 1
+    return None
 
 
 def claude_app_root() -> Path:
@@ -659,13 +711,13 @@ def worktree_owners(root: Path, host: str) -> tuple[str, ...]:
     that this session's record does not name: a subagent's ``agent-*``
     worktree or one the session made, as well as another session's. So only
     each record's head is read first (``RECORD_HEAD``): the app writes
-    ``cwd`` third. A head whose first ``"cwd"`` value is another folder is
-    skipped. The whole record is read and parsed only when that value is the
-    worktree, or when the head holds no complete ``cwd`` and the text holds
-    the worktree's folder name. One that is a symlink, too large, unreadable
-    or of the wrong shape names nobody, and so does a missing app folder.
-    Never raises: a failure counts as no owner, so the caller can only stay
-    quiet."""
+    ``cwd`` third. A head whose top-level ``cwd`` is another folder is
+    skipped. The whole record is read and parsed only when that ``cwd`` is
+    the worktree, or when the head holds no complete top-level ``cwd`` and the
+    text holds the worktree's folder name. One that is a symlink, too large,
+    unreadable or of the wrong shape names nobody, and so does a missing app
+    folder. Never raises: a failure counts as no owner, so the caller can only
+    stay quiet."""
 
     try:
         app = claude_app_root()
@@ -673,7 +725,8 @@ def worktree_owners(root: Path, host: str) -> tuple[str, ...]:
         if app.is_symlink() or sessions.is_symlink() or not sessions.is_dir():
             return ()
         wanted = root.resolve()
-        needle = json.dumps(wanted.name)[1:-1]
+        # The app writes JSON as JavaScript does, non-ASCII unescaped.
+        needle = json.dumps(wanted.name, ensure_ascii=False)[1:-1]
         owners: list[str] = []
         for path in sorted(sessions.glob("*/*/local_*.json")):
             try:
@@ -681,11 +734,9 @@ def worktree_owners(root: Path, host: str) -> tuple[str, ...]:
                     continue
                 with path.open("rb") as handle:
                     head = handle.read(RECORD_HEAD).decode("utf-8", errors="replace")
-                found = HEAD_CWD.search(head)
-                if found is not None:
-                    # Only a false skip can come of a nested `cwd` met first,
-                    # and a skip keeps the caller quiet.
-                    named = json.loads(f'"{found.group(1)}"')
+                raw = top_level_string(head, "cwd")
+                if raw is not None:
+                    named = json.loads(f'"{raw}"')
                     if not (
                         isinstance(named, str)
                         and named.startswith("/")

@@ -133,6 +133,9 @@ boundary = load_boundary(HERE / "boundary.py")
 config = load_config(HERE / "config.py")
 refusal_log = load_module("kavach_worktree_refusal_log", HERE / "refusal_log.py")
 clone_writers = load_module("kavach_worktree_clone_writers", HERE / "clone_writers.py", register=True)
+# For the trial-mode reading and warning every rule shares (`mode_of`,
+# `context`, `answer`); none of them loads a module of its own.
+rules = load_module("kavach_worktree_rules", HERE / "rules.py", register=True)
 
 
 def settings() -> Any:
@@ -1400,16 +1403,6 @@ def reviewed(
 OTHER_SESSIONS_WORKTREE = config.OTHER_SESSIONS_WORKTREE_RULE
 
 
-def rule_mode(loaded: Any, rule: str) -> tuple[str, str]:
-    """The mode and `refusesFrom` day the settings give ``rule``; a rule they
-    do not name warns (rules.mode_of)."""
-
-    chosen = dict(getattr(loaded, "rules", None) or ()).get(rule)
-    if chosen is None:
-        return "warn", ""
-    return chosen.mode, chosen.refuses_from
-
-
 def other_sessions_worktree(
     session_id: object, root: Path, loaded: Any, environ: Mapping[str, str]
 ) -> str | None:
@@ -1442,20 +1435,8 @@ def other_sessions_worktree(
     return (
         f"the shell is in worktree {root.name}, which {sessions} in; this session's is "
         f"{own.name}. A write here changes {whose} files and branch. Run "
-        f"`cd {shlex.quote(str(own))}` alone to return, then retry (the shell is in {root})"
+        f"`cd {shlex.quote(str(own))}` alone to return, then retry (the shell is in {root})."
     )
-
-
-def trial_answer(message: str, refuses_from: str) -> str:
-    """The PreToolUse answer that allows a call and puts the warning in front
-    of the agent, as the rules on trial do (rules.context)."""
-
-    when = f"refuses from {refuses_from}" if refuses_from else "refuses after its trial"
-    context = (
-        f"kavach warning, rule {OTHER_SESSIONS_WORKTREE} ({when}): {message}. This call still runs "
-        "while the rule is on trial."
-    )
-    return json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": context}})
 
 
 def judge_other_sessions_worktree(
@@ -1467,7 +1448,7 @@ def judge_other_sessions_worktree(
     While it warns, an error in it allows the call and logs a row naming the
     error's type; once it refuses, the error refuses too (``run``)."""
 
-    mode, refuses_from = rule_mode(loaded, OTHER_SESSIONS_WORKTREE)
+    mode, refuses_from = rules.mode_of(loaded, OTHER_SESSIONS_WORKTREE)
     try:
         message = other_sessions_worktree(data.get("session_id"), root, loaded, environ)
     except Exception as error:
@@ -1484,11 +1465,13 @@ def judge_other_sessions_worktree(
         )
     if message is None:
         return None
+    fire = rules.Fire(OTHER_SESSIONS_WORKTREE, mode, message, refuses_from)
     if mode == "refuse":
         refusal_log.label(OTHER_SESSIONS_WORKTREE, mode)
-        boundary.deny(f"{message} (kavach rule {OTHER_SESSIONS_WORKTREE})")
+        print(rules.refusal([fire]), file=sys.stderr)
+        raise SystemExit(2)
     refusal_log.record("worktree", json.dumps(data), f"WARNING: {message}", rule=OTHER_SESSIONS_WORKTREE, mode=mode)
-    return trial_answer(message, refuses_from)
+    return rules.answer([rules.context(fire)])
 
 
 def main() -> None:

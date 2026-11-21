@@ -2668,6 +2668,37 @@ class OtherSessionsWorktreeTest(GuardFixture):
         (self.records / f"{STARTER}.json").write_text(json.dumps(record), encoding="utf-8")
         self.assert_silent(self.guard(self.theirs))
 
+    def test_a_nested_cwd_in_the_head_is_no_skip(self) -> None:
+        record = {"folderPlace": {"cwd": str(self.made)}, "sessionId": STARTER, "cwd": str(self.theirs), "isArchived": False}
+        (self.records / f"{STARTER}.json").write_text(json.dumps(record), encoding="utf-8")
+        self.assert_warns(self.guard(self.theirs))
+
+    def test_a_non_ascii_worktree_name_is_found(self) -> None:
+        named = self.main / ".claude" / "worktrees" / "über-task"
+        git(self.main, "worktree", "add", "-qb", "uber-task", str(named))
+        # The app writes JSON as JavaScript does, non-ASCII unescaped, and
+        # pads the record so the cwd lies past the head.
+        record = {"padding": "x" * (2 * MODULE.RECORD_HEAD), "sessionId": STARTER, "cwd": str(named), "isArchived": False}
+        (self.records / f"{STARTER}.json").write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        self.assertIn("worktree über-task, which", self.assert_warns(self.guard(named)))
+
+    def test_top_level_string(self) -> None:
+        for text, found in (
+            ('{"a": 1, "cwd": "/x/y", "b": 2}', "/x/y"),
+            ('  {"cwd" : "/x\\"q"}', '/x\\"q'),
+            ('{"o": {"cwd": "/nested"}, "cwd": "/top"}', "/top"),
+            ('{"l": ["cwd", {"cwd": "/n"}], "cwd": "/top"}', "/top"),
+            ('{"note": "\\"cwd\\": \\"/fake\\"", "cwd": "/top"}', "/top"),
+            ('{"o": {"cwd": "/nested"}}', None),
+            ('{"cwd": 3}', None),
+            ('{"cwd": "/cut', None),
+            ('{"a": "x", "c', None),
+            ('["cwd", "/x"]', None),
+            ("", None),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(MODULE.top_level_string(text, "cwd"), found)
+
     def test_this_sessions_own_record_is_no_owner(self) -> None:
         # Only another record makes a worktree another session's.
         (self.records / f"{STARTER}.json").unlink()

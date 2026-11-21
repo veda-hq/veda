@@ -21,6 +21,7 @@ import {
   type OwnProvenanceDeps,
   ownPackages,
   ownProvenance,
+  packagesSections,
   parseOwnProvenanceConfig,
   provenanceFailures,
   safeLog,
@@ -174,8 +175,11 @@ describe('parseOwnProvenanceConfig', () => {
     ['a repository of github.com alone', { ...base, repository: 'https://github.com/' }, /^"repository" must be/],
     ['no workflow', { scope: '@veda-hq/', repository: REPOSITORY }, /^"workflow" must be/],
     ['a blank workflow', { ...base, workflow: ' ' }, /^"workflow" must be/],
-    ['a blank lockfile', { ...base, lockfile: '' }, /^"lockfile" must be a path relative to the root$/],
-    ['a trusted root that is not a string', { ...base, trustedRoot: null }, /^"trustedRoot" must be a path relative to the root$/],
+    ['a blank lockfile', { ...base, lockfile: '' }, /^"lockfile" must be a normalized path under the root, such as "pnpm-lock.yaml"$/],
+    ['a trusted root that is not a string', { ...base, trustedRoot: null }, /^"trustedRoot" must be a normalized path under the root/],
+    ['an absolute lockfile', { ...base, lockfile: '/etc/pnpm-lock.yaml' }, /^"lockfile" must be a normalized path under the root/],
+    ['a lockfile above the root', { ...base, lockfile: '../other/pnpm-lock.yaml' }, /^"lockfile" must be a normalized path under the root/],
+    ['a trusted root that climbs out', { ...base, trustedRoot: 'keys/../../root.json' }, /^"trustedRoot" must be a normalized path under the root/],
   ];
   for (const [what, value, reason] of refused) {
     it(`refuses ${what}`, () => {
@@ -442,6 +446,46 @@ describe('fetchRegistryJson', () => {
     assert.equal(seen.length, 1);
     assert.ok(seen[0] instanceof AbortSignal);
     assert.equal(seen[0].aborted, false);
+  });
+
+  it('aborts a request the registry stalls on once its time is up, so the check fails rather than waits', async () => {
+    // A registry that never answers: the request settles only when its signal aborts.
+    globalThis.fetch = ((_url: string, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason as Error));
+      })) as typeof fetch;
+    const started = Date.now();
+    await assert.rejects(fetchRegistryJson('https://registry.example/stalled', 20), { name: 'TimeoutError' });
+    assert.ok(Date.now() - started < 10_000);
+    // Through check, the stall is a failure of that package, never a pass.
+    const { failures } = await check(LOCK, (url) => fetchRegistryJson(url, 20), accept, CONFIG);
+    assert.ok(failures.length > 0 && failures.every((f) => f.includes('its attestations could not be read')), failures.join('\n'));
+  });
+});
+
+describe('packagesSections', () => {
+  it('reads resolutions from the packages sections alone, so a look-alike elsewhere cannot stand in', () => {
+    const lock = [
+      'packages:',
+      '',
+      "  '@veda-hq/kavach@0.6.0':",
+      '    resolution: {tarball: https://example.com/kavach-0.6.0.tgz}',
+      '',
+      'snapshots:',
+      '',
+      "  '@veda-hq/kavach@0.6.0':",
+      `    resolution: {integrity: ${KAVACH_PKG.integrity}}`,
+      '',
+    ].join('\n');
+    const { packages, unread } = ownPackages(lock, CONFIG);
+    assert.deepEqual(packages, []);
+    assert.deepEqual(unread, ['@veda-hq/kavach@0.6.0']);
+  });
+
+  it('keeps every packages section, in each YAML document, and nothing after one', () => {
+    const lock = ['lockfileVersion: 9.0', 'packages:', '  a: 1', '', '  b: 2', 'snapshots:', '  c: 3', '---', 'packages:', '  d: 4', 'importers:', '  e: 5'].join('\n');
+    assert.equal(packagesSections(lock), ['packages:', '  a: 1', '', '  b: 2', 'packages:', '  d: 4'].join('\n'));
+    assert.equal(packagesSections('importers:\n  x: 1\n'), '');
   });
 });
 

@@ -150,8 +150,11 @@ describe('run bp-rules', () => {
     const out: string[] = [];
     let written = '';
     const io: Io = { out: (l) => out.push(l), err: () => undefined, cwd: () => root, write: (_stream, text) => (written += text) };
+    // The day read before and after the run: either, should the run cross UTC midnight.
+    const before = new Date().toISOString().slice(0, 10);
     assert.equal(run(['bp-rules', '--due', '--root', root], io, '1.0.0', {}), 0);
-    assert.equal((JSON.parse(written) as { today: string }).today, new Date().toISOString().slice(0, 10));
+    const after = new Date().toISOString().slice(0, 10);
+    assert.ok([before, after].includes((JSON.parse(written) as { today: string }).today), written);
   });
 });
 

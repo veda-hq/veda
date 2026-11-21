@@ -23,7 +23,7 @@
 // status; `bpRules` is the command line over them.
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
-import { basename, join, posix, relative, sep } from 'node:path';
+import { basename, isAbsolute, join, posix, relative, sep } from 'node:path';
 import { parseJson, path as repoPath, text as nonEmpty } from './registry-ratchet.ts';
 
 /**
@@ -163,10 +163,17 @@ const asArray = (v: string | string[] | undefined): string[] => {
   return [];
 };
 
-/** A Rule from parsed frontmatter, or null when the file is not a rule (no id). */
+const TIERS: readonly string[] = ['eslint-rule', 'validator', 'guidance'] satisfies readonly Enforcement[];
+
+/** A Rule from parsed frontmatter, or null when the file is not a rule (no id); throws on a tier that is not one. */
 export const ruleFromFrontmatter = (parsed: Record<string, string | string[]>, path: string): Rule | null => {
   const id = asString(parsed['id']);
   if (!id) return null; // README / non-rule markdown
+  // A tier outside the three would fall out of every count and check (a
+  // misspelt `validater` with no script would pass --check-wiring), so the
+  // corpus is refused, naming the rule.
+  const tier = asString(parsed['enforcement']);
+  if (tier !== undefined && !TIERS.includes(tier)) throw new Error(`${path}: ${id}'s enforcement "${tier}" is not one of ${TIERS.join(', ')}`);
   return {
     id,
     title: asString(parsed['title']) ?? '',
@@ -186,8 +193,8 @@ export const ruleFromFrontmatter = (parsed: Record<string, string | string[]>, p
   };
 };
 
-/** Rule markdown under the corpus: `.md`, README excluded. */
-const isRuleFile = (rel: string): boolean => rel.endsWith('.md') && !/(^|\/)README/i.test(rel);
+/** Rule markdown under the corpus: `.md`, README excluded, in a folder of any depth on any platform. */
+const isRuleFile = (rel: string): boolean => rel.endsWith('.md') && !/(^|[/\\])README/i.test(rel);
 
 /** Load and parse every rule file under rulesDir (recursive), sorted by id. */
 export const loadRules = (rulesDir: string, repoRoot: string, reader: CorpusReader = DISK): Rule[] => {
@@ -300,7 +307,9 @@ export const parseIsoDate = (raw: string): Date | null => {
 const daysBetween = (fromISO: string, to: Date): number | null => {
   const from = parseIsoDate(fromISO);
   if (from === null) return null;
-  const toUTC = new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate()));
+  // `to`'s calendar day at UTC midnight, with setUTCFullYear for the reason parseIsoDate gives.
+  const toUTC = new Date(0);
+  toUTC.setUTCFullYear(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate());
   return Math.round((from.getTime() - toUTC.getTime()) / 86_400_000);
 };
 
@@ -854,7 +863,9 @@ const runMode = (mode: Mode, f: ReadonlyMap<string, string>, config: BpRulesConf
         ?.split(',')
         .map((id) => id.trim())
         .filter((id) => id !== '');
-      const result = checkWiring(rules(), (rel) => io.exists(join(io.root, rel)), ids);
+      // A script outside the root (`../x`, an absolute path) wires nothing in this repository.
+      const underRoot = (rel: string): boolean => !isAbsolute(rel) && !relative(io.root, join(io.root, rel)).startsWith('..');
+      const result = checkWiring(rules(), (rel) => underRoot(rel) && io.exists(join(io.root, rel)), ids);
       return { code: result.ok ? 0 : 1, stdout: json(result), stderr: '' };
     }
     default:

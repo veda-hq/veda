@@ -20,6 +20,16 @@ const setBaseBranch = (value: string | undefined): void => {
 
 const LONG = `${'x'.repeat(80)}.json`;
 
+/** A repository with one commit holding `files`. */
+const repoWith = (files: Readonly<Record<string, string>>): string => {
+  const dir = mkdtempSync(join(tmpdir(), 'pariksha-baseline-odd-'));
+  gitIn(dir, 'init', '-q', '-b', 'main');
+  for (const [path, body] of Object.entries(files)) writeFileSync(join(dir, path), body);
+  gitIn(dir, 'add', '-A');
+  gitIn(dir, 'commit', '-q', '-m', 'files');
+  return dir;
+};
+
 describe('baseline-ratchet', () => {
   let repo = '';
 
@@ -73,7 +83,8 @@ describe('baseline-ratchet', () => {
 
   it('names the merge base as a full sha, and none for an empty base', () => {
     const main = gitIn(repo, 'rev-parse', 'main').trim();
-    assert.match(main, /^[0-9a-f]{40}$/);
+    // A full object id: SHA-1, or SHA-256 where GIT_DEFAULT_HASH says so.
+    assert.match(main, /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
     assert.equal(mergeBaseOf(repo, 'main', ENV), main);
     assert.equal(mergeBaseOf(repo, '', ENV), null);
     setBaseBranch(undefined);
@@ -99,6 +110,19 @@ describe('baseline-ratchet', () => {
     assert.equal(fileAt(repo, 'main', 'baseline.json', ENV), '{"at":"base"}\n');
     assert.equal(fileAt(repo, 'topic', 'baseline.json', ENV), '{"at":"head"}\n');
     assert.equal(fileAt(repo, 'main', 'new.json', ENV), null);
+  });
+
+  it('lists a non-ASCII or pattern-like name as committed, and reads it at a commit', () => {
+    const odd = repoWith({ 'café.json': '{"at":"accent"}\n', '[ab].json': '{"at":"brackets"}\n', 'a.json': '{}\n' });
+    try {
+      assert.deepEqual(trackedFiles(odd, ENV, ['.']).sort(), ['[ab].json', 'a.json', 'café.json']);
+      assert.equal(fileAt(odd, 'HEAD', 'café.json', ENV), '{"at":"accent"}\n');
+      assert.equal(fileAt(odd, 'HEAD', '[ab].json', ENV), '{"at":"brackets"}\n');
+      // A name that is a pattern for another file still names only itself.
+      assert.equal(fileAt(odd, 'HEAD', '*.json', ENV), null);
+    } finally {
+      rmSync(odd, { recursive: true, force: true });
+    }
   });
 
   it('lists tracked files that still exist, leaving out deleted ones', () => {

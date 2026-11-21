@@ -16,10 +16,14 @@ import { join } from 'node:path';
 /** Enough for a whole-repository listing or diff of a large monorepo. */
 const MAX_BUFFER = 64 * 1024 * 1024;
 
-/** Tracked paths under `pathspecs` that still exist in the working tree. */
+/**
+ * Tracked paths under `pathspecs` that still exist in the working tree,
+ * NUL-separated as git lists them, so a non-ASCII or newline name arrives as
+ * committed, never C-quoted.
+ */
 export const trackedFiles = (root: string, env: NodeJS.ProcessEnv, pathspecs: readonly string[]): string[] =>
-  execFileSync('git', ['ls-files', '--', ...pathspecs], { cwd: root, encoding: 'utf8', env, maxBuffer: MAX_BUFFER })
-    .split('\n')
+  execFileSync('git', ['ls-files', '-z', '--', ...pathspecs], { cwd: root, encoding: 'utf8', env, maxBuffer: MAX_BUFFER })
+    .split('\0')
     .filter((path) => path !== '' && existsSync(join(root, path)));
 
 // Default stdio: git's stderr is captured into a failure's message (and
@@ -43,7 +47,8 @@ export const mergeBaseOf = (root: string, base: string = process.env['BASE_BRANC
  * failure, so only a confirmed absence is null.
  */
 export const fileAt = (root: string, commit: string, path: string, env: NodeJS.ProcessEnv = process.env): string | null => {
-  if (git(root, env, ['ls-tree', '--name-only', commit, '--', path]) === '') return null;
+  // `:(literal)`: the path itself, never a pattern or other pathspec magic.
+  if (git(root, env, ['ls-tree', '--name-only', commit, '--', `:(literal)${path}`]) === '') return null;
   return git(root, env, ['show', `${commit}:${path}`]);
 };
 

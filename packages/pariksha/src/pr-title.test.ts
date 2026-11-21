@@ -288,6 +288,8 @@ describe('parsePrTitleConfig', () => {
     ['not an object', '[]', /must be a JSON object/],
     ['an unknown key', '{"title":1}', /unknown key "title"; pr-title reads shape, skipHeadPrefixes, guide/],
     ['skipHeadPrefixes not a list', '{"skipHeadPrefixes":"m/"}', /"skipHeadPrefixes" must be a list/],
+    ['skipHeadPrefixes set to null', '{"skipHeadPrefixes":null}', /"skipHeadPrefixes" must be a list/],
+    ['a guide set to null', '{"guide":null}', /"guide" must be a path or URL/],
     ['an empty prefix, which would skip every branch', '{"skipHeadPrefixes":[""]}', /none empty/],
     ['a guide that is not a string', '{"guide":1}', /"guide" must be a path or URL/],
     ['a blank guide', '{"guide":" "}', /"guide" must be a path or URL/],

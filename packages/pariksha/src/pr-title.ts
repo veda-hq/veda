@@ -69,7 +69,8 @@ export const parsePrTitleConfig = (text: string): PrTitleConfig => {
   if (!isRecord(raw)) throw new Error('the config must be a JSON object');
   const unknown = Object.keys(raw).find((k) => k !== 'shape' && k !== 'skipHeadPrefixes' && k !== 'guide');
   if (unknown !== undefined) throw new Error(`unknown key "${unknown}"; pr-title reads shape, skipHeadPrefixes, guide`);
-  const skipHeadPrefixes = raw['skipHeadPrefixes'] ?? [];
+  // Defaulted only when absent: an explicit null is refused below, as for shape and guide.
+  const skipHeadPrefixes = 'skipHeadPrefixes' in raw ? raw['skipHeadPrefixes'] : [];
   // An empty prefix would skip every branch.
   if (!Array.isArray(skipHeadPrefixes) || skipHeadPrefixes.some((p) => typeof p !== 'string' || p === '')) throw new Error('"skipHeadPrefixes" must be a list of branch-name prefixes, none empty');
   const guide = raw['guide'];

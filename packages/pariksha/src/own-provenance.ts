@@ -50,6 +50,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isRepoPath } from './registry-ratchet.ts';
 
 export interface OwnProvenanceConfig {
   /** The repository's own npm scope, `@name/`. */
@@ -139,7 +140,9 @@ export const parseOwnProvenanceConfig = (text: string): OwnProvenanceConfig => {
   const optional = (key: 'lockfile' | 'trustedRoot'): string | undefined => {
     if (!(key in raw)) return undefined;
     const value = raw[key];
-    if (typeof value !== 'string' || value.trim() === '') throw new Error(`"${key}" must be a path relative to the root`);
+    // Under the root, normalized: a lockfile or trust anchor read from
+    // outside the repository is not the one it commits.
+    if (typeof value !== 'string' || value.trim() === '' || !isRepoPath(value)) throw new Error(`"${key}" must be a normalized path under the root, such as "pnpm-lock.yaml"`);
     return value;
   };
   return { scope, repository, workflow, lockfile: optional('lockfile') ?? 'pnpm-lock.yaml', trustedRoot: optional('trustedRoot') };
@@ -273,6 +276,21 @@ const provenanceOf = (document: unknown): { bundle: unknown; statement: Statemen
 const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
+ * The lines of every top-level `packages:` section, in every YAML document
+ * of the lockfile (pnpm 12 writes two), each from its key to the next line
+ * that is not indented.
+ */
+export const packagesSections = (lockText: string): string => {
+  const kept: string[] = [];
+  let inside = false;
+  for (const line of lockText.split('\n')) {
+    if (line !== '' && !line.startsWith(' ')) inside = line === 'packages:';
+    if (inside) kept.push(line);
+  }
+  return kept.join('\n');
+};
+
+/**
  * The own packages a pnpm lockfile resolves, and every own key it names that
  * is not one of them. Those are failures, so nothing own goes unchecked.
  */
@@ -285,7 +303,9 @@ export const ownPackages = (lockText: string, config: OwnProvenanceConfig): { pa
   const ownKey = new RegExp(`^ {2}['"]?(${scope}[^@'"\\s]+@[^'"\\s(]+)`, 'gm');
   const packages: OwnPackage[] = [];
   // Every group in both patterns is required, so each match holds them all.
-  for (const match of lockText.matchAll(readable)) {
+  // Resolutions are read from the `packages:` sections alone: a look-alike
+  // entry in another section must not stand in for a package's real one.
+  for (const match of packagesSections(lockText).matchAll(readable)) {
     const [name, version, integrity] = match.slice(2, 5) as [string, string, string];
     packages.push({ name, version, integrity });
   }
@@ -355,8 +375,8 @@ export const check = async (lockText: string, fetchJson: FetchJson, verifyBundle
  * status of a bad response, and a timeout after FETCH_TIMEOUT_MS so a stalled
  * registry fails the check instead of holding a push.
  */
-export const fetchRegistryJson: FetchJson = async (url) => {
-  const response = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+export const fetchRegistryJson = async (url: string, timeoutMs: number = FETCH_TIMEOUT_MS): Promise<unknown> => {
+  const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) throw new Error(`HTTP ${response.status.toString()}`);
   return attestationsOf(await response.json());
 };

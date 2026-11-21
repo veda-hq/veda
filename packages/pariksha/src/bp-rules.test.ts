@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   BP_RULES_USAGE,
@@ -52,14 +52,17 @@ const rule = (partial: Partial<Rule> & { id: string }): Rule => ({
   ...partial,
 });
 
+/** A path with `/` separators, as the fixtures' keys are written, whatever `join` gave on this platform. */
+const slashed = (path: string): string => path.split(sep).join('/');
+
 /** An in-memory corpus: `list` returns paths in insertion order, unsorted. */
 const memoryReader = (files: Readonly<Record<string, string>>): CorpusReader => ({
   list: (dir) =>
     Object.keys(files)
-      .filter((path) => path.startsWith(`${dir}/`))
-      .map((path) => path.slice(dir.length + 1)),
+      .filter((path) => path.startsWith(`${slashed(dir)}/`))
+      .map((path) => path.slice(slashed(dir).length + 1)),
   read: (path) => {
-    const text = files[path];
+    const text = files[slashed(path)];
     if (text === undefined) throw new Error(`ENOENT: ${path}`);
     return Buffer.from(text);
   },
@@ -988,6 +991,15 @@ describe('bpRules modes', () => {
     assert.equal(result.code, 1);
     assert.equal(result.stderr, '');
     assert.deepEqual((JSON.parse(result.stdout) as { missing: unknown[] }).missing, [{ id: 'BP-MOB-002', enforcement_script: 'scripts/check-d.ts' }]);
+  });
+
+  it('--check-wiring: a script outside the root wires nothing, even one that exists', () => {
+    for (const script of ['../elsewhere/check-d.ts', '/abs/check-d.ts', 'scripts/../../check-d.ts']) {
+      const files = { ...CORPUS, [`${RULES_DIR}/mobile/d.md`]: ruleFile(['id: BP-MOB-002', "title: 'D'", 'category: mobile', 'severity: critical', 'enforcement: validator', `enforcement_script: ${script}`]) };
+      const result = main(['--check-wiring'], { ...io(files), exists: () => true });
+      assert.equal(result.code, 1, script);
+      assert.deepEqual((JSON.parse(result.stdout) as { missing: unknown[] }).missing, [{ id: 'BP-MOB-002', enforcement_script: script }], script);
+    }
   });
 
   it('--check-wiring --ids trims each id and drops empty ones', () => {

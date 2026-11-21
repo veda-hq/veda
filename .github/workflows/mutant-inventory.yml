@@ -294,7 +294,7 @@ jobs:
               os.makedirs(data_dir)
               start = time.monotonic()
               with open(f"{out_dir}/{label}.log", "w") as log:
-                  code = subprocess.run(argv, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, timeout=3600).returncode
+                  code = subprocess.run(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, timeout=3600).returncode
               seconds = time.monotonic() - start
               cov = coverage.Coverage(data_file=f"{data_dir}/.coverage", config_file=False)
               try:
@@ -315,9 +315,11 @@ jobs:
           base = {}
           for m in modules:
               # The modules import their siblings by bare name, as the guards
-              # run them: from the package folder.
+              # run them: from the package folder. bash_guard and the like run
+              # their guard as they load and refuse an empty stdin, so any exit
+              # will do: the baseline only orders the subset.
               found, _, code = measure([python, "-B", "-c", f"import {m}"], f"import-{m}", cwd=f"{py}/kavach")
-              if code != 0 or not found.get(m):
+              if not found.get(m):
                   summary.write(f"- Importing {m} under coverage failed (exit {code})\n")
                   raise SystemExit(1)
               base[m] = found[m]
@@ -370,7 +372,7 @@ jobs:
                   argv = [python, "-B", "-m", "unittest", "-f", *(f"tests.{t}" for t in reach)]
                   start = time.monotonic()
                   with open(f"{out_dir}/subset-{m}.log", "w") as log:
-                      code = subprocess.run(argv, cwd=py, stdout=log, stderr=subprocess.STDOUT, timeout=3600).returncode
+                      code = subprocess.run(argv, cwd=py, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, timeout=3600).returncode
                   seconds = time.monotonic() - start
                   if code != 0:
                       summary.write(f"- The unmutated subset of {m} failed (exit {code})\n")

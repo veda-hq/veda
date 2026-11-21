@@ -625,7 +625,8 @@ class Settings(unittest.TestCase):
 
     def test_the_known_ids_are_the_rules(self) -> None:
         self.assertEqual(
-            set(config.RULE_IDS), {rule.id for rule in rules.RULES} | {config.SHELL_EXPANSION_RULE}
+            set(config.RULE_IDS),
+            {rule.id for rule in rules.RULES} | {config.SHELL_EXPANSION_RULE, config.OTHER_SESSIONS_WORKTREE_RULE},
         )
 
     def test_the_tool_matcher_names_every_tool_but_bash(self) -> None:

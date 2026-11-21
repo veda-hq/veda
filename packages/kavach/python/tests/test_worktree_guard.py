@@ -2426,6 +2426,228 @@ class SessionFoldersTest(GuardFixture):
         self.assertIn(str(self.notes / STARTER), note.stderr)
 
 
+class OtherSessionsWorktreeTest(GuardFixture):
+    """Rule other-sessions-worktree (veda#363): a write from inside another
+    live session's managed worktree warns on trial and refuses once set to.
+
+    It fires only when this session's own record names a different worktree
+    and another record, not archived, names the shell's. Every other case is
+    judged exactly as before: no record, a record that does not match, a
+    worktree no other record names (one the session made, a subagent's
+    ``agent-*``), a shared worktree, and reads.
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        temp = Path(self.temporary.name).resolve()
+        self.main = temp / "main"
+        self.make_repository(self.main)
+        worktrees = self.main / ".claude" / "worktrees"
+        worktrees.mkdir(parents=True)
+        self.mine = worktrees / "mine-task"
+        self.theirs = worktrees / "their-task"
+        self.made = worktrees / "made-here"
+        self.agent = worktrees / "agent-a1b2c3"
+        for folder in (self.mine, self.theirs, self.made, self.agent):
+            git(self.main, "worktree", "add", "-qb", folder.name, str(folder))
+        self.home = temp / "home"
+        self.records = (
+            self.home / "Library" / "Application Support" / "Claude" / "claude-code-sessions" / "acct" / "org"
+        )
+        self.records.mkdir(parents=True)
+        self.outside = temp / "outside"
+        self.outside.mkdir()
+        self.log = self.main / ".git" / "kavach" / "refusals.jsonl"
+        self.write_record(HOST, SESSION, self.mine)
+        self.write_record(STARTER, OTHER_SESSION, self.theirs)
+
+    def write_record(self, host: str, cli: str, cwd: Path | str, **fields: object) -> Path:
+        record: dict[str, object] = {
+            "sessionId": host,
+            "cliSessionId": cli,
+            "cwd": str(cwd),
+            "isArchived": False,
+            **fields,
+        }
+        path = self.records / f"{host}.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        return path
+
+    def guard(
+        self,
+        cwd: Path,
+        tool_input: dict[str, str] | None = None,
+        tool: str = "Bash",
+        session: str | None = SESSION,
+        settings: object | None = None,
+        **changes: str | None,
+    ) -> subprocess.CompletedProcess[str]:
+        payload: dict[str, object] = {
+            "cwd": str(cwd),
+            "tool_name": tool,
+            "tool_input": tool_input or {"command": "touch new.txt"},
+        }
+        if session is not None:
+            payload["session_id"] = session
+        environment = hermetic_git_env()
+        environment.update(
+            {
+                "HOME": str(self.home),
+                "CLAUDE_CONFIG_DIR": str(self.home / ".claude"),
+                "CLAUDE_CODE_HOST_SESSION_ID": HOST,
+            }
+        )
+        environment.pop("KAVACH_REFUSAL_LOG_OFF", None)
+        if settings is not None:
+            path = self.outside / "kavach.json"
+            path.write_text(json.dumps(settings), encoding="utf-8")
+            environment["KAVACH_CONFIG"] = str(path)
+        for name, value in changes.items():
+            if value is None:
+                environment.pop(name, None)
+            else:
+                environment[name] = value
+        return subprocess.run(
+            [sys.executable, str(ADAPTER_PATH)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=environment,
+        )
+
+    def assert_warns(self, result: subprocess.CompletedProcess[str]) -> str:
+        self.assertEqual(result.returncode, 0, result.stderr)
+        answer = json.loads(result.stdout)
+        context = answer["hookSpecificOutput"]["additionalContext"]
+        self.assertEqual(answer["hookSpecificOutput"]["hookEventName"], "PreToolUse")
+        self.assertIn("kavach warning, rule other-sessions-worktree (refuses after its trial)", context)
+        return context
+
+    def assert_silent(self, result: subprocess.CompletedProcess[str]) -> None:
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    REFUSE = {"rules": {"other-sessions-worktree": "refuse"}}
+
+    def test_a_write_in_another_live_sessions_worktree_warns(self) -> None:
+        context = self.assert_warns(self.guard(self.theirs))
+        self.assertIn(
+            "the shell is in worktree their-task, which another live session works in; "
+            "this session's is mine-task.",
+            context,
+        )
+        self.assertIn(f"Run `cd {self.mine}` alone to return", context)
+        self.assertTrue(context.endswith("This call still runs while the rule is on trial."))
+        for tool, values in (
+            ("Write", {"file_path": str(self.theirs / "a.txt"), "content": "x"}),
+            ("Edit", {"file_path": str(self.theirs / "tracked.txt"), "old_string": "a", "new_string": "b"}),
+        ):
+            with self.subTest(tool=tool):
+                self.assert_warns(self.guard(self.theirs, values, tool))
+
+    def test_the_warning_is_a_log_row_naming_the_rule(self) -> None:
+        self.assert_warns(self.guard(self.theirs))
+        rows = [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["rule"], rows[0]["mode"], rows[0]["guard"]), ("other-sessions-worktree", "warn", "worktree"))
+        self.assertTrue(rows[0]["reason"].startswith("WARNING: the shell is in worktree their-task"))
+
+    def test_refuse_blocks_it(self) -> None:
+        result = self.guard(self.theirs, settings=self.REFUSE)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("BLOCKED: the shell is in worktree their-task", result.stderr)
+        self.assertIn("(kavach rule other-sessions-worktree)", result.stderr)
+        self.assertEqual(result.stdout, "")
+        row = json.loads(self.log.read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual((row["rule"], row["mode"]), ("other-sessions-worktree", "refuse"))
+
+    def test_refuse_judges_reviewed_and_trusted_commands_too(self) -> None:
+        settings = {**self.REFUSE, **REVIEWED_SETTINGS}
+        result = self.guard(self.theirs, {"command": "niyam pr-signals 12"}, settings=settings)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("other-sessions-worktree", result.stderr)
+        self.assert_silent(self.guard(self.mine, {"command": "niyam pr-signals 12"}, settings=settings))
+
+    def test_a_refusesfrom_day_is_shown(self) -> None:
+        settings = {"rules": {"other-sessions-worktree": {"mode": "warn", "refusesFrom": "2026-12-01"}}}
+        result = self.guard(self.theirs, settings=settings)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("(refuses from 2026-12-01)", result.stdout)
+
+    def test_several_owners_are_counted(self) -> None:
+        self.write_record(STRANGER, "77777777-7777-4777-8777-777777777777", self.theirs)
+        self.assertIn("which 2 other live sessions work in", self.assert_warns(self.guard(self.theirs)))
+
+    def test_everything_else_is_judged_as_before(self) -> None:
+        # Each case runs under refuse: silence there is the proof.
+        touch = {"command": "touch new.txt"}
+        cases: list[tuple[str, Path, dict[str, str], str | None, dict[str, str | None]]] = [
+            ("this session's own worktree", self.mine, touch, SESSION, {}),
+            ("a worktree the session made itself", self.made, touch, SESSION, {}),
+            ("a subagent's isolated worktree", self.agent, touch, SESSION, {}),
+            ("no host session", self.theirs, touch, SESSION, {"CLAUDE_CODE_HOST_SESSION_ID": None}),
+            ("a malformed host session", self.theirs, touch, SESSION, {"CLAUDE_CODE_HOST_SESSION_ID": "local_../x"}),
+            ("no session id in the payload", self.theirs, touch, None, {}),
+            ("a record of another CLI session", self.theirs, touch, OTHER_SESSION, {}),
+            ("a read", self.theirs, {"command": "cat tracked.txt"}, SESSION, {}),
+        ]
+        for name, cwd, values, session, changes in cases:
+            with self.subTest(name):
+                self.assert_silent(self.guard(cwd, values, session=session, settings=self.REFUSE, **changes))
+
+    def test_a_shared_worktree_passes(self) -> None:
+        # A side session started in its starter's worktree records it as its own.
+        self.write_record(HOST, SESSION, self.theirs)
+        self.assert_silent(self.guard(self.theirs, settings=self.REFUSE))
+
+    def test_a_record_naming_no_worktree_keeps_todays_behaviour(self) -> None:
+        for named in (self.main, self.mine / "sub", "relative/path", self.outside / "gone"):
+            with self.subTest(named=named):
+                self.write_record(HOST, SESSION, named)
+                self.assert_silent(self.guard(self.theirs, settings=self.REFUSE))
+
+    def test_owners_that_do_not_count(self) -> None:
+        cases: list[tuple[str, Callable[[], None]]] = [
+            ("archived", lambda: self.write_record(STARTER, OTHER_SESSION, self.theirs, isArchived=True)),
+            ("unreadable", lambda: (self.records / f"{STARTER}.json").write_text("{not json", encoding="utf-8")),
+            ("not an object", lambda: (self.records / f"{STARTER}.json").write_text(f'["{self.theirs}"]', encoding="utf-8")),
+            ("a relative cwd", lambda: self.write_record(STARTER, OTHER_SESSION, ".claude/worktrees/their-task")),
+            ("a malformed session id", lambda: self.write_record(STARTER, OTHER_SESSION, self.theirs, sessionId="x/their-task")),
+            ("a subfolder as cwd", lambda: self.write_record(STARTER, OTHER_SESSION, self.theirs / "their-task")),
+        ]
+        for name, change in cases:
+            with self.subTest(name):
+                change()
+                self.assert_silent(self.guard(self.theirs, settings=self.REFUSE))
+        # A record that is a symlink to a real owner's names nobody either.
+        real = self.outside / "owner.json"
+        real.write_text(json.dumps({"sessionId": STARTER, "cliSessionId": OTHER_SESSION, "cwd": str(self.theirs)}), encoding="utf-8")
+        (self.records / f"{STARTER}.json").unlink()
+        (self.records / f"{STARTER}.json").symlink_to(real)
+        self.assert_silent(self.guard(self.theirs, settings=self.REFUSE))
+        # And the plain record fires again.
+        (self.records / f"{STARTER}.json").unlink()
+        self.write_record(STARTER, OTHER_SESSION, self.theirs)
+        self.assertEqual(self.guard(self.theirs, settings=self.REFUSE).returncode, 2)
+
+    def test_this_sessions_own_record_is_no_owner(self) -> None:
+        # Only another record makes a worktree another session's.
+        (self.records / f"{STARTER}.json").unlink()
+        self.write_record(HOST, SESSION, self.mine)
+        self.assert_silent(self.guard(self.theirs, settings=self.REFUSE))
+
+    def test_worktree_owners_never_raises(self) -> None:
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            self.assertEqual(MODULE.worktree_owners(self.theirs, HOST), (STARTER,))
+            self.assertEqual(MODULE.worktree_owners(self.mine, HOST), ())
+            self.assertEqual(MODULE.worktree_owners(self.mine, STARTER), (HOST,))
+            with mock.patch.object(MODULE.Path, "glob", side_effect=RuntimeError("boom")):
+                self.assertEqual(MODULE.worktree_owners(self.theirs, HOST), ())
+        with mock.patch.dict(os.environ, {"HOME": str(self.outside)}):
+            self.assertEqual(MODULE.worktree_owners(self.theirs, HOST), ())
+
+
 class ClaudeHarnessStateTest(GuardFixture):
     """The read-namespace that lets a report read a worktree run's transcripts.
 

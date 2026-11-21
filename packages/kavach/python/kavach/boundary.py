@@ -647,6 +647,51 @@ def session_worktree(session_id: object, own: Any, environ: Mapping[str, str]) -
         return None
 
 
+def worktree_owners(root: Path, host: str) -> tuple[str, ...]:
+    """The desktop app sessions, other than ``host``, whose record names
+    ``root`` as their ``cwd`` and is not archived (veda#363).
+
+    Every record is read, so this is for the rare call whose shell is in a
+    worktree that this session's record does not name. A record is parsed
+    only when its text holds the worktree's folder name. One that is a
+    symlink, too large, unreadable or of the wrong shape names nobody, and so
+    does a missing app folder. Never raises: a failure counts as no owner, so
+    the caller can only stay quiet."""
+
+    try:
+        app = claude_app_root()
+        sessions = app / "claude-code-sessions"
+        if app.is_symlink() or sessions.is_symlink() or not sessions.is_dir():
+            return ()
+        wanted = root.resolve()
+        needle = json.dumps(wanted.name)[1:-1]
+        owners: list[str] = []
+        for path in sorted(sessions.glob("*/*/local_*.json")):
+            try:
+                if path.is_symlink() or not path.is_file() or path.stat().st_size > RECORD_LIMIT:
+                    continue
+                text = path.read_text(encoding="utf-8")
+                if needle not in text:
+                    continue
+                record = json.loads(text)
+            except (OSError, ValueError, RecursionError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            name, cwd = record.get("sessionId"), record.get("cwd")
+            if not isinstance(name, str) or not HOST_SESSION.fullmatch(name) or name == host:
+                continue
+            if record.get("isArchived") is True:
+                continue
+            if not isinstance(cwd, str) or not cwd.startswith("/"):
+                continue
+            if Path(cwd).resolve() == wanted:
+                owners.append(name)
+        return tuple(dict.fromkeys(owners))
+    except Exception:
+        return ()
+
+
 def deny(message: str) -> None:
     print(f"BLOCKED: {message}", file=sys.stderr)
     raise SystemExit(2)

@@ -146,9 +146,14 @@ RULE_MODES = SHELL_EXPANSION_MODES
 DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 # The shell-expansion rule's id, which `rules` may name too.
 SHELL_EXPANSION_RULE = "commit-message-shell-expansion"
-# Every rule `rules` may name: rules.RULES and the shell-expansion rule.
+# The worktree guard's rule (worktree_guard.py) for a write in another live
+# session's worktree, which `rules` may name too (veda#363).
+OTHER_SESSIONS_WORKTREE_RULE = "other-sessions-worktree"
+# Every rule `rules` may name: rules.RULES, the shell-expansion rule and the
+# worktree guard's.
 RULE_IDS = (
     SHELL_EXPANSION_RULE,
+    OTHER_SESSIONS_WORKTREE_RULE,
     "pipe-masks-exit",
     "cd-out-of-worktree",
     "stryker-inplace",

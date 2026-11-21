@@ -129,7 +129,9 @@ settled a question, so it checks that a look happened, not what it found.
   not the transcript, which "isn't guaranteed to include the final message
   at Stop time" ([hooks reference, Stop input](https://code.claude.com/docs/en/hooks#stop-input)).
   It takes the question sentences in the last three paragraphs, leaving out
-  fenced code, inline code, quoted lines and URLs. A question is held when it
+  fenced code, inline code, quoted lines, URLs and text in double quotes
+  (straight or curly): a question quoted from someone else is not the
+  session's own. A question is held when it
   names alternatives ("which", "or", "how should", "either"). "… or not?" and
   a bare "A/B" do not count, since no buttons tell a pair from a path. A
   yes/no question that names no alternative ("Force-push to main?", "Delete

@@ -248,10 +248,13 @@ describe('runPrTitle', () => {
   it('exits 2 when the commitlint config does not load, with its reason', async () => {
     const broken = mkdtempSync(join(tmpdir(), 'pariksha-pr-title-broken-'));
     try {
-      writeFileSync(join(broken, 'commitlint.config.mjs'), "export default { extends: ['no-such-commitlint-config'] };\n");
+      // A config that throws: an `extends` that does not resolve would do too,
+      // but commitlint then asks npm for its global folder, and npm leaves a
+      // compile cache in TMPDIR.
+      writeFileSync(join(broken, 'commitlint.config.mjs'), "throw new Error('this config does not load');\n");
       const report = await runPrTitle({ PR_TITLE: GOOD[0] }, CONFIG, broken);
       assert.equal(report.code, 2);
-      assert.match(report.stderr[0] as string, /^pariksha pr-title: the commitlint config at .* did not load: .*no-such-commitlint-config.*; nothing was checked, so this is not a pass$/);
+      assert.match(report.stderr[0] as string, /^pariksha pr-title: the commitlint config at .* did not load: .*this config does not load.*; nothing was checked, so this is not a pass$/);
     } finally {
       rmSync(broken, { recursive: true, force: true });
     }

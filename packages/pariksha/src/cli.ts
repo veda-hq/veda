@@ -46,6 +46,7 @@ import { DEFAULT_CONFIG as DEFAULT_ESLINT_BY_WORKSPACE, inheritEslint, lintByWor
 import { parseLicenseConfig, pnpmLicenses, runLicenseCheck, type LicensesRunner } from './license-check.ts';
 import { BASELINE_PATH as CODEQL_BASELINE, runCodeqlBaseline } from './codeql-baseline.ts';
 import { type Commitlint, DEFAULT_PR_TITLE_CONFIG, loadCommitlint, parsePrTitleConfig, runPrTitle } from './pr-title.ts';
+import { defaultDeps as provenanceDeps, ownProvenance as runOwnProvenance, type OwnProvenanceDeps } from './own-provenance.ts';
 
 export interface Io {
   readonly out: (line: string) => void;
@@ -76,6 +77,8 @@ export interface Io {
   readonly cwd?: () => string;
   /** How pr-title gets commitlint and the config at a root; the peers beside pariksha by default. */
   readonly commitlint?: (root: string) => Promise<Commitlint | string>;
+  /** How own-provenance reads files, loads Sigstore and asks the registry; the disk, the peers and npm's registry by default. */
+  readonly provenance?: Partial<Pick<OwnProvenanceDeps, 'readFile' | 'loadSigstore' | 'fetchJson'>>;
 }
 
 /**
@@ -176,6 +179,7 @@ const USAGE = [
   '       pariksha license-check --config <file> [--report <file.json>] [--root <dir>]',
   '       pariksha masked-exit-codes [--config <file>] [--staged] [--root <dir>]',
   '       pariksha non-synced-resources [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
+  '       pariksha own-provenance --config <file> [--root <dir>]',
   '       pariksha pnpm-settings [--config <file>] [--root <dir>]',
   '       PR_TITLE=<title> [PR_NUMBER=<n>] [HEAD_REF=<branch>] pariksha pr-title [--config <file>] [--root <dir>]',
   '       pariksha python-floor --python <interpreter> --floor-file <path> [--exclude <regex>] [--selector <path>] [--root <dir>]',
@@ -1094,6 +1098,24 @@ const prTitle = async (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv): 
   return report.code;
 };
 
+/**
+ * own-provenance: each package of the settings' scope the lockfile under
+ * `--root` resolves, against its npm provenance. Its lines carry the
+ * `own-provenance:` prefix of the script it replaces. Exit 1 on a package
+ * that is not the repository's signed build or could not be checked; 2 on
+ * no settings or bad ones.
+ */
+const ownProvenance = async (f: Map<string, string>, io: Io): Promise<number> => {
+  if (!f.has('--config')) {
+    io.err(`own-provenance: no settings: name a settings file with --config or set checks.own-provenance in ${CONFIG_FILE}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+  const root = rootOf(f);
+  const settings = unchecked('own-provenance:', io, () => configText(f, root));
+  if (settings === undefined) return 2;
+  return runOwnProvenance(settings, root, { ...provenanceDeps, ...io.provenance, out: io.out, err: io.err });
+};
+
 /** `rest` split into its `--name value` pairs and the bare words around them, the files a command names. */
 export const splitFiles = (rest: readonly string[]): { flagArgs: string[]; files: string[] } => {
   const flagArgs: string[] = [];
@@ -1202,6 +1224,7 @@ const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly
   'absolute-paths': { allowed: ['--config', '--files-from', '--base', '--head', '--root'], switches: ['--staged', '--all'], run: absolutePaths },
   'aggregate-gate-needs': { allowed: ['--config', '--root'], run: aggregateGateNeeds },
   'non-synced-resources': { allowed: ['--config', '--files-from', '--base', '--head', '--root'], switches: ['--staged', '--all'], run: nonSyncedResources },
+  'own-provenance': { allowed: ['--config', '--root'], run: ownProvenance },
   'pnpm-settings': { allowed: ['--config', '--root'], run: pnpmSettings },
   'pr-title': { allowed: ['--config', '--root'], run: prTitle },
   'python-floor': { allowed: ['--python', '--floor-file', '--exclude', '--selector', '--root'], run: pythonFloor },
@@ -1289,7 +1312,7 @@ const projectApplied = (command: string, f: Map<string, string>, io: Io, env: No
     return true;
   }) === true;
 
-/** The exit code; a Promise of it for the checks that are asynchronous (those that load an optional peer: enforcement-claims, pr-title). */
+/** The exit code; a Promise of it for the checks that are asynchronous (those that load an optional peer: enforcement-claims, own-provenance, pr-title). */
 export const run = (args: readonly string[], io: Io, version: string = ownVersion(), env: NodeJS.ProcessEnv = process.env): number | Promise<number> => {
   const [command, ...rest] = args;
   if (command === '--version' && rest.length === 0) {

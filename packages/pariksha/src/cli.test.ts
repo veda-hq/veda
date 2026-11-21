@@ -142,6 +142,7 @@ const USAGE = [
   '       pariksha license-check --config <file> [--report <file.json>] [--root <dir>]',
   '       pariksha masked-exit-codes [--config <file>] [--staged] [--root <dir>]',
   '       pariksha non-synced-resources [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
+  '       pariksha own-provenance --config <file> [--root <dir>]',
   '       pariksha pnpm-settings [--config <file>] [--root <dir>]',
   '       PR_TITLE=<title> [PR_NUMBER=<n>] [HEAD_REF=<branch>] pariksha pr-title [--config <file>] [--root <dir>]',
   '       pariksha python-floor --python <interpreter> --floor-file <path> [--exclude <regex>] [--selector <path>] [--root <dir>]',
@@ -235,6 +236,7 @@ describe('run: what no command takes', () => {
       'license-check',
       'masked-exit-codes',
       'non-synced-resources',
+      'own-provenance',
       'pnpm-settings',
       'pr-title',
       'regression-controls',
@@ -315,6 +317,7 @@ describe('run: the flags each command takes', () => {
     ['license-check', '--config', 'x', '--report', 'r', '--root', NOWHERE],
     ['masked-exit-codes', '--config', 'x', '--root', NOWHERE, '--staged'],
     ['non-synced-resources', '--config', 'x', '--files-from', 'x', '--base', 'b', '--head', 'h', '--root', NOWHERE, '--staged', '--all'],
+    ['own-provenance', '--config', 'x', '--root', NOWHERE],
     ['pnpm-settings', '--config', 'x', '--root', NOWHERE],
     ['pr-title', '--config', 'x', '--root', NOWHERE],
     ['python-floor', '--python', 'p', '--floor-file', 'f', '--exclude', 'e', '--selector', 's', '--root', NOWHERE],
@@ -475,7 +478,7 @@ describe('.pariksha.json', () => {
     assert.equal(unknown.code, 2);
     assert.match(
       unknown.err[0] ?? '',
-      / \(pariksha 0\): unknown check "boundary" in "checks"; this version reads settings for absolute-paths, aggregate-gate-needs, authority-citations, codec-registry, codeql-baseline, coverage-by-type, coverage-exemptions, doc-budgets, doc-references, duplicate-tests, enforcement-claims, env-gate-switches, eslint-by-workspace, eslint-targets, fault-injection-registry, flaky-tests, license-check, masked-exit-codes, non-synced-resources, pnpm-settings, pr-title, regression-controls, repo-rules, shell-gates; nothing was checked, so this is not a pass$/,
+      / \(pariksha 0\): unknown check "boundary" in "checks"; this version reads settings for absolute-paths, aggregate-gate-needs, authority-citations, codec-registry, codeql-baseline, coverage-by-type, coverage-exemptions, doc-budgets, doc-references, duplicate-tests, enforcement-claims, env-gate-switches, eslint-by-workspace, eslint-targets, fault-injection-registry, flaky-tests, license-check, masked-exit-codes, non-synced-resources, own-provenance, pnpm-settings, pr-title, regression-controls, repo-rules, shell-gates; nothing was checked, so this is not a pass$/,
     );
     const gone = absolute(project({ 'absolute-paths': 'gone.json' }).env);
     assert.equal(gone.code, 2);

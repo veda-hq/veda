@@ -1127,6 +1127,57 @@ repository is needed only when there is a document to read; without it, the
 documents come from `git ls-files`, so a root that is not a repository exits
 2 even when it holds no document.
 
+## `own-provenance`
+
+```sh
+pariksha own-provenance --config <file> [--root <dir>]
+```
+
+What stands in for pnpm's release age on the repository's own scope. A
+repository that exempts its own packages from `minimumReleaseAge` (nobody
+else watches those releases, so the day's wait buys nothing) names the scope
+here. Every package of it that the lockfile resolves must carry npm
+provenance saying the repository's release workflow built it from the tag of
+its own version (`refs/tags/v<version>`), for the very tarball the lockfile
+installs. A release published any other way, from a stolen token, a fork or
+another workflow, fails.
+
+The statement's workflow fields are written by whoever ran `npm publish`, so
+they alone prove nothing. What binds them is the Sigstore bundle around the
+statement, verified offline: the DSSE signature, the certificate's chain to
+Sigstore's public-good Fulcio, its signed certificate timestamp and Rekor
+entry, and the certificate's identity (its SAN names the release workflow at
+the version's tag; its issuer is GitHub Actions). The trust anchors are
+`baselines/sigstore-trusted-root.json`, shipped with pariksha: Sigstore's
+public-good `trusted_root.json`, whose sha256 (`6494e21e…0b66`) matched the
+`trusted_root.json` entry of Sigstore's TUF targets v14 on 2026-11-14. When
+Sigstore rotates a key, new releases fail until the file is refreshed (take
+`targets/trusted_root.json` from `sigstore/root-signing` and check its sha256
+against the latest `targets.json` on `tuf-repo-cdn.sigstore.dev`).
+
+```json
+{ "scope": "@acme/", "repository": "https://github.com/acme/tools", "workflow": ".github/workflows/release.yml" }
+```
+
+- `scope`, `repository` and `workflow` are required; pariksha ships none.
+- `lockfile` (default `pnpm-lock.yaml`) and `trustedRoot` (default the one
+  pariksha ships) are paths under `--root`.
+
+It fails closed. An own key it cannot read fails: a prerelease, a tarball or
+git resolution, a shape it does not know. So do a lockfile that resolves no
+package of the scope, a registry it cannot reach or that stalls past 30
+seconds, an answer with no SLSA provenance, and an integrity that is not a
+SHA-512 digest.
+
+`@sigstore/bundle` (>=5 <6), `@sigstore/protobuf-specs` (>=0.5 <0.6) and
+`@sigstore/verify` (>=4.1 <5) are optional peers: install them beside
+pariksha. The output keeps the `own-provenance:` prefix of the script it was
+ported from. Exit 0 when every own package is the repository's signed build,
+naming them on stdout; 1 when one is not or could not be checked (each reason
+on stderr, then a line saying why the scope must pass), the lockfile or the
+trusted root cannot be read, or the peers are missing; 2 with no settings or
+bad ones.
+
 ## `pnpm-settings`
 
 ```sh

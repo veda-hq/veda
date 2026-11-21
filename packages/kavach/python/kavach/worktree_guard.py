@@ -261,17 +261,15 @@ def claude_memory_root(primary: Path) -> Path | None:
     return resolved
 
 
-# A Claude Code session id, as the PreToolUse payload's `session_id` carries
-# it, and a desktop app session (`CLAUDE_CODE_HOST_SESSION_ID`). Each is
-# matched whole before it names a folder, so neither can carry a `..` or a `/`.
-SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-HOST_SESSION = re.compile(r"local_" + SESSION_ID.pattern)
+# The session ids and the desktop app's record of a session live in
+# boundary.py, which the cd-out-of-worktree rule reads them from too.
+SESSION_ID = boundary.SESSION_ID
+HOST_SESSION = boundary.HOST_SESSION
+claude_app_root = boundary.claude_app_root
+session_record = boundary.session_record
 # One folder name in Claude Code's per-project temp folder (a slug of the
 # project's path).
 PROJECT_SLUG = re.compile(r"[A-Za-z0-9_-]{1,255}")
-# The desktop app's record of a session is a few hundred KB; past this it is
-# not read.
-RECORD_LIMIT = 8 * 1024 * 1024
 
 
 def claude_temp_root(environ: Mapping[str, str]) -> Path | None:
@@ -291,12 +289,6 @@ def real_directory(path: Path) -> bool:
     """A directory that is not a symlink."""
 
     return not path.is_symlink() and path.is_dir()
-
-
-def claude_app_root() -> Path:
-    """The desktop app's support folder, where it keeps session notes."""
-
-    return Path.home() / "Library" / "Application Support" / "Claude"
 
 
 def notes_root() -> Path:
@@ -393,25 +385,6 @@ class SessionFolders:
         if not boundary.is_inside(resolved, notes_root()):
             return False
         return any(boundary.is_inside(resolved, folder) for folder in self.notes())
-
-
-def session_record(app: Path, host: str) -> dict[str, Any] | None:
-    """The desktop app's record of session ``host``, when exactly one is
-    found (``claude-code-sessions/<account>/<org>/<host>.json``)."""
-
-    found = list((app / "claude-code-sessions").glob(f"*/*/{host}.json"))
-    if len(found) != 1:
-        return None
-    path = found[0]
-    try:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > RECORD_LIMIT:
-            return None
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, RecursionError):
-        return None
-    if not isinstance(record, dict) or record.get("sessionId") != host:
-        return None
-    return record
 
 
 def granted_notes(record: dict[str, Any], notes: Path) -> list[str]:

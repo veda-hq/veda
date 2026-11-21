@@ -24,7 +24,9 @@ The rules (README, "Rules that hold a lesson"):
   in no git repository refuses even on trial: from there the worktree guard
   runs reads only. From a checkout no session can own (another repository, or
   a main checkout other than the ``worktree.ownCheckout`` clone), the ``cd``
-  back into one a session can own passes (veda#339).
+  back into one a session can own passes (veda#339). Where the desktop app's
+  record names the session's worktree, a ``cd`` into it passes from anywhere,
+  another session's worktree included, and a finding names it (veda#362).
 - ``stryker-inplace``: ``stryker run --inPlace``, or a Stryker config written
   with ``inPlace: true``, mutates the real files and restores them only after
   a run that finishes.
@@ -80,6 +82,9 @@ class Call:
     cwd: str
     # The consumer's settings, which ``judge`` hands every detector.
     settings: Any = field(default=None, compare=False)
+    # The payload's ``session_id``, which names the desktop app's record of
+    # the session (``boundary.session_worktree``).
+    session_id: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -323,12 +328,30 @@ def ownable(folder: str, settings: Any) -> bool:
     return boundary.ownable_checkout(Path(folder), own, os.environ) is not None
 
 
+def recorded_worktree(call: Call) -> str | None:
+    """The worktree the desktop app's record names as this session's
+    (``boundary.session_worktree``), or ``None`` with no record that fits."""
+
+    if __package__:
+        from . import boundary
+    else:
+        import boundary  # type: ignore[no-redef]
+    own = getattr(call.settings, "own_checkout", None)
+    found = boundary.session_worktree(call.session_id, own, os.environ)
+    return str(found) if found is not None else None
+
+
+# Not yet read: ``recorded_worktree`` runs at most once per call.
+UNREAD = object()
+
+
 def cd_out_of_worktree(call: Call) -> str | None:
     script = bash_command(call)
     if not re.search(r"\b(?:cd|pushd)\b", script):
         return None
     root: str | None = None
     owned: bool | None = None
+    recorded: Any = UNREAD
     for step in steps(script, call.cwd):
         command = step.command
         if command.depth != 0 or step.pipes_on or command.piped_from is not None:
@@ -354,9 +377,24 @@ def cd_out_of_worktree(call: Call) -> str | None:
             # cd in the same command is judged from the checkout it entered.
             root, owned = session_checkout(target) or target, True
             continue
+        if recorded is UNREAD:
+            # The desktop app's record names the session's worktree where the
+            # hook input does not: from another session's worktree, which
+            # looks ownable, the cd back is told apart (veda#362).
+            recorded = recorded_worktree(call)
+        if recorded is not None and inside(target, recorded):
+            root, owned = recorded, True
+            continue
         moves =f"`{command.words[0].text} {target}` moves the shell"
-        whose = "this session's" if owned else "its"
-        if owned:
+        elsewhere = recorded is not None and not inside(root, recorded)
+        whose = "this session's" if owned and not elsewhere else "its"
+        if elsewhere:
+            # The shell's checkout is not the one the record names: name that
+            # one as the session's, and the way back to it.
+            mine = f" (the shell is in {root}; {recorded} is this session's)"
+            back = f"`cd {recorded}` brings it back"
+            stay = "Read elsewhere with absolute paths, `git -C <dir>` or `ls <dir>`."
+        elif owned:
             mine = f" ({root} is this session's)"
             back = f"`cd {root}` brings it back"
             stay = "Stay in the checkout: read elsewhere with absolute paths, `git -C <dir>` or `ls <dir>`."
@@ -841,4 +879,10 @@ def read_call(raw: str) -> Call | None:
     tool, tool_input, cwd = data.get("tool_name"), data.get("tool_input"), data.get("cwd")
     if not isinstance(tool, str) or not isinstance(tool_input, dict):
         return None
-    return Call(tool, tool_input, cwd if isinstance(cwd, str) and os.path.isabs(cwd) else os.getcwd())
+    session = data.get("session_id")
+    return Call(
+        tool,
+        tool_input,
+        cwd if isinstance(cwd, str) and os.path.isabs(cwd) else os.getcwd(),
+        session_id=session if isinstance(session, str) else None,
+    )

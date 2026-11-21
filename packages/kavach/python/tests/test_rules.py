@@ -247,6 +247,113 @@ class CdOutOfWorktree(Repo):
             self.assertIsNone(rules.peer_worktree("/x", self.repo))
 
 
+SESSION = "11111111-2222-4333-8444-555555555555"
+HOST = "local_0a0a0a0a-1b1b-4c2c-8d3d-4e4e4e4e4e4e"
+
+
+class RecordedWorktree(Repo):
+    """veda#362: two managed worktrees of one repository, ``mine`` (the one
+    the desktop app's record names as this session's) and ``theirs``, with
+    the app folder faked under a test HOME."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.mine = os.path.join(self.repo, ".claude", "worktrees", "mine")
+        self.theirs = os.path.join(self.repo, ".claude", "worktrees", "theirs")
+        for path in (self.mine, self.theirs):
+            git(self.repo, "worktree", "add", "-q", path)
+        self.home = os.path.join(self.work, "home")
+        self.records = Path(self.home, "Library", "Application Support", "Claude", "claude-code-sessions", "a", "o")
+        self.records.mkdir(parents=True)
+        self.write_record()
+        patched = mock.patch.dict(os.environ, {"HOME": self.home, "CLAUDE_CODE_HOST_SESSION_ID": HOST})
+        patched.start()
+        self.addCleanup(patched.stop)
+
+    def write_record(self, **fields: object) -> None:
+        record: dict[str, object] = {"sessionId": HOST, "cliSessionId": SESSION, "cwd": self.mine, "worktreePath": self.mine}
+        record.update(fields)
+        record = {key: value for key, value in record.items() if value is not None}
+        Path(self.records, f"{HOST}.json").write_text(json.dumps(record), encoding="utf-8")
+
+    def find(self, command: str, cwd: str, session: str | None = SESSION) -> str | None:
+        return rules.cd_out_of_worktree(rules.Call("Bash", {"command": command}, cwd, session_id=session))
+
+    def test_from_another_sessions_worktree_the_cd_back_passes(self) -> None:
+        for command in (f"cd {self.mine}", f"cd {self.mine} && pwd", f"pushd {self.mine}/sub"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.find(command, self.theirs))
+        refuse = config.parse({"rules": {"cd-out-of-worktree": "refuse"}})
+        call = rules.Call("Bash", {"command": f"cd {self.mine}"}, self.theirs, session_id=SESSION)
+        self.assertEqual(rules.judge(call, refuse), rules.Outcome([], []))
+
+    def test_with_no_record_that_fits_the_cd_back_still_fires(self) -> None:
+        def fires(**changes: str | None) -> str:
+            with mock.patch.dict(os.environ, {key: value for key, value in changes.items() if value is not None}):
+                for key, value in changes.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                return self.find(f"cd {self.mine}", self.theirs) or ""
+
+        self.assertIn(f"another worktree, {self.mine}", fires(CLAUDE_CODE_HOST_SESSION_ID=None))
+        self.assertIn(f"another worktree, {self.mine}", fires(CLAUDE_CODE_HOST_SESSION_ID="local_../x"))
+        self.assertIn(f"another worktree, {self.mine}", self.find(f"cd {self.mine}", self.theirs, session=None) or "")
+        self.write_record(cliSessionId="66666666-7777-4888-8999-aaaaaaaaaaaa")
+        self.assertIn(f"another worktree, {self.mine}", self.find(f"cd {self.mine}", self.theirs) or "")
+
+    def test_a_recorded_path_that_is_no_ownable_root_names_nothing(self) -> None:
+        sub = os.path.join(self.mine, "sub")
+        os.mkdir(sub)
+        for named in ("/", sub, self.repo, "relative/path", os.path.join(self.work, "missing")):
+            with self.subTest(named=named):
+                self.write_record(worktreePath=named, cwd=named)
+                found = self.find(f"cd {self.mine}", self.theirs) or ""
+                self.assertIn(f"another worktree, {self.mine}", found)
+                self.assertIn(f"({self.theirs} is this session's)", found)
+
+    def test_a_record_with_only_cwd_counts(self) -> None:
+        self.write_record(worktreePath=None)
+        self.assertIsNone(self.find(f"cd {self.mine}", self.theirs))
+
+    def test_a_cd_elsewhere_names_the_recorded_worktree(self) -> None:
+        elsewhere = os.path.join(self.work, "elsewhere")
+        found = self.find(f"cd {self.repo}", self.theirs) or ""
+        self.assertIn(f"(the shell is in {self.theirs}; {self.mine} is this session's)", found)
+        self.assertIn(f"until `cd {self.mine}` brings it back", found)
+        self.assertNotIn("Stay in the checkout", found)
+        refused = self.find(f"cd {elsewhere}", self.theirs) or ""
+        self.assertIsInstance(refused, rules.Refuses)
+        self.assertIn(f"until `cd {self.mine}` brings it back", refused)
+
+    def test_from_the_recorded_worktree_a_cd_out_reads_as_before(self) -> None:
+        found = self.find(f"cd {self.theirs}", self.mine) or ""
+        self.assertIn(f"another worktree, {self.theirs}, which another session may own ({self.mine} is this session's)", found)
+        self.assertIn(f"until `cd {self.mine}` brings it back", found)
+
+    def test_a_later_cd_is_judged_from_the_recorded_worktree(self) -> None:
+        found = self.find(f"cd {self.mine} && cd {self.theirs}", self.theirs) or ""
+        self.assertIn(f"({self.mine} is this session's)", found)
+
+    def test_a_cd_inside_the_checkout_reads_no_record(self) -> None:
+        with mock.patch.object(rules, "recorded_worktree", side_effect=AssertionError("read")):
+            self.assertIsNone(self.find(f"cd {self.theirs}", self.theirs))
+
+    def test_the_command_guard_lets_the_cd_back_through_a_refusing_rule(self) -> None:
+        settings = os.path.join(self.work, "kavach.json")
+        Path(settings).write_text(json.dumps({"rules": {"cd-out-of-worktree": "refuse"}}), encoding="utf-8")
+        env = {**ENV, "HOME": self.home, "CLAUDE_CODE_HOST_SESSION_ID": HOST, "KAVACH_CONFIG": settings}
+        for session, code in ((SESSION, 0), (None, 2)):
+            with self.subTest(session=session):
+                event: dict[str, object] = {"tool_name": "Bash", "tool_input": {"command": f"cd {self.mine}"}, "cwd": self.theirs}
+                if session is not None:
+                    event["session_id"] = session
+                result = subprocess.run(
+                    [sys.executable, str(COMMAND_GUARD)], input=json.dumps(event), cwd=self.theirs, env=env,
+                    capture_output=True, text=True, timeout=120, check=False,
+                )
+                self.assertEqual(result.returncode, code, result.stderr)
+
+
 class StrykerInPlace(unittest.TestCase):
     def find(self, command: str) -> str | None:
         return rules.stryker_inplace(rules.Call("Bash", {"command": command}, "/"))

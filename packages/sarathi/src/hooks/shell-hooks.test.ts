@@ -396,3 +396,62 @@ test('services-reap does nothing without docker, and exits 0', async () => {
   await new Promise(resolve => setTimeout(resolve, 300));
   assert.equal(existsSync(REAP_LOG), false);
 });
+
+// --- worktree-hooks-path.sh --------------------------------------------------
+// Its own repository: the case turns on extensions.worktreeConfig, which the
+// shared fixture's other handlers should not see.
+const HP_MAIN = join(TMP, 'hp-main');
+const HP_WT = join(HP_MAIN, '.claude', 'worktrees', 'hp');
+mkdirSync(HP_MAIN, { recursive: true });
+git(HP_MAIN, 'init', '-q', '-b', 'main');
+git(HP_MAIN, 'commit', '-q', '--allow-empty', '-m', 'init');
+git(HP_MAIN, 'config', 'core.hooksPath', '.githooks');
+git(HP_MAIN, 'config', 'extensions.worktreeConfig', 'true');
+git(HP_MAIN, 'worktree', 'add', '-q', '-b', 'hp', HP_WT);
+const hooksPath = hook('worktree-hooks-path.sh');
+
+function hooksPathRun(input: string): Run {
+  const result = spawnSync('bash', [hooksPath], { cwd: HP_MAIN, input, encoding: 'utf8', env: { ...GIT_ENV, CLAUDE_PROJECT_DIR: HP_MAIN } });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+const scoped = (cwd: string): string => spawnSync('git', ['config', '--worktree', '--get', 'core.hooksPath'], { cwd, env: GIT_ENV, encoding: 'utf8' }).stdout.trim();
+
+test('worktree-hooks-path clears the session worktree’s scoped hooksPath, not the project’s', () => {
+  git(HP_WT, 'config', '--worktree', 'core.hooksPath', join(HP_MAIN, '.githooks'));
+  git(HP_MAIN, 'config', '--worktree', 'core.hooksPath', '/main/own');
+  const run = hooksPathRun(JSON.stringify({ cwd: join(HP_WT) }));
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout, `Cleared worktree-scoped core.hooksPath (${join(HP_MAIN, '.githooks')}); the shared .githooks now applies\n`);
+  assert.equal(scoped(HP_WT), '');
+  assert.equal(git(HP_WT, 'config', '--get', 'core.hooksPath').trim(), '.githooks');
+  // The project checkout named by CLAUDE_PROJECT_DIR keeps its own value.
+  assert.equal(scoped(HP_MAIN), '/main/own');
+  git(HP_MAIN, 'config', '--worktree', '--unset-all', 'core.hooksPath');
+});
+
+test('worktree-hooks-path says nothing when there is no scoped value, or no checkout', () => {
+  assert.deepEqual(hooksPathRun(JSON.stringify({ cwd: HP_WT })), { status: 0, stdout: '', stderr: '' });
+  assert.deepEqual(hooksPathRun(JSON.stringify({ cwd: BIN })), { status: 0, stdout: '', stderr: '' });
+});
+
+test('worktree-hooks-path falls back to the project checkout without a usable cwd', () => {
+  git(HP_MAIN, 'config', '--worktree', 'core.hooksPath', '/main/stale');
+  for (const input of ['not json', JSON.stringify({ cwd: 42 }), JSON.stringify({ cwd: join(TMP, 'missing') })]) {
+    git(HP_MAIN, 'config', '--worktree', 'core.hooksPath', '/main/stale');
+    const run = hooksPathRun(input);
+    assert.equal(run.status, 0, input);
+    assert.match(run.stdout, /^Cleared worktree-scoped core\.hooksPath \(\/main\/stale\)/, input);
+  }
+  assert.equal(scoped(HP_MAIN), '');
+});
+
+test('worktree-hooks-path names git’s default when no shared value is left', () => {
+  const bare = join(TMP, 'hp-plain');
+  mkdirSync(bare, { recursive: true });
+  git(bare, 'init', '-q', '-b', 'main');
+  git(bare, 'config', 'extensions.worktreeConfig', 'true');
+  git(bare, 'config', '--worktree', 'core.hooksPath', '/elsewhere');
+  const result = spawnSync('bash', [hooksPath], { cwd: bare, input: JSON.stringify({ cwd: bare }), encoding: 'utf8', env: GIT_ENV });
+  assert.equal(result.stdout, "Cleared worktree-scoped core.hooksPath (/elsewhere); git's default hooks folder now applies\n");
+});

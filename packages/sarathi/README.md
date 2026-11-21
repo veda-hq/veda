@@ -98,6 +98,7 @@ folder, which holds handlers any TypeScript repository can list:
 | `autofix-watch.sh` | PostToolUse `Bash\|mcp__ccd_pr__set_monitor\|mcp__ccd_pr__get_status\|mcp__ccd_turn__wrap_up`; PostToolUseFailure `mcp__ccd_pr__set_monitor` | Lists every pull request the session opens and tells the model, in its context, about each open one that Auto-fix is not on for ("Auto-fix for every pull request"). Never blocks. |
 | `worktree-archive.sh` | PreToolUse `ExitWorktree` (and Codex's `set_thread_archived`) | Denies removing or archiving the session's worktree while `sarathi worktree archive-check` finds work that would be lost ("Worktrees"). List it with `"failClosed": true`. |
 | `services-reap.sh` | SessionStart | Starts `sarathi services reap` detached, output discarded, when `docker` is on PATH: deleted worktrees' services go ("Services"). Never blocks; always exits 0. |
+| `worktree-hooks-path.sh` | SessionStart | Clears a worktree-scoped `core.hooksPath` in the session's checkout, which tools that create worktrees write as an absolute path to another checkout's hooks, so the repository's shared value applies again ("Worktrees"). Says what it cleared; always exits 0. |
 
 They act on the session's checkout, the git toplevel of the event's `cwd`:
 the desktop app runs a worktree session's hooks with `$CLAUDE_PROJECT_DIR`
@@ -692,6 +693,10 @@ word that the PR merged from this branch into main of the same repository
 recovery ref first, and moves commits made after the merge to a successor
 branch. `archive-check` lists every blocker: changes, a git operation,
 ignored files other than rebuildable caches, work not in origin/main.
+
+`sarathi worktree pick` lists the worktrees on stderr, asks for a number
+and prints only the chosen path, since no subprocess can `cd` its shell;
+`sarathi worktree pick --shell` prints the `wt` shell function that does.
 
 Settings are the `worktree` object of `.claude/sarathi.json`:
 

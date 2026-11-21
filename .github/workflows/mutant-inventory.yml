@@ -37,7 +37,7 @@ env:
   # to prove the plumbing. `plan`: the same TypeScript file, every Python
   # module timed and counted, and only tool_guard's shards run, so the full
   # run's cost is read before it starts. `full`: everything.
-  SCOPE: smoke
+  SCOPE: plan
   # #287's head (claude/prepush-gate-272), pinned.
   LANES_SHA: 3fca3c140911467257eeb859b1468e0443d40271
   COSMIC_RAY: cosmic-ray==8.9.0

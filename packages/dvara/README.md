@@ -25,9 +25,13 @@ file in your repository; dvara runs it.
 - **Keep-going mode.** For a preflight, a run of the push hook ahead of the
   push: each stage's `exit 1` is recorded and the hook carries on, so one run
   lists every failure.
-- **A watchdog, if you have one.** `watchdog` names a module the supervisor
-  attaches to each run; it may stop a hung hook and decide the verdict. Without
-  one, or when it fails to load, the hook runs exactly as it would anyway.
+- **A watchdog, if you want one.** `"watchdog": "dvara"` attaches the built-in
+  watchdog to each run (below); any other value names a module of your own.
+  It may stop a hung hook and decide the verdict. Without one, or when it
+  fails to load, the hook runs exactly as it would anyway.
+- **One slot per machine.** `dvara slot` runs a command with extra
+  environment only while it holds a machine-wide slot, and without it
+  otherwise, never waiting (below).
 
 - **A stage list, if you keep one.** `stages`, or the JSON file `stageList`
   names (inside an installed package, say), gives each hook's stage names in
@@ -97,7 +101,7 @@ field is optional; an unknown field is an error.
 | ------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
 | `historyDir`        | `.dvara`                                         | where the history, the quiet log and scratch files go                                                              |
 | `quietHooks`        | `["pre-commit"]`                                 | hooks whose passing output is one line                                                                             |
-| `watchdog`          | `null`                                           | a watchdog module, relative to the root                                                                            |
+| `watchdog`          | `null`                                           | `"dvara"` for the built-in watchdog, or a watchdog module of your own, relative to the root                        |
 | `baseRefs`          | `origin/main`, `origin/develop`, `origin/master` | the refs tried for the base a run is judged against; to `dvara records`, every one that resolves is pushed history |
 | `stages`            | `{}`                                             | each hook's stages in order, which a passing run must keep to; `dvara stages <hook>` prints them                   |
 | `stageList`         | `null`                                           | a JSON file holding the same map instead, relative to the root and read when a run ends; not both                  |
@@ -122,6 +126,37 @@ The environment it reads: `DVARA_MODE=preflight` (a preflight's rows get kind
 `DVARA_BOOTSTRAP_SECONDS` (seconds the hook spent selecting its runtime before
 starting dvara, counted as a stage), `DVARA_VERBOSE=1`. It sets
 `DVARA_MEASURED_HOOK`, `DVARA_STAGE_FILE` and `DVARA_RECORD_FILE` for the hook.
+
+## The built-in watchdog
+
+`"watchdog": "dvara"` stops a hook that is provably deadlocked, and never one
+that is slow. After a quiet window (no stage marker, no process starting or
+exiting, no CPU time), it samples the hook's process tree with `ps` and its
+open descriptors with `lsof`. It acts only on positive evidence: a leaf
+process whose every open IPC channel leads to another idle process in the
+same tree. Waiting on the outside world (a network peer, a daemon, a
+terminal) or on a timed wait (`sleep`) is spared, and a measurement it cannot
+read is never evidence. A timer is invisible to `ps` and `lsof`, so a kill
+also needs the same processes found that way twice, one quiet window apart,
+and once more just before it stops them: a process that sleeps on its own
+timer that long, holding only channels to idle processes in the tree, is
+treated as stuck.
+
+In `enforce` mode, it stops the tree (SIGTERM, then SIGKILL after the grace
+period). The run exits 124 and its row's status is `timed_out`, as is its
+last marked stage's when it marked one, and the diagnostics go under `<historyDir>/hangs/<run>/`, kept 14 days. In `report`
+mode, it writes the diagnostics and leaves the hook alone.
+
+| Variable                         | Default                                                  |
+| -------------------------------- | -------------------------------------------------------- |
+| `DVARA_WATCHDOG`                 | `enforce`, or `report` on a CPU with efficiency cores, where enforcing is not yet verified; set `enforce`, `report` or `off` |
+| `DVARA_WATCHDOG_IDLE_MS`         | `600000`: quiet this long before the deadlock check runs |
+| `DVARA_WATCHDOG_EXTERNAL_IDLE_MS`| `3600000`: quiet on an outside wait before it warns      |
+| `DVARA_WATCHDOG_SAMPLE_MS`       | `5000`                                                   |
+| `DVARA_WATCHDOG_GRACE_MS`        | `10000`: from SIGTERM to SIGKILL                         |
+
+It runs on macOS only. Elsewhere its row's mode is `unsupported` (or `off`
+when `DVARA_WATCHDOG=off`), and the hook runs as it would without it.
 
 ## A watchdog module
 
@@ -271,6 +306,33 @@ resolves. It never refuses: exit 0 whatever it finds, or when it cannot tell
 node node_modules/@veda-hq/dvara/dist/cli.js review-size --cap 50000 --ignore 'pnpm-lock.yaml' --ignore 'docs/**'
 ```
 
+## A machine-wide slot: `dvara slot`
+
+Some runs are fast alone and fatal together: four test suites at full width
+can exhaust a machine that one at full width beside three at a fallback
+width does not. `dvara slot` caps the machine at the case that is safe:
+
+```sh
+dvara slot --name <name> [--dir <dir>] [--set NAME=VALUE]… [--unset NAME]… -- <command> [args…]
+```
+
+It tries once, never waiting, to take the slot `<name>`:
+
+- If it gets the slot, it runs the command with each `--set` variable and holds the slot until the command exits.
+- If the slot is held, or anything fails, it runs the command without the `--set` variables.
+
+Every run drops each `--unset` variable from the command's environment. It
+does not try in CI, when a `--set` variable is already set (an explicit value
+wins), or with `DVARA_SLOT=off`. It prints one line to stderr saying which.
+
+The slot is the lock file `<dir>/<hostname>/<name>.lock` (`--dir` defaults to
+`~/.dvara/slots`; `DVARA_SLOT_DIR` replaces the whole directory). It is
+linked into place complete and removed when the command exits. A holder that
+died without releasing it, or whose pid was reused (by its start time), is
+reclaimed under `<name>.reclaim`. Each start is a JSON line in `slots.jsonl`
+beside it. A forwarded SIGINT or SIGTERM decides the exit status, a command
+that cannot start is 127, and bad arguments are 2.
+
 ## Commands
 
 ```sh
@@ -282,5 +344,6 @@ dvara frozen <--staged | --base REF [--head REF]>
 dvara trailers [--key KEY]… <commit-msg-file>  # refuse trailer lines git would not read
 dvara exec-bits --staged [--refuse]  # warn on (or refuse) a dropped executable bit
 dvara review-size --cap N [--ignore GLOB]… [--base REF]  # warn over a reviewer's line cap
+dvara slot --name <name> [--dir <dir>] [--set NAME=VALUE]… [--unset NAME]… -- <command…>  # run with a machine-wide slot, or without it
 dvara --version
 ```

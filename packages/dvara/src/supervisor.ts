@@ -23,12 +23,13 @@ import {
 import { cpus, totalmem } from "node:os";
 import { relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Config } from "./config.ts";
+import { BUILT_IN_WATCHDOG, type Config } from "./config.ts";
 import { hookKind, invocationContext, perfLevelNames } from "./context.ts";
 import { headMoved, readHead } from "./head.ts";
 import { isQuiet, successLine, successNotices } from "./quiet.ts";
 import { parseRecords, parseStages, treeUsage } from "./records.ts";
 import { readStageLists, stageVerdict } from "./stages.ts";
+import * as dvaraWatchdog from "./watchdog.ts";
 
 /** Exit code per signal, shared by the pre-launch path and the exit handler. */
 export const SIGNAL_EXIT_CODES: Readonly<Record<string, number>> = {
@@ -54,7 +55,8 @@ export interface Watchdog {
 
 /**
  * A watchdog module (`watchdog` in the config): a safety net that may stop a
- * hung hook. Loaded dynamically and fail-open: the hook runs exactly as it
+ * hung hook. `"dvara"` is the built-in one (watchdog.ts); any other value is a
+ * path, loaded dynamically. Either is fail-open: the hook runs exactly as it
  * would without one.
  */
 export interface WatchdogModule {
@@ -117,6 +119,9 @@ const readOrNull = (path: string): string | null => {
 
 const importWatchdog = async (path: string): Promise<WatchdogModule> =>
   (await import(pathToFileURL(path).href)) as WatchdogModule;
+
+/** The built-in watchdog, held to the contract a module loaded from a path keeps. */
+const BUILT_IN: WatchdogModule = dvaraWatchdog;
 
 /** What a run is judged against, read once before the hook starts. */
 export const judgedAgainst = (
@@ -275,7 +280,10 @@ export const supervise = async (
   let watchdogModule: WatchdogModule | null = null;
   if (config.watchdog) {
     try {
-      watchdogModule = await loadWatchdog(resolve(root, config.watchdog));
+      watchdogModule =
+        config.watchdog === BUILT_IN_WATCHDOG
+          ? BUILT_IN
+          : await loadWatchdog(resolve(root, config.watchdog));
     } catch {
       /* the watchdog is a safety net, never a prerequisite for running the hook */
     }

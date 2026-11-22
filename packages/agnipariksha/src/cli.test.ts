@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, type ChildProcess } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -590,6 +590,7 @@ test('each Stryker run gets its own fresh temp directory, which no lane env can 
     assert.equal(first.TMP, first.TMPDIR);
     assert.equal(first.tmpdir, first.TMPDIR, "the child's os.tmpdir() is its own directory");
     assert.ok(first.TMPDIR.startsWith(join(tmpdir(), SCRATCH_TMP_PREFIX)), first.TMPDIR);
+    assert.equal(basename(first.TMPDIR).slice(0, -6), 'agnipariksha-tmp-', 'named so a leftover is recognisable');
     assert.deepEqual(first.entries, [], 'fresh and empty');
     assert.equal(existsSync(first.TMPDIR), false, 'removed after the run');
     const second = await seen();

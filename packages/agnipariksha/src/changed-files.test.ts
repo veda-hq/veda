@@ -46,6 +46,8 @@ const diff = (...body: string[]): string => ['diff --git a/x.ts b/x.ts', '--- a/
 test('comment-only: line comments, block comments and blank lines', () => {
   assert.equal(commentOnly(diff('@@ -1 +1 @@', '-// old', '+// new', '+', '+  /* a', '+   * b', '+   */')), true);
   assert.equal(commentOnly(diff('@@ -3,0 +4 @@', '+   ', '\\ No newline at end of file')), true);
+  // git names the enclosing function after a hunk header, so the header starts with @@ but need not end with it.
+  assert.equal(commentOnly(diff('@@ -5 +5 @@ export function x() {', '-  // old', '+  // new')), true);
 });
 
 test('any code line judges the file', () => {

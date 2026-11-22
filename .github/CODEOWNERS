@@ -10,6 +10,19 @@
 /scripts/version-rule.mjs           @AlokBansal8
 /README.md                          @AlokBansal8
 
+# What the mutation gate judges: its lanes, their Stryker configs, and the
+# script that plans the lanes with work. A pull request runs its own copy, so
+# it could drop or narrow the lane that would judge it. The gate's workflow,
+# .github/workflows/mutation.yml, is not here: niyam's shared Guard judges it
+# against the approved slice, as it does every .github/ change. Not covered:
+# the @veda-hq/agnipariksha pin in package.json, whose planner the script
+# calls. Pins stay agents' work, and released-pins.mjs holds each to an exact
+# release.
+/agnipariksha.json                  @AlokBansal8
+/stryker/                           @AlokBansal8
+/packages/*/stryker.config.mjs      @AlokBansal8
+/scripts/mutation-lanes.mjs         @AlokBansal8
+
 # What veda's lint enforces and what it forgives: the rules, and the findings
 # suppressed when they were turned on. Turning a rule off or adding a
 # suppression waits for the owner's review too.

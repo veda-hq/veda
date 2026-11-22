@@ -142,16 +142,21 @@ so a pull request touching any path `.github/CODEOWNERS` names for Alok
 also waits for his approving review, then merges by itself. Those paths are
 the release rules (`.github/workflows/release.yml`,
 `.github/workflows/version-rule.yml`, `scripts/version-rule.mjs`,
-`README.md`), the lint rules and their suppressions
+`README.md`), what the mutation gate judges (`agnipariksha.json`,
+`stryker/`, each package's `stryker.config.mjs`,
+`scripts/mutation-lanes.mjs`), the lint rules and their suppressions
 (`eslint.config.js`, `eslint-suppressions.json`), and `.github/CODEOWNERS`
 itself; a change to any one of them alone waits too. Until he approves, it
 is open, not done. Every other path, the other workflows included, has no
 owner: his approval of the slice, state or work item is the review. The
 files that run the required checks (`.github/workflows/ci.yml`,
-`.github/workflows/niyam.yml`, `.github/niyam.json`) have no owner either:
-niyam's shared Guard judges a change to them against the approved slice, as
-it does any other `.github/` change. It runs on `pull_request_target`, from
-main's copy, so the pull request's own copy cannot weaken it.
+`.github/workflows/mutation.yml`, `.github/workflows/niyam.yml`,
+`.github/niyam.json`) have no owner either: niyam's shared Guard judges a
+change to them against the approved slice, as it does any other `.github/`
+change. It runs on `pull_request_target`, from main's copy, so the pull
+request's own copy cannot weaken it. The sources the gate mutates are not
+owned; veda's lint refuses a `// Stryker disable` comment in them
+(`docs/lessons/stryker.md`).
 
 Leave auto-merge off only to hold a pull request on purpose (say why in it),
 or for a change that needs Alok's yes first, such as a major release

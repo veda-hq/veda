@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import {
   existsSync,
   mkdtempSync,
@@ -413,4 +414,161 @@ describe("isEntry", () => {
     });
     assert.equal(out.trim(), ownVersion());
   });
+});
+
+describe("dvara slot", () => {
+  const cli = resolve(import.meta.dirname, "cli.ts");
+  const GRANT = "GRANT_WORKERS";
+  /** The environment a run gets: never CI, never switched off, no preset grant. */
+  const slotEnv = (dir: string): NodeJS.ProcessEnv => ({
+    ...process.env,
+    CI: "",
+    DVARA_SLOT: undefined,
+    [GRANT]: undefined,
+    DVARA_SLOT_DIR: dir,
+  });
+  const runSlot = (argv: string[], dir: string) =>
+    spawnSync(process.execPath, [cli, "slot", ...argv], {
+      encoding: "utf8",
+      env: slotEnv(dir),
+      timeout: 60_000,
+      killSignal: "SIGKILL",
+    });
+  const printGrant = [
+    process.execPath,
+    "-e",
+    `process.stdout.write(String(process.env.${GRANT}))`,
+  ];
+  const lock = (dir: string, name: string): string => join(dir, `${name}.lock`);
+
+  it("lists the command in its usage", () => {
+    assert.ok(
+      USAGE.includes(
+        "dvara slot --name <name> [--dir <dir>] [--set NAME=VALUE]… [--unset NAME]… -- <command> [args…]",
+      ),
+      USAGE,
+    );
+  });
+
+  it("runs the slot on the wiring it is given", async () => {
+    const dir = scratch("dvara-cli-slot-");
+    const { io, err } = capture();
+    const status = await run(["slot", "--name", "mobile", "--", "cmd"], {
+      io,
+      cwd: dir,
+      env: { DVARA_SLOT_DIR: dir },
+      slot: {
+        spawn: () => {
+          const child = Object.assign(new EventEmitter(), { kill: () => true });
+          queueMicrotask(() => child.emit("exit", 5, null));
+          return child;
+        },
+      },
+    });
+    assert.equal(status, 5);
+    assert.deepEqual(err, ["[dvara slot] mobile: took the slot"]);
+    assert.equal(existsSync(lock(dir, "mobile")), false);
+  });
+
+  it("runs the command with the variables, releases the slot, and logs the start", () => {
+    const dir = scratch("dvara-cli-slot-");
+    const result = runSlot(["--name", "mobile", "--set", `${GRANT}=12`, "--", ...printGrant], dir);
+    assert.equal(result.stdout, "12");
+    assert.match(result.stderr, /\[dvara slot\] mobile: took the slot/);
+    assert.equal(result.status, 0);
+    assert.equal(existsSync(lock(dir, "mobile")), false);
+    const log = JSON.parse(readFileSync(join(dir, "slots.jsonl"), "utf8")) as Record<
+      string,
+      unknown
+    >;
+    assert.equal(log["name"], "mobile");
+    assert.equal(log["taken"], true);
+    assert.deepEqual(log["set"], { [GRANT]: "12" });
+  });
+
+  it("runs the command without the variables while a live process holds the slot", () => {
+    const dir = scratch("dvara-cli-slot-");
+    writeFileSync(
+      lock(dir, "web"),
+      JSON.stringify({
+        pid: process.pid,
+        startIdentity: null,
+        branch: "web",
+        rootDir: "/elsewhere",
+        token: "their-token",
+        since: Date.now(),
+      }),
+    );
+    const result = runSlot(["--name", "web", "--set", `${GRANT}=8`, "--", ...printGrant], dir);
+    assert.equal(result.stdout, "undefined");
+    assert.match(result.stderr, new RegExp(`held by pid ${process.pid}`));
+    assert.match(readFileSync(lock(dir, "web"), "utf8"), /their-token/);
+  });
+
+  it("passes the command's exit status through and still releases the slot", () => {
+    const dir = scratch("dvara-cli-slot-");
+    const result = runSlot(
+      ["--name", "mobile", "--", process.execPath, "-e", "process.exit(7)"],
+      dir,
+    );
+    assert.equal(result.status, 7);
+    assert.equal(existsSync(lock(dir, "mobile")), false);
+  });
+
+  it("exits 127 when the command cannot be started", () => {
+    const dir = scratch("dvara-cli-slot-");
+    const result = runSlot(["--name", "mobile", "--", join(dir, "no-such-command")], dir);
+    assert.equal(result.status, 127);
+    assert.match(result.stderr, /could not start/);
+    assert.equal(existsSync(lock(dir, "mobile")), false);
+  });
+
+  it("exits 2 with usage on bad arguments", () => {
+    const dir = scratch("dvara-cli-slot-");
+    const result = runSlot(["--name", "mobile"], dir);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /usage: dvara slot/);
+  });
+
+  it(
+    "reports an interrupted run as 130 even when the command exits 0 on the signal",
+    { timeout: 60_000 },
+    async () => {
+      const dir = scratch("dvara-cli-slot-");
+      // The command swallows SIGINT and exits 0, as a test runner cleaning up might.
+      const ready = join(dir, "ready");
+      const childScript = [
+        `process.on('SIGINT', () => process.exit(0));`,
+        `require('node:fs').writeFileSync(${JSON.stringify(ready)}, '');`,
+        `setInterval(() => {}, 1000);`,
+      ].join(" ");
+      const wrapper = spawn(
+        process.execPath,
+        [cli, "slot", "--name", "mobile", "--", process.execPath, "-e", childScript],
+        // Its own process group, so cleanup can reach the command too.
+        { env: slotEnv(dir), stdio: "ignore", detached: true },
+      );
+      const group = wrapper.pid ?? 0;
+      try {
+        const exited = new Promise<number | null>((resolve, reject) => {
+          wrapper.on("exit", (code) => resolve(code));
+          wrapper.on("error", reject);
+        });
+        const deadline = Date.now() + 30_000;
+        while (!existsSync(ready) && Date.now() < deadline)
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        assert.ok(existsSync(ready), "the command never started");
+        wrapper.kill("SIGINT");
+        assert.equal(await exited, 130);
+        assert.equal(existsSync(lock(dir, "mobile")), false);
+      } finally {
+        // Whatever failed above, leave no wrapper or command running.
+        try {
+          if (group > 0) process.kill(-group, "SIGKILL");
+        } catch {
+          // fail-open: the group already exited.
+        }
+      }
+    },
+  );
 });

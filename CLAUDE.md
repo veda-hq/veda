@@ -33,8 +33,11 @@ lists, kavach's guards among them.
   `niyam onboard <owner> <agent> --dry-run`); a
   `--reply "<text>"` with quotes does not.
 - **Command guard.** kavach refuses any bypass of git's hooks
-  (`--no-verify`, `-c core.hooksPath=…`), and any push that rewrites or
-  deletes history.
+  (`--no-verify`, `-c core.hooksPath=…`), and any push that rewrites
+  history: a force push (`-f`, `--force`, `--force-with-lease`), a `+`
+  refspec, or `--mirror`. Deleting a branch rewrites no history, and kavach
+  lets `git push origin --delete <branch>` through. Delete your own
+  superseded or closed pull request branches yourself; never ask Alok to.
 - **The advisor stays on.** sarathi refuses a command that sets
   `CLAUDE_CODE_DISABLE_ADVISOR_TOOL`.
 
@@ -139,18 +142,19 @@ so a pull request touching any path `.github/CODEOWNERS` names for Alok
 also waits for his approving review, then merges by itself. Those paths are
 the release rules (`.github/workflows/release.yml`,
 `.github/workflows/version-rule.yml`, `scripts/version-rule.mjs`,
-`README.md`), the files that run the required checks
-(`.github/workflows/ci.yml`, `.github/workflows/mutation.yml`,
-`.github/workflows/niyam.yml`, `.github/niyam.json`), what the mutation
-gate judges (`agnipariksha.json`, `stryker/`, each package's
-`stryker.config.mjs`, `scripts/mutation-lanes.mjs`), the lint rules and
-their suppressions (`eslint.config.js`, `eslint-suppressions.json`), and
-`.github/CODEOWNERS`
+`README.md`), what the mutation gate judges (`agnipariksha.json`,
+`stryker/`, each package's `stryker.config.mjs`,
+`scripts/mutation-lanes.mjs`), the lint rules and their suppressions
+(`eslint.config.js`, `eslint-suppressions.json`), and `.github/CODEOWNERS`
 itself; a change to any one of them alone waits too. Until he approves, it
 is open, not done. Every other path, the other workflows included, has no
 owner: his approval of the slice, state or work item is the review. The
-check files stay owned until veda runs niyam's shared Guard, which judges a
-change to them from main's copy. The sources the gate mutates are not
+files that run the required checks (`.github/workflows/ci.yml`,
+`.github/workflows/mutation.yml`, `.github/workflows/niyam.yml`,
+`.github/niyam.json`) have no owner either: niyam's shared Guard judges a
+change to them against the approved slice, as it does any other `.github/`
+change. It runs on `pull_request_target`, from main's copy, so the pull
+request's own copy cannot weaken it. The sources the gate mutates are not
 owned, and nothing yet refuses a `// Stryker disable` comment in them, so
 only review catches one.
 

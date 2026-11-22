@@ -62,7 +62,10 @@ settings' own `hooks` block, one entry per handler:
 `sarathi hook <Event>` runs the matching handlers side by side and answers
 Claude Code once, as Claude Code combines several hooks' answers: any exit 2
 blocks with every blocker's reason; a fail-closed handler that crashes or
-runs out of time blocks too; JSON answers merge with the strictest decision
+runs out of time blocks too. sarathi blocks with exit 2 either way, which
+drops every JSON answer, so on `Stop` and `SubagentStop` the other handlers'
+`decision: "block"` reasons, then their `additionalContext`, follow the
+blockers' reasons on stderr, each after a blank line. JSON answers merge with the strictest decision
 winning (deny over ask over allow, block over none, `continue: false` over
 true) and every handler's context kept; a handler that failed without
 blocking is named in `systemMessage`, or on stderr with exit 1. A hook list
@@ -95,6 +98,7 @@ folder, which holds handlers any TypeScript repository can list:
 | `autofix-watch.sh` | PostToolUse `Bash\|mcp__ccd_pr__set_monitor\|mcp__ccd_pr__get_status\|mcp__ccd_turn__wrap_up`; PostToolUseFailure `mcp__ccd_pr__set_monitor` | Lists every pull request the session opens and tells the model, in its context, about each open one that Auto-fix is not on for ("Auto-fix for every pull request"). Never blocks. |
 | `worktree-archive.sh` | PreToolUse `ExitWorktree` (and Codex's `set_thread_archived`) | Denies removing or archiving the session's worktree while `sarathi worktree archive-check` finds work that would be lost ("Worktrees"). List it with `"failClosed": true`. |
 | `services-reap.sh` | SessionStart | Starts `sarathi services reap` detached, output discarded, when `docker` is on PATH: deleted worktrees' services go ("Services"). Never blocks; always exits 0. |
+| `worktree-hooks-path.sh` | SessionStart | Clears a worktree-scoped `core.hooksPath` in the session's checkout, which tools that create worktrees write as an absolute path to another checkout's hooks, so the repository's shared value applies again ("Worktrees"). Acts only when `extensions.worktreeConfig` is on, since without it there is no scoped value. Says what it cleared; always exits 0. |
 
 They act on the session's checkout, the git toplevel of the event's `cwd`:
 the desktop app runs a worktree session's hooks with `$CLAUDE_PROJECT_DIR`
@@ -126,12 +130,16 @@ settled a question, so it checks that a look happened, not what it found.
   not the transcript, which "isn't guaranteed to include the final message
   at Stop time" ([hooks reference, Stop input](https://code.claude.com/docs/en/hooks#stop-input)).
   It takes the question sentences in the last three paragraphs, leaving out
-  fenced code, inline code, quoted lines and URLs. A question is held when it
+  fenced code, inline code, quoted lines, URLs and text in double quotes
+  (straight or curly): a question quoted from someone else is not the
+  session's own. A question is held when it
   names alternatives ("which", "or", "how should", "either"). "… or not?" and
   a bare "A/B" do not count, since no buttons tell a pair from a path. A
-  yes/no question that names no alternative ("Force-push to main?", "Delete
-  the branch?") lets the turn end at once. An irreversible step asked as a choice ("Delete the branch or
-  keep it?") is held once, as a `wrap_up` ask is.
+  yes/no question that names no alternative ("Force-push to main?", "Publish
+  v1.0.0?") lets the turn end at once. An irreversible step asked as a choice
+  ("Publish v1.0.0 or wait?") is held once, as a `wrap_up` ask is. A branch
+  the session pushed is not the owner's step: it deletes its own superseded
+  or closed branches itself.
 - **Research:** since the owner's last message, a `WebSearch`, a `WebFetch`,
   a browser page read (`…Claude_Browser__get_page_text`, `read_page`,
   `navigate`), or an `Agent`/`Task` launch of `researcher`,
@@ -160,12 +168,41 @@ settled a question, so it checks that a look happened, not what it found.
   (86%) came after a repo read, so counting a read for every ask would have
   passed 86% of them, including the questions
   official docs settle (API behaviour, defaults, version facts), the common
-  miss in veda-hq/veda#176's sample. Scoped, 380 pass, all naming repository
+  miss in veda-hq/veda#176's sample. Scoped as 0.7.8 read it, over the
+  whole ask, 380 pass, all naming repository
   state, and 352 stay held. On Stop, reading the question's own paragraph
   passes 50 of 166 held closing questions; reading the last three paragraphs
   would pass 102, since a closing summary names files and commits.
+- **Question by question, and nothing outside:** the state is read per
+  unit: each `AskUserQuestion` question with its header and options, the
+  `wrap_up` ask with its buttons, the closing question's paragraph. A look
+  counts only when every unit names repository state and none names
+  something outside the repository: `API` or `SDK`, a dollar amount,
+  price, pricing, billing, credits, a quota, a subscription or a rate
+  limit, credentials, Keychain, OAuth or an API key, Claude Code,
+  claude.ai, Anthropic, OpenAI, a marketplace or Homebrew, documentation,
+  release notes, a changelog or the latest version. No repository read
+  settles those; they need research. Case is ignored, and a service the
+  list does not name is not seen. A path or file named like one
+  (`CHANGELOG.md`, `credentials.json`, `src/api/`) is no such word, and
+  words a trade-off uses for the repository's own work ("costs a CI run",
+  "docs-only", "login", "endpoint", "registry") are left out: in local
+  transcripts they named the repository's work more often than anything
+  outside. On 2026-11-19 a four-question batch about API credits, spend and
+  scope passed as a look because one option's description named a file; it
+  is held now. Over 2,448 local transcripts (2026-11-20, the script on
+  veda-hq/veda#293), 0.7.8's reading passed 412 asks on a look, and this one
+  passes 364. Of the 48 held, 25 name something outside and 28 have a
+  question that names no state.
 - **Declaring the kind:** an ask that declares an owner-only kind passes the
-  first time. The field is `Kind: <kind>` at the start of a line, after the
+  first time: `approval`, `money` or `irreversible` at once, the owner's
+  authority; `preference`, `private` and `ambiguity` only after research or
+  a look in the turn (any look, for a question that names nothing outside;
+  research, for one that does). A choice among options nobody
+  checked is not yet a preference, and a fact the session could have read
+  is not private: on 2026-11-19 two asks declared `preference` for a
+  credential choice the official docs settle, with no research and no look,
+  and passed. The field is `Kind: <kind>` at the start of a line, after the
   end of a sentence or after `(`, its value running to the line's end or a
   `.`, `;` or `)`, case ignored. It is read from each `AskUserQuestion`
   question's text or header (12 characters at most, so `Kind: money` fits
@@ -180,8 +217,7 @@ settled a question, so it checks that a look happened, not what it found.
   one declaration in its last three paragraphs covers every choice question
   in them, and the log records that kind beside each one. Every
   declaration in a unit must be owner-only: `Kind: api` beside `Kind: preference` stays
-  held. `ambiguity` is what is left after research, so it passes only after
-  a look (any one above, for any ask). A researchable kind (`api`,
+  held. A researchable kind (`api`,
   `default`, `version`, `limit`, `error`, `convention`, `state`) or an
   unknown word stays held, and a value that runs into the question
   (`Kind: api - v1 or v2?`) is no known kind, so the question is still read
@@ -192,6 +228,20 @@ settled a question, so it checks that a look happened, not what it found.
   with none, and lost nearly all its value later, on samples of 5 to 28 per
   dimension, so a direction rather than a size. The log shows each kind it
   reads, so a kind declared to skip research shows.
+- **A relabel after a hold:** in the turn of a hold, an ask that puts a
+  question held then with only its `Kind:` fields added or changed is held
+  once more, and logged `held: relabelled`. The question is compared with
+  its `Kind:` fields out, case, spacing and punctuation aside: an
+  `AskUserQuestion` question's text, the `wrap_up` ask, a closing message's
+  choice questions, across the PreToolUse and Stop paths. A question asked
+  again unchanged, its declaration too, is no relabel and passes as the
+  turn's second ask; so does one rephrased with what research found. After
+  a relabel's hold every ask in the turn passes, so a turn holds at most
+  twice. On 2026-11-19 a `wrap_up` ask was held, then passed ten seconds
+  later with only `Kind: private` added. On Stop the continuation that
+  follows a hold carries `stop_hook_active` and passes unread, so a closing
+  message relabelled right after a Stop hold is not seen; one after a
+  `wrap_up` hold is.
 - **Refused (PreToolUse):** exit 2, with the rule, the owner-only kinds and
   how to declare one on stderr, which reaches the model.
 - **Held (Stop):** exit 0 with
@@ -206,22 +256,109 @@ settled a question, so it checks that a look happened, not what it found.
   ignores the field, and the turn ends as before.
 - **Once per turn:** a second held ask in the same turn goes through, keyed
   on the turn (the owner's last message), not the question's text, so an
-  owner-only question is asked again unchanged. The PreToolUse and Stop
+  owner-only question is asked again unchanged. A relabel (above) is the
+  one exception, held once more. The PreToolUse and Stop
   paths share the key: a Stop passes in a turn whose ask was held, and the
   other way round. A Stop with `stop_hook_active` set passes and spends
   nothing. The key is kept in `<dir>/<session id>`, where `<dir>` is
   `SARATHI_ASK_GATE_DIR`, else `$XDG_STATE_HOME/sarathi/ask-gate`, else
-  `~/.local/state/sarathi/ask-gate`.
+  `~/.local/state/sarathi/ask-gate`: the turn on the first line, then a
+  JSON line with the questions held (as compared for a relabel, with the
+  kinds each declared) and whether a relabel was held. A file of the turn
+  alone, as 0.7.8 wrote it, reads as a hold with no questions; a second line
+  it cannot read passes the ask as `passed: state unreadable`.
 - **Passing** is a silent exit 0, never an allow answer. Anything it cannot
   read passes.
 - **Limits on Stop:** the question has already reached the owner when Stop
   runs; the feedback tells the model to research and end again, and not to
   repeat an owner-only question. The transcript can lag, so research in the
   turn's last moments may not be in it yet; the cost is one extra
-  continuation. A Stop
-  handler that exits 2 beside it wins, and sarathi answers with that
-  handler's reason alone: the gate's feedback is not shown, and its once
-  for the turn is spent.
+  continuation. Beside another Stop handler that blocks, the model still
+  gets the gate's feedback with that handler's reason. A handler that
+  answers JSON `decision: "block"` merges with it. Claude Code 2.1.326 gives
+  the model the reason as `Stop hook feedback` and the gate's text beside
+  it. One that exits 2 gets the gate's text after its own reason on stderr
+  (0.7.13 and later). Before 0.7.13 sarathi answered such a Stop with that
+  handler's reason alone. On 2026-11-19 a project's session lost the
+  gate's feedback that way, beside a hook that exits 2 for a pull request's
+  Auto-fix, and its once for the turn was spent anyway (veda#307).
+
+**An ask the app does not see (Stop).** The desktop app and the needs-you
+plugin show that a session waits on its owner from the `ask` of its
+`wrap_up`. A turn that asks only in its closing message shows nothing, so on
+Stop, before the research hold, the handler checks the closing message:
+
+- **It asks the owner** when a line of its last three paragraphs (code and
+  quoted lines out) opens `Needs you:`, bold or not, or ends on a question,
+  with URLs, inline code and "quoted text" taken out. A question answered on
+  its own line ("**Can it close?** Yes, once …") does not end that line.
+- **No `wrap_up` carried an ask** since the turn's prompt: the last
+  user-role entry from the owner, another session (meta or not) or an app
+  event, so a side session's turn counts from the message that started it.
+  A tool result, meta text other than another session's message, a row of
+  system reminders alone and a background task's report start no turn: a
+  `wrap_up` ask before them still stands.
+- **The session has `wrap_up`:** the desktop app names it in
+  `CLAUDE_CODE_TERMINAL_MCP_TOOLS`, or the transcript shows a call to it. A
+  terminal session's Stop is as before.
+
+Then the turn goes on once, with `additionalContext` that starts `file the
+ask.`, quotes the asking line, and says to call `wrap_up` with the question
+as `ask`, reply buttons, and `blocked: true` if the work stops; a turn that
+does not wait on the owner just ends again. The `wrap_up` it asks for then
+meets the research hold on PreToolUse, as any choice-shaped ask does. The
+continuation carries `stop_hook_active`, so it fires at most once a turn.
+Each one is a line in the ask log, `outcome: "nudged: no wrap_up ask"`. Like
+the hold, it needs Claude Code 2.1.163 or later, which reads
+`additionalContext` on Stop; an older one ignores it and the turn ends, so
+there a `nudged` line records feedback the model never saw.
+
+Replayed over this Mac's desktop transcripts (read 2026-11-20), the
+handler's own functions nudge 810 of 26,627 turn endings, most of them
+"Needs you:" endings. Those endings come from a split of the replay's own,
+at every user row that is not a tool result or meta text (reminder-only
+rows and task reports included), not from the handler's, so the sample
+does not lean on the rule it tests. Counting a task report as no prompt drops 11 nudges
+there, each a repeat of an ask already standing.
+
+**Links in asks.** The owner opens an ask from the sidebar, the phone or the
+needs-you band, where a bare `#376` opens nothing. So every ask names each
+GitHub issue, pull request or comment it refers to by its full URL, and the
+handler checks that before anything else, research, a look or a declared
+kind included:
+
+- **A bare reference** is `#N`, `owner/repo#N`, `PR`, `pull request`,
+  `issue` or `comment` followed by a number (`PR 382`, `comment 7068450411`),
+  or a comment fragment on its own (`#issuecomment-N`, `discussion_rN`),
+  read with the URLs taken out. A `github.com` URL in the same ask covers
+  it when its path is an owner/repository resource carrying that number
+  (`/<owner>/<repo>/issues/N`, `/pull/N`, `/discussions/N`), or its
+  fragment carries it (`#issuecomment-N`, `#discussion_rN` and the like), so
+  `#376 (https://…/issues/376)` and `[veda-hq/veda#376](https://…/issues/376)`
+  pass. A search or a query string covers nothing.
+- **On PreToolUse**, an `AskUserQuestion` (questions, headers, options) or a
+  `wrap_up` with an `ask` (its buttons too, and a URL in its `recap` covers,
+  since the ask holds 100 characters) is refused with `BLOCKED: give the full
+  link.`, naming the references. Every ask is checked, a go-ahead included,
+  and a repeat is refused too: the fix is always to hand, and a number that
+  names nothing on GitHub is reworded (option 1, not #1).
+- **On Stop**, the closing message's asking sentences are read, fenced code,
+  quoted lines, inline code and "quoted text" out: a sentence that opens on
+  an imperative (👍, approve, read, look at, check, open, review, react,
+  merge, close, answer, confirm, decide, reply), holds a 👍, `please`, a could-you, `needs you` or
+  a your-approval, or holds a question mark. A line that opens `Needs you:`
+  or ends on a question is read whole, so "PR #382 is green. Merge it?" is
+  held; "Fixed in #383." with "Anything else?" in its own paragraph is not,
+  and neither is a question answered on its own line. A URL anywhere in
+  the message covers. The turn goes on once with `additionalContext` that
+  starts `give the full link.` and quotes the sentences; where no `wrap_up`
+  carried an ask, it also says to file one. This comes before the nudge
+  above and the research hold, which that continuation skips. A report that
+  only mentions `#383` ends the turn.
+
+Each refusal is a line in the ask log, `outcome: "held: bare reference"`,
+with the references in `refs`. The rule is Alok's, from a slip of
+2026-11-22: "👍 the Guards Proposal on #376 (comment 7068450411)".
 
 A project lists it in `.claude/sarathi.json`, beside its other `PreToolUse`
 and `Stop` handlers:
@@ -270,14 +407,22 @@ JSON object:
   owner's message it follows), `via` (`AskUserQuestion`,
   `mcp__ccd_turn__wrap_up` or `Stop`), `tool_use_id`, `questions` (each
   question with its option labels, a `wrap_up`'s reply buttons, not its app
-  actions, and the `kind` it declares), `researched`, `looked`,
-  `names_state`, `kind` (the kinds the ask declares, each once, joined with
+  actions, the `kind` it declares, and its own `names_state` and
+  `names_outside`), `researched`, `looked`, `names_state` (every question
+  names repository state), `names_outside` (some question names something
+  outside), `kind` (the kinds the ask declares, each once, joined with
   `, `; an unknown value lowercased, its spaces and hyphens collapsed to
   single spaces, a leading "a" or "an" dropped, cut to 40 characters;
-  `null` for none), and `outcome`: `held`,
+  `null` for none), and `outcome`: `held`, `held: relabelled` (a `Kind:`
+  line added after a hold),
   `passed: research`, `passed: look`, `passed: declared <kind>`,
-  `passed: second ask`, or `passed: state unreadable` / `unwritable` (the
-  gate passes what it cannot keep its once-per-turn state for). An ask the
+  `passed: second ask` (with `relabelled`: `true` when it is a relabel
+  passing after its own hold), or `passed: state unreadable` /
+  `unwritable` (the
+  gate passes what it cannot keep its once-per-turn state for). A
+  `passed: look` with `names_outside` true cannot happen; a
+  `passed: declared preference` or `private` has `looked` true (a
+  researched ask logs `passed: research`). An ask the
   gate passes over (a go-ahead, a Stop with no choice, a Stop already
   continuing) is not logged, nor is any kind it declares.
 - **An answer** to an `AskUserQuestion`: `time`, `session`, `via: "answer"`,
@@ -590,6 +735,11 @@ recovery ref first, and moves commits made after the merge to a successor
 branch. `archive-check` lists every blocker: changes, a git operation,
 ignored files other than rebuildable caches, work not in origin/main.
 
+`sarathi worktree pick` lists the worktrees whose folders still exist on
+stderr, asks for a number and prints only the chosen path, since no
+subprocess can `cd` its shell;
+`sarathi worktree pick --shell` prints the `wt` shell function that does.
+
 Settings are the `worktree` object of `.claude/sarathi.json`:
 
 ```json
@@ -600,7 +750,69 @@ Settings are the `worktree` object of `.claude/sarathi.json`:
 recovery refs (`refs/<name>/lifecycle/…`); `owner` is who may discard
 scratch files; `cloudCheck` confirms a cloud session (exit 0), else
 `CLAUDE_CODE_REMOTE=true` alone does; `services` names the services file
-("Services"). All four are optional.
+("Services"); `cleanup` says what `sarathi worktree cleanup` may touch
+(below). All are optional.
+
+### Cleanup
+
+`sarathi worktree cleanup [--dry-run]` frees the disk that worktrees and
+their tooling leave behind, from any checkout of the repository. It runs
+nine steps in turn; a failed step is reported and the next one still runs.
+`--dry-run` prints what each step would remove and removes nothing. It
+exits 0 when every step succeeded or was skipped, 1 when any failed, 2 for
+a bad flag. It reads the primary checkout's settings first; settings it
+cannot read stop it before any step.
+
+1. **Leftover worktrees**: only those Claude Code made (a `CLAUDE_BASE`
+   marker in the gitdir), idle three days, unlocked, with nothing
+   uncommitted or untracked, HEAD on a remote branch, and no process or
+   running services in them. Ignored files no other checkout holds are
+   copied to `.git/<name>/worktree-archive/<worktree>` first. The desktop
+   app's own session worktrees and other agents' are never removed.
+2. **The worktree archive**: folders 30 days past their last copy go, then
+   the oldest while it holds over 10 GB.
+3. **`git worktree prune`**: registrations whose folder is gone.
+4. **git-ai folders** for worktrees nothing names any more.
+5. **Idle app worktrees**: after 14 idle days, only their rebuildable
+   output (`node_modules`, build folders, `ios/Pods`) goes; folder and
+   branch stay.
+6. **Docker**: the hourly sweep of `sarathi services prune`, run in-process
+   (it needs `worktree.services`; without one only this part is skipped),
+   then every unused build-cache record. No daemon: skipped.
+7. **Docker Desktop's staged update**, when no Docker Desktop process runs.
+8. **Android NDKs** no listed checkout's build.gradle pins.
+9. **Caches**: `pnpm store prune`, unavailable simulators, `brew cleanup`,
+   the primary checkout's build output and Gradle's caches.
+
+Steps 1 to 6 and the pnpm store run for every project. The rest is off
+until `worktree.cleanup` turns it on; an off step or part is reported as
+skipped, "off in .claude/sarathi.json", never failed:
+
+| Setting | Switches on |
+| --- | --- |
+| `primaryBuilt` | step 9 deletes these paths of the primary checkout, when no process works in it and no Gradle runs |
+| `nestedCopies` | a regular expression for a worktree's nested copies (paths from it), which steps 1 and 5 remove with it; without one, a worktree inside another keeps its parent |
+| `machine.dockerDesktopUpdate` | step 7 |
+| `machine.androidNdk` | step 8, reading the pins from this build.gradle in each checkout |
+| `machine.gradleCaches` | step 9's `~/.gradle/caches`, when no Gradle daemon or build runs |
+| `machine.simulators` | step 9's `xcrun simctl delete unavailable`, on macOS |
+| `machine.brew` | step 9's `brew cleanup` |
+
+Paths are relative, inside the checkout and outside `.git`. For example:
+
+```json
+{
+  "worktree": {
+    "name": "acme",
+    "services": "services.json",
+    "cleanup": {
+      "primaryBuilt": [".turbo", "android/app/build"],
+      "nestedCopies": "^\\.wt\\/copy$",
+      "machine": { "androidNdk": "android/build.gradle", "gradleCaches": true, "brew": true }
+    }
+  }
+}
+```
 
 ## Services
 
@@ -694,6 +906,30 @@ counts as gone once the process named in its `fixture-owner.json` has died
 or it is an hour old. It skips a stopped OrbStack rather than waking it, and
 records each sweep that did something in
 `<git common dir>/<worktree.name>-services-reaper.log`.
+
+**The hourly Docker prune** (macOS). `sarathi services prune install`
+registers a launchd agent, `com.<worktree.name>.docker-prune`, that sweeps
+Docker every hour: the reaper's step (in-process, through the same `docker`),
+stopped containers, unused images the primary checkout's code does not name,
+anonymous volumes, worktree volumes whose labelled root is gone, build cache
+(one-off layers after an hour, reused ones after three days, 40 GB at most)
+and networks. Anything touched in the last hour is kept, and so is an image
+whose build or tag time does not read as a time.
+
+```sh
+sarathi services prune install      # copy the runtime out, snapshot the settings, register the agent
+sarathi services prune run --dry-run   # print what one sweep would remove; only reads reach Docker
+sarathi services prune run-now|status|uninstall
+```
+
+launchd runs a copy, in `~/Library/Application Support/<Name>/DockerPrune`
+(`<Name>` is `worktree.name` capitalised), never the checkout: the compiled
+modules the sweep needs, which use Node built-ins only, and `settings.json`,
+a snapshot of `worktree.name`, the services file's `project` and `rootLabel`,
+and the primary checkout. A change to any of them needs another `install`.
+Each sweep is a JSON line in that folder's `prune.log` (moved to `.1` past
+1 MB); a sweep with no Docker daemon is logged as skipped. `--docker` names
+the binary, and `--settings` a snapshot to read instead of the checkout.
 
 The live-service tests start real containers, so they run only with
 `SARATHI_LIVE_SERVICES=required` and a Docker daemon.

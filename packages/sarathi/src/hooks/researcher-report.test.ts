@@ -220,7 +220,10 @@ test('researcher-report: through sarathi hook, matched on the agent type', () =>
   const refused = through('PreToolUse', handback('no shape'));
   assert.equal(refused.status, 2);
   assert.match(refused.stderr, /^BLOCKED: researcher report: no Verdict line/);
-  assert.deepEqual(through('SubagentStop', stopped('no shape')), { status: 2, stdout: '', stderr: 'matched\n' }, 'the matcher takes the plugin agent');
+  // Beside the sibling's exit 2, the handler's block reason follows on stderr (veda#307).
+  const { reason } = JSON.parse(hook(stopped('no shape')).stdout) as { reason: string };
+  assert.match(reason, /^researcher report: no Verdict line/);
+  assert.deepEqual(through('SubagentStop', stopped('no shape')), { status: 2, stdout: '', stderr: `matched\n\n${reason.trim()}\n` }, 'the matcher takes the plugin agent');
   for (const agent of ['Explore', 'researcher', 'other:sarathi:researcher']) {
     assert.deepEqual(through('SubagentStop', stopped('no shape', { agent_type: agent })), { status: 0, stdout: '', stderr: '' }, `the matcher leaves ${agent} alone`);
   }

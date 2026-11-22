@@ -4,14 +4,15 @@
 test-quality ratchets. Part of [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/pariksha@0.7.2 <check> [flags]
-npx @veda-hq/pariksha@0.7.2 --version
+npx @veda-hq/pariksha@0.7.20 <check> [flags]
+npx @veda-hq/pariksha@0.7.20 --version
 ```
 
 Every check exits 0 when the repository passes, 1 when it refuses something
-(each finding on stderr, with how to fix it; `absolute-paths` and
-`non-synced-resources` print theirs on stdout, as the shell checks they were
-ported from did), and 2 on a usage or input error. `--root <dir>` (default:
+(each finding on stderr, with how to fix it; `absolute-paths`,
+`non-synced-resources`, `license-check` and `codeql-baseline` print theirs on
+stdout, as the scripts they were ported from did), and 2 on a usage or input
+error. `--root <dir>` (default:
 the current directory) names the repository. Node 24 or later. MIT; one
 ported file is ISC, see `NOTICE`.
 
@@ -42,8 +43,9 @@ or a CI step runs `pariksha <check> --staged` and names no settings file.
   then widens a selection as a change to the file would (see Choosing files).
 - **Flag-only checks.** `authority-citations` reads `authority` and
   `issuePrefix` (a string, or a list of strings) and `adrDir`; `doc-budgets`
-  reads `table` and `section`. Each is the flag of the same name. `table`
-  is a file, read from the config file's folder as an entry's path is;
+  reads `table` and `section`; `codeql-baseline` reads `baseline`. Each is
+  the flag of the same name. `table` and `baseline` are files, read from the
+  config file's folder as an entry's path is;
   `adrDir` is the folder citations name, under `--root`.
 - **Precedence.** `--config` on the command line wins over the entry, and a
   flag over a field. The entry wins over the check's built-in default.
@@ -218,6 +220,48 @@ the repository's deny list.
 - Binary files (any NUL byte) are skipped. Untracked files are not read.
   Line 0 in a finding is the file's path.
 
+## `bp-rules`
+
+```sh
+pariksha bp-rules <mode> [--config <file>] [--root <dir>]
+```
+
+The mechanical half of a best-practice rule corpus: one Markdown file per
+rule, with YAML-like frontmatter (`id`, `title`, `category`, `severity`,
+`enforcement`, `enforcement_script`, `verified`, `verify_by`, `sources`,
+`applies_to`, `status`, `deprecated_at`), and an index document with a table
+per section and a Summary table derived from them. Judging a rule stays with
+people and agents; this parses, filters, compares dates and counts, each with
+one right answer. A rule is enforced when a hook or CI checks it
+(`enforcement: eslint-rule` or `validator`) and guidance otherwise; one that
+names no tier is guidance. A `README` file in the corpus is not a rule.
+
+```json
+{ "rules": "docs/standards/best-practices", "index": "docs/standards/BEST_PRACTICES.md", "idPrefix": "BP" }
+```
+
+All three are required (pariksha ships no corpus): the corpus folder and the
+index, under `--root`, and the id family, so ids read `BP-SEC-001`. A rule's
+section is the first folder under `rules`; index links are relative to the
+index's folder.
+
+| Mode | Prints | Exits 1 when |
+| ---- | ------ | ------------ |
+| `--inventory` | every rule, projected, with counts by tier | |
+| `--gaps` | active guidance rules, critical first | |
+| `--due [--within <days>] [--today <YYYY-MM-DD>]` | rules whose `verify_by` has passed, falls within the window (30 days), or is missing | |
+| `--next-id <PREFIX>` | the next `<idPrefix>-<PREFIX>-NNN` | |
+| `--corpus-fingerprint` | a sha1 over every rule file's path and bytes | |
+| `--check-wiring [--ids <a,b>]` | each `validator` rule and each rule naming an `enforcement_script`, and the scripts missing under `--root` | a script is missing, or an id names no rule |
+| `--regenerate-index` | the index with its rows, `(N rules)` counts and Summary rebuilt, everything else kept | a rule has no section to go in (named on stderr) |
+| `--check-index` | the Summary as written against the one the rows give | they differ (with the command that recomputes it) |
+
+Every mode prints JSON except `--regenerate-index`, which prints the index
+itself, written as it is so `pariksha bp-rules --regenerate-index >
+.tmp/index.md` round-trips byte for byte. Exit 2 on a usage error (no mode,
+two modes, an option outside its mode, a `--today` that is no real date),
+no settings or bad ones, or a read that fails.
+
 ## `codec-registry`
 
 ```sh
@@ -325,6 +369,48 @@ lists are malformed; a root holding no tracked file; discovery finding no
 hand parser, or no pair, since a kind found nowhere is checked nowhere; no
 base without `--no-base`; a git call that fails. Needs `typescript`, as
 `coverage-by-type` does.
+
+## `codeql-baseline`
+
+```sh
+pariksha codeql-baseline --check <results.sarif> [--baseline <file>] [--root <dir>]
+pariksha codeql-baseline --write <results.sarif> [--baseline <file>] [--root <dir>]
+```
+
+A CodeQL gate that counts results whose `level` says `error` counts none:
+CodeQL leaves `level` out when it equals the rule's default, which is how it
+writes every alert. This reads each result's effective level (SARIF 2.1.0
+§3.27.10: the result's `level`, else the rule's
+`defaultConfiguration.level` from the driver or an extension, else
+`warning`) and refuses, with `--check`, every error-level alert the
+committed baseline does not hold. The alerts an existing codebase already
+has go in the baseline, so they do not block while a new one does.
+
+- **Identity.** An alert is its rule, its file and CodeQL's
+  `primaryLocationLineHash` (the line's number when there is none). The hash
+  reads the line's content, so an edit elsewhere in the file keeps a known
+  alert known. The baseline is a multiset: a second copy of a baselined alert
+  is new.
+- **Suppressions.** A result with an accepted suppression (a missing
+  `status` means accepted, SARIF §3.35) blocks nothing and is never written
+  to the baseline. CodeQL writes one for a result under a
+  `// codeql[rule-id]` comment only when the analysis includes
+  `codeql/javascript-queries:AlertSuppression.ql`.
+- **`--write`** regenerates the baseline from a scan, sorted, so an unchanged
+  scan writes the same bytes. Write it from a scan of the main branch, never
+  by hand. A baseline alert no longer reported is counted on `--check`'s
+  first line, as a reminder to regenerate.
+- **`--baseline`** (default `.github/codeql/error-baseline.json`) is read
+  from `--root`. Its `.pariksha.json` entry is `{ "baseline": "<path>" }`,
+  read from the config file's folder.
+
+The verdict goes to stdout, as in the script this was ported from. A SARIF
+log with no runs is a broken analysis, never a clean one: exit 1 on
+`--check`. A SARIF log or a baseline that cannot be read or is not JSON, a
+baseline that is not `{ "alerts": [...] }`, and a log `--write` cannot
+write from exit 2. The module (`@veda-hq/pariksha/dist/codeql-baseline.js`)
+exports `checkSarif`, `readBaseline` and `ALERT_SUPPRESSION` for a
+pre-push scan that judges the same way.
 
 ## `coverage-by-type`
 
@@ -960,6 +1046,49 @@ to the root) replaces each default it names:
   files Vitest runs from that directory, with its config.
 - `exclude` (default none): globs passed to Vitest as `--exclude`.
 
+## `license-check`
+
+```sh
+pariksha license-check --config <file> [--report <file.json>] [--root <dir>]
+```
+
+Every installed package's licence must equal a name on the allow list, or
+the package must be allowed by name, with a reason. A checker that accepts a
+licence when an allowed name is a substring of it passes `FSL-1.1-MIT` on
+`MIT` and `MIT-0` on `MIT`; here a licence passes only when it equals an
+allowed name. An SPDX expression passes when one `OR` branch passes, and a
+branch when every `AND` term does (`AND` binds tighter; brackets group); a
+malformed one is refused. A name may hold spaces (`Apache 2.0`).
+
+The inventory is `pnpm licenses list --json --recursive`, run at `--root`:
+every workspace's installed dependencies, dev ones included, read from the
+store pnpm already has. `--report` reads a saved copy of that output instead,
+from the working directory. pnpm reads only the `license` field and reports
+`Unknown` for a package that declares none: such a package is refused unless
+`Unknown` is on the allow list or the package is allowed by name. A package
+pnpm lists under two licences must pass both.
+
+```json
+{
+  "allow": ["Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "MIT"],
+  "packages": {
+    "some-tool": "source-available build tool; its licence permits this use",
+    "old-package@1.0.9": "declares no licence; its LICENSE file is MIT"
+  }
+}
+```
+
+- `allow` (required, not empty) lists the licence names, compared exactly.
+  pariksha ships no allow list: with no settings the check exits 2.
+- `packages` (default none) maps a package to the reason it is allowed
+  whatever its licence: `name` for every version, `name@version` for that
+  version only.
+
+The verdict goes to stdout, as in the script this was ported from: one line
+when every licence passes, else a count and one line per package with its
+licence. pnpm failing, a report that cannot be read, text that is not JSON
+or not pnpm's shape, and an inventory with no package judged nothing: exit 2.
+
 ## `masked-exit-codes`
 
 ```sh
@@ -1040,6 +1169,57 @@ repository is needed only when there is a document to read; without it, the
 documents come from `git ls-files`, so a root that is not a repository exits
 2 even when it holds no document.
 
+## `own-provenance`
+
+```sh
+pariksha own-provenance --config <file> [--root <dir>]
+```
+
+What stands in for pnpm's release age on the repository's own scope. A
+repository that exempts its own packages from `minimumReleaseAge` (nobody
+else watches those releases, so the day's wait buys nothing) names the scope
+here. Every package of it that the lockfile resolves must carry npm
+provenance saying the repository's release workflow built it from the tag of
+its own version (`refs/tags/v<version>`), for the very tarball the lockfile
+installs. A release published any other way, from a stolen token, a fork or
+another workflow, fails.
+
+The statement's workflow fields are written by whoever ran `npm publish`, so
+they alone prove nothing. What binds them is the Sigstore bundle around the
+statement, verified offline: the DSSE signature, the certificate's chain to
+Sigstore's public-good Fulcio, its signed certificate timestamp and Rekor
+entry, and the certificate's identity (its SAN names the release workflow at
+the version's tag; its issuer is GitHub Actions). The trust anchors are
+`baselines/sigstore-trusted-root.json`, shipped with pariksha: Sigstore's
+public-good `trusted_root.json`, whose sha256 (`6494e21e…0b66`) matched the
+`trusted_root.json` entry of Sigstore's TUF targets v14 on 2026-11-14. When
+Sigstore rotates a key, new releases fail until the file is refreshed (take
+`targets/trusted_root.json` from `sigstore/root-signing` and check its sha256
+against the latest `targets.json` on `tuf-repo-cdn.sigstore.dev`).
+
+```json
+{ "scope": "@acme/", "repository": "https://github.com/acme/tools", "workflow": ".github/workflows/release.yml" }
+```
+
+- `scope`, `repository` and `workflow` are required; pariksha ships none.
+- `lockfile` (default `pnpm-lock.yaml`) and `trustedRoot` (default the one
+  pariksha ships) are paths under `--root`.
+
+It fails closed. An own key it cannot read fails: a prerelease, a tarball or
+git resolution, a shape it does not know. So do a lockfile that resolves no
+package of the scope, a registry it cannot reach or that stalls past 30
+seconds, an answer with no SLSA provenance, and an integrity that is not a
+SHA-512 digest.
+
+`@sigstore/bundle` (>=5 <6), `@sigstore/protobuf-specs` (>=0.5 <0.6) and
+`@sigstore/verify` (>=4.1 <5) are optional peers: install them beside
+pariksha. The output keeps the `own-provenance:` prefix of the script it was
+ported from. Exit 0 when every own package is the repository's signed build,
+naming them on stdout; 1 when one is not or could not be checked (each reason
+on stderr, then a line saying why the scope must pass), the lockfile or the
+trusted root cannot be read, or the peers are missing; 2 with no settings or
+bad ones.
+
 ## `pnpm-settings`
 
 ```sh
@@ -1084,6 +1264,52 @@ refuse is not passed: it is printed as a selector not version-checked.
 `semver`'s loose mode is not read. Notes and failures go to stderr, the clean
 line to stdout; a missing input file is a failure (exit 1), a bad config or
 an unreadable `package.json` exits 2.
+
+## `pr-title`
+
+```sh
+PR_TITLE=<title> [PR_NUMBER=<n>] [HEAD_REF=<branch>] pariksha pr-title [--config <file>] [--root <dir>]
+```
+
+A repository that squash-merges keeps the pull request title as the commit
+subject, with ` (#N)` appended, and never the branch's own commits. So the
+title must pass the rules a commit subject does. It is held to:
+
+1. the repository's commitlint config, found from `--root` and loaded by
+   commitlint itself, so the check cannot drift from the config every commit
+   is linted with. It lints the subject the squash writes, `<title> (#N)`,
+   with `PR_NUMBER` as `N` (a five-digit stand-in without one), so a title
+   that passes cannot become a subject over `header-max-length`. Warnings do
+   not refuse;
+2. with `shape` in the settings, the shape a commit-msg hook may enforce on
+   top: one of the listed emoji, a space, one of the listed types, an
+   optional `(scope)`, `: `, then a summary of at most `summaryMax`
+   characters (code points) that does not end with a period.
+
+The title, number and head branch come from the environment, as a workflow
+passes them (`PR_TITLE: ${{ github.event.pull_request.title }}`): a title in
+an argument would be one shell quote away from running. A workflow runs it on
+`edited` as well as on pushes, since CI does not rerun on a title edit.
+
+```json
+{
+  "shape": { "gitmoji": ["✨", "🐛", "♻️", "♻"], "types": ["feat", "fix", "refactor"], "summaryMax": 70 },
+  "skipHeadPrefixes": ["mergify/merge-queue/"],
+  "guide": "docs/COMMIT_GUIDE.md"
+}
+```
+
+- `shape` (default none: commitlint alone) lists each emoji exactly as
+  written, so list one with and without U+FE0F to accept both.
+- `skipHeadPrefixes` (default none) are head branches whose title is not
+  checked, such as a merge queue's drafts, whose titles are the queue's.
+- `guide` (default none) is named on the refusal's last line.
+
+`@commitlint/load` and `@commitlint/lint` (>=20 <21) are optional peers:
+install them beside pariksha. Exit 0 when the title passes or its branch is
+skipped, saying so on stdout; 1 when it fails, each problem on stderr; 2 when
+`PR_TITLE` is unset or empty, the settings are bad, the peers are missing,
+or the commitlint config does not load.
 
 ## `python-floor`
 
@@ -1277,10 +1503,27 @@ naming the key, what is wrong and the reason. A missing settings file is a
 refusal; a requirements file it cannot read or parse, or one listing no key,
 exits 2.
 
+In both files it also refuses a rule in `permissions.allow`, `deny` or `ask`
+that Claude Code does not match as written
+([permissions](https://code.claude.com/docs/en/permissions)): in the settings
+whether or not a requirement names it, in the requirements file as an exit 2.
+
+- A path rule on `Write`, `NotebookEdit` or `MultiEdit`, such as
+  `Write(./**)`. Claude Code checks file edits against `Edit(path)` rules
+  only, and `Edit(path)` covers every file-editing tool. A bare `Write`
+  names the whole tool and passes.
+- A `Bash(…)` rule ending in `:*` with another `*` before it, such as
+  `Bash(*git push* :*)`. Claude Code reads `:*` as a prefix only at the end
+  of a rule with no other wildcard; on Claude Code 2.1.326 that rule let
+  `git push origin :feature-x` through. Write `:**` for a colon followed by
+  anything: Claude Code 2.1.326 reads two adjacent stars as one wildcard,
+  and prints one informational line for the rule.
+
 `baselines/claude-settings.json` (`@veda-hq/pariksha/baselines/claude-settings.json`)
 is the permission baseline every repository agents work in keeps:
 
-- allow: edits inside the checkout; selected git commands (`status`,
+- allow: edits inside the checkout (`Edit(./**)`, which Claude Code also
+  applies to `Write`, `NotebookEdit` and `MultiEdit`); selected git commands (`status`,
   `diff`, `log`, `show`, `branch`, `ls-remote`, `worktree list`) and gh
   commands (`pr view`, `pr list`, `pr checks`, `run view`, `run list`,
   `issue list`, and `pr comment`, which posts: agents leave their evidence
@@ -1291,8 +1534,9 @@ is the permission baseline every repository agents work in keeps:
   that started this one;
 - deny: `Bash(*--no-verify*)`;
 - ask: every push that rewrites or deletes published history (`--force`,
-  `-f`, `--mirror`, `--delete`, `-d`, `--prune`, a `+` or empty-source `:`
-  refspec, and the abbreviations git accepts), a forced branch delete
+  `-f`, `--mirror`, `--delete`, `-d`, `--prune`, a `+` refspec or an
+  empty-source one such as `:feature-x` (`Bash(*git push* :**)`), and the
+  abbreviations git accepts), a forced branch delete
   (`git branch -D`, `-df`, `-fd`, and any `-d`/`--delete` with
   `-f`/`--force` in either order: the two globs `*-d*-f*` and `*-f*-d*`
   also ask for a plain `-d` of a branch whose name holds `-f`, which errs
@@ -1428,6 +1672,31 @@ each finding as `file:line  <id> <rule>` and its message, then the
 guidance. It exits 1 on any ShellCheck or rule finding, or when ShellCheck
 is not installed; 2 on a bad config, two modes, an empty list, or a
 selection or git failure, since nothing was checked.
+
+## `baseline-ratchet`, a module
+
+```ts
+import { atMergeBase, fileAt, mergeBaseOf, parseRenames, renamedSinceMergeBase, trackedFiles } from '@veda-hq/pariksha/baseline-ratchet';
+```
+
+Not a check but the git reads a repository's own list-shaped ratchet needs,
+so its baseline can only shrink: refuse an entry the merge base's copy does
+not have, and read an entry that only moved as the same debt under a new
+name. Typed (the package ships declarations).
+
+| Export | Gives |
+| ------ | ----- |
+| `trackedFiles(root, env, pathspecs)` | the tracked paths under `pathspecs` that still exist in the working tree |
+| `mergeBaseOf(root, base?, env?)` | the merge base of HEAD and `base` as a full sha; `null` when `base` is `''` (a first push, no base branch) |
+| `fileAt(root, commit, path, env?)` | `path` as committed at `commit`; `null` only when the commit does not have it |
+| `atMergeBase(root, path, base?, env?)` | `path` as the merge base has it; `null` when it does not, or with no base |
+| `renamedSinceMergeBase(root, base?, env?)` | new path → old path for each file git sees renamed since the merge base, the working tree and index included; empty with no base |
+| `parseRenames(nameStatus)` | the renames in `git diff --name-status -z` output (a copy is not one) |
+
+`base` defaults to `BASE_BRANCH` from the environment, else `origin/main`;
+`env`, the environment git runs with, to `process.env`. A base that is named
+but does not resolve, and any other git failure, throws with git's reason
+rather than reading as an empty baseline.
 
 ## markdownlint rules
 

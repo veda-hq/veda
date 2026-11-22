@@ -67,7 +67,7 @@ export class ServicesError extends Error {
 }
 
 /** The actions sarathi runs itself; a configured action may not take these names. */
-export const BUILT_IN_ACTIONS = ['up', 'down', 'status', 'run', 'web', 'server', 'reap'] as const;
+export const BUILT_IN_ACTIONS = ['up', 'down', 'status', 'run', 'web', 'server', 'reap', 'prune'] as const;
 const BUILT_IN_PLACEHOLDERS = new Set(['password', 'serverPort', 'webPort', 'project']);
 const KEYS = new Set(['compose', 'project', 'rootLabel', 'apiPorts', 'webPort', 'published', 'environment', 'web', 'server', 'actions']);
 const PROJECT = /^[a-z][a-z0-9-]{0,39}$/;

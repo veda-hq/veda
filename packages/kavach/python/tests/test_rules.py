@@ -87,6 +87,75 @@ class PipeMasksExit(unittest.TestCase):
 
 
 class CdOutOfWorktree(Repo):
+    """From the session's own checkout: the test's repository, a plain clone
+    that ``worktree.ownCheckout`` makes the session's."""
+
+    OWNED = config.parse({"worktree": {"ownCheckout": {"env": {"KAVACH_TEST_OWN": ["1"]}, "reason": "the test's clone"}}})
+
+    def setUp(self) -> None:
+        super().setUp()
+        patched = mock.patch.dict(os.environ, {"KAVACH_TEST_OWN": "1", "CLAUDE_PROJECT_DIR": self.repo})
+        patched.start()
+        self.addCleanup(patched.stop)
+
+    def bash(self, command: str, cwd: str | None = None, settings: object = OWNED) -> rules.Call:
+        return rules.Call("Bash", {"command": command}, cwd or self.repo, settings)
+
+    def repository(self, name: str) -> str:
+        path = os.path.join(self.work, name)
+        os.mkdir(path)
+        git(path, "init", "-q", ".")
+        git(path, "config", "user.email", "t@example.com")
+        git(path, "config", "user.name", "t")
+        git(path, "commit", "-q", "--allow-empty", "-m", "init")
+        return path
+
+    def managed(self, repository: str, name: str = "s") -> str:
+        path = os.path.join(repository, ".claude", "worktrees", name)
+        git(repository, "worktree", "add", "-q", path)
+        return path
+
+    def test_from_another_repository_the_cd_into_a_managed_worktree_passes(self) -> None:
+        other = self.repository("other")
+        session = self.managed(self.repo)
+        for command in (f"cd {session}", f"cd {session} && pwd", f"pushd {session}"):
+            with self.subTest(command=command):
+                self.assertIsNone(rules.cd_out_of_worktree(self.bash(command, other)))
+        # And into the ownCheckout clone, the other checkout a session can own.
+        self.assertIsNone(rules.cd_out_of_worktree(self.bash(f"cd {self.repo}", other)))
+        # A later cd is judged from the checkout the first one entered.
+        found = rules.cd_out_of_worktree(self.bash(f"cd {session} && cd {other}", other)) or ""
+        self.assertIn(f"outside this session's checkout ({session} is this session's)", found)
+        self.assertIn(f"until `cd {session}` brings it back", found)
+
+    def test_from_a_main_checkout_the_cd_into_its_managed_worktree_passes(self) -> None:
+        other = self.repository("other")
+        session = self.managed(other)
+        self.assertIsNone(rules.cd_out_of_worktree(self.bash(f"cd {session}", other)))
+
+    def test_from_another_repository_a_cd_elsewhere_names_no_checkout_as_the_sessions(self) -> None:
+        other = self.repository("other")
+        third = self.repository("third")
+        for target in (third, os.path.join(self.work, "elsewhere")):
+            with self.subTest(target=target):
+                found = rules.cd_out_of_worktree(self.bash(f"cd {target}", other)) or ""
+                self.assertIn(f"outside its checkout (the shell is in {other}, which the worktree guard", found)
+                self.assertIn("until a `cd` into your own worktree brings it back", found)
+                self.assertNotIn("this session's", found)
+                self.assertNotIn("Stay in the checkout", found)
+
+    def test_from_a_managed_worktree_a_cd_into_another_repositorys_still_fires(self) -> None:
+        session = self.managed(self.repo)
+        theirs = self.managed(self.repository("other"))
+        found = rules.cd_out_of_worktree(self.bash(f"cd {theirs}", session, settings=None)) or ""
+        self.assertIn(f"outside this session's checkout ({session} is this session's)", found)
+        self.assertIn(f"until `cd {session}` brings it back", found)
+
+    def test_from_the_own_checkout_clone_a_cd_into_a_managed_worktree_still_fires(self) -> None:
+        theirs = self.managed(self.repository("other"))
+        found = rules.cd_out_of_worktree(self.bash(f"cd {theirs}")) or ""
+        self.assertIn(f"({self.repo} is this session's)", found)
+
     def test_a_cd_or_pushd_out_of_the_checkout_fires(self) -> None:
         elsewhere = os.path.join(self.work, "elsewhere")
         for command in (f"cd {elsewhere} && ls", f"pushd {elsewhere}", "cd ..", "cd sub && cd ../..", "cd"):
@@ -111,6 +180,11 @@ class CdOutOfWorktree(Repo):
             with self.subTest(command=command):
                 self.assertIsNone(rules.cd_out_of_worktree(self.bash(command)))
 
+    def test_a_cd_inside_the_checkout_asks_nothing_of_ownership(self) -> None:
+        os.mkdir(os.path.join(self.repo, "sub"))
+        with mock.patch.object(rules, "ownable", side_effect=AssertionError("asked")):
+            self.assertIsNone(rules.cd_out_of_worktree(self.bash("cd sub && ls")))
+
     def test_a_clone_nested_in_the_checkout_counts_as_inside_it(self) -> None:
         nested = os.path.join(self.repo, "nested")
         os.mkdir(nested)
@@ -124,8 +198,45 @@ class CdOutOfWorktree(Repo):
         found = rules.cd_out_of_worktree(self.bash(f"cd {peer}"))
         self.assertIn(f"another worktree, {peer}, which another session may own", found or "")
         # From the linked worktree, the main checkout is outside it too.
-        found = rules.cd_out_of_worktree(self.bash(f"cd {self.repo}", peer))
+        found = rules.cd_out_of_worktree(self.bash(f"cd {self.repo}", peer, settings=None))
         self.assertIn("another worktree", found or "")
+        # Unless the main checkout is the session's ownCheckout clone: from a
+        # worktree no session owns, that cd is the way back.
+        self.assertIsNone(rules.cd_out_of_worktree(self.bash(f"cd {self.repo}", peer)))
+
+    def test_only_a_folder_in_no_repository_refuses_whatever_the_mode(self) -> None:
+        other = os.path.join(self.work, "other")
+        os.mkdir(other)
+        git(other, "init", "-q", ".")
+        peer = os.path.join(self.work, "peer")
+        git(self.repo, "worktree", "add", "-q", peer)
+        elsewhere = os.path.join(self.work, "elsewhere")
+        for command, refuses in (
+            (f"cd {elsewhere}", True),
+            (f"pushd {elsewhere}", True),
+            ("cd ..", True),
+            (f"cd {other}", False),
+            (f"cd {peer}", False),
+            # A folder that is not there: the `cd` fails and the shell stays.
+            (f"cd {os.path.join(self.work, 'missing')}", False),
+        ):
+            with self.subTest(command=command):
+                found = rules.cd_out_of_worktree(self.bash(command))
+                self.assertIsNotNone(found)
+                self.assertIs(isinstance(found, rules.Refuses), refuses)
+                self.assertIs("in no git repository" in (found or ""), refuses)
+        found = rules.cd_out_of_worktree(self.bash(f"cd {other}"))
+        self.assertIn(f"until `cd {self.repo}` brings it back", found or "")
+        self.assertNotIn("the `cd` back included", found or "")
+
+    def test_judge_files_a_refusing_finding_with_the_refusals(self) -> None:
+        settings = config.parse({"rules": {"cd-out-of-worktree": "warn"}})
+        fires: list[tuple[str, str, str]] = []
+        call = self.bash(f"cd {os.path.join(self.work, 'elsewhere')}")
+        outcome = rules.judge(call, settings, lambda *fire: fires.append(fire))
+        self.assertEqual([fire.mode for fire in outcome.refusals], ["refuse"])
+        self.assertEqual(outcome.warnings, [])
+        self.assertEqual([(rule, mode) for rule, mode, _ in fires], [("cd-out-of-worktree", "refuse")])
 
     def test_outside_any_checkout_nothing_is_judged(self) -> None:
         self.assertIsNone(rules.cd_out_of_worktree(self.bash("cd /", os.path.join(self.work, "elsewhere"))))
@@ -134,6 +245,114 @@ class CdOutOfWorktree(Repo):
         with mock.patch.object(rules.subprocess, "run", side_effect=OSError("no git")):
             self.assertIsNone(rules.git_toplevel(self.repo))
             self.assertIsNone(rules.peer_worktree("/x", self.repo))
+
+
+SESSION = "11111111-2222-4333-8444-555555555555"
+HOST = "local_0a0a0a0a-1b1b-4c2c-8d3d-4e4e4e4e4e4e"
+
+
+class RecordedWorktree(Repo):
+    """veda#362: two managed worktrees of one repository, ``mine`` (the one
+    the desktop app's record names as this session's) and ``theirs``, with
+    the app folder faked under a test HOME."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.mine = os.path.join(self.repo, ".claude", "worktrees", "mine")
+        self.theirs = os.path.join(self.repo, ".claude", "worktrees", "theirs")
+        for path in (self.mine, self.theirs):
+            git(self.repo, "worktree", "add", "-q", path)
+        self.home = os.path.join(self.work, "home")
+        self.records = Path(self.home, "Library", "Application Support", "Claude", "claude-code-sessions", "a", "o")
+        self.records.mkdir(parents=True)
+        self.write_record()
+        patched = mock.patch.dict(os.environ, {"HOME": self.home, "CLAUDE_CODE_HOST_SESSION_ID": HOST})
+        patched.start()
+        self.addCleanup(patched.stop)
+
+    def write_record(self, **fields: object) -> None:
+        record: dict[str, object] = {"sessionId": HOST, "cliSessionId": SESSION, "cwd": self.mine, "worktreePath": self.mine}
+        record.update(fields)
+        record = {key: value for key, value in record.items() if value is not None}
+        Path(self.records, f"{HOST}.json").write_text(json.dumps(record), encoding="utf-8")
+
+    def find(self, command: str, cwd: str, session: str | None = SESSION) -> str | None:
+        return rules.cd_out_of_worktree(rules.Call("Bash", {"command": command}, cwd, session_id=session))
+
+    def test_from_another_sessions_worktree_the_cd_back_passes(self) -> None:
+        os.mkdir(os.path.join(self.mine, "sub"))
+        for command in (f"cd {self.mine}", f"cd {self.mine} && pwd", f"pushd {self.mine}/sub"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.find(command, self.theirs))
+        refuse = config.parse({"rules": {"cd-out-of-worktree": "refuse"}})
+        call = rules.Call("Bash", {"command": f"cd {self.mine}"}, self.theirs, session_id=SESSION)
+        self.assertEqual(rules.judge(call, refuse), rules.Outcome([], []))
+
+    def test_with_no_record_that_fits_the_cd_back_still_fires(self) -> None:
+        def fires(**changes: str | None) -> str:
+            with mock.patch.dict(os.environ, {key: value for key, value in changes.items() if value is not None}):
+                for key, value in changes.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                return self.find(f"cd {self.mine}", self.theirs) or ""
+
+        self.assertIn(f"another worktree, {self.mine}", fires(CLAUDE_CODE_HOST_SESSION_ID=None))
+        self.assertIn(f"another worktree, {self.mine}", fires(CLAUDE_CODE_HOST_SESSION_ID="local_../x"))
+        self.assertIn(f"another worktree, {self.mine}", self.find(f"cd {self.mine}", self.theirs, session=None) or "")
+        self.write_record(cliSessionId="66666666-7777-4888-8999-aaaaaaaaaaaa")
+        self.assertIn(f"another worktree, {self.mine}", self.find(f"cd {self.mine}", self.theirs) or "")
+
+    def test_a_recorded_path_that_is_no_ownable_root_names_nothing(self) -> None:
+        sub = os.path.join(self.mine, "sub")
+        os.mkdir(sub)
+        for named in ("/", sub, self.repo, "relative/path", os.path.join(self.work, "missing")):
+            with self.subTest(named=named):
+                self.write_record(worktreePath=named, cwd=named)
+                found = self.find(f"cd {self.mine}", self.theirs) or ""
+                self.assertIn(f"another worktree, {self.mine}", found)
+                self.assertIn(f"({self.theirs} is this session's)", found)
+
+    def test_a_record_with_only_cwd_counts(self) -> None:
+        self.write_record(worktreePath=None)
+        self.assertIsNone(self.find(f"cd {self.mine}", self.theirs))
+
+    def test_a_cd_elsewhere_names_the_recorded_worktree(self) -> None:
+        elsewhere = os.path.join(self.work, "elsewhere")
+        found = self.find(f"cd {self.repo}", self.theirs) or ""
+        self.assertIn(f"(the shell is in {self.theirs}; {self.mine} is this session's)", found)
+        self.assertIn(f"until `cd {self.mine}` brings it back", found)
+        self.assertNotIn("Stay in the checkout", found)
+        refused = self.find(f"cd {elsewhere}", self.theirs) or ""
+        self.assertIsInstance(refused, rules.Refuses)
+        self.assertIn(f"until `cd {self.mine}` brings it back", refused)
+
+    def test_from_the_recorded_worktree_a_cd_out_reads_as_before(self) -> None:
+        found = self.find(f"cd {self.theirs}", self.mine) or ""
+        self.assertIn(f"another worktree, {self.theirs}, which another session may own ({self.mine} is this session's)", found)
+        self.assertIn(f"until `cd {self.mine}` brings it back", found)
+
+    def test_a_later_cd_is_judged_from_the_recorded_worktree(self) -> None:
+        found = self.find(f"cd {self.mine} && cd {self.theirs}", self.theirs) or ""
+        self.assertIn(f"({self.mine} is this session's)", found)
+
+    def test_a_cd_inside_the_checkout_reads_no_record(self) -> None:
+        with mock.patch.object(rules, "recorded_worktree", side_effect=AssertionError("read")):
+            self.assertIsNone(self.find(f"cd {self.theirs}", self.theirs))
+
+    def test_the_command_guard_lets_the_cd_back_through_a_refusing_rule(self) -> None:
+        settings = os.path.join(self.work, "kavach.json")
+        Path(settings).write_text(json.dumps({"rules": {"cd-out-of-worktree": "refuse"}}), encoding="utf-8")
+        env = {**ENV, "HOME": self.home, "CLAUDE_CODE_HOST_SESSION_ID": HOST, "KAVACH_CONFIG": settings}
+        for session, code in ((SESSION, 0), (None, 2)):
+            with self.subTest(session=session):
+                event: dict[str, object] = {"tool_name": "Bash", "tool_input": {"command": f"cd {self.mine}"}, "cwd": self.theirs}
+                if session is not None:
+                    event["session_id"] = session
+                result = subprocess.run(
+                    [sys.executable, str(COMMAND_GUARD)], input=json.dumps(event), cwd=self.theirs, env=env,
+                    capture_output=True, text=True, timeout=120, check=False,
+                )
+                self.assertEqual(result.returncode, code, result.stderr)
 
 
 class StrykerInPlace(unittest.TestCase):
@@ -406,7 +625,8 @@ class Settings(unittest.TestCase):
 
     def test_the_known_ids_are_the_rules(self) -> None:
         self.assertEqual(
-            set(config.RULE_IDS), {rule.id for rule in rules.RULES} | {config.SHELL_EXPANSION_RULE}
+            set(config.RULE_IDS),
+            {rule.id for rule in rules.RULES} | {config.SHELL_EXPANSION_RULE, config.OTHER_SESSIONS_WORKTREE_RULE},
         )
 
     def test_the_tool_matcher_names_every_tool_but_bash(self) -> None:
@@ -466,13 +686,23 @@ class Guards(Repo):
         Path(path).write_text(json.dumps(document), encoding="utf-8")
         return path
 
-    def run_guard(self, guard: Path, tool: str, tool_input: object, settings: str | None = None, raw: str | None = None) -> subprocess.CompletedProcess[str]:
-        env = dict(ENV)
+    def run_guard(
+        self,
+        guard: Path,
+        tool: str,
+        tool_input: object,
+        settings: str | None = None,
+        raw: str | None = None,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        cwd = cwd or self.repo
+        environ = {**ENV, **(env or {})}
         if settings:
-            env["KAVACH_CONFIG"] = settings
-        event = raw if raw is not None else json.dumps({"tool_name": tool, "tool_input": tool_input, "cwd": self.repo})
+            environ["KAVACH_CONFIG"] = settings
+        event = raw if raw is not None else json.dumps({"tool_name": tool, "tool_input": tool_input, "cwd": cwd})
         return subprocess.run(
-            [sys.executable, str(guard)], input=event, cwd=self.repo, env=env, capture_output=True, text=True, timeout=120, check=False
+            [sys.executable, str(guard)], input=event, cwd=cwd, env=environ, capture_output=True, text=True, timeout=120, check=False
         )
 
     def rows(self) -> list[dict[str, str]]:
@@ -492,19 +722,89 @@ class Guards(Repo):
             [("commit-body-ref-line-length", "warn"), ("commit-message-shell-expansion", "warn")],
         )
 
+    def other_repository(self) -> str:
+        other = os.path.join(self.work, "other")
+        os.mkdir(other)
+        git(other, "init", "-q", ".")
+        return other
+
     def test_the_command_guard_warns_on_a_command_with_no_git(self) -> None:
-        result = self.run_guard(COMMAND_GUARD, "Bash", {"command": f"cd {self.work}"})
+        other = self.other_repository()
+        result = self.run_guard(COMMAND_GUARD, "Bash", {"command": f"cd {other}"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("rule cd-out-of-worktree", json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"])
 
     def test_the_command_guard_refuses_once_told_to(self) -> None:
+        other = self.other_repository()
         settings = self.settings({"rules": {"cd-out-of-worktree": "refuse"}})
-        result = self.run_guard(COMMAND_GUARD, "Bash", {"command": f"cd {self.work}"}, settings)
+        result = self.run_guard(COMMAND_GUARD, "Bash", {"command": f"cd {other}"}, settings)
         self.assertEqual((result.returncode, result.stdout), (2, ""))
-        self.assertTrue(result.stderr.startswith(f"BLOCKED: `cd {self.work}` moves the shell"), result.stderr)
+        self.assertTrue(result.stderr.startswith(f"BLOCKED: `cd {other}` moves the shell"), result.stderr)
         self.assertIn("(kavach rule cd-out-of-worktree)", result.stderr)
+        # The rule's refusal is all it says: no second line about how the check ended.
+        self.assertEqual(result.stderr.count("BLOCKED"), 1, result.stderr)
         (row,) = self.rows()
         self.assertEqual((row["guard"], row["rule"], row["mode"]), ("command", "cd-out-of-worktree", "refuse"))
+
+    def test_a_cd_to_a_folder_in_no_repository_refuses_on_trial(self) -> None:
+        """veda#335: from there the worktree guard runs reads only, so the
+        rule refuses whatever its mode, with no setting or a warn one."""
+
+        own = {"ownCheckout": {"env": {"KAVACH_TEST_OWN": ["1"]}, "reason": "the test's clone"}}
+        unset = self.settings({"worktree": own})
+        warn = self.settings(
+            {"worktree": own, "rules": {"cd-out-of-worktree": {"mode": "warn", "refusesFrom": "2099-01-01"}}}
+        )
+        owned = {"KAVACH_TEST_OWN": "1", "CLAUDE_PROJECT_DIR": self.repo}
+        for settings in (unset, warn):
+            with self.subTest(settings=settings):
+                result = self.run_guard(
+                    COMMAND_GUARD, "Bash", {"command": f"cd {self.work} && cat *.md"}, settings, env=owned
+                )
+                self.assertEqual((result.returncode, result.stdout), (2, ""))
+                self.assertEqual(
+                    result.stderr,
+                    f"BLOCKED: `cd {self.work}` moves the shell outside this session's checkout "
+                    f"({self.repo} is this session's), to a folder in no git repository. Where the shell "
+                    "keeps that folder for later calls, the guards run only reads from there: no write, "
+                    f"Edit or Write until `cd {self.repo}` brings it back. This refuses even while the rule is on trial. "
+                    "Stay in the checkout: read elsewhere with absolute paths, `git -C <dir>` or `ls <dir>`. "
+                    "(kavach rule cd-out-of-worktree)\n",
+                )
+        modes = [(row["rule"], row["mode"]) for row in self.rows()]
+        self.assertEqual(modes, [("cd-out-of-worktree", "refuse")] * 2)
+
+    def test_from_a_folder_in_no_repository_the_cd_back_passes(self) -> None:
+        event = json.dumps({"tool_name": "Bash", "tool_input": {"command": f"cd {self.repo}"}, "cwd": self.work})
+        result = subprocess.run(
+            [sys.executable, str(COMMAND_GUARD)], input=event, cwd=self.work, env=dict(ENV),
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+
+    def test_from_another_repository_the_cd_back_to_a_managed_worktree_passes_a_refusing_rule(self) -> None:
+        """veda#339: the shell's checkout there is no session's, so the cd
+        into one a session can own is the way back, not a cd out."""
+
+        session = os.path.join(self.repo, ".claude", "worktrees", "s")
+        git(self.repo, "worktree", "add", "-q", session)
+        other = self.other_repository()
+        settings = self.settings({"rules": {"cd-out-of-worktree": "refuse"}})
+        back = self.run_guard(COMMAND_GUARD, "Bash", {"command": f"cd {session}"}, settings, cwd=other)
+        self.assertEqual((back.returncode, back.stdout, back.stderr), (0, "", ""))
+        third = os.path.join(self.work, "third")
+        os.mkdir(third)
+        git(third, "init", "-q", ".")
+        away = self.run_guard(COMMAND_GUARD, "Bash", {"command": f"cd {third}"}, settings, cwd=other)
+        self.assertEqual((away.returncode, away.stdout), (2, ""))
+        self.assertEqual(
+            away.stderr,
+            f"BLOCKED: `cd {third}` moves the shell to outside its checkout (the shell is in {other}, "
+            "which the worktree guard takes as no session's own). Where the shell keeps that folder for later "
+            "calls, each of them runs outside the checkout, where the guards refuse every write until a `cd` "
+            "into your own worktree brings it back. Read elsewhere with absolute paths, `git -C <dir>` or "
+            "`ls <dir>`. (kavach rule cd-out-of-worktree)\n",
+        )
 
     def test_a_clean_command_prints_nothing(self) -> None:
         result = self.run_guard(COMMAND_GUARD, "Bash", {"command": "ls"})
@@ -539,6 +839,111 @@ class Guards(Repo):
                 self.assertEqual(result.returncode, 2)
                 self.assertTrue(result.stderr.startswith("BLOCKED: the tool guard "), result.stderr)
                 self.assertIn(said, result.stderr)
+
+    def test_the_tool_guard_refuses_input_it_cannot_read(self) -> None:
+        # Open for writing only, so reading it fails (OSError): a guard that
+        # cannot read the call must refuse it, not crash with exit 1, which
+        # Claude Code lets through.
+        stdin = os.open(os.path.join(self.work, "input"), os.O_WRONLY | os.O_CREAT)
+        self.addCleanup(os.close, stdin)
+        result = subprocess.run(
+            [sys.executable, str(TOOL_GUARD)], stdin=stdin, cwd=self.repo, env=ENV, capture_output=True, text=True, timeout=120, check=False
+        )
+        self.assertEqual(
+            (result.returncode, result.stdout, result.stderr),
+            (2, "", "BLOCKED: the tool guard could not read its hook input (OSError), so it cannot judge this call.\n"),
+        )
+
+    def test_the_tool_guard_refuses_when_a_module_does_not_load(self) -> None:
+        for name, source, said in (
+            ("rules.py", None, "could not load rules.py (ModuleNotFoundError)"),
+            ("rules.py", "raise RuntimeError('planted')", "could not load rules.py (RuntimeError)"),
+            ("refusal_log.py", None, "could not load refusal_log.py (ModuleNotFoundError)"),
+            ("refusal_log.py", "raise RuntimeError('planted')", "could not load refusal_log.py (RuntimeError)"),
+        ):
+            with self.subTest(said=said):
+                directory = Path(tempfile.mkdtemp(dir=self.work), "kavach")
+                shutil.copytree(KAVACH, directory, ignore=shutil.ignore_patterns("__pycache__"))
+                if source is None:
+                    (directory / name).unlink()
+                else:
+                    (directory / name).write_text(source + "\n", encoding="utf-8")
+                result = self.run_guard(directory / "tool_guard.py", "Write", {"file_path": os.path.join(self.repo, "c.txt"), "content": "x"})
+                self.assertEqual(
+                    (result.returncode, result.stdout, result.stderr),
+                    (2, "", "BLOCKED: the tool guard %s, so it cannot judge this call.\n" % said),
+                )
+
+    def copy_with_a_label_that_raises(self) -> Path:
+        directory = Path(tempfile.mkdtemp(dir=self.work), "kavach")
+        shutil.copytree(KAVACH, directory, ignore=shutil.ignore_patterns("__pycache__"))
+        with open(directory / "refusal_log.py", "a", encoding="utf-8") as handle:
+            handle.write("\n\ndef label(rule, mode):\n    raise RuntimeError('planted')\n")
+        return directory
+
+    def test_a_logging_error_leaves_the_rules_own_refusal(self) -> None:
+        directory = self.copy_with_a_label_that_raises()
+        for guard, tool, tool_input, rule, said in (
+            (
+                "tool_guard.py",
+                "RemoteTrigger",
+                {"action": "create", "body": RoutineSourcesShape.body([{"url": "u"}])},
+                "routine-sources-shape",
+                "has no `git_repository` object",
+            ),
+            ("command_guard.py", "Bash", {"command": f"cd {self.work}"}, "cd-out-of-worktree", "moves the shell"),
+        ):
+            with self.subTest(guard=guard):
+                settings = self.settings({"rules": {rule: "refuse"}})
+                result = self.run_guard(directory / guard, tool, tool_input, settings)
+                self.assertEqual((result.returncode, result.stdout), (2, ""))
+                self.assertIn(said, result.stderr)
+                self.assertEqual(result.stderr.count("BLOCKED"), 1, result.stderr)
+
+    def planted(self, *names: str) -> str:
+        """A folder of modules named like the guard's own and the standard
+        library's, each of which fails as it loads."""
+        folder = tempfile.mkdtemp(dir=self.work)
+        for name in names:
+            Path(folder, name + ".py").write_text("raise RuntimeError('planted %s')\n" % name, encoding="utf-8")
+        return folder
+
+    GUARD_MODULES = ("config", "rules", "refusal_log", "bash_guard", "git_safety")
+
+    def calls(self) -> tuple[tuple[Path, str, object], ...]:
+        """A call each guard allows, saying nothing."""
+        return (
+            (COMMAND_GUARD, "Bash", {"command": "ls"}),
+            (TOOL_GUARD, "Write", {"file_path": os.path.join(self.repo, "c.txt"), "content": "x"}),
+        )
+
+    def run_isolated(self, guard: Path, tool: str, tool_input: object, args: list[str], cwd: str, env: dict[str, str]) -> tuple[int, str, str]:
+        event = json.dumps({"tool_name": tool, "tool_input": tool_input, "cwd": self.repo})
+        result = subprocess.run(
+            [sys.executable, *args], input=event, cwd=cwd, env=env, capture_output=True, text=True, timeout=120, check=False
+        )
+        return result.returncode, result.stdout, result.stderr
+
+    def test_modules_in_the_cwd_do_not_stand_in_when_run_through_c(self) -> None:
+        # Run through `-c`, Python puts the cwd first on sys.path: the guard
+        # puts its own folder there instead, so neither its modules nor the
+        # standard library's load from the cwd.
+        cwd = self.planted(*self.GUARD_MODULES, "json", "shlex", "dataclasses", "subprocess", "pathlib")
+        launch = 'import sys\np = sys.argv[1]\nexec(compile(open(p).read(), p, "exec"), {"__name__": "__main__", "__file__": p})'
+        for guard, tool, tool_input in self.calls():
+            with self.subTest(guard=guard.name):
+                self.assertEqual(
+                    self.run_isolated(guard, tool, tool_input, ["-c", launch, str(guard)], cwd, dict(ENV)), (0, "", "")
+                )
+
+    def test_modules_on_pythonpath_do_not_stand_in_under_safe_path(self) -> None:
+        # Under -P Python puts no folder of the guard's first, but PYTHONPATH
+        # still comes before the standard library: the guard's own folder goes
+        # in front of it.
+        env = dict(ENV, PYTHONPATH=self.planted(*self.GUARD_MODULES))
+        for guard, tool, tool_input in self.calls():
+            with self.subTest(guard=guard.name):
+                self.assertEqual(self.run_isolated(guard, tool, tool_input, ["-P", str(guard)], self.repo, env), (0, "", ""))
 
     def test_a_refusing_rule_that_fails_refuses(self) -> None:
         directory = Path(self.work, "kavach")

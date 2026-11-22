@@ -24,9 +24,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kavach import git_safety
+from kavach import git_safety, refusal_log
 
 from .command_guard_cases import CASES
+from .outside import outside
 
 KAVACH = Path(__file__).resolve().parents[1] / "kavach"
 GUARD = KAVACH / "command_guard.py"
@@ -279,7 +280,9 @@ class Loading(unittest.TestCase):
 
     def test_a_copy_without_its_refusal_log_blocks(self) -> None:
         directory = self.copy("config.py", "bash_guard.py", "git_safety.py", log=False)
-        self.assert_blocks(os.path.join(directory, "command_guard.py"), "could not load refusal_log.py")
+        self.assert_refuses_with(
+            os.path.join(directory, "command_guard.py"), "could not load refusal_log.py (ModuleNotFoundError)"
+        )
 
     def stub(self, source: str) -> str:
         directory = self.copy("config.py")
@@ -303,8 +306,50 @@ class Loading(unittest.TestCase):
         guard = os.path.join(self.copy("bash_guard.py", "git_safety.py"), "command_guard.py")
         self.assert_blocks(guard, "could not load config.py")
 
+    def assert_refuses_with(self, guard: str, reason: str) -> None:
+        actual, stderr = Guard.run(make_input("ls"), PLAIN_REPO, guard=guard)
+        self.assertEqual(
+            (actual, stderr), (2, "BLOCKED: the command guard %s, so it cannot judge this command.\n" % reason)
+        )
+
+    def test_a_settings_module_that_fails_to_import_blocks_and_names_the_error(self) -> None:
+        # A module config.py itself lacks is not config.py missing. The two
+        # names sort before and after "config", so only equal to it passes.
+        for source, error in (
+            ("raise RuntimeError('planted')", "RuntimeError: planted"),
+            ("import a_missing_dependency", "ModuleNotFoundError: No module named 'a_missing_dependency'"),
+            ("import z_missing_dependency", "ModuleNotFoundError: No module named 'z_missing_dependency'"),
+        ):
+            with self.subTest(source=source):
+                directory = self.copy("bash_guard.py", "git_safety.py")
+                Path(directory, "config.py").write_text(source + "\n", encoding="utf-8")
+                self.assert_refuses_with(
+                    os.path.join(directory, "command_guard.py"), "could not load its settings (%s)" % error
+                )
+
+    def test_settings_that_fail_to_load_without_a_config_error_block(self) -> None:
+        directory = self.copy("bash_guard.py", "git_safety.py")
+        Path(directory, "config.py").write_text(
+            "class ConfigError(Exception):\n    pass\n\n\ndef load():\n    raise RuntimeError('planted')\n",
+            encoding="utf-8",
+        )
+        self.assert_refuses_with(
+            os.path.join(directory, "command_guard.py"), "could not load its settings (RuntimeError: planted)"
+        )
+
     def test_run_by_a_relative_path_it_still_loads_its_module(self) -> None:
-        actual, stderr = Guard.run(make_input("git push --force origin main"), str(KAVACH), guard="command_guard.py")
+        # Its cwd is the package's own folder: a copy outside every repository,
+        # with the refusal log off too. Run in the real folder, each run wrote
+        # a row to the running repository's log (#368), and under a mutant of
+        # the log's off switch it would again (#387).
+        package = outside(self) / "kavach"
+        shutil.copytree(KAVACH, package, ignore=shutil.ignore_patterns("__pycache__"))
+        actual, stderr = Guard.run(
+            make_input("git push --force origin main"),
+            str(package),
+            guard="command_guard.py",
+            env={refusal_log.OFF_VAR: "1"},
+        )
         self.assertEqual(actual, 2, stderr)
         self.assertIn("git push --force", stderr)
 
@@ -316,6 +361,48 @@ class Loading(unittest.TestCase):
 
     def test_a_check_missing_a_module_of_its_own_blocks_and_names_it(self) -> None:
         self.assert_blocks(self.stub("import absent_dependency_of_the_check"), "absent_dependency_of_the_check")
+
+    def test_a_missing_module_that_sorts_after_the_checks_own_is_named_too(self) -> None:
+        # Only a name equal to the check's own module is "could not load"; a
+        # name that sorts after "bash_guard" is the check's own dependency.
+        actual, stderr = Guard.run(make_input("ls"), PLAIN_REPO, guard=self.stub("import z_absent_dependency"))
+        self.assertEqual(
+            (actual, stderr),
+            (
+                2,
+                "BLOCKED: the git-command check failed (ModuleNotFoundError: No module named 'z_absent_dependency'),"
+                " so it cannot judge this command.\n",
+            ),
+        )
+
+    def test_a_check_that_exits_2_blocks_with_its_own_words_only(self) -> None:
+        actual, stderr = Guard.run(make_input("ls"), PLAIN_REPO, guard=self.stub("import sys\nsys.exit(2)"))
+        self.assertEqual((actual, stderr), (2, ""))
+
+    def run_with_shell_code_check(self, source: str) -> subprocess.CompletedProcess[bytes]:
+        directory = self.copy("config.py", "bash_guard.py")
+        Path(directory, "git_safety.py").write_text(source, encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, os.path.join(directory, "command_guard.py")],
+            input=make_input("git status"),
+            cwd=PLAIN_REPO,
+            env=BASE_ENV,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+
+    def test_shell_code_check_output_that_is_no_answer_is_passed_through_and_allows(self) -> None:
+        # The check allows (exit 0) and prints something other than a
+        # PreToolUse answer: the guard allows too, printing it as it came.
+        for printed in ("not json", '{"other": 1}', "[1, 2]"):
+            with self.subTest(printed=printed):
+                result = self.run_with_shell_code_check(
+                    "def hook_main(settings, fired=None):\n    print(%r)\n    raise SystemExit(0)\n" % printed
+                )
+                self.assertEqual(
+                    (result.returncode, result.stdout.decode(), result.stderr.decode()), (0, printed + "\n", "")
+                )
 
     def test_a_check_that_exits_1_blocks(self) -> None:
         self.assert_blocks(self.stub("import sys\nsys.exit(1)"), "exited with 1 instead of a verdict")
@@ -361,6 +448,43 @@ class Loading(unittest.TestCase):
         self.assertEqual(actual, 0, stderr)
 
 
+class Importing(unittest.TestCase):
+    """Each guard is a module too: importing one runs nothing. Each run is a
+    child with stdin closed, so a guard that did run would end, not wait.
+    The child imports the package from its path and runs outside every
+    repository: a guard that did run refuses, and its row must not reach the
+    running repository's log (#387)."""
+
+    def python(self, code: str, hook_input: str | None = None) -> tuple[int, str, str]:
+        env = dict(BASE_ENV)
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(KAVACH.parent), env.get("PYTHONPATH"))))
+        if hook_input is not None:
+            env["HOOK_INPUT"] = hook_input
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            stdin=subprocess.DEVNULL,
+            cwd=outside(self),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        return result.returncode, result.stdout, result.stderr
+
+    def test_importing_either_guard_runs_nothing(self) -> None:
+        for name in ("command_guard", "tool_guard"):
+            with self.subTest(name=name):
+                self.assertEqual(self.python("import kavach.%s" % name), (0, "", ""))
+
+    def test_a_payload_that_is_not_json_has_no_fast_exit(self) -> None:
+        # The guard's own run never gets here with such a payload: the
+        # git-command check refuses it first.
+        code = "from kavach import command_guard\nprint(command_guard.cannot_name_git())"
+        self.assertEqual(self.python(code, "not json"), (0, "False\n", ""))
+        self.assertEqual(self.python(code, '{"tool_input": {"command": "ls"}}'), (0, "True\n", ""))
+
+
 class HookInput(unittest.TestCase):
     """Input the guard cannot read blocks. The input reaches Python on stdin,
     not in its environment, where Linux caps one string at 128 KiB and macOS
@@ -388,6 +512,28 @@ class HookInput(unittest.TestCase):
         fixture("git init -q . && git remote add origin https://example.com/x.git", repo)
         command = "git push origin main # " + self.BIG_WORD
         self.case.raw(0, "big plain push", "", json.dumps({"tool_input": {"command": command}}), cwd=repo)
+
+    def test_hook_input_that_cannot_be_read_blocks(self) -> None:
+        # Open for writing only, so reading it fails (OSError).
+        path = os.path.join(tempfile.mkdtemp(dir=WORK), "input")
+        stdin = os.open(path, os.O_WRONLY | os.O_CREAT)
+        self.addCleanup(os.close, stdin)
+        result = subprocess.run(
+            [sys.executable, str(GUARD)],
+            stdin=stdin,
+            cwd=PLAIN_REPO,
+            env=BASE_ENV,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+        self.assertEqual(
+            (result.returncode, result.stderr.decode("utf-8", "replace")),
+            (
+                2,
+                "BLOCKED: the git-command check could not read its hook input (OSError), so it cannot judge this command.\n",
+            ),
+        )
 
     def test_hook_input_that_is_not_utf8_blocks_as_unreadable(self) -> None:
         self.case.raw(2, "not UTF-8", "could not read a command in its hook input", b"not json \xff")

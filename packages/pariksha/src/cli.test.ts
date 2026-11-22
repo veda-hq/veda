@@ -9,6 +9,7 @@ import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, r
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative } from 'node:path';
 import { after, before, beforeEach, describe, it } from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { hash } from './boundary.ts';
 import { CONFIGURABLE, consoleIo, DENY_FILE, flags, main, ownVersion, run, splitFiles, trackedFiles, type Io } from './cli.ts';
 import type { LinkRunner } from './doc-links.ts';
@@ -124,7 +125,9 @@ const USAGE = [
   '       pariksha absolute-paths [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha aggregate-gate-needs [--config <file>] [--root <dir>]',
   '       pariksha boundary [--root <dir>] [--deny <file>]',
+  '       pariksha bp-rules (--inventory | --gaps | --due [--within <0..3650>] [--today <YYYY-MM-DD>] | --next-id <PREFIX> | --corpus-fingerprint | --check-wiring [--ids <a,b>] | --regenerate-index | --check-index) [--config <file>] [--root <dir>]',
   '       pariksha codec-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
+  '       pariksha codeql-baseline (--check <results.sarif> | --write <results.sarif>) [--baseline <file>] [--root <dir>]',
   '       pariksha coverage-by-type [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha coverage-exemptions --config <file> [--package <dir>] [--root <dir>]',
   '       pariksha doc-budgets --table <file> [--section <name>] [--root <dir>]',
@@ -137,9 +140,12 @@ const USAGE = [
   '       pariksha export-deletions [--base <ref>] [--root <dir>]',
   '       pariksha fault-injection-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
   '       pariksha flaky-tests [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--runs <n>] [--root <dir>]',
+  '       pariksha license-check --config <file> [--report <file.json>] [--root <dir>]',
   '       pariksha masked-exit-codes [--config <file>] [--staged] [--root <dir>]',
   '       pariksha non-synced-resources [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
+  '       pariksha own-provenance --config <file> [--root <dir>]',
   '       pariksha pnpm-settings [--config <file>] [--root <dir>]',
+  '       PR_TITLE=<title> [PR_NUMBER=<n>] [HEAD_REF=<branch>] pariksha pr-title [--config <file>] [--root <dir>]',
   '       pariksha python-floor --python <interpreter> --floor-file <path> [--exclude <regex>] [--selector <path>] [--root <dir>]',
   '       pariksha regression-controls --config <file> [--staged] [--root <dir>]',
   '       pariksha repo-rules [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
@@ -215,7 +221,9 @@ describe('run: what no command takes', () => {
       'absolute-paths',
       'aggregate-gate-needs',
       'authority-citations',
+      'bp-rules',
       'codec-registry',
+      'codeql-baseline',
       'coverage-by-type',
       'coverage-exemptions',
       'doc-budgets',
@@ -227,9 +235,12 @@ describe('run: what no command takes', () => {
       'eslint-targets',
       'fault-injection-registry',
       'flaky-tests',
+      'license-check',
       'masked-exit-codes',
       'non-synced-resources',
+      'own-provenance',
       'pnpm-settings',
+      'pr-title',
       'regression-controls',
       'repo-rules',
       'shell-gates',
@@ -253,16 +264,6 @@ describe('main and the console', () => {
     assert.equal(await main([process.execPath], other.io), undefined);
     assert.deepEqual(other.out, []);
     assert.deepEqual(other.err, []);
-  });
-
-  it('leaves an importer’s exit code as it is', async () => {
-    process.exitCode = 7;
-    try {
-      await import(`./cli.ts?import=${Date.now()}`);
-      assert.equal(process.exitCode, 7);
-    } finally {
-      process.exitCode = undefined;
-    }
   });
 
   it('follows a link to this file, as node names a bin', async () => {
@@ -296,8 +297,11 @@ describe('run: the flags each command takes', () => {
     ['aggregate-gate-needs', '--config', 'x', '--root', NOWHERE],
     ['authority-citations', '--mode', 'tree', '--authority', 'a', '--issue-prefix', 'A', '--adr-dir', 'd', '--root', NOWHERE],
     ['boundary', '--root', NOWHERE, '--deny', 'x'],
+    ['bp-rules', '--config', 'x', '--within', '1', '--today', '2026-01-01', '--next-id', 'P', '--ids', 'a', '--root', NOWHERE, '--inventory', '--gaps', '--due', '--corpus-fingerprint', '--check-wiring', '--regenerate-index', '--check-index'],
     ['codec-registry', '--config', 'x', '--base', 'b', '--root', NOWHERE],
     ['codec-registry', '--config', 'x', '--no-base', '--root', NOWHERE],
+    ['codeql-baseline', '--check', 'x', '--baseline', 'b', '--root', NOWHERE],
+    ['codeql-baseline', '--write', 'x', '--baseline', 'b', '--root', NOWHERE],
     ['coverage-by-type', '--config', 'x', '--files-from', 'x', '--base', 'b', '--head', 'h', '--root', NOWHERE, '--staged', '--all'],
     ['coverage-exemptions', '--config', 'x', '--package', 'p', '--root', NOWHERE],
     ['doc-budgets', '--table', 'x', '--section', 's', '--root', NOWHERE],
@@ -313,9 +317,12 @@ describe('run: the flags each command takes', () => {
     ['fault-injection-registry', '--config', 'x', '--base', 'b', '--root', NOWHERE],
     ['fault-injection-registry', '--config', 'x', '--no-base', '--root', NOWHERE],
     ['flaky-tests', '--config', 'x', '--files-from', 'x', '--base', 'b', '--head', 'h', '--runs', '2', '--root', NOWHERE, '--staged', '--all'],
+    ['license-check', '--config', 'x', '--report', 'r', '--root', NOWHERE],
     ['masked-exit-codes', '--config', 'x', '--root', NOWHERE, '--staged'],
     ['non-synced-resources', '--config', 'x', '--files-from', 'x', '--base', 'b', '--head', 'h', '--root', NOWHERE, '--staged', '--all'],
+    ['own-provenance', '--config', 'x', '--root', NOWHERE],
     ['pnpm-settings', '--config', 'x', '--root', NOWHERE],
+    ['pr-title', '--config', 'x', '--root', NOWHERE],
     ['python-floor', '--python', 'p', '--floor-file', 'f', '--exclude', 'e', '--selector', 's', '--root', NOWHERE],
     ['regression-controls', '--config', 'x', '--root', NOWHERE, '--staged'],
     ['repo-rules', '--config', 'x', '--files-from', 'x', '--base', 'b', '--head', 'h', '--root', NOWHERE, '--staged', '--all'],
@@ -474,7 +481,7 @@ describe('.pariksha.json', () => {
     assert.equal(unknown.code, 2);
     assert.match(
       unknown.err[0] ?? '',
-      / \(pariksha 0\): unknown check "boundary" in "checks"; this version reads settings for absolute-paths, aggregate-gate-needs, authority-citations, codec-registry, coverage-by-type, coverage-exemptions, doc-budgets, doc-references, duplicate-tests, enforcement-claims, env-gate-switches, eslint-by-workspace, eslint-targets, fault-injection-registry, flaky-tests, masked-exit-codes, non-synced-resources, pnpm-settings, regression-controls, repo-rules, shell-gates; nothing was checked, so this is not a pass$/,
+      / \(pariksha 0\): unknown check "boundary" in "checks"; this version reads settings for absolute-paths, aggregate-gate-needs, authority-citations, bp-rules, codec-registry, codeql-baseline, coverage-by-type, coverage-exemptions, doc-budgets, doc-references, duplicate-tests, enforcement-claims, env-gate-switches, eslint-by-workspace, eslint-targets, fault-injection-registry, flaky-tests, license-check, masked-exit-codes, non-synced-resources, own-provenance, pnpm-settings, pr-title, regression-controls, repo-rules, shell-gates; nothing was checked, so this is not a pass$/,
     );
     const gone = absolute(project({ 'absolute-paths': 'gone.json' }).env);
     assert.equal(gone.code, 2);
@@ -1182,7 +1189,8 @@ describe('run doc-references', () => {
 
   it('runs lychee from PATH when it is given no runner', () => {
     const bin = temp();
-    writeFileSync(join(bin, 'lychee'), '#!/bin/sh\nexit 3\n');
+    // It reads the list pariksha writes before it exits: one that exits first can close the pipe mid-write (EPIPE).
+    writeFileSync(join(bin, 'lychee'), '#!/bin/sh\ncat > /dev/null\nexit 3\n');
     chmodSync(join(bin, 'lychee'), 0o755);
     assert.deepEqual(w1WithPath(`${bin}${delimiter}${process.env['PATH'] ?? ''}`, () => docRefs('links.json', ['--all'])), {
       code: 2,
@@ -2798,14 +2806,21 @@ describe('run env-gate-switches under fault injection', () => {
   }
 });
 
-// Last: the only test that starts node, so the cheap tests above stop a
-// mutant before it pays for the start.
+// Last: the only tests that start node, so the cheap tests above stop a
+// mutant before it pays for a start.
 describe('the command', () => {
   it('runs as a script, its arguments after the script, and exits with the code', () => {
     const pkg = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { version: string };
     const script = join(import.meta.dirname, 'cli.ts');
     assert.equal(execFileSync(process.execPath, [script, '--version'], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }), `${pkg.version}\n`);
     assert.throws(() => execFileSync(process.execPath, [script, 'nope'], { stdio: 'pipe', timeout: 30_000, killSignal: 'SIGKILL' }), { status: 2 });
+  });
+
+  // In a process of its own: a second instance of cli.ts in this one would
+  // stand in for the first in the coverage report.
+  it('leaves an importer’s exit code as it is', () => {
+    const importer = `process.exitCode = 7; await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, 'cli.ts')).href)});`;
+    assert.throws(() => execFileSync(process.execPath, ['--input-type=module', '-e', importer], { stdio: 'pipe', timeout: 30_000, killSignal: 'SIGKILL' }), { status: 7 });
   });
 });
 

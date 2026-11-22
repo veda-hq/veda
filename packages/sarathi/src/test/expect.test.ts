@@ -4,7 +4,7 @@
 // vitest's meaning: toEqual ignores undefined properties, toThrow(text)
 // matches part of the message, toHaveBeenCalledWith compares deeply, and the
 // asymmetric matchers (stringContaining, stringMatching, any,
-// objectContaining) match at any depth.
+// objectContaining, arrayContaining) match at any depth.
 import assert from 'node:assert/strict';
 import { it as nodeIt } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -14,6 +14,7 @@ export interface Mock<F extends (...args: never[]) => unknown> {
   (...args: Parameters<F>): ReturnType<F>;
   mock: { calls: Parameters<F>[]; lastCall: Parameters<F> | undefined };
   mockReturnValue: (value: ReturnType<F>) => Mock<F>;
+  mockImplementation: (impl: F) => Mock<F>;
   mockRestore: () => void;
 }
 
@@ -34,6 +35,10 @@ function record<F extends AnyFn>(impl: F | undefined, restore: () => void = () =
   };
   fn.mockReturnValue = value => {
     body = () => value;
+    return fn;
+  };
+  fn.mockImplementation = next => {
+    body = next;
     return fn;
   };
   fn.mockRestore = restore;
@@ -186,6 +191,8 @@ function matchers(actual: unknown, negate: boolean, message: string | undefined)
     toBeGreaterThanOrEqual: (bound: number) => number(value => value >= bound, `to be at least ${bound}`),
     toBeLessThan: (bound: number) => number(value => value < bound, `to be less than ${bound}`),
     toBeLessThanOrEqual: (bound: number) => number(value => value <= bound, `to be at most ${bound}`),
+    /** vitest's: within half a unit of the `digits`th decimal place. */
+    toBeCloseTo: (expected: number, digits = 2) => number(value => Math.abs(value - expected) < 10 ** -digits / 2, `to be close to ${expected}`),
     toHaveLength: (length: number) => check((typeof actual === 'string' || Array.isArray(actual)) && actual.length === length, `to have length ${length}`),
     toHaveProperty: (key: string) => check(typeof actual === 'object' && actual !== null && key in actual, `to have property ${key}`),
     toThrow: (expected?: Expected) => {
@@ -238,6 +245,9 @@ expect.any = (kind: StringConstructor | NumberConstructor | (new (...args: never
     `any ${kind.name}`,
   );
 expect.objectContaining = (part: object): Asymmetric => new Asymmetric(actual => subset(actual, part), `objectContaining ${show(part)}`);
+/** vitest's: an array holding an item equal to each of `items`, in any order, among others. */
+expect.arrayContaining = (items: readonly unknown[]): Asymmetric =>
+  new Asymmetric(actual => Array.isArray(actual) && items.every(item => actual.some(entry => equals(entry, item))), `arrayContaining ${show(items)}`);
 
 /** `it`, plus vitest's `it.each` with `%s` names. */
 export const it = Object.assign(
@@ -245,14 +255,17 @@ export const it = Object.assign(
   {
     each:
       <const T>(table: readonly T[]) =>
-      (name: string, fn: (...args: T extends readonly unknown[] ? [...T] : [T]) => void) => {
+      (name: string, fn: (...args: T extends readonly unknown[] ? [...T] : [T]) => void | Promise<void>) => {
         for (const row of table) {
           const args = (Array.isArray(row) ? row : [row]) as T extends readonly unknown[] ? [...T] : [T];
           let used = 0;
-          const title = name.replace(/%s/g, () => String(args[used++]));
-          nodeIt(title, () => {
-            fn(...args);
+          // `%s` is the value as text, `%j` as JSON.
+          const title = name.replace(/%[sj]/g, token => {
+            const value: unknown = args[used++];
+            return token === '%j' ? show(value) : String(value);
           });
+          // Returned, so an async row's failure fails its test.
+          nodeIt(title, () => fn(...args));
         }
       },
   },

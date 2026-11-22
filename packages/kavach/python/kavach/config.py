@@ -19,7 +19,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 ENV_VAR = "KAVACH_CONFIG"
 # A variable name as the shell accepts it in an assignment.
@@ -126,7 +126,7 @@ class Config:
     # shows no wrong fire.
     shell_expansion_refuses_from: str = ""
     reviewed_clis: tuple[ReviewedCLI, ...] = ()
-    own_checkout: OwnCheckout | None = None
+    own_checkout: Optional[OwnCheckout] = None
     # The hosts a push may go to (`worktree.pushHosts`); boundary.py's
     # DEFAULT_PUSH_HOSTS, kept equal by test_config.py.
     push_hosts: tuple[str, ...] = ("github.com",)
@@ -146,9 +146,14 @@ RULE_MODES = SHELL_EXPANSION_MODES
 DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 # The shell-expansion rule's id, which `rules` may name too.
 SHELL_EXPANSION_RULE = "commit-message-shell-expansion"
-# Every rule `rules` may name: rules.RULES and the shell-expansion rule.
+# The worktree guard's rule (worktree_guard.py) for a write in another live
+# session's worktree, which `rules` may name too (veda#363).
+OTHER_SESSIONS_WORKTREE_RULE = "other-sessions-worktree"
+# Every rule `rules` may name: rules.RULES, the shell-expansion rule and the
+# worktree guard's.
 RULE_IDS = (
     SHELL_EXPANSION_RULE,
+    OTHER_SESSIONS_WORKTREE_RULE,
     "pipe-masks-exit",
     "cd-out-of-worktree",
     "stryker-inplace",
@@ -413,7 +418,7 @@ def _push_host(value: Any, index: int) -> str:
     return host
 
 
-def load(environ: Mapping[str, str] | None = None) -> Config:
+def load(environ: Optional[Mapping[str, str]] = None) -> Config:
     """The settings named by KAVACH_CONFIG, or DEFAULT when it is unset or empty."""
     env = os.environ if environ is None else environ
     path = env.get(ENV_VAR, "")

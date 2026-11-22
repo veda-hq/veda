@@ -1,7 +1,7 @@
 {
   "name": "@veda-hq/pariksha",
-  "version": "0.7.2",
-  "description": "Repository checks: doc drift, rule enforcement, test-quality ratchets, read from one .pariksha.json. Checks: absolute-paths, aggregate-gate-needs, authority-citations, boundary, codec-registry, coverage-by-type, coverage-exemptions, doc-budgets, doc-references, duplicate-tests, enforcement-claims, env-gate-switches, eslint-by-workspace, eslint-targets, export-deletions, fault-injection-registry, flaky-tests, masked-exit-codes, non-synced-resources, pnpm-settings, python-floor, regression-controls, repo-rules, required-settings, schema-roots, shell-gates. Also markdownlint rules for Markdown that renders mangled: @veda-hq/pariksha/markdownlint.",
+  "version": "0.7.20",
+  "description": "Repository checks: doc drift, rule enforcement, test-quality ratchets, read from one .pariksha.json. Checks: absolute-paths, aggregate-gate-needs, authority-citations, boundary, bp-rules, codec-registry, codeql-baseline, coverage-by-type, coverage-exemptions, doc-budgets, doc-references, duplicate-tests, enforcement-claims, env-gate-switches, eslint-by-workspace, eslint-targets, export-deletions, fault-injection-registry, flaky-tests, license-check, masked-exit-codes, non-synced-resources, own-provenance, pnpm-settings, pr-title, python-floor, regression-controls, repo-rules, required-settings, schema-roots, shell-gates. Also markdownlint rules for Markdown that renders mangled, @veda-hq/pariksha/markdownlint, and the git reads of a baseline that only shrinks, @veda-hq/pariksha/baseline-ratchet.",
   "keywords": ["repository checks", "lint", "boundary", "ci", "coding agents", "markdownlint"],
   "license": "MIT",
   "type": "module",
@@ -23,6 +23,10 @@
   },
   "exports": {
     "./markdownlint": "./dist/markdownlint-rules.js",
+    "./baseline-ratchet": {
+      "types": "./dist/baseline-ratchet.d.ts",
+      "default": "./dist/baseline-ratchet.js"
+    },
     "./dist/*": "./dist/*",
     "./baselines/*": "./baselines/*",
     "./package.json": "./package.json"
@@ -37,17 +41,37 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node ../../scripts/fresh-tmpdir.mjs node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts src/**/*.test.ts",
-    "smoke": "node dist/cli.js --version && node dist/cli.js boundary --root ../.. && node dist/cli.js repo-rules --root ../.. && node dist/cli.js required-settings --require .veda/required-settings.json --root ../.. && node dist/cli.js required-settings --require packages/pariksha/baselines/claude-settings.json --root ../.. && node --input-type=module -e \"import { createRequire } from 'node:module'; import { pathToFileURL } from 'node:url'; const id = '@veda-hq/pariksha/markdownlint'; const req = createRequire(process.cwd() + '/'); const required = req(id); const imported = (await import(pathToFileURL(req.resolve(id, { paths: [process.cwd()] })).href)).default; if (!Array.isArray(required) || required !== imported || required.length !== 13) throw new Error(id + ' does not load as markdownlint-cli2 loads it');\"",
+    "smoke": "node dist/cli.js --version && node dist/cli.js boundary --root ../.. && node dist/cli.js repo-rules --root ../.. && node dist/cli.js required-settings --require .veda/required-settings.json --root ../.. && node dist/cli.js required-settings --require packages/pariksha/baselines/claude-settings.json --root ../.. && node --input-type=module -e \"import { createRequire } from 'node:module'; import { pathToFileURL } from 'node:url'; const id = '@veda-hq/pariksha/markdownlint'; const req = createRequire(process.cwd() + '/'); const required = req(id); const imported = (await import(pathToFileURL(req.resolve(id, { paths: [process.cwd()] })).href)).default; if (!Array.isArray(required) || required !== imported || required.length !== 13) throw new Error(id + ' does not load as markdownlint-cli2 loads it');\" && node --input-type=module -e \"const id = '@veda-hq/pariksha/baseline-ratchet'; const m = await import(id); const names = ['atMergeBase', 'fileAt', 'mergeBaseOf', 'parseRenames', 'renamedSinceMergeBase', 'trackedFiles']; if (names.some((n) => typeof m[n] !== 'function') || m.mergeBaseOf('.', '') !== null) throw new Error(id + ' does not export its six functions');\"",
     "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
   },
   "dependencies": {
     "js-yaml": "4.3.2"
   },
   "peerDependencies": {
+    "@commitlint/lint": ">=20 <21",
+    "@commitlint/load": ">=20 <21",
+    "@sigstore/bundle": ">=5 <6",
+    "@sigstore/protobuf-specs": ">=0.5 <0.6",
+    "@sigstore/verify": ">=4.1 <5",
     "eslint": ">=9.24 <10",
     "typescript": ">=5.4 <6"
   },
   "peerDependenciesMeta": {
+    "@commitlint/lint": {
+      "optional": true
+    },
+    "@commitlint/load": {
+      "optional": true
+    },
+    "@sigstore/bundle": {
+      "optional": true
+    },
+    "@sigstore/protobuf-specs": {
+      "optional": true
+    },
+    "@sigstore/verify": {
+      "optional": true
+    },
     "eslint": {
       "optional": true
     },
@@ -56,6 +80,11 @@
     }
   },
   "devDependencies": {
+    "@commitlint/lint": "20.2.0",
+    "@commitlint/load": "20.2.0",
+    "@sigstore/bundle": "5.0.1",
+    "@sigstore/protobuf-specs": "0.5.2",
+    "@sigstore/verify": "4.1.3",
     "@types/node": "24.19.2",
     "eslint": "9.39.1",
     "mdast-util-from-markdown": "2.0.3",

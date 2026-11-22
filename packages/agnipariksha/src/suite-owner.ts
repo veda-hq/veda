@@ -2,9 +2,13 @@
 
 export type Exists = (repoRelativePath: string) => boolean;
 
-export const COLOCATED_SUITE_SUFFIXES: readonly string[] = ['.test.ts', '.test.tsx'];
+export const COLOCATED_SUITE_SUFFIXES: readonly string[] = ['.test.ts', '.test.tsx', '.test.mjs'];
 
-/** The sibling suites that could own a source, most specific first. */
+/**
+ * The sibling suites that could own a source, most specific first: a `.tsx`
+ * source prefers `.test.tsx`, any other source `.test.ts`, and `.test.mjs`
+ * comes last, so a source with a TypeScript suite keeps it.
+ */
 export function suiteCandidatesFor(sourcePath: string): string[] {
   const extension = /\.[^./]+$/.exec(sourcePath)?.[0] ?? '';
   const stem = sourcePath.slice(0, sourcePath.length - extension.length);
@@ -19,19 +23,22 @@ export function ownerOf(sourcePath: string, exists: Exists): string | null {
 }
 
 const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const SUITE = /\.test\.tsx?$/;
+/** A suite file's ending, as a regular expression fragment. */
+const SUITE_ENDING = String.raw`\.test\.(?:tsx?|mjs)$`;
+const SUITE = new RegExp(SUITE_ENDING);
 
 /**
  * The suites beside a source that kill none of its mutants: `<stem>-*.test.ts`
- * or a qualified `<stem>.<qualifier>.test.ts`, from `files` (repo-relative).
- * A suite with a source of its own (`foo-bar.test.ts` beside `foo-bar.ts` or
+ * or a qualified `<stem>.<qualifier>.test.ts` (`.test.tsx` and `.test.mjs`
+ * too), from `files` (repo-relative). A suite with a source of its own
+ * (`foo-bar.test.ts` or `foo-bar.test.mjs` beside `foo-bar.ts` or
  * `foo-bar.mjs`) is that file's, so it is left out; so is any suite that
  * could own the source.
  */
 export function siblingSuites(sourcePath: string, files: readonly string[]): string[] {
   const extension = /\.[^./]+$/.exec(sourcePath)?.[0] ?? '';
   const stem = sourcePath.slice(0, sourcePath.length - extension.length);
-  const sibling = new RegExp(`^${escape(stem)}(?:-[^/]+|\\.[^./]+)\\.test\\.tsx?$`);
+  const sibling = new RegExp(`^${escape(stem)}(?:-[^/]+|\\.[^./]+)${SUITE_ENDING}`);
   const candidates = new Set(suiteCandidatesFor(sourcePath));
   const hasOwnSource = (suite: string): boolean => {
     const source = new RegExp(`^${escape(suite.replace(SUITE, ''))}\\.[^./]+$`);

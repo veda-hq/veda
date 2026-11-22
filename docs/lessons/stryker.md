@@ -104,6 +104,17 @@ without suppressing them, and the traps of a gate scoped to a diff.
 
 ## Killing survivors without suppressing them
 
+- **`// Stryker disable` is refused.** agnipariksha doesn't count Ignored mutants, so one
+  `// Stryker disable …` or `/* Stryker disable … */` comment would take its file's mutants out
+  of the gate, and the sources the gate mutates aren't code-owner paths, so only review would
+  catch it. Kill the mutant, or make the code observable (below). An unkillable pattern goes in
+  agnipariksha's `arid-nodes.mjs`, which explains each one. `// Stryker restore` and a comment
+  that only mentions the directive are fine. Inline ESLint config is off in linted code, so
+  neither `eslint-disable…` nor `/* eslint no-warning-comments: "off" */` turns the ban off. An
+  exception to any lint rule goes in `eslint.config.js` or `eslint-suppressions.json`, which
+  Alok reviews.
+  <!-- held by: eslint.config.js, no-warning-comments (terms "stryker disable", location start) with linterOptions.noInlineConfig on MUTABLE (the linted trees, every JS and TS extension); scripts/stryker-disable-lint.test.mjs -->
+
 - **An unobservable mutant means the code is unclear.** A mutant that looks value-equivalent
   usually means the code says one thing twice or says nothing; fix the code instead of
   suppressing the mutant. Move an unobservable literal into a shared constant that an observed

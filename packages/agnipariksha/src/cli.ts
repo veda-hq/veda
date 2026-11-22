@@ -272,8 +272,8 @@ export function scratchTmpEnv(dir: string): Record<(typeof TMPDIR_KEYS)[number],
 /** Temp directories of runs still going, removed if the gate exits first. */
 const liveScratch = new Set<string>();
 
-/** Remove a run's temp directory; one that cannot be removed is left, never failing the run. */
-export function removeScratchTmp(dir: string, rm: (path: string) => void = (path) => rmSync(path, { recursive: true, force: true })): void {
+/** Remove a run's temp directory; one that cannot be removed, or is gone already, is left, never failing the run. */
+export function removeScratchTmp(dir: string, rm: (path: string) => void = (path) => rmSync(path, { recursive: true })): void {
   liveScratch.delete(dir);
   try {
     rm(dir);

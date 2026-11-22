@@ -37,10 +37,11 @@ env:
   # module is always timed and counted; PY_MODULES names the ones whose
   # mutants run, so a costly module's run is decided from its measured cost,
   # and PY_SHARDS, when set, keeps only the named shards (module:index).
-  SCOPE: full
-  # Run A of two: boundary's 233 shards take a run of their own, so each
-  # run's matrix stays under GitHub's 256 jobs.
-  PY_MODULES: tool_guard command_guard rules bash_guard config refusal_log git_safety worktree_guard clone_writers
+  SCOPE: smoke
+  # Run B of two: boundary's 233 shards take this run of their own, so each
+  # run's matrix stays under GitHub's 256 jobs. Run A, 44889563419, took
+  # every other module and every TypeScript file.
+  PY_MODULES: boundary
   PY_SHARDS: ""
   # #287's head (claude/prepush-gate-272), pinned.
   LANES_SHA: 3fca3c140911467257eeb859b1468e0443d40271

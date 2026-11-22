@@ -1975,6 +1975,33 @@
     "text": "git log -1 -S--output={P}/pwned"
   },
   {
+    "id": "ow-git-log-ignore-case-output",
+    "note": "kavach passes log's search options (`-i`, veda#404); the --output beside them still writes.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "--output",
+    "text": "git log -1 -i --grep=base --output={P}/pwned"
+  },
+  {
+    "id": "ow-git-log-ignore-case-grep",
+    "note": "The line refused on 2026-11-21 (veda#404): -i and --grep choose commits and name no file.",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "option value",
+    "text": "git log -1 --oneline -i --grep=BASE"
+  },
+  {
+    "id": "ow-git-show-search-options",
+    "note": "Display and search options of show name no file (veda#404).",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "option value",
+    "text": "git show -i --word-diff=color --color-moved --abbrev-commit --stat HEAD"
+  },
+  {
     "id": "ow-sed-program-in-variable",
     "note": "The parser read \"$x ...\" as the sed address $ and the command x. An earlier parser allowed it.",
     "intent": "outside-write",

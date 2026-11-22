@@ -1631,6 +1631,35 @@ def git_inspection_outputs(words: list[str], command_index: int) -> list[str] | 
         "--untracked-files",
         # Pickaxe switches: which matches -S and -G count, and what is shown.
         "--pickaxe-all", "--pickaxe-regex",
+        # git 2.54's log and show options that choose commits, or how they
+        # and their diffs are shown, and name no file (veda#404). Each one
+        # was run as `git log -1` and `git show` here. Those with an
+        # optional value take it attached (`--notes=<ref>`), as git does;
+        # `--min-parents`/`--max-parents` take only that form. Left out:
+        # `--ext-diff`, `--textconv` and `--show-signature`, which run
+        # programs; `--remerge-diff` and `--diff-merges` (`remerge`), which
+        # write objects; and `--output`, read above as a write.
+        "--regexp-ignore-case", "--extended-regexp", "--fixed-strings", "--perl-regexp",
+        "--basic-regexp", "--all-match", "--invert-grep", "--merges", "--min-parents",
+        "--max-parents", "--no-min-parents", "--no-max-parents", "--exclude-first-parent-only",
+        "--branches", "--tags", "--remotes", "--reflog", "--alternate-refs",
+        "--single-worktree", "--ignore-missing", "--cherry-mark", "--cherry-pick",
+        "--left-only", "--right-only", "--cherry", "--walk-reflogs", "--boundary",
+        "--simplify-by-decoration", "--ancestry-path", "--dense", "--sparse",
+        "--simplify-merges", "--show-pulls", "--no-walk", "--do-walk", "--author-date-order",
+        "--abbrev-commit", "--no-abbrev-commit", "--expand-tabs", "--no-expand-tabs",
+        "--notes", "--no-notes", "--show-notes", "--relative-date", "--log-size", "--source",
+        "--use-mailmap", "--mailmap", "--no-mailmap", "--no-use-mailmap", "--full-diff",
+        "--clear-decorations", "--show-linear-break", "--cc", "--dd", "--no-diff-merges",
+        "--combined-all-paths", "--word-diff", "--color-words", "--color-moved",
+        "--no-color-moved", "--ignore-blank-lines", "--ignore-cr-at-eol",
+        "--ignore-space-at-eol", "--minimal", "--patience", "--histogram",
+        "--indent-heuristic", "--no-indent-heuristic", "--function-context", "--dirstat",
+        "--cumulative", "--dirstat-by-file", "--patch-with-stat", "--patch-with-raw",
+        "--submodule", "--no-prefix", "--default-prefix", "--irreversible-delete",
+        "--break-rewrites", "--find-copies-harder", "--rename-empty", "--no-rename-empty",
+        "--ignore-submodules", "--ita-invisible-in-index", "--ita-visible-in-index",
+        "--no-relative",
     }
     values = {
         "--abbrev", "--author", "--before", "--after", "--since", "--until",
@@ -1638,6 +1667,14 @@ def git_inspection_outputs(words: list[str], command_index: int) -> list[str] | 
         "--format", "--pretty", "--grep", "--max-count", "--skip", "--sort",
         "--path-format", "--unified", "--find-renames", "--find-copies",
         "--output-indicator-new", "--output-indicator-old", "--output-indicator-context",
+        # git 2.54's, as above: each one's value is a name, a pattern or a
+        # number, never a file.
+        "--committer", "--encoding", "--glob", "--exclude", "--exclude-hidden",
+        "--grep-reflog", "--decorate-refs", "--decorate-refs-exclude", "--word-diff-regex",
+        "--color-moved-ws", "--anchored", "--src-prefix", "--dst-prefix", "--line-prefix",
+        "--skip-to", "--rotate-to", "--inter-hunk-context", "--ws-error-highlight",
+        "--since-as-filter", "--stat-width", "--stat-name-width", "--stat-count",
+        "--stat-graph-width", "--max-age", "--min-age",
     }
     outputs: list[str] = []
     index = command_index + 1
@@ -1669,7 +1706,11 @@ def git_inspection_outputs(words: list[str], command_index: int) -> list[str] | 
             # the pickaxe, whatever it spells (`-S--output=x` searches for
             # that text), so nothing after the letter is an option.
             pass
-        elif re.fullmatch(r"-(?:[0-9]+|[purszabw]+|[UMCBn][0-9]+)", option):
+        elif re.fullmatch(r"-(?:[0-9]+|[purszabwiEFPmtRDWgMCB]+|[UMCBnl][0-9]+)", option):
+            # Short switches, none naming a file: diff's (`-p`, `-R`, `-W`,
+            # bare `-M`/`-C`/`-B`), log's search ones (`-i`, `-E`, `-F`,
+            # `-P`, veda#404), `-m`, `-t` and `-g` (reflogs); and the
+            # counted ones (`-U3`, `-M50`, `-l5`).
             pass
         elif option.startswith("-"):
             return None
@@ -5404,6 +5445,67 @@ def pnpm_exec_program_index(name: str, args: list[str]) -> int | None:
 
 PNPM_SELECTOR_OPTIONS = {"-C": "dir", "--dir": "dir", "-F": "filter", "--filter": "filter"}
 
+# What `pnpm_selected_directory` reads after the selector: the subcommands
+# whose paths pnpm 12.9 reads from the selected folder (probed: `pnpm --dir
+# <pkg> pack --pack-destination out` and `--out out/%s.tgz` wrote under
+# `<pkg>`), with each one's own options beyond pnpm's shared ones (from its
+# `--help`): (flags, options taking the next word). `exec`'s are
+# `RUNNER_SHELL_MODES`' slot, `run`'s and `pack`'s their own.
+PNPM_SELECTED_SUBCOMMANDS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "exec": (frozenset(), frozenset()),
+    "run": (frozenset({"--if-present", "-s", "--sequential", "--dry-run", "--json"}), frozenset()),
+    "pack": (
+        frozenset({"--dry-run", "--json", "--skip-manifest-obfuscation"}),
+        frozenset({"--pack-destination", "--out", "--pack-gzip-level"}),
+    ),
+}
+# Options in a subcommand's own slot that move where it runs or what it
+# selects, or whose relative value pnpm reads from another folder. pnpm
+# reads `-C`/`--dir` "anywhere on the command line, before or after the
+# subcommand" (its `--help`), and the last one wins: `pnpm --dir A exec
+# --dir B pwd` printed B, and B was read from the shell's folder, not from
+# A. `-w`, `-r` and `--filter` there move it too (`pnpm --dir <pkg> exec -w
+# pwd` printed the workspace root). `--store-dir` is read "from the
+# workspace root, or from `--dir` outside a workspace"; `--state-dir`'s base
+# is not documented.
+PNPM_SLOT_MOVERS = frozenset({
+    "-C", "--dir", "-w", "--workspace-root", "-r", "--recursive", "-F", "--filter",
+    "--filter-prod", "--store-dir", "--state-dir",
+})
+# `pnpm_selected_directory`'s answer for a line whose selected folder its
+# subcommand's slot may move: unresolved, never the selector's folder.
+PNPM_UNPLACED = "unplaced"
+
+
+def pnpm_slot_is_unplaced(verb: str, words: list[str]) -> bool:
+    """Whether the words after ``verb`` may move it from the selected
+    folder, or hold an option this reading does not know.
+
+    ``exec`` and ``run`` read their own options up to the program or
+    script; what follows goes to it (`pnpm --dir A run s --dir B` handed
+    `--dir B` to the script). ``pack`` takes no operand and pnpm reads every
+    word of it, so the whole line counts there, and a bare word is the value
+    of an option this does not know.
+    """
+
+    _subcommands, _modes, flags, values = RUNNER_SHELL_MODES["pnpm"]
+    own_flags, own_values = PNPM_SELECTED_SUBCOMMANDS[verb]
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if verb != "pack" and (word == "--" or not word.startswith("-")):
+            return False
+        option, attached, _value = word.partition("=") if word.startswith("--") else (word, "", "")
+        if option in PNPM_SLOT_MOVERS:
+            return True
+        if option in values or option in own_values:
+            index += 1 if attached else 2
+        elif not attached and (option in flags or option in own_flags) or attached and option == "--color":
+            index += 1
+        else:
+            return True
+    return False
+
 
 def workspace_packages(root: Path) -> list[tuple[Path, str]] | None:
     """Each package of the pnpm workspace at ``root`` and its name, from
@@ -5454,16 +5556,49 @@ def workspace_packages(root: Path) -> list[tuple[Path, str]] | None:
     return found
 
 
-def pnpm_selected_directory(args: list[str], cwd: Path) -> tuple[Path, int] | None:
+def pnpm_is_dir_option(word: str) -> bool:
+    """`-C`/`--dir` in any spelling pnpm takes: spaced, `--dir=…`, `-C…`."""
+
+    return word in {"-C", "--dir"} or word.startswith(("--dir=", "-C"))
+
+
+def pnpm_folder_unplaced(args: list[str], cwd: Path) -> bool:
+    """Whether a pnpm line names a folder that this reading cannot place.
+
+    That is a selected folder its subcommand's slot may move
+    (`PNPM_UNPLACED`), or a `pack` whose `-C`/`--dir` is not one selector
+    before it. pnpm reads `--dir` anywhere on a line and packs into the last
+    one (`pnpm pack --dir .githooks`, `pnpm --dir a --dir .githooks pack`),
+    while the command's folder is the only other one read; a bare folder
+    name is not path-shaped, so it would read as no target at all.
+    """
+
+    selected = pnpm_selected_directory(args, cwd)
+    if selected == PNPM_UNPLACED:
+        return True
+    if isinstance(selected, tuple):
+        return False
+    _subcommands, _modes, flags, values = RUNNER_SHELL_MODES["pnpm"]
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        option, attached, _value = args[index].partition("=")
+        index += 2 if option in values and not attached else 1
+    return args[index : index + 1] == ["pack"] and any(pnpm_is_dir_option(word) for word in args)
+
+
+def pnpm_selected_directory(args: list[str], cwd: Path) -> tuple[Path, int] | str | None:
     """Where ``pnpm exec``/``pnpm run`` runs when one selector before the
-    subcommand names exactly one folder, and the index of the subcommand.
+    subcommand names exactly one folder, and the index of the subcommand;
+    ``pnpm pack`` too, under ``--dir``/``-C`` alone.
 
     ``--dir``/``-C`` name the folder; ``--filter``/``-F`` name it by a path
     (``./apps/server``, ``{./apps/server}``) or by one package's name, with or
     without its scope, as pnpm matches it. Anything else before the
     subcommand, a second selector, a pattern (``@scope/*``, ``server...``) or
     a name more than one package has leaves the operands resolved from the
-    command's own folder, as before."""
+    command's own folder, as before. ``PNPM_UNPLACED`` when a folder is
+    selected but the subcommand's own words may move it
+    (`pnpm_slot_is_unplaced`): the line is then unresolved."""
 
     index = 0
     selector: tuple[str, str] | None = None
@@ -5484,9 +5619,13 @@ def pnpm_selected_directory(args: list[str], cwd: Path) -> tuple[Path, int] | No
         if not value or has_dynamic_markers(value) and not re.fullmatch(r"\{\.{1,2}/[^{}$`*?\[]*\}", value):
             return None
         selector = (kind, value)
-    if selector is None or index >= len(args) or args[index] not in ("exec", "run"):
+    if selector is None or index >= len(args) or args[index] not in PNPM_SELECTED_SUBCOMMANDS:
         return None
     kind, value = selector
+    if args[index] == "pack" and kind != "dir":
+        # `--filter <pkg> pack` was not probed: read from the command's
+        # folder, as before.
+        return None
     if kind == "dir" or value.startswith(("./", "../", "{./", "{../")) or value in (".", ".."):
         relative = value[1:-1] if value.startswith("{") and value.endswith("}") else value
         target = resolve_shell_path(relative, cwd)
@@ -5494,6 +5633,8 @@ def pnpm_selected_directory(args: list[str], cwd: Path) -> tuple[Path, int] | No
             return None
         if kind == "filter" and not (target / "package.json").is_file():
             return None
+        if pnpm_slot_is_unplaced(args[index], args[index + 1 :]):
+            return PNPM_UNPLACED
         return target, index
     if re.search(r"[^A-Za-z0-9@/._-]", value) or value.startswith(("-", ".")):
         return None
@@ -5504,7 +5645,88 @@ def pnpm_selected_directory(args: list[str], cwd: Path) -> tuple[Path, int] | No
     exact = [folder for folder, package in packages if package == value]
     if not exact and "/" not in value:
         exact = [folder for folder, package in packages if package.startswith("@") and package.split("/", 1)[-1] == value]
-    return (exact[0].resolve(), index) if len(exact) == 1 else None
+    if len(exact) != 1:
+        return None
+    if pnpm_slot_is_unplaced(args[index], args[index + 1 :]):
+        return PNPM_UNPLACED
+    return exact[0].resolve(), index
+
+
+# pariksha's checks that only read what their path options name, and those
+# options (veda#404). Audited in pariksha 0.7.20's `src/cli.ts`: `boundary`
+# reads its deny list and `git ls-files` under `--root`; `own-provenance`
+# reads its settings, the lockfile and the trust anchor under `--root`, and
+# fetches attestations from the registry. Neither writes a file, and
+# `.pariksha.json` hands neither a flag (`FLAG_FIELDS`). Other checks write
+# under `--root`: `codeql-baseline` its baseline by default, `doc-references`
+# with `--write-baseline`; they are not listed, so they are read as any
+# program is.
+PARIKSHA_READING_CHECKS: dict[str, frozenset[str]] = {
+    "boundary": frozenset({"--root", "--deny"}),
+    "own-provenance": frozenset({"--config", "--root"}),
+}
+PARIKSHA_PACKAGE = "@veda-hq/pariksha"
+
+
+def pariksha_cli_file(script: str, cwd: Path) -> bool:
+    """Whether ``script`` (read from ``cwd``) is pariksha's command line: its
+    package's `src/cli.ts`, or the file the package's `bin` names, in the
+    nearest package whose manifest is named `@veda-hq/pariksha`."""
+
+    if has_dynamic_markers(script):
+        return False
+    path = resolve_shell_path(script, cwd)
+    if path is None or not path.is_file():
+        return False
+    path = path.resolve()
+    for folder in path.parents:
+        try:
+            manifest = json.loads((folder / "package.json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, UnicodeDecodeError):
+            return False
+        if not isinstance(manifest, dict) or manifest.get("name") != PARIKSHA_PACKAGE:
+            return False
+        bins = manifest.get("bin")
+        named = bins.get("pariksha") if isinstance(bins, dict) else bins
+        files = {"src/cli.ts", *([os.path.normpath(named)] if isinstance(named, str) else [])}
+        return path.relative_to(folder).as_posix() in files
+    return False
+
+
+def pariksha_read_values(words: list[str], cwd: Path) -> frozenset[int]:
+    """The indexes in ``words`` of the values a reading pariksha check only
+    reads, when ``words`` is that check's whole line; none otherwise.
+
+    The line is the bare program `pariksha` (a bin pnpm finds in its bin
+    folders), or bare `node <file>` (a `.tmp/node` is no node) with
+    pariksha's command line as the file
+    (`pariksha_cli_file`), then a check of `PARIKSHA_READING_CHECKS`, then
+    only that check's own options, each with its value as the next word, as
+    pariksha reads them. Anything else (a node option, a second word, an
+    option it does not take, an expansion) leaves every word read as any
+    program's is.
+    """
+
+    if words[:1] == ["pariksha"]:
+        at = 1
+    elif words[:1] == ["node"] and len(words) > 1 and pariksha_cli_file(words[1], cwd):
+        at = 2
+    else:
+        return frozenset()
+    if at >= len(words) or words[at] not in PARIKSHA_READING_CHECKS:
+        return frozenset()
+    allowed = PARIKSHA_READING_CHECKS[words[at]]
+    rest = words[at + 1 :]
+    if len(rest) % 2 or any(has_dynamic_markers(word) for word in rest):
+        return frozenset()
+    values: set[int] = set()
+    for offset in range(0, len(rest), 2):
+        if rest[offset] not in allowed or rest[offset + 1].startswith("-"):
+            return frozenset()
+        values.add(at + 1 + offset + 1)
+    return frozenset(values)
 
 
 def generic_mutation_paths(
@@ -5513,6 +5735,7 @@ def generic_mutation_paths(
     cwd: Path,
     *,
     read_namespaces: tuple[Path, ...] = (),
+    program_at: int | None = None,
 ) -> list[Path] | None:
     """Conservatively resolve path-like operands for an unknown mutator.
 
@@ -5536,25 +5759,59 @@ def generic_mutation_paths(
     this parser never sees, in a namespace or out of it. It claims only that the
     operand is not EVIDENCE of a write, which is all the operand check ever
     established for the paths it does confine.
+
+    ``program_at`` is where the program a selected `pnpm exec` runs starts
+    in ``args`` (its words after `exec`), so a reading pariksha check there
+    is read as one (`pariksha_read_values`); the program word itself stays
+    confined.
     """
 
     destinations: list[str] = []
     selected = pnpm_selected_directory(args, cwd) if name == "pnpm" else None
-    if selected is not None:
+    if name == "pnpm" and pnpm_folder_unplaced(args, cwd):
+        return None
+    if isinstance(selected, tuple):
         # `pnpm --filter server exec tsx ../../.tmp/x.ts` runs in the
         # package's folder, so what follows the subcommand is read from
         # there; the selector itself is still read from the command's folder.
         # The program word stays confined, as for any shape but the plain
-        # `pnpm exec <program>`.
+        # `pnpm exec <program>`. `pack` writes its tarball into the folder
+        # itself unless told otherwise, so the folder is a target too
+        # (`pnpm --dir .githooks pack`).
         folder, subcommand = selected
+        after_words = args[subcommand + 1 :]
+        # `exec`'s program, when the slot is empty (`--` or nothing before it).
+        program = (
+            (1 if after_words[:1] == ["--"] else 0)
+            if args[subcommand] == "exec" else None
+        )
+        if program is not None and (program >= len(after_words) or after_words[program].startswith("-")):
+            program = None
         before = generic_mutation_paths(name, args[:subcommand], cwd, read_namespaces=read_namespaces)
-        after = generic_mutation_paths(name, args[subcommand + 1 :], folder, read_namespaces=read_namespaces)
-        return None if before is None or after is None else before + after
+        after = generic_mutation_paths(
+            name, after_words, folder, read_namespaces=read_namespaces, program_at=program,
+        )
+        if before is None or after is None:
+            return None
+        return before + after + ([folder] if args[subcommand] == "pack" else [])
     turbo_run = (name == "turbo" and args[:1] == ["run"]) or (
         name == "pnpm" and args[:2] == ["turbo", "run"]
     )
     program_index = pnpm_exec_program_index(name, args)
+    # A reading pariksha check's `--root`, `--config` and `--deny` name what
+    # it reads, not what it writes (veda#404): `pnpm exec pariksha boundary
+    # --root .` and `pnpm --dir packages/pariksha exec node src/cli.ts
+    # boundary --root ../..` name the root, which the protected paths
+    # otherwise refuse (`rm -rf .`). Only the values: the line is still a
+    # program's, run in its folder, judged for ownership and the push.
+    start = program_index if program_at is None else program_at
+    read_values = (
+        frozenset(start + value for value in pariksha_read_values(args[start:], cwd))
+        if start is not None else frozenset()
+    )
     for index, item in enumerate(args):
+        if index in read_values:
+            continue
         if turbo_run and item.startswith("--filter="):
             # Turbo filters are graph selectors rather than filesystem paths.
             continue
@@ -6120,7 +6377,7 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
             folder, moved = root, True
         elif selectors:
             selected = pnpm_selected_directory(selectors + ["run"], cwd)
-            if selected is not None:
+            if isinstance(selected, tuple):
                 folder, moved = selected[0], True
             elif selectors[0].partition("=")[0] in {"-C", "--dir"} or sum(
                 word.startswith("-") for word in selectors
@@ -6157,6 +6414,11 @@ def runner_program(name: str, args: list[str], cwd: Path) -> RunnerProgram | boo
                         index += 1
                         value = args[index] if index < len(args) else ""
                     if option in {"-C", "--dir"}:
+                        if moved:
+                            # pnpm reads this `--dir` from the shell's
+                            # folder, not the selected one, and it wins
+                            # (`pnpm --dir A exec --dir B pwd` printed B).
+                            return None
                         place = resolve_shell_path(value, folder)
                         if place is None:
                             return None

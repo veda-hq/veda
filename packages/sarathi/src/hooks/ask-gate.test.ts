@@ -1315,6 +1315,8 @@ test('ask-gate links on Stop: an ask by number alone goes back once, quoted, wit
     ['read', 'Read comment 7068450411 first.'],
     ['your approval', 'It waits on your approval on veda-hq/veda#376.'],
     ['a numbered step', 'Two things:\n\n1. Approve PR 382.\n2. Then tag it.'],
+    ['the id a sentence before the question', 'PR #382 is green. Merge it?'],
+    ['a report, then a question, on one line', 'Fixed in #383. Anything else?'],
   ] as const) {
     assert.match(stopFeedbackOf(sideTurn(), message), /^give the full link\./, why);
   }
@@ -1323,7 +1325,11 @@ test('ask-gate links on Stop: an ask by number alone goes back once, quoted, wit
 test('ask-gate links on Stop: a report, and an ask with its URL, end the turn', () => {
   for (const [why, message] of [
     ['a report that mentions #383', 'Merged https://github.com/veda-hq/veda/pull/390. The old branch from #383 is deleted, and Secret scans pass again.'],
-    ['a report, then a question with no number', 'Fixed in #383. Anything else?'],
+    ['a report, then a question with no number', 'Fixed in #383.\n\nAnything else?'],
+    ['a quoted ask in a report', 'The slip "👍 the Guards Proposal on #376 (comment 7068450411)" is now held.'],
+    ['a curly-quoted ask in a report', 'The slip “Approve #376?” is now held.'],
+    ['an ask in inline code', 'The test pins `Approve #376?` as held.'],
+    ['a Done line beside a linked Needs you', NEEDS_YOU_261],
     ['a question answered on its own line', '**Can 0117 close?** Yes, once #2303 merges.'],
     ['a review report', 'Review of #383 found nothing. Reviewed by Cubic on #384.'],
     ['read-only', 'Read-only checks on #383 pass.'],

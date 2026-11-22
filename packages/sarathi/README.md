@@ -338,11 +338,14 @@ kind included:
   link.`, naming the references. Every ask is checked, a go-ahead included,
   and a repeat is refused too: the fix is always to hand, and a number that
   names nothing on GitHub is reworded (option 1, not #1).
-- **On Stop**, the closing message's asking sentences are read, fenced code
-  and quoted lines out: a sentence that opens on an imperative (👍, approve,
-  read, look at, review, react, merge, answer, confirm, decide, reply), holds
-  a 👍, `please`, a could-you, `needs you` or a your-approval, or holds a
-  question mark, and every line that opens `Needs you:`. A URL anywhere in
+- **On Stop**, the closing message's asking sentences are read, fenced code,
+  quoted lines, inline code and "quoted text" out: a sentence that opens on
+  an imperative (👍, approve, read, look at, review, react, merge, answer,
+  confirm, decide, reply), holds a 👍, `please`, a could-you, `needs you` or
+  a your-approval, or holds a question mark. A line that opens `Needs you:`
+  or ends on a question is read whole, so "PR #382 is green. Merge it?" is
+  held; "Fixed in #383." with "Anything else?" in its own paragraph is not,
+  and neither is a question answered on its own line. A URL anywhere in
   the message covers. The turn goes on once with `additionalContext` that
   starts `give the full link.` and quotes the sentences; where no `wrap_up`
   carried an ask, it also says to file one. This comes before the nudge

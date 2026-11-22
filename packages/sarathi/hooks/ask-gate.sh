@@ -614,11 +614,15 @@ def bare_refs(text, covered):
     return list(dict.fromkeys(refs))
 
 def asking_sentences(message):
-    """The sentences of a closing message that ask the owner, fenced code
-    and quoted lines left out."""
+    """The sentences of a closing message that ask the owner, fenced code,
+    quoted lines, inline code and text in double quotes left out: someone
+    else's words, as on the research hold. A line that opens "Needs you:"
+    or ends on a question asks whole, so the id one sentence before the
+    question counts (PR #382 is green. Merge it?)."""
     found = []
     for line in QUOTED.sub("", FENCE.sub("", message or "")).split("\n"):
-        if NEEDS_YOU.search(line):
+        line = QUOTES.sub(" ", INLINE_CODE.sub(" ", line))
+        if NEEDS_YOU.search(line) or ENDS_ASKING.search(URL.sub(url_out, line)):
             found.append(line.strip())
             continue
         for sentence in ASK_SENTENCE.split(line):

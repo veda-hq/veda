@@ -88,7 +88,7 @@ test('siblingSuites with .mjs: .test.mjs siblings are named, their own sources a
     'scripts/pins-z.test.mjsx',
   ];
   assert.deepEqual(siblingSuites('scripts/pins.mjs', files), ['scripts/pins-cases.test.mjs', 'scripts/pins.e2e.test.mjs']);
-  // A .ts source's .test.mjs sibling is named too; its own .test.mjs is a candidate, so it is not.
+  // A .ts source's .test.mjs sibling is named too; its own a/foo.test.mjs is its owner, never a sibling.
   assert.deepEqual(siblingSuites('a/foo.ts', ['a/foo.ts', 'a/foo.test.mjs', 'a/foo-more.test.mjs']), ['a/foo-more.test.mjs']);
 });
 

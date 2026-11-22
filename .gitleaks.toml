@@ -5,3 +5,15 @@ useDefault = true
 # never sees them because they are ignored.
 [[allowlists]]
 paths = ['''^node_modules/''', '''^dist/''']
+
+# CI checks out every branch (fetch-depth 0) and gitleaks scans them all, so
+# a commit on any pushed branch can fail main's Secret scans. 6e30b83, only on
+# closed #382's branch claude/w63-dvara-watchdog-slot, holds two lock-token
+# test fixtures that read as generic API keys; #383 rewrote them. This entry
+# covers that commit's two test files alone, and can go with that branch.
+[[allowlists]]
+description = "dvara lock-token fixtures in 6e30b83, closed #382's branch"
+condition = "AND"
+targetRules = ['generic-api-key']
+commits = ['6e30b837480462842c1ed636d070acdbc0505a14']
+paths = ['''^packages/dvara/src/(liveness|slot)\.test\.ts$''']

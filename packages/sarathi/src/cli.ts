@@ -33,7 +33,11 @@ import { cleanupMain } from './worktree/cleanup.ts';
 import { hookMain } from './worktree/hook.ts';
 import { lifecycleMain } from './worktree/lifecycle.ts';
 import { pickMain } from './worktree/pick.ts';
-import { parseSettings, SettingsError } from './worktree/settings.ts';
+import { parseSettings } from './worktree/settings.ts';
+import { VERSION } from './version.ts';
+
+// Kept for code that imports dist/cli.js for it, as before version.ts.
+export { VERSION };
 
 export interface Io {
   readonly argv: readonly string[];
@@ -50,8 +54,6 @@ export interface Io {
   /** Runs handlers; replaced in tests. */
   readonly run?: (entries: Parameters<typeof runAll>[0], config: Config, input: string, cwd: string) => Promise<Outcome[]>;
 }
-
-export const VERSION = '0.8.3';
 
 const USAGE = `usage: sarathi hook <Event> [--config <file>]
        sarathi check [--config <file>] [--settings <file>]
@@ -77,34 +79,34 @@ const GUARDED_EVENTS = new Set(['PreToolUse']);
 
 interface Options {
   readonly positional: string[];
-  readonly config?: string;
-  readonly settings?: string;
+  readonly config: string | undefined;
+  readonly settings: string | undefined;
 }
 
 function parseOptions(args: readonly string[]): Options | string {
   const positional: string[] = [];
   let config: string | undefined;
   let settings: string | undefined;
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index] ?? '';
+  // One iterator: an option's value is the next word, taken from it.
+  const words = args[Symbol.iterator]();
+  for (const arg of words) {
     if (arg === '--config' || arg === '--settings') {
-      const value = args[index + 1];
+      const { value } = words.next();
       if (value === undefined || value === '') return `${arg} needs a file`;
       if (arg === '--config') config = value;
       else settings = value;
-      index += 1;
     } else if (arg.startsWith('--')) {
       return `unknown option ${arg}`;
     } else {
       positional.push(arg);
     }
   }
-  return { positional, ...(config === undefined ? {} : { config }), ...(settings === undefined ? {} : { settings }) };
+  return { positional, config, settings };
 }
 
+/** The project checkout: $CLAUDE_PROJECT_DIR, or the working folder when it is unset or empty. */
 function projectRoot(io: Io): string {
-  const dir = io.env.CLAUDE_PROJECT_DIR;
-  return dir === undefined || dir === '' ? io.cwd : dir;
+  return io.env.CLAUDE_PROJECT_DIR || io.cwd;
 }
 
 function configPath(io: Io, options: Options): string {
@@ -157,7 +159,7 @@ async function hook(io: Io, options: Options): Promise<number> {
   try {
     parsed = JSON.parse(input);
   } catch {
-    parsed = undefined;
+    // Input that is not JSON leaves parsed undefined, which the check below refuses.
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     io.err(`${refuse ? 'BLOCKED: ' : ''}sarathi: the ${event} event on stdin is not a JSON object, so no handler ran.\n`);
@@ -177,24 +179,25 @@ async function hook(io: Io, options: Options): Promise<number> {
     return 2;
   }
   const entries = entriesFor(config, event, matchTarget(parsed as Record<string, unknown>));
-  if (entries.length === 0 && forbidden === undefined) return 0;
+  // No handler and no warning merges to exit 0 with nothing to say.
   const outcomes = entries.length === 0 ? [] : await (io.run ?? runAll)(entries, config, input, io.cwd);
   const merged = merge(event, forbidden === undefined ? outcomes : [forbidden, ...outcomes]);
   // A handler that blocks drops every JSON answer, the warning among them; keep it in the reason.
   const warning = forbidden === undefined ? undefined : (JSON.parse(forbidden.stdout) as { systemMessage: string }).systemMessage;
   const answer = merged.code === 2 && warning !== undefined ? { ...merged, stderr: `${warning}\n${merged.stderr}` } : merged;
-  if (answer.stdout !== '') io.out(answer.stdout);
-  if (answer.stderr !== '') io.err(answer.stderr);
+  io.out(answer.stdout);
+  io.err(answer.stderr);
   return answer.code;
 }
 
-interface SettingsHook {
+export interface SettingsHook {
   readonly matcher: string | undefined;
   readonly command: string;
   readonly timeout: number | undefined;
 }
 
-function settingsHooks(text: string, path: string): Map<string, SettingsHook[]> | string {
+/** The command hooks a Claude Code settings file lists, per event, or why it cannot be read. */
+export function settingsHooks(text: string, path: string): Map<string, SettingsHook[]> | string {
   let raw: unknown;
   try {
     raw = JSON.parse(text);
@@ -206,9 +209,13 @@ function settingsHooks(text: string, path: string): Map<string, SettingsHook[]> 
   if (typeof hooks !== 'object' || hooks === null) return found;
   for (const [event, groups] of Object.entries(hooks)) {
     const list: SettingsHook[] = [];
-    for (const group of Array.isArray(groups) ? (groups as unknown[]) : []) {
+    found.set(event, list);
+    // A value that is not a list runs nothing.
+    if (!Array.isArray(groups)) continue;
+    for (const group of groups as unknown[]) {
       const { matcher, hooks: inner } = (group ?? {}) as { matcher?: unknown; hooks?: unknown };
-      for (const item of Array.isArray(inner) ? (inner as unknown[]) : []) {
+      if (!Array.isArray(inner)) continue;
+      for (const item of inner as unknown[]) {
         const { command, timeout } = (item ?? {}) as { command?: unknown; timeout?: unknown };
         if (typeof command !== 'string') continue;
         list.push({
@@ -218,7 +225,6 @@ function settingsHooks(text: string, path: string): Map<string, SettingsHook[]> 
         });
       }
     }
-    found.set(event, list);
   }
   return found;
 }
@@ -235,9 +241,9 @@ export function runsSarathiFor(command: string, event: string): boolean {
 /** The settings' problems in running `config`: a missing event, a matcher that hides a handler, a timeout shorter than one. */
 export function settingsProblems(config: Config, settings: Map<string, SettingsHook[]>): string[] {
   const problems: string[] = [];
-  for (const event of Object.keys(config.hooks)) {
-    if ((config.hooks[event] ?? []).length === 0) continue;
-    const runner = (settings.get(event) ?? []).find(item => runsSarathiFor(item.command, event));
+  for (const [event, list] of Object.entries(config.hooks)) {
+    if (list.length === 0) continue;
+    const runner = settings.get(event)?.find(item => runsSarathiFor(item.command, event));
     if (runner === undefined) {
       problems.push(`${event}: no settings hook runs \`sarathi hook ${event}\``);
       continue;
@@ -271,7 +277,8 @@ function check(io: Io, options: Options): number {
     // The worktree settings share the file; a malformed one would only show at the next lifecycle call.
     parseSettings((JSON.parse(readFileSync(config.path, 'utf8')) as { worktree?: unknown }).worktree, config.path, config.root);
   } catch (error) {
-    io.err(`sarathi: ${error instanceof ConfigError || error instanceof SettingsError ? error.message : String(error)}\n`);
+    // loadConfig throws a ConfigError and parseSettings a SettingsError, each with a message that names the file.
+    io.err(`sarathi: ${(error as Error).message}\n`);
     return 1;
   }
   const counts = Object.entries(config.hooks).map(([event, list]) => `${event} ${list.length}`);
@@ -279,7 +286,7 @@ function check(io: Io, options: Options): number {
     const path = resolve(io.cwd, options.settings);
     let text: string;
     try {
-      text = readFileSync(path, 'utf8');
+      text = String(readFileSync(path));
     } catch {
       io.err(`sarathi: cannot read ${path}\n`);
       return 1;
@@ -304,24 +311,26 @@ export async function main(io: Io): Promise<number> {
     io.out(`${VERSION}\n`);
     return 0;
   }
-  // Before parseOptions: the page command has flags of its own.
-  if (io.argv[0] === 'page') return page(io.argv.slice(1), io);
-  if (io.argv[0] === 'autofix') return autofixCommand(io.argv.slice(1), { ...io, now: () => new Date() });
-  if (io.argv[0] === 'worktree') {
-    if (io.argv[1] === 'hook' && io.argv.length === 2) return hookMain(await io.readStdin(), io.out);
-    if (io.argv[1] === 'pick') {
+  // Before parseOptions: these commands have flags of their own.
+  const [first, second, ...rest] = io.argv;
+  const after = io.argv.slice(1);
+  if (first === 'page') return page(after, io);
+  if (first === 'autofix') return autofixCommand(after, { ...io, now: () => new Date() });
+  if (first === 'worktree') {
+    if (second === 'hook' && rest.length === 0) return hookMain(await io.readStdin(), io.out);
+    if (second === 'pick') {
       const ask =
         io.ask ??
         (async (prompt: string): Promise<string> => {
           io.err(prompt);
-          return (await io.readStdin()).split('\n')[0] ?? '';
+          return String((await io.readStdin()).split('\n')[0]);
         });
-      return pickMain(io.argv.slice(2), { ...io, ask });
+      return pickMain(rest, { ...io, ask });
     }
-    if (io.argv[1] === 'cleanup') return cleanupMain(io.argv.slice(2), io);
-    return lifecycleMain(io.argv.slice(1), io);
+    if (second === 'cleanup') return cleanupMain(rest, io);
+    return lifecycleMain(after, io);
   }
-  if (io.argv[0] === 'services') return servicesMain(io.argv.slice(1), io);
+  if (first === 'services') return servicesMain(after, io);
   const options = parseOptions(io.argv);
   if (typeof options === 'string') {
     io.err(`sarathi: ${options}\n${USAGE}`);

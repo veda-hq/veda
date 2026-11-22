@@ -22,6 +22,7 @@ import {
   selectLanes,
   spawnStryker,
   summaryLine,
+  TMPDIR_KEYS,
   unfinishedMerge,
   type CliDeps,
 } from './cli.ts';
@@ -528,9 +529,24 @@ test('unsetEnv names are removed from what a Stryker run inherits; a lane env st
 
 test('a run whose temp directory vanished refuses, whatever it exited with', async () => {
   const children = new Set<ChildProcess>();
-  const result = await spawnStryker([node, '-e', 'require("node:fs").rmSync(process.env.TMPDIR, { recursive: true })'], children)('.', [], {});
-  assert.equal(result.code, 0);
-  assert.match(result.refusal ?? '', /^the run's temp directory .*agnipariksha-tmp-.* vanished during the run: .* not trusted$/);
+  // The child deletes its TMPDIR. Under a mutant that drops the run's temp
+  // variables it inherits this test's, so the test owns them: the mutant then
+  // deletes this directory, never the gate's own scratch or the shared one.
+  const own = mkdtempSync(join(tmpdir(), 'agnipariksha-test-'));
+  const saved = Object.fromEntries(TMPDIR_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of TMPDIR_KEYS) process.env[key] = own;
+  try {
+    const result = await spawnStryker([node, '-e', 'require("node:fs").rmSync(process.env.TMPDIR, { recursive: true })'], children)('.', [], {});
+    assert.equal(result.code, 0);
+    assert.match(result.refusal ?? '', /^the run's temp directory .*agnipariksha-tmp-.* vanished during the run: .* not trusted$/);
+    assert.equal(existsSync(own), true, 'the child removed its own temp directory, not the one it was started under');
+  } finally {
+    for (const key of TMPDIR_KEYS) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+    rmSync(own, { recursive: true, force: true });
+  }
   assert.deepEqual(scratchTmpEnv('/s'), { TMPDIR: '/s', TEMP: '/s', TMP: '/s' });
 });
 

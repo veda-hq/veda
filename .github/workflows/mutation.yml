@@ -48,7 +48,10 @@ jobs:
         run: node scripts/mutation-lanes.mjs --base "origin/$BASE_REF" >> "$GITHUB_OUTPUT"
 
   lane:
-    name: Lane ${{ matrix.lane }}
+    # A fixed name: GitHub appends each leg's matrix value, as "Lane (kavach)".
+    # niyam's Guard refuses a job name holding an expression, since it could
+    # report a required check (niyam-guard / judge among them).
+    name: Lane
     needs: plan
     # An empty matrix is an error, so the job runs only when a lane has work.
     if: ${{ needs.plan.outputs.any == 'true' }}

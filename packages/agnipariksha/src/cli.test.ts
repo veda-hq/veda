@@ -527,11 +527,26 @@ test('unsetEnv names are removed from what a Stryker run inherits; a lane env st
 });
 
 test('a run whose temp directory vanished refuses, whatever it exited with', async () => {
-  const children = new Set<ChildProcess>();
-  const result = await spawnStryker([node, '-e', 'require("node:fs").rmSync(process.env.TMPDIR, { recursive: true })'], children)('.', [], {});
-  assert.equal(result.code, 0);
-  assert.match(result.refusal ?? '', /^the run's temp directory .*agnipariksha-tmp-.* vanished during the run: .* not trusted$/);
-  assert.deepEqual(scratchTmpEnv('/s'), { TMPDIR: '/s', TEMP: '/s', TMP: '/s' });
+  // The child removes whatever TMPDIR it is given. A mutant that drops the
+  // scratch variables hands it the test's own TMPDIR, so the test owns one:
+  // under a gate run, the inherited TMPDIR is the gate's own scratch.
+  const keys = ['TMPDIR', 'TEMP', 'TMP'] as const;
+  const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const owned = mkdtempSync(join(tmpdir(), 'agnipariksha-test-'));
+  for (const key of keys) process.env[key] = owned;
+  try {
+    const children = new Set<ChildProcess>();
+    const result = await spawnStryker([node, '-e', 'require("node:fs").rmSync(process.env.TMPDIR, { recursive: true })'], children)('.', [], {});
+    assert.equal(result.code, 0);
+    assert.match(result.refusal ?? '', /^the run's temp directory .*agnipariksha-tmp-.* vanished during the run: .* not trusted$/);
+    assert.deepEqual(scratchTmpEnv('/s'), { TMPDIR: '/s', TEMP: '/s', TMP: '/s' });
+  } finally {
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+    rmSync(owned, { recursive: true, force: true });
+  }
 });
 
 test('a temp directory that cannot be removed is left, never failing the run; an exiting gate removes the live ones', () => {

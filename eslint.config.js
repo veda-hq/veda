@@ -4,9 +4,10 @@ import { errorHandlingBlocks } from '@veda-hq/eslint-plugin-shuddhi/error-handli
 import tseslint from 'typescript-eslint';
 
 const CODE = ['packages/*/src/**/*.{ts,js,mjs}', 'packages/*/hooks/**/*.{ts,js,mjs}', 'scripts/*.mjs'];
-// Every file in those trees that Stryker can mutate, .tsx included.
+// Every file in those trees that Stryker can mutate, .tsx included, and
+// scripts/ at any depth.
 const SCRIPT = '{ts,tsx,mts,cts,js,jsx,mjs,cjs}';
-const MUTABLE = [`packages/*/src/**/*.${SCRIPT}`, `packages/*/hooks/**/*.${SCRIPT}`, `scripts/*.${SCRIPT}`];
+const MUTABLE = [`packages/*/src/**/*.${SCRIPT}`, `packages/*/hooks/**/*.${SCRIPT}`, `scripts/**/*.${SCRIPT}`];
 
 export default [
   { ignores: ['**/node_modules/**', '**/dist/**', '**/coverage/**', 'packages/*/corpus/**', 'packages/*/test/fixture/**', '.claude/worktrees/**'] },

@@ -1,7 +1,7 @@
 // veda's lint refuses a `// Stryker disable` comment (#326): agnipariksha
 // doesn't count Ignored mutants, so one comment would take a file's mutants
 // out of the gate. These cases lint text through the repository's own
-// eslint.config.js, at paths its CODE globs cover, so they test the rule
+// eslint.config.js, at paths its MUTABLE globs cover, so they test the rule
 // veda runs, not a copy. The comments sit in string literals, so this file
 // passes its own lint.
 import { readFileSync } from 'node:fs';
@@ -15,13 +15,13 @@ import { ESLint } from 'eslint';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const eslint = new ESLint({ cwd: ROOT });
 
-/** Linted paths: TypeScript sources, a .tsx hook, a .mjs hook, a root script. */
+/** Linted paths: every MUTABLE extension, in a source, a hook and scripts/ (nested too). */
 const PATHS = [
-  'packages/agnipariksha/src/probe.ts',
-  'packages/agnipariksha/src/probe.tsx',
+  ...['ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs'].map(extension => `packages/agnipariksha/src/probe.${extension}`),
   'packages/needs-you/hooks/probe.tsx',
   'packages/sarathi/hooks/probe.mjs',
   'scripts/probe.mjs',
+  'scripts/nested/probe.ts',
 ];
 
 /**
@@ -41,11 +41,11 @@ async function refused(code, path) {
 describe('lint refuses a Stryker disable comment', () => {
   for (const path of PATHS) {
     test(`the line form, in ${path}`, async () => {
-      assert.deepEqual(await refused('export const a = 1;\n// Stryker disable next-line all\nexport const b = 2;\n', path), [2]);
+      assert.deepEqual(await refused('const a = 1;\n// Stryker disable next-line all\nconst b = a;\n', path), [2]);
     });
 
     test(`the block form, in ${path}`, async () => {
-      assert.deepEqual(await refused('/* Stryker disable all */\nexport const a = 1;\n', path), [1]);
+      assert.deepEqual(await refused('/* Stryker disable all */\nconst a = 1;\n', path), [1]);
     });
 
     test(`inline ESLint config is off for ${path}`, async () => {

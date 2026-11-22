@@ -29,6 +29,7 @@ const pnpmCalls = join(scratch, 'pnpm-calls');
 const guardsCalls = join(scratch, 'guards-calls');
 const niyamCalls = join(scratch, 'niyam-calls');
 const strayCalls = join(scratch, 'stray-niyam-calls');
+const agniparikshaCalls = join(scratch, 'agnipariksha-calls');
 // HOME is the scratch folder. A stand-in for the pinned niyam sits in the test
 // repo's node_modules; another on PATH, and one as the launcher in HOME, must
 // never run.
@@ -40,10 +41,11 @@ const env = {
   GUARDS_CALLS: guardsCalls,
   NIYAM_CALLS: niyamCalls,
   STRAY_CALLS: strayCalls,
+  AGNIPARIKSHA_CALLS: agniparikshaCalls,
   COPY_RUNS: join(scratch, 'copy-runs'),
 };
 for (const name of Object.keys(env)) {
-  if (name.startsWith('DVARA_') || name.startsWith('GIT_') || name === 'NIYAM_AGENT' || name === 'NIYAM_REFUSE' || name === 'GUARDS_REFUSE' || name === 'CLAUDECODE') delete env[name];
+  if (name.startsWith('DVARA_') || name.startsWith('GIT_') || name === 'NIYAM_AGENT' || name === 'NIYAM_REFUSE' || name === 'GUARDS_REFUSE' || name === 'AGNIPARIKSHA_REFUSE' || name === 'CLAUDECODE') delete env[name];
 }
 // No automatic maintenance: a commit's detached `git maintenance run --auto`
 // outlives it and can write into the scratch folder while it is removed.
@@ -110,6 +112,10 @@ before(() => {
   // and refuses when NIYAM_REFUSE is set, as niyam refuses a push.
   writeFileSync(join(repo, 'node_modules', '.bin', 'niyam'), '#!/bin/sh\n{ echo "args: $*"; echo "agent: ${NIYAM_AGENT:-}"; cat; } >> "$NIYAM_CALLS"\n[ -z "${NIYAM_REFUSE:-}" ]\n');
   chmodSync(join(repo, 'node_modules', '.bin', 'niyam'), 0o755);
+  // A stand-in for the pinned agnipariksha's bin: it records its arguments,
+  // and refuses when AGNIPARIKSHA_REFUSE is set, as a blocking mutant does.
+  writeFileSync(join(repo, 'node_modules', '.bin', 'agnipariksha'), '#!/bin/sh\necho "agnipariksha $*" >> "$AGNIPARIKSHA_CALLS"\n[ -z "${AGNIPARIKSHA_REFUSE:-}" ]\n');
+  chmodSync(join(repo, 'node_modules', '.bin', 'agnipariksha'), 0o755);
   writeFileSync(join(repo, 'package.json'), JSON.stringify({ devDependencies: { '@veda-hq/dvara': PIN, '@veda-hq/niyam': NIYAM_PIN } }));
   // veda's own stage lists, so a hook that strays from them fails here.
   const { stages } = JSON.parse(readFileSync(join(ROOT, '.dvara.json'), 'utf8'));
@@ -179,6 +185,8 @@ describe('pre-push', () => {
     const result = git(repo, 'push', '-q', 'origin', 'main');
     assert.equal(result.code, 0, result.out);
     assert.equal(readFileSync(guardsCalls, 'utf8'), 'guards \n');
+    // The first push has no origin/main yet, so the gate diffs against HEAD.
+    assert.equal(readFileSync(agniparikshaCalls, 'utf8'), 'agnipariksha --tracked-only --base HEAD\n');
     assert.ok(!existsSync(pnpmCalls), 'the hook runs scripts/guards.sh itself, never a package.json script');
     assert.ok(!existsSync(niyamCalls), 'niyam runs only once .github/niyam.json is there');
   });
@@ -191,6 +199,17 @@ describe('pre-push', () => {
     // the refusal is theirs, not an earlier stage's.
     assert.equal(readFileSync(guardsCalls, 'utf8'), 'guards \nguards \n');
     assert.equal(git(remote, 'rev-parse', 'main').stdout, git(repo, 'rev-parse', 'HEAD~1').stdout);
+  });
+
+  test('refuses the push when the pinned agnipariksha refuses, diffing against origin/main', () => {
+    commitFile(repo, 'mutated.md');
+    const result = spawnSync('git', ['push', '-q', 'origin', 'main'], { cwd: repo, env: { ...env, AGNIPARIKSHA_REFUSE: '1' }, encoding: 'utf8' });
+    assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+    // The gate ran on this push too, after the guards, with origin/main
+    // there by now, so the refusal is the gate's.
+    assert.equal(readFileSync(agniparikshaCalls, 'utf8').split('\n').at(-2), 'agnipariksha --tracked-only --base origin/main');
+    assert.equal(readFileSync(guardsCalls, 'utf8'), 'guards \nguards \nguards \n');
+    assert.notEqual(git(remote, 'rev-parse', 'main').stdout, git(repo, 'rev-parse', 'main').stdout);
   });
 
   test("once onboarded, an agent session's push goes through the pinned niyam's pre-push with git's ref lines", () => {

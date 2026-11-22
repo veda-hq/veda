@@ -1,0 +1,82 @@
+{
+  "upstream": "origin/main",
+  "ignore": ["\\.test\\.tsx?$", "\\.d\\.ts$", "(^|/)fixtures?/"],
+  "maxLines": 1500,
+  "unsetEnv": [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_QUARANTINE_PATH"
+  ],
+  "lanes": [
+    {
+      "name": "agnipariksha",
+      "cwd": "packages/agnipariksha",
+      "config": "stryker.config.mjs",
+      "reuse": false,
+      "include": ["^packages/agnipariksha/src/"],
+      "extensions": [".ts"],
+      "env": { "AGNIPARIKSHA_SUITES": "{suites}" }
+    },
+    {
+      "name": "dvara",
+      "cwd": "packages/dvara",
+      "config": "stryker.config.mjs",
+      "reuse": false,
+      "include": ["^packages/dvara/src/"],
+      "extensions": [".ts"],
+      "env": { "AGNIPARIKSHA_SUITES": "{suites}" }
+    },
+    {
+      "name": "shuddhi",
+      "cwd": "packages/eslint-plugin-shuddhi",
+      "config": "stryker.config.mjs",
+      "reuse": false,
+      "include": ["^packages/eslint-plugin-shuddhi/src/"],
+      "extensions": [".js", ".ts"],
+      "env": { "AGNIPARIKSHA_SUITES": "{suites}" }
+    },
+    {
+      "name": "kavach",
+      "cwd": "packages/kavach",
+      "config": "stryker.config.mjs",
+      "reuse": false,
+      "include": ["^packages/kavach/src/"],
+      "extensions": [".ts"],
+      "env": { "AGNIPARIKSHA_SUITES": "{suites}" }
+    },
+    {
+      "name": "pariksha",
+      "cwd": "packages/pariksha",
+      "config": "stryker.config.mjs",
+      "reuse": false,
+      "include": ["^packages/pariksha/src/"],
+      "extensions": [".ts"],
+      "maxLines": 400,
+      "env": { "AGNIPARIKSHA_SUITES": "{suites}" }
+    },
+    {
+      "name": "sarathi",
+      "cwd": "packages/sarathi",
+      "config": "stryker.config.mjs",
+      "reuse": false,
+      "include": ["^packages/sarathi/src/"],
+      "extensions": [".ts"],
+      "maxLines": 1000,
+      "env": { "AGNIPARIKSHA_SUITES": "{suites}" }
+    }
+  ],
+  "reuseKey": {
+    "always": ["pnpm-lock.yaml", "node_modules/@stryker-mutator/core/package.json"],
+    "pluginDir": "stryker/",
+    "helperPackages": [],
+    "sharedWorkspace": "packages/eslint-plugin-shuddhi"
+  }
+}

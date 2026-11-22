@@ -33,6 +33,12 @@ node "$dvara/dist/cli.js" frozen --base "$base" || exit 1
 dvara_stage guards
 bash "$root/scripts/guards.sh" || exit 1
 
+# agnipariksha's mutation gate (agnipariksha.json, #272) on the tracked files
+# the branch changes. Lanes over their maxLines are left to CI (#273), since
+# the run names no lane; released-pins checked the pin above.
+dvara_stage mutation
+"$root/node_modules/.bin/agnipariksha" --tracked-only --base "$base" || exit 1
+
 # niyam's own hook, as `niyam onboard` writes it, once veda is onboarded
 # (.github/niyam.json): anyone else's push goes ahead; an agent session's
 # push is refused without the CLI. Where core.hooksPath is set, onboard and

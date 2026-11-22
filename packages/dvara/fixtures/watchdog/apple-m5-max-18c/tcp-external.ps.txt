@@ -1,0 +1,2 @@
+40375 40365 40351 S      0:00.05 Sun Sep 13 17:16:29 2026     node
+41032 40375 40351 S      0:00.02 Sun Sep 13 17:16:41 2026     ~/.local/share/fnm/node-versions/v24.19.0/installation/bin/node

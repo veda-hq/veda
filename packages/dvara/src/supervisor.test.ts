@@ -816,6 +816,54 @@ describe("the watchdog", () => {
     assert.deepEqual(rows(root)[0]?.watchdog, { mode: "file" });
   });
 
+  it('runs the built-in watchdog for "dvara", never loading it as a path', async () => {
+    const { root, hook } = repo("true");
+    const loaded: string[] = [];
+    const { opts } = options(
+      root,
+      {
+        loadWatchdog: async (path) => {
+          loaded.push(path);
+          throw new Error("not a module");
+        },
+        env: { ...process.env, DVARA_VERBOSE: "", DVARA_WATCHDOG: "off" },
+      },
+      { watchdog: "dvara" },
+    );
+    assert.equal(await supervise([hook], opts), 0);
+    assert.deepEqual(loaded, []);
+    // Only the built-in one writes this summary; a failed load writes "unavailable".
+    assert.deepEqual(rows(root)[0]?.watchdog, {
+      mode: "off",
+      reason: "explicit",
+      idleMs: 600_000,
+      verdict: null,
+      acted: false,
+      diagnostics: null,
+      warnings: [],
+    });
+  });
+
+  it("records the built-in watchdog unsupported off macOS", async () => {
+    const { root, hook } = repo("true");
+    const { opts } = options(
+      root,
+      {
+        platform: "linux",
+        env: { ...process.env, DVARA_VERBOSE: "", DVARA_WATCHDOG: "" },
+      },
+      { watchdog: "dvara" },
+    );
+    assert.equal(await supervise([hook], opts), 0);
+    const [row] = rows(root);
+    assert.equal(row?.status, "success");
+    assert.partialDeepStrictEqual(row?.watchdog, {
+      mode: "unsupported",
+      reason: "non-darwin",
+      acted: false,
+    });
+  });
+
   it("disarms the watchdog when a person cancels", async () => {
     const { root, hook } = repo("sleep 5");
     const calls: string[] = [];

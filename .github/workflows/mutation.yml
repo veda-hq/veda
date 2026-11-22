@@ -4,9 +4,11 @@ name: Mutation
 # lane with a file to judge, each running the released agnipariksha the root
 # pins with `--lane`, so it judges its lane in full whatever the pre-push
 # cut-off (`maxLines` in agnipariksha.json). The "Mutation" job is the one
-# check main's ruleset requires.
+# check main's ruleset is to require, once this workflow is on main: niyam's
+# Guard refuses a pull request that adds a job reporting a check the ruleset
+# already requires.
 #
-# No `paths:` filter, so the required check reports on every pull request,
+# No `paths:` filter, so the gate's check reports on every pull request,
 # and no `workflow_dispatch`, whose run would post the gate as skipped on the
 # pull request's head (docs/lessons/github-actions.md).
 

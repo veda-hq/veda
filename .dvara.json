@@ -3,7 +3,7 @@
   "quietHooks": ["pre-commit"],
   "stages": {
     "pre-commit": ["records", "frozen"],
-    "pre-push": ["records", "frozen", "guards", "niyam"]
+    "pre-push": ["records", "frozen", "guards", "mutation", "niyam"]
   },
   "records": {
     "baseline": ".veda/records-baseline.json",

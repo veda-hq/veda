@@ -57,7 +57,13 @@ unproven with `-K`/`--config`, with a `-w` that writes or reads a file, or in
 a command that assigns `CURL_HOME`, `XDG_CONFIG_HOME` or `HOME` (a config may
 set its `output`), or `SSLKEYLOGFILE` or `QLOGDIR` (files curl writes). A
 `git log`, `show`, `diff`, `diff-tree` or `rev-list` pickaxe passes attached
-(`-S'text'`, `-G'regex'`) as it does spaced. `claude --version` (`-v`, `-V`,
+(`-S'text'`, `-G'regex'`) as it does spaced. Those read subcommands take
+each option by its exact name from git 2.54's list of options that choose
+commits or how they show: log's search ones (`-i`, `-E`, `--all-match`,
+`--committer`) among them. Never `--ext-diff`, `--textconv` or
+`--show-signature`, which run programs, nor `--remerge-diff` or
+`--diff-merges`, whose `remerge` writes objects. Their `--output` is read as
+a write. `claude --version` (`-v`, `-V`,
 either one alone or followed by `--verbose`) passes where no `BUN_` variable
 and no `NODE_OPTIONS` is set in the environment or on its line: Claude Code
 prints its version before it loads anything, but `BUN_OPTIONS=--preload`
@@ -78,7 +84,28 @@ or one workspace package's name, with or without its scope. So a path after
 the subcommand is read from that folder (`pnpm --filter server exec tsx
 ../../.tmp/x.ts` writes inside the worktree). A second selector, `-r`, a
 pattern (`@scope/*`, `server...`) or a name more than one package has leaves
-paths read from the command's own folder.
+paths read from the command's own folder. `pnpm pack` runs in the folder
+`--dir`/`-C` names, too: its `--pack-destination` and `--out` are read from
+there, and the folder itself counts as written, since the tarball lands
+there by default. Where a folder is selected, the subcommand's own options
+may not move it again. pnpm reads `-C`/`--dir` after the subcommand too,
+the last one winning and read from the shell's folder, and `-w`, `-r` and
+`--filter` move it as well. So `pnpm --dir docs exec --dir . touch x` runs
+`touch` in `.`, and such a line is unproven. So is one whose
+subcommand options this guard does not list before the program or script
+(for `pack`, anywhere on the line), or one with `--store-dir`, which pnpm
+reads from the workspace root (from `--dir` only outside a workspace).
+
+pariksha's checks that only read their path options (`boundary`:
+`--root`, `--deny`; `own-provenance`: `--config`, `--root`) do not name
+those paths as written. The line is `pnpm exec pariksha <check>`, or
+`node <file>` where the file is `src/cli.ts`, or the `bin`, of the package
+named `@veda-hq/pariksha`, followed only by that check's options, each with
+its value as the next word. So `pnpm exec pariksha boundary --root .` runs,
+where the root otherwise counts as written and holds `protectedPaths`. It
+is still a program's line, judged as one in its folder. Every other check,
+`codeql-baseline` among them, writes under `--root` and is read as any
+program is.
 
 `corpus/corpus.json` is the adversarial test set: commands that write outside
 the worktree, bypass hooks or force-push, each executed in real bash to prove

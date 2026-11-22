@@ -72,6 +72,15 @@ test('overCutoff: over means more lines than maxLines, across every target, and 
   assert.equal(overCutoff(plan(1, ['apps/web/src/gone.ts']), read), null, 'a failed read never causes a skip');
 });
 
+test('planLane judges an .mjs source whose only suite is its .test.mjs', () => {
+  const scripts: Lane = { ...web, name: 'scripts', cwd: '.', selects: (path) => path.startsWith('scripts/') };
+  const owned = new Set(['scripts/version-rule.test.mjs', 'scripts/pins.test.ts', 'scripts/pins.test.mjs']);
+  const plan = planLane(scripts, ['scripts/version-rule.mjs', 'scripts/pins.mjs', 'scripts/lone.mjs'], (path) => owned.has(path), () => false);
+  assert.deepEqual(plan.targets, ['scripts/version-rule.mjs', 'scripts/pins.mjs']);
+  assert.deepEqual(plan.suites, ['scripts/version-rule.test.mjs', 'scripts/pins.test.ts']);
+  assert.deepEqual(plan.notJudged, ['not judged (no colocated suite): scripts/lone.mjs']);
+});
+
 test('planLane lists each owning suite once', () => {
   const plan = planLane(web, ['apps/web/src/a.ts', 'apps/web/src/a.tsx'], (path) => path === 'apps/web/src/a.test.ts', () => false);
   assert.deepEqual(plan.suites, ['apps/web/src/a.test.ts']);

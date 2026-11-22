@@ -31,6 +31,15 @@ export function lane(cwd, env = process.env) {
     },
     coverageAnalysis: 'perTest',
     checkers: [],
+    // Stryker rewrites a lane's tsconfig.json for the sandbox. To do it, it
+    // imports `typescript` with no dependency of its own declared, so the
+    // import resolves to whatever install a checkout happens to hoist. Some
+    // of veda's checkouts hoist TypeScript 7, which has no
+    // parseConfigFileTextToJson, and every run there crashed before its
+    // first mutant. No lane needs the rewrite: the suites run on node:test,
+    // which never reads a tsconfig. So point Stryker at a file that never
+    // exists, and the rewrite is skipped.
+    tsconfigFile: 'stryker-reads-no-tsconfig.json',
     // agnipariksha prints each blocking mutant itself; clear-text would print each again in full.
     reporters: ['json'],
     // agnipariksha's wrapper config moves the report into reports/agnipariksha/.

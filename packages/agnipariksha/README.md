@@ -6,7 +6,7 @@ lane by lane, and blocks the push on a mutant no test kills. Part of
 [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/agnipariksha@0.7.9 [--base <ref>] [--files a,b] [--lane <name>]... [--tracked-only] [--no-reuse]
+npx @veda-hq/agnipariksha@0.8.4 [--base <ref>] [--files a,b] [--lane <name>]... [--tracked-only] [--no-reuse]
 ```
 
 Exit 0 when every judged mutant is caught, 1 on a blocking mutant, and 2 when
@@ -30,8 +30,12 @@ runs the repository's own `node_modules/.bin/stryker`.
   a push carries no untracked file; a run by hand judges them.
   `--files` names the files instead. A file whose change touches only
   comments and blank lines is not judged (untracked and `--files` ones always
-  are), nor one with no colocated suite (`a.ts` → `a.test.ts` or
-  `a.test.tsx` beside it).
+  are), nor one with no colocated suite beside it. The suite that owns a
+  source shares its name less the extension, and the first that exists
+  wins: `a.test.tsx`, then `a.test.ts`, then `a.test.mjs` for `a.tsx`;
+  `a.test.ts`, then `a.test.tsx`, then `a.test.mjs` for any other source
+  (`a.ts`, `a.js`, `a.mjs`). So `a.mjs` with only `a.test.mjs` beside it is
+  judged, and a source with a TypeScript suite keeps it.
 - **Each lane** is one Stryker config. The lane's files are mutated whole, in
   one `stryker run` from the lane's `cwd`, through a wrapper config that moves
   the JSON report into `reports/agnipariksha/`.
@@ -72,7 +76,8 @@ runs the repository's own `node_modules/.bin/stryker`.
   whose `fallbackEnv` does),
   only those suites run. When a file judged there has blocking mutants and a
   suite beside it does not own it (`a-cases.test.ts`, or a qualified
-  `a.integration.test.ts`, with no source of its own), the gate says so once
+  `a.integration.test.ts`, or their `.test.tsx` and `.test.mjs` forms, with
+  no source of its own), the gate says so once
   for the file: `a-cases.test.ts is not the owner, so it did not run; only
   a.test.ts kills mutants of a.ts here`. Under a related filter any suite
   that imports the file runs, a sibling included, so there it says nothing.

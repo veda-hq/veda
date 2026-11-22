@@ -27,8 +27,11 @@ and PR state, and the GitHub API.
   into the main checkout runs main's hook scripts against the worktree. With
   `extensions.worktreeConfig`, a per-worktree override in `config.worktree` wins over the shared
   value, and some tools (the Claude desktop app at worktree creation among them) write an
-  absolute one. Diagnose with `git config --show-origin --get-all core.hooksPath` and clear it
-  with `git config --worktree --unset core.hooksPath`.
+  absolute one. The app writes it into every worktree it creates and again when a session opens
+  there, so a hand-run clear lasts one session; clear it at session start instead. Diagnose with
+  `git config --show-scope --show-origin --get-all core.hooksPath` and clear it with
+  `git config --worktree --unset-all core.hooksPath`.
+  <!-- held by: sarathi hooks/worktree-hooks-path.sh, the first SessionStart handler in .claude/sarathi.json (veda#425) -->
 - **Tracked hooks are in an agent's reach.** With `core.hooksPath` set to a tracked folder, each
   worktree runs its own copy of the hooks, of the scripts and settings they read, and of the
   guards in its `node_modules`. An agent that edits any of them in its worktree skips the checks

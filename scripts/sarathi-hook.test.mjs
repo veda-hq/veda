@@ -129,9 +129,59 @@ describe('kavach through sarathi, from the pinned install', () => {
     const refused = hook('PreToolUse', bash('git status'), { env });
     assert.equal(refused.code, 2);
     assert.match(refused.stderr, /CLAUDE_CODE_DISABLE_ADVISOR_TOOL is set/);
-    const told = hook('SessionStart', { hook_event_name: 'SessionStart', cwd: ROOT, source: 'startup' }, { env });
+    // A scratch cwd, not ROOT: the hooks-path handler acts on the session's
+    // checkout, and a test run must never clear this worktree's own config.
+    const told = hook('SessionStart', { hook_event_name: 'SessionStart', cwd: scratch, source: 'startup' }, { env });
     assert.equal(told.code, 0);
     assert.match(JSON.parse(told.stdout).systemMessage, /advisor/);
+  });
+});
+
+// The Claude desktop app writes an absolute core.hooksPath into each new
+// worktree's config.worktree, pointing at the main checkout's .githooks
+// (veda#425). That scoped value outranks the shared relative one, so the
+// worktree would run main's hooks. Session start clears it.
+describe('session start clears a worktree-scoped core.hooksPath', () => {
+  // git run here must not follow a GIT_DIR or GIT_INDEX_FILE that a hook
+  // running these tests was given.
+  const gitless = Object.keys(process.env).filter(name => name.startsWith('GIT_'));
+  const gitEnv = { ...process.env };
+  for (const name of gitless) delete gitEnv[name];
+  /** @param {string} cwd @param {string[]} args */
+  const git = (cwd, ...args) => spawnSync('git', args, { cwd, encoding: 'utf8', env: gitEnv });
+
+  const repo = join(scratch, 'hooks-path-repo');
+  const linked = join(scratch, 'hooks-path-linked');
+  mkdirSync(repo, { recursive: true });
+  for (const args of [
+    ['init', '-q', '-b', 'main'],
+    ['-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'init'],
+    ['config', 'extensions.worktreeConfig', 'true'],
+    ['config', 'core.hooksPath', '.githooks'],
+    ['worktree', 'add', '-q', '-b', 'side', linked],
+  ]) {
+    const result = git(repo, ...args);
+    assert.equal(result.status, 0, result.stderr);
+  }
+
+  test("a linked worktree's absolute scoped value goes, and the shared .githooks applies", () => {
+    const absolute = join(repo, '.githooks');
+    assert.equal(git(linked, 'config', '--worktree', 'core.hooksPath', absolute).status, 0);
+    assert.equal(git(linked, 'config', '--get', 'core.hooksPath').stdout.trim(), absolute);
+
+    const started = hook('SessionStart', { hook_event_name: 'SessionStart', cwd: linked, source: 'startup' }, { unset: gitless });
+    assert.equal(started.code, 0, started.stderr);
+    assert.match(started.stdout, /Cleared worktree-scoped core\.hooksPath/);
+    assert.equal(git(linked, 'config', '--worktree', '--get', 'core.hooksPath').status, 1, 'the scoped value is gone');
+    const left = git(linked, 'config', '--show-scope', '--get-all', 'core.hooksPath').stdout.trim();
+    assert.equal(left, 'local\t.githooks');
+  });
+
+  test('a worktree with no scoped value is left as it is, and nothing is said', () => {
+    const started = hook('SessionStart', { hook_event_name: 'SessionStart', cwd: linked, source: 'startup' }, { unset: gitless });
+    assert.equal(started.code, 0, started.stderr);
+    assert.doesNotMatch(started.stdout, /Cleared worktree-scoped/);
+    assert.equal(git(linked, 'config', '--show-scope', '--get-all', 'core.hooksPath').stdout.trim(), 'local\t.githooks');
   });
 });
 

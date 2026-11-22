@@ -35,20 +35,22 @@ const fixture = parseConfig(readFileSync(FIXTURE, 'utf8'));
 if (typeof fixture === 'string') throw new Error(fixture);
 const config: Config = fixture;
 
-test('parseArgs: --base, --files, --no-reuse, and refusals', () => {
-  assert.deepEqual(parseArgs([]), { reuse: true, trackedOnly: false });
-  assert.deepEqual(parseArgs(['--base', 'abc', '--files', 'a.ts,,b.ts', '--no-reuse']), { reuse: false, trackedOnly: false, base: 'abc', files: ['a.ts', 'b.ts'] });
-  assert.deepEqual(parseArgs(['--tracked-only']), { reuse: true, trackedOnly: true });
+test('parseArgs: --base, --files, --no-reuse, --pushed-refs, and refusals', () => {
+  assert.deepEqual(parseArgs([]), { reuse: true, trackedOnly: false, pushedRefs: false });
+  assert.deepEqual(parseArgs(['--base', 'abc', '--files', 'a.ts,,b.ts', '--no-reuse']), { reuse: false, trackedOnly: false, pushedRefs: false, base: 'abc', files: ['a.ts', 'b.ts'] });
+  assert.deepEqual(parseArgs(['--tracked-only']), { reuse: true, trackedOnly: true, pushedRefs: false });
+  assert.deepEqual(parseArgs(['--tracked-only', '--pushed-refs', '--base', 'origin/main']), { reuse: true, trackedOnly: true, pushedRefs: true, base: 'origin/main' });
   assert.match(parseArgs(['--base']) as string, /"--base"/);
   assert.match(parseArgs(['--files', '--no-reuse']) as string, /"--files"/);
   assert.match(parseArgs(['--ci']) as string, /"--ci"/);
 });
 
 test('parseArgs: --lane is repeatable and comma-separated, and keeps spaces in a name', () => {
-  assert.deepEqual(parseArgs(['--lane', 'apps/web']), { reuse: true, trackedOnly: false, lanes: ['apps/web'] });
+  assert.deepEqual(parseArgs(['--lane', 'apps/web']), { reuse: true, trackedOnly: false, pushedRefs: false, lanes: ['apps/web'] });
   assert.deepEqual(parseArgs(['--lane', 'tooling vitest', '--lane', 'tooling node:test,apps/web,']), {
     reuse: true,
     trackedOnly: false,
+    pushedRefs: false,
     lanes: ['tooling vitest', 'tooling node:test', 'apps/web'],
   });
   assert.equal(parseArgs(['--lane', ',']), '--lane names no lane');
@@ -205,6 +207,9 @@ function fake(reports: Record<string, string>, over: Partial<CliDeps> = {}): Fak
     keyPolicy: config.reuseKey,
     atExit: (fn) => exits.push(fn),
     log: (line) => logs.push(line),
+    readStdin: () => {
+      throw new Error('stdin read without --pushed-refs');
+    },
     lock: {
       create: (path, text) => (files.has(path) ? false : (files.set(path, text), true)),
       read: (path) => files.get(path),
@@ -336,6 +341,69 @@ test('an unfinished merge refuses before the lock, naming the merge and the way 
   };
   assert.equal(await main([], failing.deps), 2);
   assert.deepEqual(failing.logs, ['agnipariksha REFUSED: git: not a repository']);
+});
+
+const PUSHED_HEAD = '1a'.repeat(20);
+const PUSHED_ZERO = '0'.repeat(40);
+
+/** The fake, given `refs` on stdin, with HEAD at PUSHED_HEAD and a clean tracked tree. */
+function pushing(refs: string, reports: Record<string, string> = {}): Fake {
+  const f = fake(reports, { readStdin: () => refs });
+  const git = f.deps.git;
+  f.deps.git = (args) => {
+    if (args[0] === 'rev-parse' && args[1] === 'HEAD^{commit}') {
+      f.gitCalls.push(args);
+      return `${PUSHED_HEAD}\n${args.slice(2).map((arg) => arg.replace('^{commit}', '')).join('\n')}\n`;
+    }
+    if (args.join(' ') === 'diff --name-only -z HEAD --') {
+      f.gitCalls.push(args);
+      return '';
+    }
+    return git(args);
+  };
+  return f;
+}
+
+test('--pushed-refs: a push of HEAD from a clean tree runs as it does without the flag', async () => {
+  const reports = { scripts: mutants('Killed', 'RuntimeError', 'Ignored'), tools: JSON.stringify({ files: { 'tools/new.ts': { mutants: [] } } }) };
+  const plain = fake(reports);
+  assert.equal(await main(['--tracked-only'], plain.deps), 0);
+  const f = pushing(`refs/heads/feat ${PUSHED_HEAD} refs/heads/feat ${PUSHED_ZERO}\n`, reports);
+  assert.equal(await main(['--tracked-only', '--pushed-refs'], f.deps), 0);
+  assert.deepEqual(f.logs, plain.logs);
+  assert.equal(f.strykerRuns.length, plain.strykerRuns.length);
+  assert.deepEqual(f.gitCalls.slice(0, 2), [['rev-parse', 'HEAD^{commit}', `${PUSHED_HEAD}^{commit}`], ['diff', '--name-only', '-z', 'HEAD', '--']]);
+});
+
+test('--pushed-refs: a ref other than HEAD refuses before the lock, judging nothing', async () => {
+  const other = `0${'2b'.repeat(19)}0`;
+  const f = pushing(`refs/heads/other ${other} refs/heads/other ${PUSHED_ZERO}\n`);
+  assert.equal(await main(['--pushed-refs'], f.deps), 2);
+  assert.deepEqual(f.logs, [
+    'agnipariksha REFUSED: the push carries refs/heads/other at 02b2b2b2b2b2, not the checked-out HEAD (1a1a1a1a1a1a): the gate judges HEAD and the files on disk, so its verdict would not be about refs/heads/other. Check out refs/heads/other and push again',
+  ]);
+  assert.deepEqual(f.strykerRuns, []);
+  assert.equal(f.exits.length, 0, 'refused before the lock');
+});
+
+test('--pushed-refs: deletions only judge nothing and pass, before the lock', async () => {
+  const f = pushing(`(delete) ${PUSHED_ZERO} refs/heads/old ${PUSHED_HEAD}\n`);
+  assert.equal(await main(['--tracked-only', '--pushed-refs'], f.deps), 0);
+  assert.deepEqual(f.logs, ['agnipariksha: the push carries no commit (up to date, or deletions only) - nothing to judge']);
+  assert.deepEqual(f.gitCalls, []);
+  assert.deepEqual(f.strykerRuns, []);
+  assert.equal(f.exits.length, 0);
+});
+
+test('--pushed-refs: stdin that cannot be read refuses with exit 2', async () => {
+  const f = fake({}, {
+    readStdin: () => {
+      throw new Error('EAGAIN: resource temporarily unavailable, read');
+    },
+  });
+  assert.equal(await main(['--pushed-refs'], f.deps), 2);
+  assert.deepEqual(f.logs, ['agnipariksha REFUSED: EAGAIN: resource temporarily unavailable, read']);
+  assert.deepEqual(f.gitCalls, []);
 });
 
 test('unfinishedMerge reads git paths relative to the root or absolute, names a merge with no message by its head, and refuses an unreadable one', () => {
@@ -585,6 +653,9 @@ test('realDeps reads, writes, removes and locks on the real filesystem', async (
     assert.equal(readText(join(dir, 'missing')), undefined);
     assert.equal(deps.pid, process.pid);
     assert.equal(typeof deps.now(), 'number');
+    const refs = join(dir, 'refs');
+    writeFileSync(refs, 'refs/heads/a 1 refs/heads/a 0\n');
+    assert.equal(realDeps(dir, new Set(), config, refs).readStdin(), 'refs/heads/a 1 refs/heads/a 0\n');
     deps.atExit(() => undefined);
     deps.log('realDeps log check');
     deps.lock.log('realDeps lock log check');

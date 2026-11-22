@@ -6,7 +6,7 @@ lane by lane, and blocks the push on a mutant no test kills. Part of
 [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/agnipariksha@0.8.4 [--base <ref>] [--files a,b] [--lane <name>]... [--tracked-only] [--no-reuse]
+npx @veda-hq/agnipariksha@0.8.5 [--base <ref>] [--files a,b] [--lane <name>]... [--tracked-only] [--pushed-refs] [--no-reuse]
 ```
 
 Exit 0 when every judged mutant is caught, 1 on a blocking mutant, and 2 when
@@ -24,6 +24,21 @@ runs the repository's own `node_modules/.bin/stryker`.
   exit 2, before the machine lock: the working tree would be judged against
   the merge-base, so its verdict would say nothing about the branch. The
   refusal names the merge; commit it or abort it, then run again.
+- **Only what the push carries, under `--pushed-refs`.** Stryker mutates
+  the files on disk, so the gate judges the checked-out `HEAD` and its
+  working tree. A pre-push hook passes `--pushed-refs` and git's ref lines
+  (`<local ref> <local sha> <remote ref> <remote sha>`) on stdin, as in
+  `agnipariksha --tracked-only --pushed-refs --base "$base" <<< "$refs"`.
+  The gate then refuses with exit 2, before the machine lock and judging
+  nothing, when a pushed sha is not `HEAD` (an annotated tag at `HEAD`
+  passes), naming the ref: check it out and push again. It refuses too when
+  a tracked file differs from `HEAD`, staged or not, naming the files:
+  commit or stash the change and push again. A line whose local sha is all
+  zeros is a deletion and is skipped. A push that carries no commit, with
+  deletions only or no lines at all (git runs the hook with none for an
+  up-to-date push), judges nothing and exits 0. A line not in git's shape
+  refuses. With every pushed ref at `HEAD` and a clean tracked tree, the run
+  is the same as without the flag.
 - **The files.** Those changed since the merge-base of `HEAD` with `--base`
   (default: the config's `upstream`), deletions left out, plus untracked
   files unless `--tracked-only` is given. A pre-push hook passes it, because

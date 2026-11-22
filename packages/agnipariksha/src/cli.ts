@@ -2,10 +2,12 @@
 /**
  * agnipariksha: a mutation gate over stock StrykerJS.
  *
- * Usage: agnipariksha [--base <sha>] [--files a,b] [--lane <name>[,<name>]]... [--tracked-only] [--no-reuse]
+ * Usage: agnipariksha [--base <sha>] [--files a,b] [--lane <name>[,<name>]]... [--tracked-only] [--pushed-refs] [--no-reuse]
  * The lanes come from agnipariksha.json at the repository root (config.ts);
  * `--lane`, repeatable, runs only the lanes it names. `--tracked-only` leaves
- * out untracked files, which a push does not carry.
+ * out untracked files, which a push does not carry. `--pushed-refs` reads
+ * git's pre-push ref lines on stdin and refuses a push of anything but the
+ * checked-out HEAD from a clean tracked tree (pushed-refs.ts).
  * Exit: 0 pass, 1 a blocking mutant, 2 refused or unable to judge.
  */
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
@@ -19,6 +21,7 @@ import { lanesOf, loadConfig, type Config } from './config.ts';
 import { changedFiles, commentOnly, type Changes, type Git } from './changed-files.ts';
 import { judgeLane, MARKERS, overCutoff, planLane, type Lane, type LaneDeps, type LaneResult, type Plan } from './lanes.ts';
 import { acquireLock, pidAlive, type LockDeps } from './machine-lock.ts';
+import { checkPushedRefs, type PushCheck } from './pushed-refs.ts';
 import { incrementalKey, keyInputPaths, type KeyPolicy } from './reuse-key.ts';
 import { failedTestReader } from './failed-tests.ts';
 import { notTheOwner, ownerOf, siblingSuites, type Exists } from './suite-owner.ts';
@@ -36,17 +39,20 @@ export interface Args {
   reuse: boolean;
   /** Leave out untracked files: a push carries none (pre-push passes it). */
   trackedOnly: boolean;
+  /** Read git's pre-push ref lines on stdin, and judge only a push of HEAD from a clean tracked tree. */
+  pushedRefs: boolean;
 }
 
 const list = (value: string): string[] => value.split(',').filter((item) => item !== '');
 
 export function parseArgs(argv: readonly string[]): Args | string {
-  const args: Args = { reuse: true, trackedOnly: false };
+  const args: Args = { reuse: true, trackedOnly: false, pushedRefs: false };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const value = argv[i + 1];
     if (flag === '--no-reuse') args.reuse = false;
     else if (flag === '--tracked-only') args.trackedOnly = true;
+    else if (flag === '--pushed-refs') args.pushedRefs = true;
     else if ((flag === '--base' || flag === '--files' || flag === '--lane') && value !== undefined && !value.startsWith('--')) {
       if (flag === '--base') args.base = value;
       else if (flag === '--files') args.files = list(value);
@@ -83,6 +89,8 @@ export interface CliDeps extends Omit<LaneDeps, 'reuseKey'> {
   /** Run `fn` when the process exits, signals included. */
   atExit: (fn: () => void) => void;
   log: (line: string) => void;
+  /** All of stdin: git's pre-push ref lines, read only under `--pushed-refs`. */
+  readStdin: () => string;
 }
 
 /**
@@ -125,6 +133,25 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
   if (typeof lanes === 'string') {
     deps.log(`agnipariksha REFUSED: ${lanes}`);
     return 2;
+  }
+  if (args.pushedRefs) {
+    // Before the lock, as a merge's refusal is: a run that only refuses never waits.
+    let push: PushCheck;
+    try {
+      push = checkPushedRefs(deps.readStdin(), deps.git);
+    } catch (error: unknown) {
+      // fail-open: ref lines that cannot be read, or shas git cannot resolve, refuse (exit 2).
+      deps.log(`agnipariksha REFUSED: ${(error as Error).message}`);
+      return 2;
+    }
+    if (push.verdict === 'refuse') {
+      deps.log(`agnipariksha REFUSED: ${push.reason}`);
+      return 2;
+    }
+    if (push.verdict === 'nothing') {
+      deps.log(push.line);
+      return 0;
+    }
   }
   let merging: string | null;
   try {
@@ -368,7 +395,8 @@ export function readText(path: string): string | undefined {
   }
 }
 
-export function realDeps(root: string, children: Set<ChildProcess>, config: Config): CliDeps {
+/** `stdin` is where `readStdin` reads: fd 0, or a file in a test. */
+export function realDeps(root: string, children: Set<ChildProcess>, config: Config, stdin: number | string = 0): CliDeps {
   const readFile = readText;
   const writeFile = (path: string, text: string): void => {
     mkdirSync(dirname(path), { recursive: true });
@@ -391,6 +419,7 @@ export function realDeps(root: string, children: Set<ChildProcess>, config: Conf
     keyPolicy: config.reuseKey,
     atExit: (fn) => process.on('exit', fn),
     log: (line) => process.stdout.write(`${line}\n`),
+    readStdin: () => readFileSync(stdin, 'utf8'),
     lock: {
       create: (path, text) => {
         try {

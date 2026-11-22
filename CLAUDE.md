@@ -33,8 +33,11 @@ lists, kavach's guards among them.
   `niyam onboard <owner> <agent> --dry-run`); a
   `--reply "<text>"` with quotes does not.
 - **Command guard.** kavach refuses any bypass of git's hooks
-  (`--no-verify`, `-c core.hooksPath=…`), and any push that rewrites or
-  deletes history.
+  (`--no-verify`, `-c core.hooksPath=…`), and any push that rewrites
+  history: a force push (`-f`, `--force`, `--force-with-lease`), a `+`
+  refspec, or `--mirror`. Deleting a branch rewrites no history, and kavach
+  lets `git push origin --delete <branch>` through. Delete your own
+  superseded or closed pull request branches yourself; never ask Alok to.
 - **The advisor stays on.** sarathi refuses a command that sets
   `CLAUDE_CODE_DISABLE_ADVISOR_TOOL`.
 

@@ -77,6 +77,12 @@ and PR state, and the GitHub API.
 - **`* [new branch]` on a PR branch.** If pushing to a PR's branch prints `* [new branch]`, the
   PR already merged and its branch was deleted; your commits now sit on an orphan branch, so
   re-apply them on top of main in a new PR.
+- **Delete your own old branches.** Deleting a branch rewrites no history: kavach refuses a
+  force push, a `+` refspec and `--mirror`, and lets `git push origin --delete <branch>`
+  through. When a PR you opened is superseded or closed, delete its remote branch yourself and
+  never ask the owner to. A branch left behind still counts: on
+  https://github.com/veda-hq/veda/pull/383 an old branch, kept for the owner to delete, held a
+  secret-shaped token and failed every PR's Secret scans check until it went.
 - **Tracked-files checks pass on new files.** A check that scans only git-tracked files passes
   vacuously on a new untracked file, so stage it before running the check.
 - **Read-then-write on a counter races.** Code that looks up the latest round (or version) of a

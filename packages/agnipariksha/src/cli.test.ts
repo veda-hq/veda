@@ -529,8 +529,9 @@ test('a lane whose first dry run flaked says so', async () => {
 });
 
 const node = process.execPath;
-// A mutant that keeps a run from settling fails the tests that spawn at 30 s, well inside a retry's 180 s.
-const HANG = { timeout: 30_000 };
+// A mutant that keeps a run, a lock or a sleep from settling fails the tests that reach one at 15 s,
+// well inside a retry's 180 s: several such tests in a row must still fit the retry pass's budget.
+const HANG = { timeout: 15_000 };
 
 test("spawnStryker names the failing tests from Stryker's real output, split anywhere, and a last line with no newline", HANG, async () => {
   const children = new Set<ChildProcess>();
@@ -654,9 +655,9 @@ test('a temp directory that cannot be removed is left, never failing the run; an
   assert.doesNotThrow(() => removeLiveScratch());
 });
 
-/** Wait, on real timers, until `path` holds text; give up after 30 s, so a failed test leaves nothing polling. */
+/** Wait, on real timers, until `path` holds text; give up after 15 s, so a failed test leaves nothing polling. */
 async function written(path: string): Promise<string> {
-  for (let tries = 0; tries < 1500; tries += 1) {
+  for (let tries = 0; tries < 750; tries += 1) {
     const text = readText(path);
     if (text !== undefined && text !== '') return text;
     await delay(20);
@@ -852,7 +853,7 @@ test('entry runs the arguments after the script, sets the exit code, exits 2 on 
   assert.deepEqual(kills, ['SIGTERM']);
 });
 
-test('bootstrap refuses with exit 2 on a bad argument, and outside a repository', async () => {
+test('bootstrap refuses with exit 2 on a bad argument, and outside a repository', HANG, async () => {
   assert.equal(await bootstrap(['--nope'], new Set()), 2);
   const here = process.cwd();
   const dir = mkdtempSync(join(tmpdir(), 'agnipariksha-'));
@@ -871,12 +872,14 @@ test('bootstrap refuses with exit 2 on a bad argument, and outside a repository'
   }
 });
 
-test('bootstrap reads agnipariksha.json at the root: missing or bad refuses with exit 2 before any work, valid runs', async () => {
+test('bootstrap reads agnipariksha.json at the root: missing or bad refuses with exit 2 before any work, valid runs', HANG, async () => {
   const here = process.cwd();
   const dir = mkdtempSync(join(tmpdir(), 'agnipariksha-'));
   const printed: string[] = [];
   const write = process.stdout.write.bind(process.stdout);
-  process.stdout.write = ((chunk: string) => (printed.push(chunk), true)) as typeof process.stdout.write;
+  // Captured and still written: a swallowed stdout would hide the test reporter's lines, a failure's
+  // among them, and a runner that stops at the first failure would never see it.
+  process.stdout.write = ((chunk: string) => (printed.push(chunk), write(chunk))) as typeof process.stdout.write;
   try {
     execFileSync('git', ['init', '-q'], { cwd: dir });
     process.chdir(dir);

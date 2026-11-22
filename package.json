@@ -22,7 +22,7 @@
     "@sigstore/verify": "4.1.3",
     "@stryker-mutator/core": "10.1.1",
     "@stryker-mutator/tap-runner": "10.1.1",
-    "@veda-hq/agnipariksha": "0.7.9",
+    "@veda-hq/agnipariksha": "0.8.5",
     "@veda-hq/dvara": "0.5.16",
     "@veda-hq/eslint-plugin-shuddhi": "0.2.0",
     "@veda-hq/niyam": "0.7.5",

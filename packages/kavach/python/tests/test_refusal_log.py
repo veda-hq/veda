@@ -17,6 +17,8 @@ PACKAGE = HERE.parent / "kavach"
 sys.path.insert(0, str(PACKAGE))
 import refusal_log  # noqa: E402
 
+from .outside import run_outside  # noqa: E402
+
 GIT_ENV = {
     key: value for key, value in os.environ.items() if not key.startswith("GIT_")
 } | {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
@@ -32,6 +34,10 @@ class RefusalLogTest(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {"KAVACH_REFUSAL_LOG_OFF": ""})
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Logging runs in this process: under a mutant that drops the event's
+        # cwd, it logs to this cwd's repository, so the cwd is outside every
+        # repository (#387).
+        run_outside(self)
         self.log = self.repo / ".git" / "kavach" / refusal_log.FILE
 
     def event(self, **fields: object) -> str:

@@ -1483,10 +1483,9 @@ PROTECTED = "a path worktree.protectedPaths keeps from agent sessions"
 WORKTREE_WAY_OUT = "this session's own worktree does not open it"
 
 
-class ProtectedPathsTest(BoundaryFixture):
-    """`worktree.protectedPaths`: the files a repository's own git hooks run
-    stay refused inside a session's own worktree (veda#235), which holds its
-    own copy of them."""
+class ProtectedFixture(BoundaryFixture):
+    """A worktree whose hooks folder, a script and `node_modules` are
+    `protectedPaths`, and the adapter's verdict there. No tests of its own."""
 
     settings_env = AdapterTest.settings_env
 
@@ -1518,6 +1517,12 @@ class ProtectedPathsTest(BoundaryFixture):
 
     def bash(self, command: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         return self.claude_bash(self.claude if cwd is None else cwd, command, self.env)
+
+
+class ProtectedPathsTest(ProtectedFixture):
+    """`worktree.protectedPaths`: the files a repository's own git hooks run
+    stay refused inside a session's own worktree (veda#235), which holds its
+    own copy of them."""
 
     def test_a_runners_program_from_the_root_does_not_name_the_root(self) -> None:
         # #256 reads the program a runner starts as a line of its own; the
@@ -1807,6 +1812,196 @@ class ProtectedPathsTest(BoundaryFixture):
             self.main, tool_input={"file_path": str(self.main / "tracked.txt"), "content": "x\n"}, env=environment
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+PARIKSHA_MANIFEST = json.dumps({"name": "@veda-hq/pariksha", "bin": {"pariksha": "dist/cli.js"}})
+UNRESOLVED = "mutation targets could not be resolved"
+NAMES_ROOT = "the checkout's root, as what it writes"
+UNPLACED_FOLDER = "`pnpm` with a folder the guard cannot place"
+
+
+class ReportedFalseRefusalsTest(ProtectedFixture):
+    """Commands refused on 2026-11-21/22 while releasing pariksha 0.7.20,
+    each writing nothing or only inside the session's own worktree, now run;
+    each one's write-shaped neighbour stays refused (veda#404). Through the
+    adapter as sarathi runs it, with `protectedPaths` set as veda's are.
+
+    The fourth, a plugin CLI's `agent wait`, stays refused: kavach cannot
+    bind that name to code it has read, so the plugin's router changes
+    instead (veda#404)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        for checkout in (self.main, self.claude):
+            (checkout / "pnpm-workspace.yaml").write_text("packages:\n  - 'packages/*'\n", encoding="utf-8")
+            for name, manifest in (("pariksha", PARIKSHA_MANIFEST), ("other", json.dumps({"name": "other"}))):
+                package = checkout / "packages" / name
+                (package / "src").mkdir(parents=True)
+                (package / "dist").mkdir()
+                (package / "package.json").write_text(manifest, encoding="utf-8")
+                (package / "src" / "cli.ts").write_text("// cli\n", encoding="utf-8")
+                (package / "dist" / "cli.js").write_text("// cli\n", encoding="utf-8")
+            (checkout / "node_modules" / ".bin").mkdir(parents=True, exist_ok=True)
+            (checkout / "node_modules" / ".bin" / "pariksha").write_text("#!/bin/sh\n", encoding="utf-8")
+            (checkout / "docs").mkdir()
+            (checkout / ".tmp").mkdir()
+
+    def runs(self, *commands: str) -> None:
+        for command in commands:
+            with self.subTest(command=command):
+                result = self.bash(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def refuses(self, expected: str, *commands: str, cwd: Path | None = None) -> None:
+        for command in commands:
+            with self.subTest(command=command):
+                self.refused(self.bash(command, cwd), expected)
+
+    def test_pnpm_pack_reads_its_paths_from_its_dir(self) -> None:
+        # The reported line: kavach 0.7.19 read `../../.tmp/pack` from the
+        # root, two folders above the worktree. pnpm 12.9 wrote the tarball
+        # under `--dir` (`--pack-destination` and `--out` alike).
+        self.runs(
+            "pnpm --dir packages/pariksha pack --pack-destination ../../.tmp/pack",
+            "pnpm --dir packages/pariksha pack --pack-destination=../../.tmp/pack",
+            "pnpm -C packages/pariksha pack --out ../../.tmp/pack/%s.tgz",
+            "pnpm --dir packages/pariksha pack --dry-run --json",
+        )
+        self.refuses(
+            "is outside this session's Claude worktree",
+            "pnpm --dir packages/pariksha pack --pack-destination ../../../x",
+            f"pnpm --dir packages/pariksha pack --pack-destination {self.external}",
+            f"pnpm --dir {self.external} pack",
+        )
+        # Into a protected folder, named or by default: the tarball lands
+        # in the `--dir` folder unless told otherwise.
+        self.refuses(
+            PROTECTED,
+            "pnpm --dir packages/pariksha pack --pack-destination ../../.githooks",
+            "pnpm --dir .githooks pack",
+        )
+        # pnpm reads `--dir` anywhere on a `pack` line, the last one winning,
+        # and `--store-dir` from the workspace root: unresolved, saying how
+        # to name the folder. A `--dir` after `pack`, or two before it,
+        # passed in 0.7.19, read as no target: `.githooks` is no path shape.
+        self.refuses(
+            UNPLACED_FOLDER,
+            "pnpm --dir packages/pariksha pack --dir . --pack-destination .githooks",
+            "pnpm --dir packages/pariksha pack --pack-destination .githooks -C .",
+            "pnpm --dir packages/pariksha pack --store-dir ../x",
+            "pnpm --dir packages/pariksha pack -r",
+            "pnpm --dir packages/pariksha pack --unknown-option x",
+            "pnpm pack --dir .githooks",
+            "pnpm pack -C .githooks",
+            "pnpm pack --dir=.githooks",
+            "pnpm --dir docs --dir .githooks pack",
+        )
+
+    def test_a_second_folder_in_pnpms_slot_is_unresolved(self) -> None:
+        # kavach 0.7.19 read these from the first `--dir`, and passed them;
+        # pnpm 12.9 ran the program in the second (`pnpm --dir A exec
+        # --dir B pwd` printed B, read from the shell's folder), so `touch`
+        # wrote the protected hook.
+        self.refuses(
+            UNPLACED_FOLDER,
+            "pnpm --dir docs exec --dir . touch .githooks/pre-push",
+            "pnpm --dir docs exec --dir=. touch .githooks/pre-push",
+            "pnpm --dir docs exec -C . touch .githooks/pre-push",
+            "pnpm --dir docs exec --reporter silent --dir . touch .githooks/pre-push",
+            "pnpm --dir docs run --dir . check",
+            "pnpm --dir packages/other exec -w touch .githooks/pre-push",
+            "pnpm --dir docs run --unlisted check",
+        )
+        # One folder, before the subcommand or in its slot, still reads as
+        # before; an option after the program or script is its own.
+        self.runs(
+            "pnpm --dir packages/other exec --reporter silent touch ../../.tmp/x",
+            "pnpm exec --dir docs touch x",
+            "pnpm --dir packages/pariksha run --if-present check",
+            "pnpm --dir packages/pariksha run check --dir .",
+        )
+
+    def test_a_reading_pariksha_checks_root_is_not_a_target(self) -> None:
+        # The reported line, and the same check through the installed bin:
+        # kavach 0.7.19 read `--root <root>` as naming the root as written,
+        # relative or absolute. `boundary` reads its deny list and the
+        # tracked files there; `own-provenance` its settings and lockfile.
+        self.runs(
+            "pnpm --dir packages/pariksha exec node src/cli.ts boundary --root ../..",
+            f"pnpm --dir packages/pariksha exec node src/cli.ts boundary --root {self.claude}",
+            "pnpm --dir packages/pariksha exec node dist/cli.js own-provenance --config ../../.tmp/p.json --root ../..",
+            "pnpm --filter @veda-hq/pariksha exec node src/cli.ts boundary --root ../..",
+            "pnpm exec node packages/pariksha/src/cli.ts boundary --root .",
+            "pnpm exec pariksha boundary --root .",
+            "pnpm exec -- pariksha boundary --root . --deny .tmp/deny.txt",
+        )
+        # A check that writes under `--root`, another program, another
+        # package's file, or a line outside the check's grammar still names
+        # the root as written.
+        self.refuses(
+            NAMES_ROOT,
+            "pnpm --dir packages/pariksha exec node src/cli.ts codeql-baseline --root ../..",
+            "pnpm --dir packages/pariksha exec node src/cli.ts doc-references --write-baseline --root ../..",
+            "pnpm exec pariksha codeql-baseline --root .",
+            "pnpm --dir packages/pariksha exec node src/cli.ts boundary --root ../.. .",
+            "pnpm --dir packages/pariksha exec node src/cli.ts boundary --root=../..",
+            "pnpm --dir packages/pariksha exec node src/cli.ts boundary --root ../.. --fix x",
+            "pnpm --dir packages/pariksha exec node --import x src/cli.ts boundary --root ../..",
+            "pnpm --dir packages/other exec node src/cli.ts boundary --root ../..",
+            "pnpm exec node .tmp/cli.ts boundary --root .",
+            "pnpm exec .tmp/node packages/pariksha/src/cli.ts boundary --root .",
+            "pnpm exec prettier --write .",
+            "rm -rf .",
+        )
+        # A `pariksha` that is no installed bin is not pariksha's: the runner
+        # reads it as a program of its own, which it cannot prove.
+        (self.claude / "node_modules" / ".bin" / "pariksha").unlink()
+        self.refused(self.bash("pnpm exec pariksha boundary --root ."), "a bin that is not installed")
+        (self.claude / "node_modules" / ".bin" / "pariksha").write_text("#!/bin/sh\n", encoding="utf-8")
+        # Still a program's line, run in its folder: from the main checkout,
+        # which this session does not own, it is refused.
+        for command in (
+            "pnpm exec pariksha boundary --root .",
+            "pnpm --dir packages/pariksha exec node src/cli.ts boundary --root ../..",
+        ):
+            with self.subTest(command=command, cwd="main"):
+                self.refused(self.bash(command, self.main), NOT_OWNED)
+
+    def test_git_log_and_show_take_their_search_options(self) -> None:
+        # The reported line: kavach 0.7.19 knew no `-i`. The exact-name
+        # list stays, since some options run programs (`--ext-diff`,
+        # `--textconv`, `--show-signature`) or write objects
+        # (`--remerge-diff`). git 2.54 refused `--outp=` on log, show, diff
+        # and shortlog; an abbreviation stays unresolved all the same.
+        self.runs(
+            "git log origin/main --oneline -i --grep=kavach -5",
+            "git log --regexp-ignore-case --grep=x --all-match --invert-grep",
+            "git log -E --grep=a.b --committer=someone --merges --min-parents=2",
+            "git log --notes=commits --abbrev-commit -l5 -M -C --branches=main",
+            "git show -i HEAD",
+            "git show --word-diff=color --color-moved HEAD",
+            "git shortlog -sn -i --grep=x",
+            "git log --output=.tmp/log.txt",
+            "git shortlog --output=.tmp/log.txt",
+        )
+        self.refuses(
+            "is outside this session's Claude worktree",
+            f"git log -i --output={self.external}/x",
+            f"git show --output={self.external}/x HEAD",
+            f"git shortlog -i --output={self.external}/x",
+        )
+        self.refuses(PROTECTED, "git log -i --output=.githooks/pre-push")
+        self.refuses(
+            UNRESOLVED,
+            "git log --outp=.tmp/x",
+            "git log --out=x",
+            "git shortlog --outp=x",
+            "git log --ext-diff -p",
+            "git show --textconv HEAD",
+            "git log --show-signature",
+            "git log --remerge-diff",
+            "git log --diff-merges=remerge",
+        )
 
 
 class ReviewedCLIWordsTest(unittest.TestCase):

@@ -865,6 +865,14 @@ def unreadable_constructs(
                     f"`{head}` with `git` on its line, which the guard reads only "
                     "when `git` is the command itself"
                 )
+            elif head == "pnpm" and boundary.pnpm_folder_unplaced(texts[1:], cwd):
+                add(
+                    "`pnpm` with a folder the guard cannot place: one named before the "
+                    "subcommand and moved again after it (`--dir`, `-C`, `-w`, `-r`, `--filter`, "
+                    "`--store-dir`), an option the guard does not list for the subcommand, or a "
+                    "`pack` folder not named once before `pack`; name the folder once, before the "
+                    "subcommand (`pnpm --dir <folder> pack`)"
+                )
             elif head in boundary.GIT_RUNNERS and boundary.runner_runs_shell_program(head, texts[1:]):
                 add(
                     f"`{head}` handing a shell a program (`sh -c`, or its own shell mode), "

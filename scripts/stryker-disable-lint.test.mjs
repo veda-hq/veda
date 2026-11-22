@@ -15,8 +15,14 @@ import { ESLint } from 'eslint';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const eslint = new ESLint({ cwd: ROOT });
 
-/** Linted paths: one TypeScript source, one hook, one root script. */
-const PATHS = ['packages/agnipariksha/src/probe.ts', 'packages/sarathi/hooks/probe.mjs', 'scripts/probe.mjs'];
+/** Linted paths: TypeScript sources, a .tsx hook, a .mjs hook, a root script. */
+const PATHS = [
+  'packages/agnipariksha/src/probe.ts',
+  'packages/agnipariksha/src/probe.tsx',
+  'packages/needs-you/hooks/probe.tsx',
+  'packages/sarathi/hooks/probe.mjs',
+  'scripts/probe.mjs',
+];
 
 /**
  * The lines `no-warning-comments` refuses in `code`, linted as `path`.

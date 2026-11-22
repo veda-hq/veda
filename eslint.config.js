@@ -4,6 +4,9 @@ import { errorHandlingBlocks } from '@veda-hq/eslint-plugin-shuddhi/error-handli
 import tseslint from 'typescript-eslint';
 
 const CODE = ['packages/*/src/**/*.{ts,js,mjs}', 'packages/*/hooks/**/*.{ts,js,mjs}', 'scripts/*.mjs'];
+// Every file in those trees that Stryker can mutate, .tsx included.
+const SCRIPT = '{ts,tsx,mts,cts,js,jsx,mjs,cjs}';
+const MUTABLE = [`packages/*/src/**/*.${SCRIPT}`, `packages/*/hooks/**/*.${SCRIPT}`, `scripts/*.${SCRIPT}`];
 
 export default [
   { ignores: ['**/node_modules/**', '**/dist/**', '**/coverage/**', 'packages/*/corpus/**', 'packages/*/test/fixture/**', '.claude/worktrees/**'] },
@@ -27,7 +30,7 @@ export default [
   // an exception goes here or in eslint-suppressions.json, both code-owner
   // paths.
   {
-    files: CODE,
+    files: MUTABLE,
     linterOptions: { noInlineConfig: true },
     rules: {
       'no-warning-comments': ['error', { terms: ['stryker disable'], location: 'start' }],

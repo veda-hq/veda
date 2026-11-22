@@ -155,8 +155,8 @@ files that run the required checks (`.github/workflows/ci.yml`,
 change to them against the approved slice, as it does any other `.github/`
 change. It runs on `pull_request_target`, from main's copy, so the pull
 request's own copy cannot weaken it. The sources the gate mutates are not
-owned, and nothing yet refuses a `// Stryker disable` comment in them, so
-only review catches one.
+owned; veda's lint refuses a `// Stryker disable` comment in them
+(`docs/lessons/stryker.md`).
 
 Leave auto-merge off only to hold a pull request on purpose (say why in it),
 or for a change that needs Alok's yes first, such as a major release

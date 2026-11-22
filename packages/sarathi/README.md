@@ -135,9 +135,11 @@ settled a question, so it checks that a look happened, not what it found.
   session's own. A question is held when it
   names alternatives ("which", "or", "how should", "either"). "… or not?" and
   a bare "A/B" do not count, since no buttons tell a pair from a path. A
-  yes/no question that names no alternative ("Force-push to main?", "Delete
-  the branch?") lets the turn end at once. An irreversible step asked as a choice ("Delete the branch or
-  keep it?") is held once, as a `wrap_up` ask is.
+  yes/no question that names no alternative ("Force-push to main?", "Publish
+  v1.0.0?") lets the turn end at once. An irreversible step asked as a choice
+  ("Publish v1.0.0 or wait?") is held once, as a `wrap_up` ask is. A branch
+  the session pushed is not the owner's step: it deletes its own superseded
+  or closed branches itself.
 - **Research:** since the owner's last message, a `WebSearch`, a `WebFetch`,
   a browser page read (`…Claude_Browser__get_page_text`, `read_page`,
   `navigate`), or an `Agent`/`Task` launch of `researcher`,
@@ -318,6 +320,45 @@ at every user row that is not a tool result or meta text (reminder-only
 rows and task reports included), not from the handler's, so the sample
 does not lean on the rule it tests. Counting a task report as no prompt drops 11 nudges
 there, each a repeat of an ask already standing.
+
+**Links in asks.** The owner opens an ask from the sidebar, the phone or the
+needs-you band, where a bare `#376` opens nothing. So every ask names each
+GitHub issue, pull request or comment it refers to by its full URL, and the
+handler checks that before anything else, research, a look or a declared
+kind included:
+
+- **A bare reference** is `#N`, `owner/repo#N`, `PR`, `pull request`,
+  `issue` or `comment` followed by a number (`PR 382`, `comment 7068450411`),
+  or a comment fragment on its own (`#issuecomment-N`, `discussion_rN`),
+  read with the URLs taken out. A `github.com` URL in the same ask covers
+  it when its path is an owner/repository resource carrying that number
+  (`/<owner>/<repo>/issues/N`, `/pull/N`, `/discussions/N`), or its
+  fragment carries it (`#issuecomment-N`, `#discussion_rN` and the like), so
+  `#376 (https://…/issues/376)` and `[veda-hq/veda#376](https://…/issues/376)`
+  pass. A search or a query string covers nothing.
+- **On PreToolUse**, an `AskUserQuestion` (questions, headers, options) or a
+  `wrap_up` with an `ask` (its buttons too, and a URL in its `recap` covers,
+  since the ask holds 100 characters) is refused with `BLOCKED: give the full
+  link.`, naming the references. Every ask is checked, a go-ahead included,
+  and a repeat is refused too: the fix is always to hand, and a number that
+  names nothing on GitHub is reworded (option 1, not #1).
+- **On Stop**, the closing message's asking sentences are read, fenced code,
+  quoted lines, inline code and "quoted text" out: a sentence that opens on
+  an imperative (👍, approve, read, look at, check, open, review, react,
+  merge, close, answer, confirm, decide, reply), holds a 👍, `please`, a could-you, `needs you` or
+  a your-approval, or holds a question mark. A line that opens `Needs you:`
+  or ends on a question is read whole, so "PR #382 is green. Merge it?" is
+  held; "Fixed in #383." with "Anything else?" in its own paragraph is not,
+  and neither is a question answered on its own line. A URL anywhere in
+  the message covers. The turn goes on once with `additionalContext` that
+  starts `give the full link.` and quotes the sentences; where no `wrap_up`
+  carried an ask, it also says to file one. This comes before the nudge
+  above and the research hold, which that continuation skips. A report that
+  only mentions `#383` ends the turn.
+
+Each refusal is a line in the ask log, `outcome: "held: bare reference"`,
+with the references in `refs`. The rule is Alok's, from a slip of
+2026-11-22: "👍 the Guards Proposal on #376 (comment 7068450411)".
 
 A project lists it in `.claude/sarathi.json`, beside its other `PreToolUse`
 and `Stop` handlers:

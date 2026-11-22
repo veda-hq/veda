@@ -191,7 +191,7 @@ test('ask-gate: a wrap_up is gated only when its ask offers a choice', () => {
     ['one button', { recap: 'r', ask: 'Fix the parser here?', actions: [{ label: 'Fix it here' }] }],
     ['an app action first', { recap: 'r', ask: 'Which way to land it?', actions: [{ action: 'commit' }, { label: 'Hold it' }] }],
     ['odd actions', { recap: 'r', ask: 'Fix it?', actions: 'commit' }],
-    ['a pull request reference', { recap: 'r', ask: 'Merge acme/widgets#12 now?', actions: [{ label: 'Yes' }, { label: 'Not now' }] }],
+    ['a pull request reference', { recap: 'r', ask: 'Merge [acme/widgets#12](https://github.com/acme/widgets/pull/12) now?', actions: [{ label: 'Yes' }, { label: 'Not now' }] }],
     ['a path', { recap: 'r', ask: 'Delete src/old/parser.ts?', actions: [{ label: 'Yes' }, { label: 'No' }] }],
     ['a URL', { recap: 'r', ask: 'Publish to https://example.com/docs/page now?', actions: [{ label: 'Yes' }, { label: 'Not now' }] }],
     ['a shallow path with yes/no buttons', { recap: 'r', ask: 'Delete src/file?', actions: [{ label: 'Yes' }, { label: 'No' }] }],
@@ -330,7 +330,9 @@ test('ask-gate on Stop: only a choice-shaped question near the end counts', () =
   for (const [why, message] of [
     ['no question', 'Done. The parser and the lexer both pass.'],
     ['a yes/no approval', 'The branch is ready.\n\nForce-push to main?'],
-    ['an irreversible step, asked yes/no', 'Delete the branch?'],
+    // Not "Delete the branch?": an agent deletes its own superseded or
+    // closed branches itself and never asks the owner to (docs/lessons/git-github.md).
+    ['an irreversible step, asked yes/no', 'Publish v1.0.0?'],
     ['"or not"', 'Ship it now or not?'],
     ['a bare A/B with no buttons', 'Keep the cache/drop it?'],
     ['a statement with "or", no question', 'I fixed the parser or the lexer, whichever failed.'],
@@ -518,8 +520,8 @@ test('ask-gate: a look counts only when the ask names repository or session stat
     questions: [{ question, header: 'Q', options: options.map((label) => ({ label })), multiSelect: false }],
   });
   for (const [why, input] of [
-    ['#N', asking('Close #12 or keep it?')],
-    ['owner/repo#N', asking('Which of acme/widgets#12 and #13 first?')],
+    ['#N', asking('Close [#12](https://github.com/acme/widgets/pull/12) or keep it?')],
+    ['owner/repo#N', asking('Which of [acme/widgets#12](https://github.com/acme/widgets/pull/12) and [#13](https://github.com/acme/widgets/pull/13) first?')],
     ['PR', asking('Which PR goes first?')],
     ['pull request', asking('Rebase the pull request or merge main in?')],
     ['branch', asking('Which branch?')],
@@ -542,10 +544,10 @@ test('ask-gate: a look counts only when the ask names repository or session stat
   ] as const) {
     assert.equal(exit(looked, ASK, input), 2, why);
   }
-  const wrapUp = { recap: 'r', ask: 'PR #12 failed CI: retry it or revert?', actions: [{ label: 'Retry' }, { label: 'Revert' }] };
+  const wrapUp = { recap: 'r', ask: 'The PR failed CI: retry it or revert?', actions: [{ label: 'Retry' }, { label: 'Revert' }] };
   assert.equal(exit(looked, WRAP_UP, wrapUp), 0, 'a wrap_up ask');
   assert.equal(exit(looked, WRAP_UP, { ...wrapUp, ask: 'Which one first?', actions: [{ label: 'The PR' }, { label: 'The issue' }] }), 0, 'a wrap_up button');
-  assert.equal(holds(looked, 'Done.\n\nPR #12 failed CI. Retry it or revert?'), false, "a closing question whose paragraph names the state");
+  assert.equal(holds(looked, 'Done.\n\nThe PR failed CI. Retry it or revert?'), false, "a closing question whose paragraph names the state");
   assert.equal(holds(looked, 'Edited `src/a.ts`.\n\nRetry it or revert?'), true, 'the state named only in another paragraph');
   assert.equal(holds(looked, 'Retry it or revert?'), true, 'a closing message that names none');
   for (const [why, input] of [
@@ -580,7 +582,7 @@ test('ask-gate: a look counts question by question, and not for a question about
     ['an api, lower case', 'Which branch should call the api?'],
     ['an SDK', 'Bump the SDK in package.json or pin it?'],
     ['an sdk, lower case', 'Bump the sdk in package.json or pin it?'],
-    ['a price', 'PR #12 wants the larger runner at $0.08 a minute: take it or wait?'],
+    ['a price', 'The PR wants the larger runner at $0.08 a minute: take it or wait?'],
     ['pricing', 'Which pricing tier does the CI job need?'],
     ['credits', 'Spend the credits on the PR review or keep them?'],
     ['a quota', 'CI hit its quota: wait or move the workflow?'],
@@ -608,11 +610,11 @@ test('ask-gate: a look counts question by question, and not for a question about
   ] as const) {
     assert.equal(exit(looked(), ASK, asking(question)), 0, why);
   }
-  const wrapUp = { recap: 'r', ask: 'PR #12 hit the API rate limit: retry it or revert?', actions: [{ label: 'Retry' }, { label: 'Revert' }] };
+  const wrapUp = { recap: 'r', ask: 'The PR hit the API rate limit: retry it or revert?', actions: [{ label: 'Retry' }, { label: 'Revert' }] };
   assert.equal(exit(looked(), WRAP_UP, wrapUp), 2, 'a wrap_up ask');
-  assert.equal(holds(looked(), 'Done.\n\nPR #12 failed CI on the API quota. Retry it or revert?'), true, 'a closing question');
-  assert.equal(holds(looked(), 'Done.\n\nPR #12 failed CI. Retry it or revert?'), false, 'a closing question about the state alone');
-  const two = 'PR #12 failed CI. Retry it or revert?\n\nWhich name next, kebab or camel?';
+  assert.equal(holds(looked(), 'Done.\n\nThe PR failed CI on the API quota. Retry it or revert?'), true, 'a closing question');
+  assert.equal(holds(looked(), 'Done.\n\nThe PR failed CI. Retry it or revert?'), false, 'a closing question about the state alone');
+  const two = 'The PR failed CI. Retry it or revert?\n\nWhich name next, kebab or camel?';
   assert.equal(holds(looked(), two), true, 'state named in one closing paragraph passes no question in another');
   const { run, lines } = logged();
   run({ ...stopEvent(looked(), two), session_id: 'two-paragraphs' });
@@ -620,7 +622,7 @@ test('ask-gate: a look counts question by question, and not for a question about
     ['Retry it or revert?', true],
     ['Which name next, kebab or camel?', false],
   ]);
-  assert.equal(holds(looked(), 'PR #12 failed CI. Retry it or revert?\n\nOn branch next, keep the commit or drop it?'), false, 'every paragraph names state');
+  assert.equal(holds(looked(), 'The PR failed CI. Retry it or revert?\n\nOn branch next, keep the commit or drop it?'), false, 'every paragraph names state');
 });
 
 test('ask-gate log: names_state and names_outside, per question and for the ask', () => {
@@ -1133,7 +1135,7 @@ test('ask-gate on Stop: a plain-text ask with no wrap_up ask goes on once, to ma
   assert.equal(stopFeedbackOf(sideTurn(), NEEDS_YOU_259, DESKTOP, { stop_hook_active: true }), '', 'once: a Stop already going on ends');
   for (const [why, message] of [
     ['a question that ends its line', 'The parser is fixed.\n\nShall I tag v0.7.11 now?'],
-    ['a plain "Needs you:"', 'Needs you: add the approved label to #289.'],
+    ['a plain "Needs you:"', 'Needs you: add the approved label to https://github.com/veda-hq/veda/issues/289.'],
     ['a bulleted question', 'Two open points:\n- Should old files go by age, by size, or both?'],
     ['a question that ends on a URL', 'The page is published. Should we open https://example.com/page?'],
   ] as const) {
@@ -1218,5 +1220,146 @@ test('ask-gate log: a nudge is a line, with the asking line', () => {
   assert.deepEqual(
     lines.map((l) => [l['via'], l['outcome'], (l['questions'] as Entry[])[0]?.['question']]),
     [['Stop', 'nudged: no wrap_up ask', NEEDS_YOU_259.split('\n')[0]?.slice(0, 300)]],
+  );
+});
+
+// --- links in asks ---------------------------------------------------------------
+/** The real slip (2026-11-22): an ask that named the comment and its issue by number alone. */
+const SLIP = '👍 the Guards Proposal on #376 (comment 7068450411)';
+const COMMENT_URL = 'https://github.com/veda-hq/veda/issues/376#issuecomment-7068450411';
+const linkRun = (tool: string, toolInput: Entry, path = transcript(owner())): Run =>
+  gate({ tool_name: tool, tool_input: toolInput, transcript_path: path, session_id: `s${sessions++}` });
+const askOf = (question: string): Entry => ({ questions: [{ question, header: 'Ask', options: [{ label: 'Done' }, { label: 'Later' }], multiSelect: false }] });
+const goAhead = (ask: string, extra: Entry = {}): Entry => ({ recap: 'r', ask, actions: [{ label: 'Done' }, { label: 'Not now' }], ...extra });
+
+test('ask-gate links: an ask that names an issue, pull request or comment by number alone is refused', () => {
+  const run = linkRun(WRAP_UP, goAhead(SLIP));
+  assert.equal(run.status, 2);
+  assert.match(run.stderr, /^BLOCKED: give the full link\. This ask names #376, comment 7068450411 by number alone\./);
+  assert.match(run.stderr, /https:\/\/github\.com\/<owner>\/<repo>\/\.\.\. URL/);
+  assert.match(run.stderr, /a URL in the recap covers its number too/);
+  for (const [why, ask] of [
+    ['the slip', SLIP],
+    ['#N', 'Approve #376?'],
+    ['owner/repo#N', 'Approve veda-hq/veda#376?'],
+    ['PR N', 'Merge PR 382 now?'],
+    ['PR #N', 'Merge PR #382 now?'],
+    ['pull request N', 'Merge pull request 382 now?'],
+    ['issue N', 'Close issue 382?'],
+    ['comment N on #N', '👍 comment 7068450411 on #376'],
+    ['a URL that carries another number', '👍 #376: https://github.com/veda-hq/veda/issues/3760'],
+    ['a URL off github.com', '👍 #376: https://example.com/issues/376'],
+    ['a comment fragment alone', '👍 #issuecomment-7068450411'],
+    ['a review comment fragment alone', '👍 discussion_r99 first'],
+    ['a GitHub search URL', '👍 #376: https://github.com/search?q=/issues/376'],
+    ['a GitHub URL with no owner/repository route', '👍 #376: https://github.com/issues/376'],
+    ['a comment number only in the query', '👍 comment 7 on https://github.com/veda-hq/veda/issues/376?c=issuecomment-7'],
+  ] as const) {
+    assert.equal(linkRun(WRAP_UP, goAhead(ask)).status, 2, `wrap_up: ${why}`);
+    assert.equal(linkRun(ASK, askOf(ask)).status, 2, `AskUserQuestion: ${why}`);
+  }
+  assert.equal(linkRun(WRAP_UP, { recap: 'r', ask: 'Done?', actions: [{ label: 'Merge #382' }] }).status, 2, 'a button');
+  assert.equal(
+    linkRun(ASK, { questions: [{ question: 'Which goes first?', header: 'Order', options: [{ label: 'a', description: 'PR 382' }, { label: 'b' }], multiSelect: false }] }).status,
+    2,
+    'an option description',
+  );
+});
+
+test('ask-gate links: the refusal comes before every pass', () => {
+  const researched = transcript(owner(), toolUse('WebSearch', { query: 'q' }), toolResult());
+  const looked = transcript(owner(), toolUse('Read'), toolResult());
+  for (const [why, path, input] of [
+    ['a go-ahead with yes/no buttons', transcript(owner()), goAhead(SLIP)],
+    ['one button', transcript(owner()), { recap: 'r', ask: SLIP, actions: [{ label: 'Done' }] }],
+    ['no buttons', transcript(owner()), { recap: 'r', ask: SLIP }],
+    ['after research', researched, goAhead(SLIP)],
+    ['after a look', looked, goAhead('Which of #376 and #377 first?')],
+    ['a declared approval', transcript(owner()), goAhead(`${SLIP}. Kind: approval`)],
+  ] as const) {
+    assert.equal(linkRun(WRAP_UP, input, path).status, 2, why);
+  }
+  // Nothing lets a repeat through: the same ask, again in the same session and turn.
+  const t = transcript(owner());
+  const again = (): number | null => gate({ tool_name: WRAP_UP, tool_input: goAhead(SLIP), transcript_path: t, session_id: 'links-again' }).status;
+  assert.deepEqual([again(), again(), again()], [2, 2, 2]);
+});
+
+test('ask-gate links: an ask with the full URL, and a number that is no reference, go through', () => {
+  for (const [why, ask, extra] of [
+    ['the URL in place of the numbers', `👍 the Guards Proposal on ${COMMENT_URL}`, {}],
+    ['the numbers with the URL', `👍 the Guards Proposal on #376 (${COMMENT_URL})`, {}],
+    ['a markdown link', '👍 [veda-hq/veda#376](https://github.com/veda-hq/veda/issues/376)', {}],
+    ['a pull request URL', 'Merge PR 382 (https://github.com/veda-hq/veda/pull/382)?', {}],
+    ['a review comment URL', '👍 comment 99 on https://github.com/veda-hq/veda/pull/382#discussion_r99', {}],
+    ['the URL in the recap', SLIP, { recap: `The Proposal: ${COMMENT_URL}` }],
+    ['no number', 'Tag v0.8.0 now?', {}],
+    ['a version, a count, a time', 'Ship 0.7.20 with 3 fixes at 10:00?', {}],
+  ] as const) {
+    assert.equal(linkRun(WRAP_UP, goAhead(ask, extra)).status, 0, `wrap_up: ${why}`);
+  }
+  assert.equal(linkRun(ASK, askOf(`👍 the Guards Proposal on ${COMMENT_URL}. Kind: approval`)).status, 0, 'AskUserQuestion: the URL, declared');
+  assert.equal(linkRun(WRAP_UP, { recap: 'Merged #383; CI is green.' }).status, 0, 'a bare number in a recap with no ask');
+  assert.equal(linkRun(WRAP_UP, { recap: 'r', ask: 'Which goes first?', actions: [{ action: 'commit' }] }).status, 0, 'an app action');
+});
+
+test('ask-gate links on Stop: an ask by number alone goes back once, quoted, with the fix', () => {
+  const feedback = stopFeedbackOf(sideTurn(), SLIP);
+  assert.match(feedback, /^give the full link\. Your closing message asks the owner about #376, comment 7068450411 by number alone \(👍 the Guards Proposal on #376 \(comment 7068450411\)\)\./);
+  assert.match(feedback, /issues\/N#issuecomment-M/);
+  assert.match(feedback, /call wrap_up first with it as ask/, 'no wrap_up carried the ask');
+  assert.match(feedback, /If the sentence asks the owner nothing, end the turn again as it is\.$/);
+  assert.doesNotMatch(stopFeedbackOf(transcript(owner()), SLIP, {}), /call wrap_up/, 'a terminal session has no wrap_up');
+  assert.equal(stopFeedbackOf(sideTurn(), SLIP, DESKTOP, { stop_hook_active: true }), '', 'once: a Stop already going on ends');
+  for (const [why, message] of [
+    ['the slip', SLIP],
+    ['the slip, as a Needs you line', `Done.\n\n**Needs you:** ${SLIP}.`],
+    ['a question', 'The fix is in. Can #383 merge now?'],
+    ['please', 'Please 👍 the Proposal on #376.'],
+    ['approve', 'Approve the slice on #376 when you can.'],
+    ['read', 'Read comment 7068450411 first.'],
+    ['your approval', 'It waits on your approval on veda-hq/veda#376.'],
+    ['a numbered step', 'Two things:\n\n1. Approve PR 382.\n2. Then tag it.'],
+    ['the id a sentence before the question', 'PR #382 is green. Merge it?'],
+    ['check', 'Check PR #382.'],
+    ['open', 'Open #376 when you are back.'],
+    ['a comment fragment', 'Please 👍 #issuecomment-7068450411.'],
+    ['a report, then a question, on one line', 'Fixed in #383. Anything else?'],
+  ] as const) {
+    assert.match(stopFeedbackOf(sideTurn(), message), /^give the full link\./, why);
+  }
+});
+
+test('ask-gate links on Stop: a report, and an ask with its URL, end the turn', () => {
+  for (const [why, message] of [
+    ['a URL that ends the sentence', `Please 👍 ${COMMENT_URL}.`],
+    ['a report that mentions #383','Merged https://github.com/veda-hq/veda/pull/390. The old branch from #383 is deleted, and Secret scans pass again.'],
+    ['a report, then a question with no number', 'Fixed in #383.\n\nAnything else?'],
+    ['a quoted ask in a report', 'The slip "👍 the Guards Proposal on #376 (comment 7068450411)" is now held.'],
+    ['a curly-quoted ask in a report', 'The slip “Approve #376?” is now held.'],
+    ['an ask in inline code', 'The test pins `Approve #376?` as held.'],
+    ['a Done line beside a linked Needs you', NEEDS_YOU_261],
+    ['a question answered on its own line', '**Can 0117 close?** Yes, once #2303 merges.'],
+    ['a review report', 'Review of #383 found nothing. Reviewed by Cubic on #384.'],
+    ['read-only', 'Read-only checks on #383 pass.'],
+    ['the slip with its URL', `👍 the Guards Proposal on #376 (${COMMENT_URL})`],
+    ['the URL elsewhere in the message', `The Proposal: ${COMMENT_URL}\n\n${SLIP}`],
+    ['a number in fenced code', 'Done.\n\n```\nApprove #376?\n```'],
+    ['a quoted line', 'You asked:\n> Approve #376?\n\nDone.'],
+  ] as const) {
+    assert.doesNotMatch(stopFeedbackOf(transcript(owner()), message, {}), /^give the full link/, why);
+  }
+});
+
+test('ask-gate links log: a refusal is a line, with the references', () => {
+  const log = logged();
+  log.run({ tool_name: WRAP_UP, tool_input: goAhead(SLIP), transcript_path: transcript(owner()), session_id: 'links-log', tool_use_id: 't1' });
+  log.run(stopEvent(transcript(owner()), SLIP));
+  assert.deepEqual(
+    log.lines().map((l) => [l['via'], l['outcome'], l['refs']]),
+    [
+      [WRAP_UP, 'held: bare reference', ['#376', 'comment 7068450411']],
+      ['Stop', 'held: bare reference', ['#376', 'comment 7068450411']],
+    ],
   );
 });

@@ -22,7 +22,12 @@
 # is an approval, which only the owner can give, and passes; so does a closing
 # question that names no alternatives.
 #
-# On Stop, first: a closing message that asks the owner (a line opening
+# Before any of that, every ask names each GitHub issue, pull request or
+# comment it refers to by its full URL (README, "Links in asks"): an
+# AskUserQuestion or a wrap_up ask with a bare #N, PR N or comment N is
+# refused, and on Stop a closing message that asks with one goes on once.
+#
+# On Stop, then: a closing message that asks the owner (a line opening
 # "Needs you:", or one that ends on a question) in a turn whose wrap_up
 # carried no ask goes on once, told to make the ask, where the session has
 # the desktop app's wrap_up (README, "An ask the app does not see").
@@ -553,6 +558,103 @@ def declared_units(tool, given):
             units.append(kinds(text))
     return units or [[]]
 
+# Links in asks: an ask of the owner names each GitHub issue, pull request
+# or comment by its full URL, which opens from the sidebar, the phone and the
+# needs-you band; a bare number opens nothing. A bare reference is #N,
+# owner/repo#N, PR, pull request, issue or comment followed by a number, or
+# a comment fragment on its own (#issuecomment-N, #discussion_rN ...), read
+# with the URLs taken out. A github.com URL anywhere in the ask that carries
+# the same number covers it, the number ending where its digits do.
+BARE_REF = re.compile(
+    r"(?<![\w&/#.-])(?:[\w.-]+/[\w.-]+)?#(\d+)\b"
+    r"|(?i:\b(?:PRs?|pull requests?|issues?|comments?)[ \t]+#?(\d+)\b)"
+    r"|(?<![\w/])#?(?:issuecomment-|discussion_r|discussioncomment-|pullrequestreview-)(\d+)\b"
+)
+# A URL covers only as a resource on an owner/repository route: its issue,
+# pull request or discussion number, and the comment or review number of
+# its fragment. A search, a query or a malformed path covers nothing.
+GITHUB_RESOURCE = re.compile(r"^https?://(?:www\.)?github\.com/[\w.-]+/[\w.-]+/(?:issues|pull|discussions)/(\d+)(?![\w-])", re.I)
+GITHUB_FRAGMENT = re.compile(r"^(?:issuecomment-|discussion_r|discussioncomment-|pullrequestreview-)(\d+)(?!\d)")
+# A sentence of a closing message that asks the owner something: it opens
+# on an imperative (a thumbs-up, approve, read, look at, check, open,
+# review, react, merge, close, answer, confirm, decide, reply), or holds a thumbs-up, please, a
+# could-you, a needs-you or a your-approval anywhere, or holds a question
+# mark once its URLs are out. A line that opens "Needs you:" asks whole.
+ASK_OPENER = re.compile(
+    r"^[\s>*_#-]*(?:\d+[.\x29][ \t]*)?(?:please[ \t]+)?"
+    r"(?:\U0001F44D|:\+1:|(?:approve|read|look at|check|open|review|react|merge|close|answer|confirm|decide|reply)"
+    r"(?![\w-])(?![ \t]+(?:of|by|on|in|for|is|was|found|passed|failed)\b))",
+    re.I,
+)
+ASK_ANYWHERE = re.compile(
+    r"\U0001F44D|:\+1:|\bplease\b|\b(?:could|can|would|will) you\b|\bneeds you\b"
+    r"|\byour (?:approval|review|yes|go-ahead|answer|decision|call|thumbs)",
+    re.I,
+)
+# Sentences as SENTENCE cuts them, and also after a bold or italic one: a
+# question answered on its own line (**Can it close?** Yes, once ... merges)
+# is two sentences.
+ASK_SENTENCE = re.compile(r"(?<=[.!?])\s+|(?<=[.!?][*_])\s+|(?<=[.!?][*_]{2})\s+|\n")
+
+def linked_numbers(text):
+    """The issue, pull request and comment numbers the github.com URLs in a
+    text carry."""
+    found = set()
+    for match in URL.finditer(text or ""):
+        url = match.group(0)
+        resource = GITHUB_RESOURCE.match(url)
+        if resource:
+            found.add(resource.group(1))
+            fragment = GITHUB_FRAGMENT.match(url.partition("#")[2])
+            if fragment:
+                found.add(fragment.group(1))
+    return found
+
+def bare_refs(text, covered):
+    """The references a text makes by number alone, each once, in order:
+    those no URL in covered (a set of numbers) carries."""
+    refs = []
+    for match in BARE_REF.finditer(URL.sub(" ", text or "")):
+        if (match.group(1) or match.group(2) or match.group(3)) not in covered:
+            refs.append(match.group(0).strip())
+    return list(dict.fromkeys(refs))
+
+def asking_sentences(message):
+    """The sentences of a closing message that ask the owner, fenced code,
+    quoted lines, inline code and text in double quotes left out: someone
+    else's words, as on the research hold. A line that opens "Needs you:"
+    or ends on a question asks whole, so the id one sentence before the
+    question counts (PR #382 is green. Merge it?)."""
+    found = []
+    for line in QUOTED.sub("", FENCE.sub("", message or "")).split("\n"):
+        line = QUOTES.sub(" ", INLINE_CODE.sub(" ", line))
+        if NEEDS_YOU.search(line) or ENDS_ASKING.search(URL.sub(url_out, line)):
+            found.append(line.strip())
+            continue
+        for sentence in ASK_SENTENCE.split(line):
+            if ASK_OPENER.search(sentence) or ASK_ANYWHERE.search(sentence) or "?" in URL.sub(url_out, sentence):
+                found.append(sentence.strip())
+    return [s for s in found if s]
+
+def unlinked(tool, given):
+    """The bare references of an ask: an AskUserQuestion's questions,
+    headers and options, or a wrap_up's ask and buttons, a URL in its recap
+    covering too, since its ask holds 100 characters."""
+    words = ask_words(tool, given)
+    covered = linked_numbers(words)
+    if tool == WRAP_UP and isinstance(given.get("recap"), str):
+        covered |= linked_numbers(given["recap"])
+    return bare_refs(words, covered)
+
+LINKS = (
+    "The owner opens an ask from the sidebar, the phone or the needs-you "
+    "band, where a number opens nothing. Write each issue, pull request or "
+    "comment as its full https://github.com/<owner>/<repo>/... URL: an issue "
+    "or pull request as .../issues/N or .../pull/N, a comment as "
+    ".../issues/N#issuecomment-M. A number that names nothing on GitHub "
+    "(a step, an option) reads as one: reword it (option 1, not #1). "
+)
+
 try:
     data = json.loads(sys.stdin.read() or "{}")
     path = data.get("transcript_path")
@@ -580,6 +682,40 @@ try:
         message = data.get("last_assistant_message")
         if data.get("stop_hook_active") is True or not isinstance(message, str):
             passes()
+        # An ask that names an issue, a pull request or a comment by number
+        # alone goes back first, read from the message as written: the turn
+        # goes on once to give the link. A URL anywhere in the message
+        # covers its number, since the owner sees the message whole. Like
+        # the nudge below, it comes before the research hold, which this
+        # continuation then skips.
+        covered = linked_numbers(message)
+        unlinked_asks = [(s, bare_refs(s, covered)) for s in asking_sentences(message)]
+        unlinked_asks = [(s, refs) for s, refs in unlinked_asks if refs]
+        if unlinked_asks:
+            refs = list(dict.fromkeys(r for _, refs in unlinked_asks for r in refs))
+            # An unreadable transcript only leaves the wrap_up hint out.
+            try:
+                with open(path) as handle:
+                    lines = handle.readlines()
+                filing = has_wrap_up(lines) and not asked_this_turn(lines)
+            except Exception:
+                filing = False
+            log({
+                "session": str(data.get("session_id") or os.path.basename(path)),
+                "via": STOP,
+                "questions": [{"question": s[:300], "options": []} for s, _ in unlinked_asks],
+                "refs": refs,
+                "outcome": "held: bare reference",
+            })
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": STOP, "additionalContext": (
+                "give the full link. Your closing message asks the owner about " + ", ".join(refs)[:200] +
+                " by number alone (" + " / ".join(s for s, _ in unlinked_asks)[:300] + "). " + LINKS +
+                "End the turn again with the ask rewritten, not the whole message" +
+                (", and call wrap_up first with it as ask, reply buttons as actions, and blocked: true "
+                 "if your work stops until they answer" if filing else "") +
+                ". If the sentence asks the owner nothing, end the turn again as it is."
+            )}}))
+            sys.exit(0)
         # A closing message that asks the owner, in a turn whose wrap_up
         # carried no ask: the app shows nothing to say the session waits, so
         # the turn goes on once to make the ask. It comes before the research
@@ -622,6 +758,26 @@ try:
         tool_input = data.get("tool_input")
         if tool not in (ASK, WRAP_UP) or not tool_input or not isinstance(tool_input, dict):
             passes()
+        # Any ask, a go-ahead or a declared kind included, names what it
+        # refers to by its full URL: refused before every pass below. The
+        # fix is always to hand, so nothing lets a repeat through.
+        refs = unlinked(tool, tool_input)
+        if refs:
+            log({
+                "session": str(data.get("session_id") or os.path.basename(path)),
+                "via": tool,
+                "tool_use_id": data.get("tool_use_id"),
+                "questions": asked(tool, tool_input),
+                "refs": refs,
+                "outcome": "held: bare reference",
+            })
+            print(
+                "BLOCKED: give the full link. This ask names " + ", ".join(refs)[:200] + " by number alone. " + LINKS +
+                ("The ask holds 100 characters: a URL in the recap covers its number too. " if tool == WRAP_UP else "") +
+                "Then ask again.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         if tool == WRAP_UP and not choice_shaped(tool_input):
             passes()
         questions = asked(tool, tool_input)

@@ -49,6 +49,16 @@ CASES = [
     ("exit", 0, "merging main into the branch allowed", "git fetch origin main && git merge origin/main"),
     ("exit", 0, "plain push after a merge allowed", "git merge origin/main && git push"),
     ("exit", 0, "plain push allowed", "git push origin main"),
+    # Deleting a branch rewrites no history: agents delete their own
+    # superseded or closed pull request branches (veda CLAUDE.md, Guards).
+    ("exit", 0, "deleting a remote branch allowed", "git push origin --delete claude/old-slice"),
+    ("exit", 0, "deleting a remote branch with -d allowed", "git push -d origin claude/old-slice"),
+    ("exit", 0, "deleting a remote branch by an empty source allowed", "git push origin :claude/old-slice"),
+    ("exit", 0, "deleting two remote branches allowed", "git push origin --delete claude/a claude/b"),
+    ("exit", 2, "a forced branch delete blocked", "git push --force origin --delete claude/old-slice"),
+    ("exit", 2, "a bundled -fd branch delete blocked", "git push -fd origin claude/old-slice"),
+    ("exit", 2, "a delete beside a + refspec blocked", "git push origin --delete claude/old-slice +main"),
+    ("exit", 2, "a delete beside --mirror blocked", "git push --mirror --delete origin"),
     ("exit", 2, "single force-push blocked", "git push --force origin dev"),
     ("exit", 2, "short -f force-push blocked", "git push -f origin dev"),
     ("exit", 2, "force-push blocked even when first segment is benign", "git status && git push --force origin dev"),

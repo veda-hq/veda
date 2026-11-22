@@ -1,6 +1,6 @@
 {
   "upstream": "origin/main",
-  "ignore": ["\\.test\\.tsx?$", "\\.d\\.ts$", "(^|/)fixtures?/"],
+  "ignore": ["\\.test\\.tsx?$", "\\.test\\.mjs$", "\\.d\\.ts$", "(^|/)fixtures?/"],
   "maxLines": 1500,
   "unsetEnv": [
     "GIT_DIR",
@@ -70,6 +70,16 @@
       "include": ["^packages/sarathi/src/"],
       "extensions": [".ts"],
       "maxLines": 1000,
+      "env": { "AGNIPARIKSHA_SUITES": "{suites}" }
+    },
+    {
+      "name": "scripts",
+      "cwd": "",
+      "config": "stryker/scripts.config.mjs",
+      "reuse": false,
+      "include": ["^scripts/[^/]+\\.mjs$"],
+      "exclude": ["^scripts/released-pins\\.mjs$"],
+      "extensions": [".mjs"],
       "env": { "AGNIPARIKSHA_SUITES": "{suites}" }
     }
   ],

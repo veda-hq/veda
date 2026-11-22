@@ -86,8 +86,16 @@ export function main(argv, { root = process.cwd(), git, stdout = process.stdout,
   return 0;
 }
 
-/* node:coverage disable */
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exitCode = main(process.argv.slice(2));
+/**
+ * The exit code of `node <argv[1]> …` when `argv[1]` is the module at `url`,
+ * or undefined when it is not (the module was imported). A suite calls it
+ * in-process, so a mutant that would run main on import, or never, dies there.
+ * @param {readonly string[]} argv
+ * @param {string} url
+ * @param {Parameters<typeof main>[1]} [options]
+ */
+export function entry(argv, url, options) {
+  return argv[1] && url === pathToFileURL(argv[1]).href ? main(argv.slice(2), options) : undefined;
 }
-/* node:coverage enable */
+
+process.exitCode = entry(process.argv, import.meta.url);

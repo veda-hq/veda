@@ -45,6 +45,9 @@ import { DEFAULT_CONFIG as DEFAULT_ESLINT_TARGETS, parseConfig as parseEslintTar
 import { DEFAULT_CONFIG as DEFAULT_ESLINT_BY_WORKSPACE, inheritEslint, lintByWorkspace, parseConfig as parseEslintByWorkspaceConfig, type EslintRunner } from './eslint-by-workspace.ts';
 import { parseLicenseConfig, pnpmLicenses, runLicenseCheck, type LicensesRunner } from './license-check.ts';
 import { BASELINE_PATH as CODEQL_BASELINE, runCodeqlBaseline } from './codeql-baseline.ts';
+import { type Commitlint, DEFAULT_PR_TITLE_CONFIG, loadCommitlint, parsePrTitleConfig, runPrTitle } from './pr-title.ts';
+import { type BpIo, bpRules as runBpRules, DISK as BP_DISK } from './bp-rules.ts';
+import { defaultDeps as provenanceDeps, ownProvenance as runOwnProvenance, type OwnProvenanceDeps } from './own-provenance.ts';
 
 export interface Io {
   readonly out: (line: string) => void;
@@ -73,6 +76,18 @@ export interface Io {
   readonly licenses?: LicensesRunner;
   /** The directory `.pariksha.json` is found from; the process's own by default. */
   readonly cwd?: () => string;
+  /** How pr-title gets commitlint and the config at a root; the peers beside pariksha by default. */
+  readonly commitlint?: (root: string) => Promise<Commitlint | string>;
+  /** How own-provenance reads files, loads Sigstore and asks the registry; the disk, the peers and npm's registry by default. */
+  readonly provenance?: Partial<Pick<OwnProvenanceDeps, 'readFile' | 'loadSigstore' | 'fetchJson'>>;
+  /** How bp-rules reads the corpus and the clock; the disk and the clock by default. */
+  readonly bp?: Partial<Pick<BpIo, 'reader' | 'exists' | 'now'>>;
+  /**
+   * Text written as it is, no line ending added: bp-rules' output, which
+   * `--regenerate-index > index.md` must give back byte for byte. Without
+   * it, the text goes to `out` and `err` a line at a time.
+   */
+  readonly write?: (stream: 'out' | 'err', text: string) => void;
 }
 
 /**
@@ -156,6 +171,7 @@ const USAGE = [
   '       pariksha absolute-paths [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
   '       pariksha aggregate-gate-needs [--config <file>] [--root <dir>]',
   '       pariksha boundary [--root <dir>] [--deny <file>]',
+  '       pariksha bp-rules (--inventory | --gaps | --due [--within <0..3650>] [--today <YYYY-MM-DD>] | --next-id <PREFIX> | --corpus-fingerprint | --check-wiring [--ids <a,b>] | --regenerate-index | --check-index) [--config <file>] [--root <dir>]',
   '       pariksha codec-registry --config <file> [--base <ref> | --no-base] [--root <dir>]',
   '       pariksha codeql-baseline (--check <results.sarif> | --write <results.sarif>) [--baseline <file>] [--root <dir>]',
   '       pariksha coverage-by-type [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
@@ -173,7 +189,9 @@ const USAGE = [
   '       pariksha license-check --config <file> [--report <file.json>] [--root <dir>]',
   '       pariksha masked-exit-codes [--config <file>] [--staged] [--root <dir>]',
   '       pariksha non-synced-resources [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
+  '       pariksha own-provenance --config <file> [--root <dir>]',
   '       pariksha pnpm-settings [--config <file>] [--root <dir>]',
+  '       PR_TITLE=<title> [PR_NUMBER=<n>] [HEAD_REF=<branch>] pariksha pr-title [--config <file>] [--root <dir>]',
   '       pariksha python-floor --python <interpreter> --floor-file <path> [--exclude <regex>] [--selector <path>] [--root <dir>]',
   '       pariksha regression-controls --config <file> [--staged] [--root <dir>]',
   '       pariksha repo-rules [--config <file>] [--staged | --base <ref> [--head <ref>] | --all | --files-from <file>|-] [--root <dir>]',
@@ -1075,6 +1093,71 @@ const regressionControls = (f: Map<string, string>, io: Io): number => {
   return result.ok ? 0 : 1;
 };
 
+/**
+ * pr-title: the title in PR_TITLE, against the commitlint config found from
+ * `--root` and the shape the settings give. Exit 1 on a title that fails;
+ * 2 on no title, bad settings, or no commitlint.
+ */
+const prTitle = async (f: Map<string, string>, io: Io, env: NodeJS.ProcessEnv): Promise<number> => {
+  const root = rootOf(f);
+  const config = unchecked('pariksha pr-title:', io, () => (f.has('--config') ? parsePrTitleConfig(configText(f, root)) : DEFAULT_PR_TITLE_CONFIG));
+  if (config === undefined) return 2;
+  const report = await runPrTitle(env, config, root, io.commitlint ?? loadCommitlint);
+  report.stdout.forEach(io.out);
+  report.stderr.forEach(io.err);
+  return report.code;
+};
+
+/** `text` on `stream` as it is; through `out` or `err` a line at a time when the Io writes no raw text. */
+const writeText = (io: Io, stream: 'out' | 'err', text: string): void => {
+  if (io.write !== undefined) {
+    io.write(stream, text);
+    return;
+  }
+  const lines = text.split('\n');
+  // The line ending `out` and `err` add stands in for the last one.
+  if (text.endsWith('\n')) lines.pop();
+  if (text !== '') lines.forEach(stream === 'out' ? io.out : io.err);
+};
+
+/**
+ * bp-rules: one mode over the best-practice rule corpus and its index, both
+ * named by the settings. Exit 1 on a failed check (--check-wiring,
+ * --check-index) or rules --regenerate-index could not place; 2 on a usage
+ * error, no settings or bad ones, or a read that failed.
+ */
+const bpRules = (f: Map<string, string>, io: Io): number => {
+  if (!f.has('--config')) {
+    io.err(`pariksha bp-rules: no settings: name a settings file with --config or set checks.bp-rules in ${CONFIG_FILE}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+  const root = rootOf(f);
+  const settings = unchecked('pariksha bp-rules:', io, () => configText(f, root));
+  if (settings === undefined) return 2;
+  const result = runBpRules(f, settings, { reader: BP_DISK, exists: existsSync, now: () => new Date(), ...io.bp, root });
+  writeText(io, 'out', result.stdout);
+  writeText(io, 'err', result.stderr);
+  return result.code;
+};
+
+/**
+ * own-provenance: each package of the settings' scope the lockfile under
+ * `--root` resolves, against its npm provenance. Its lines carry the
+ * `own-provenance:` prefix of the script it replaces. Exit 1 on a package
+ * that is not the repository's signed build or could not be checked; 2 on
+ * no settings or bad ones.
+ */
+const ownProvenance = async (f: Map<string, string>, io: Io): Promise<number> => {
+  if (!f.has('--config')) {
+    io.err(`own-provenance: no settings: name a settings file with --config or set checks.own-provenance in ${CONFIG_FILE}; nothing was checked, so this is not a pass`);
+    return 2;
+  }
+  const root = rootOf(f);
+  const settings = unchecked('own-provenance:', io, () => configText(f, root));
+  if (settings === undefined) return 2;
+  return runOwnProvenance(settings, root, { ...provenanceDeps, ...io.provenance, out: io.out, err: io.err });
+};
+
 /** `rest` split into its `--name value` pairs and the bare words around them, the files a command names. */
 export const splitFiles = (rest: readonly string[]): { flagArgs: string[]; files: string[] } => {
   const flagArgs: string[] = [];
@@ -1183,11 +1266,14 @@ const COMMANDS: Record<string, { allowed: readonly string[]; switches?: readonly
   'absolute-paths': { allowed: ['--config', '--files-from', '--base', '--head', '--root'], switches: ['--staged', '--all'], run: absolutePaths },
   'aggregate-gate-needs': { allowed: ['--config', '--root'], run: aggregateGateNeeds },
   'non-synced-resources': { allowed: ['--config', '--files-from', '--base', '--head', '--root'], switches: ['--staged', '--all'], run: nonSyncedResources },
+  'own-provenance': { allowed: ['--config', '--root'], run: ownProvenance },
   'pnpm-settings': { allowed: ['--config', '--root'], run: pnpmSettings },
+  'pr-title': { allowed: ['--config', '--root'], run: prTitle },
   'python-floor': { allowed: ['--python', '--floor-file', '--exclude', '--selector', '--root'], run: pythonFloor },
   'regression-controls': { allowed: ['--config', '--root'], switches: ['--staged'], run: regressionControls },
   'authority-citations': { allowed: ['--mode', '--authority', '--issue-prefix', '--adr-dir', '--root'], run: authorityCitations },
   boundary: { allowed: ['--root', '--deny'], run: boundary },
+  'bp-rules': { allowed: ['--within', '--today', '--next-id', '--ids', '--config', '--root'], switches: ['--inventory', '--gaps', '--due', '--corpus-fingerprint', '--check-wiring', '--regenerate-index', '--check-index'], run: bpRules },
   'coverage-by-type': { allowed: ['--config', '--files-from', '--base', '--head', '--root'], switches: ['--staged', '--all'], run: coverageByType },
   'doc-budgets': { allowed: ['--table', '--section', '--root'], run: docBudgets },
   'doc-references': { allowed: ['--config', '--base', '--head', '--checks', '--root'], switches: ['--staged', '--all', '--update-baseline', '--write-baseline'], run: docReferences },
@@ -1269,7 +1355,7 @@ const projectApplied = (command: string, f: Map<string, string>, io: Io, env: No
     return true;
   }) === true;
 
-/** The exit code; a Promise of it for the one check that is asynchronous (enforcement-claims, which loads ESLint). */
+/** The exit code; a Promise of it for the checks that are asynchronous (those that load an optional peer: enforcement-claims, own-provenance, pr-title). */
 export const run = (args: readonly string[], io: Io, version: string = ownVersion(), env: NodeJS.ProcessEnv = process.env): number | Promise<number> => {
   const [command, ...rest] = args;
   if (command === '--version' && rest.length === 0) {
@@ -1308,6 +1394,9 @@ export const run = (args: readonly string[], io: Io, version: string = ownVersio
 export const consoleIo: Io = {
   out: (line) => console.info(line),
   err: (line) => console.error(line),
+  write: (stream, text) => {
+    (stream === 'out' ? process.stdout : process.stderr).write(text);
+  },
 };
 
 /**

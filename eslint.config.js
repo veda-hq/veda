@@ -20,4 +20,17 @@ export default [
       'shuddhi/no-direct-child-process': 'off',
     },
   },
+  // agnipariksha doesn't count Ignored mutants, so a `// Stryker disable`
+  // comment would take its file's mutants out of the gate (#326). The rule
+  // refuses the comment. noInlineConfig refuses every way a comment could
+  // turn the rule off again (`eslint-disable…`, `/* eslint rule: off */`):
+  // an exception goes here or in eslint-suppressions.json, both code-owner
+  // paths.
+  {
+    files: CODE,
+    linterOptions: { noInlineConfig: true },
+    rules: {
+      'no-warning-comments': ['error', { terms: ['stryker disable'], location: 'start' }],
+    },
+  },
 ];

@@ -67,6 +67,11 @@ cannot prove a command, it treats it as writing, and from outside an owned
 worktree that refuses. An expansion that could become an option (`git log
 $X`, where `X=--output=/elsewhere`) leaves the command unproven.
 
+A proven read also passes from a folder no git repository holds, where the
+guard finds no checkout at all, such as `pwd`, `cat *.md` or a bare
+`cd <worktree>`, the way back for a shell left there. Everything else from such a folder is
+refused, Edit and Write included, quoting git's reason and naming the folder.
+
 `pnpm exec` and `pnpm run` run in the folder one selector before them names:
 `--dir`/`-C <folder>`, or `--filter`/`-F` with a folder (`./apps/server`)
 or one workspace package's name, with or without its scope. So a path after
@@ -563,19 +568,21 @@ session at once: in `"warn"` the call runs and the agent reads the reason
 warnings share one answer), and once the project sets `"refuse"` the guard
 exits 2 with it. Every fire, in either mode, is a row of the refusal log
 naming the rule and the mode, so a trial's rows can be read for wrong fires
-before the switch. While a rule warns, an error in its own detection allows
+before the switch. A finding whose call would leave the session where a
+warning cannot help in time refuses in either mode, and its row says `refuse`. While a rule warns, an error in its own detection allows
 the call and logs a row naming the error's type; refusing, it fails closed.
 
 | Rule | Guard | Fires on |
 | --- | --- | --- |
 | `pipe-masks-exit` | command | A pipeline ending in `tail` or `head` joined by `&&` to `git push` (`pnpm test \| tail && git push` pushes after a failure), unless the line sets `pipefail`. |
-| `cd-out-of-worktree` | command | A literal top-level `cd` or `pushd` to a folder outside the session's checkout (the git work tree of the call's folder; a clone nested inside it counts as inside), naming a peer worktree when it is one. The shell keeps that folder, and the guards then refuse every write, the `cd` back included. A `cd` in a subshell or a pipeline, `cd -` and a computed target are not judged. |
+| `cd-out-of-worktree` | command | A literal top-level `cd` or `pushd` to a folder outside the session's checkout (the git work tree of the call's folder; a clone nested inside it counts as inside), naming a peer worktree when it is one. The shell keeps that folder, and the guards then refuse every write until a `cd` back. A target folder in no git repository refuses whatever the rule's mode: from there the worktree guard runs reads only. When the shell is already in a checkout the worktree guard takes as no session's own (another repository, or a main checkout other than the `worktree.ownCheckout` clone), a `cd` into one it does take as a session's own (a worktree under `.claude/worktrees`, or the `worktree.ownCheckout` clone) passes: that is the way back. In a desktop app session, the app's record of the session names its worktree (`worktreePath`, or else `cwd`). The record counts only when `CLAUDE_CODE_HOST_SESSION_ID` names it and its `cliSessionId` is the call's `session_id`, and its path only when that path is the root of a checkout a session can own. A `cd` into that worktree then passes from anywhere, another session's worktree included, and a finding names it as the session's. Without such a record, the rule judges as above. A `cd` in a subshell or a pipeline, `cd -` and a computed target are not judged. |
 | `stryker-inplace` | command, tool | `stryker` run with `--inPlace`, and a Write or Edit that sets `inPlace: true` in a Stryker config (`stryker[.<name>].conf[ig].{js,mjs,cjs,ts,mts,cts,json}`). |
 | `checkout-discards-uncommitted` | command | `git checkout -- <path>`, `git checkout <ref> -- <path>`, `git checkout --ours\|--theirs <path>` and `git restore <path>` (not `--staged` alone) when `git status` shows the path with uncommitted changes. |
 | `commit-body-ref-line-length` | command | A `git commit` whose message (`-m` paragraphs, or the `-F` file) has a body line over 100 characters holding `#<number>`: commitlint reads it as a footer and fails `footer-max-line-length`. |
 | `case-fold-path-collision` | tool | A Write to a name absent from its folder that differs only by letter case from a file there: on a case-insensitive filesystem it overwrites that file. |
 | `routine-sources-shape` | tool | A RemoteTrigger `create` or `update` whose `job_config.ccr.session_context.sources` has an entry without a `git_repository` object, which the API accepts and drops. |
 | `sync-base-on-origin` | tool | The desktop app's `mcp__ccd_host__sync_with_base_branch` with no `base` (it then merges the branch the worktree was first cut from, which may be deleted), or a `base` with no `refs/remotes/origin/<base>` in the checkout. |
+| `other-sessions-worktree` | worktree | A write (Bash, Edit, Write, NotebookEdit, a trusted or reviewed command included) that the worktree guard admits in a managed worktree, when the shell's worktree is another live session's. In a desktop app session, the app's record of this session names its worktree (as for `cd-out-of-worktree`). The rule fires only when that worktree is not the shell's and another record, not archived, names the shell's worktree as its `cwd`. So a worktree shared with the session that started this one passes, and so do one the session made itself and a subagent's `agent-*` worktree, since no other record names them. With no record (a CLI session), or one that does not match, nothing fires. A record that cannot be read names nobody, so in either mode it fires nothing and logs no row: an empty trial log does not prove the records were read. The finding names both worktrees and the `cd` back. Reads never fire. |
 | `workflow-name-in-worktree` | tool | `Workflow({name})` without `scriptPath` from a linked worktree whose `.claude/workflows/<name>.*` differs from the main checkout's, which is what runs. |
 
 The last two tools' names and fields are as recorded from real calls; the

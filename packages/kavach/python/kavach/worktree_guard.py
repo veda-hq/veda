@@ -21,6 +21,12 @@ Two more folders outside every checkout belong to one session, and from its
 owned checkout it may write them (``SessionFolders``): its scratchpad in
 Claude Code's temp folder, named by the payload's ``session_id``, and the
 side-session notes folders the desktop app granted it.
+
+A managed worktree passes the gate, but not silently when it is another live
+session's (rule ``other-sessions-worktree``, veda#363). That is the case when
+the desktop app's record of this session names a different worktree and
+another record, not archived, names this one. It warns until the consumer's
+``rules`` set it to refuse.
 """
 
 from __future__ import annotations
@@ -127,6 +133,9 @@ boundary = load_boundary(HERE / "boundary.py")
 config = load_config(HERE / "config.py")
 refusal_log = load_module("kavach_worktree_refusal_log", HERE / "refusal_log.py")
 clone_writers = load_module("kavach_worktree_clone_writers", HERE / "clone_writers.py", register=True)
+# For the trial-mode reading and warning every rule shares (`mode_of`,
+# `context`, `answer`); none of them loads a module of its own.
+rules = load_module("kavach_worktree_rules", HERE / "rules.py", register=True)
 
 
 def settings() -> Any:
@@ -261,17 +270,15 @@ def claude_memory_root(primary: Path) -> Path | None:
     return resolved
 
 
-# A Claude Code session id, as the PreToolUse payload's `session_id` carries
-# it, and a desktop app session (`CLAUDE_CODE_HOST_SESSION_ID`). Each is
-# matched whole before it names a folder, so neither can carry a `..` or a `/`.
-SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-HOST_SESSION = re.compile(r"local_" + SESSION_ID.pattern)
+# The session ids and the desktop app's record of a session live in
+# boundary.py, which the cd-out-of-worktree rule reads them from too.
+SESSION_ID = boundary.SESSION_ID
+HOST_SESSION = boundary.HOST_SESSION
+claude_app_root = boundary.claude_app_root
+session_record = boundary.session_record
 # One folder name in Claude Code's per-project temp folder (a slug of the
 # project's path).
 PROJECT_SLUG = re.compile(r"[A-Za-z0-9_-]{1,255}")
-# The desktop app's record of a session is a few hundred KB; past this it is
-# not read.
-RECORD_LIMIT = 8 * 1024 * 1024
 
 
 def claude_temp_root(environ: Mapping[str, str]) -> Path | None:
@@ -291,12 +298,6 @@ def real_directory(path: Path) -> bool:
     """A directory that is not a symlink."""
 
     return not path.is_symlink() and path.is_dir()
-
-
-def claude_app_root() -> Path:
-    """The desktop app's support folder, where it keeps session notes."""
-
-    return Path.home() / "Library" / "Application Support" / "Claude"
 
 
 def notes_root() -> Path:
@@ -393,25 +394,6 @@ class SessionFolders:
         if not boundary.is_inside(resolved, notes_root()):
             return False
         return any(boundary.is_inside(resolved, folder) for folder in self.notes())
-
-
-def session_record(app: Path, host: str) -> dict[str, Any] | None:
-    """The desktop app's record of session ``host``, when exactly one is
-    found (``claude-code-sessions/<account>/<org>/<host>.json``)."""
-
-    found = list((app / "claude-code-sessions").glob(f"*/*/{host}.json"))
-    if len(found) != 1:
-        return None
-    path = found[0]
-    try:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > RECORD_LIMIT:
-            return None
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, RecursionError):
-        return None
-    if not isinstance(record, dict) or record.get("sessionId") != host:
-        return None
-    return record
 
 
 def granted_notes(record: dict[str, Any], notes: Path) -> list[str]:
@@ -1212,31 +1194,6 @@ def refuse_during_push(tool: object, targets: list[Path], root: Path) -> None:
     )
 
 
-def owns_plain_checkout(
-    own: Any, root: Path, environ: Mapping[str, str]
-) -> bool:
-    """Whether the plain (unlinked) checkout at ``root`` is this session's own.
-
-    Only with the consumer's `worktree.ownCheckout`, only where the hook's own
-    environment holds one of its values for every variable it names, and only
-    for the checkout the session was started in (``CLAUDE_PROJECT_DIR``), so a
-    session that changes directory into another clone gains nothing there. The
-    environment is the hook's, which no tool call can change.
-    """
-
-    if own is None:
-        return False
-    if not all(environ.get(name) in values for name, values in own.env):
-        return False
-    project = environ.get("CLAUDE_PROJECT_DIR", "")
-    if not project:
-        return False
-    try:
-        return Path(project).resolve(strict=True) == root.resolve()
-    except OSError:
-        return False
-
-
 # A place inside an owned plain clone that stays refused, and what to say.
 Fence = tuple[Path, str]
 
@@ -1443,6 +1400,80 @@ def reviewed(
     return False
 
 
+OTHER_SESSIONS_WORKTREE = config.OTHER_SESSIONS_WORKTREE_RULE
+
+
+def other_sessions_worktree(
+    session_id: object, root: Path, loaded: Any, environ: Mapping[str, str]
+) -> str | None:
+    """Why a write from ``root`` is in another session's worktree, or None.
+
+    It fires only when both hold (veda#363):
+
+    - the desktop app's record of this session names its worktree
+      (``boundary.session_worktree``, the record #362's rule trusts), and that
+      worktree is not ``root``;
+    - another record, not archived, names ``root`` as its ``cwd``
+      (``boundary.worktree_owners``).
+
+    So a worktree shared with the session that started this one passes (this
+    session's own record names it). So do a worktree the session made itself
+    and a subagent's ``agent-*`` worktree, since no other record names them.
+    With no record, or one that does not match, nothing fires. Both readers
+    never raise, so on any failure nothing fires either."""
+
+    own = boundary.session_worktree(session_id, loaded.own_checkout, environ)
+    if own is None or own.resolve() == root.resolve():
+        return None
+    owners = boundary.worktree_owners(root, environ.get("CLAUDE_CODE_HOST_SESSION_ID", ""))
+    if not owners:
+        return None
+    if len(owners) == 1:
+        sessions, whose = "another live session works", "that session's"
+    else:
+        sessions, whose = f"{len(owners)} other live sessions work", "their"
+    return (
+        f"the shell is in worktree {root.name}, which {sessions} in; this session's is "
+        f"{own.name}. A write here changes {whose} files and branch. Run "
+        f"`cd {shlex.quote(str(own))}` alone to return, then retry (the shell is in {root})."
+    )
+
+
+def judge_other_sessions_worktree(
+    data: dict[str, object], root: Path, loaded: Any, environ: Mapping[str, str]
+) -> str | None:
+    """Run ``other_sessions_worktree`` in its mode: refusing, deny; warning,
+    log the fire and return the answer to print once the call is allowed.
+
+    While it warns, an error in it allows the call and logs a row naming the
+    error's type; once it refuses, the error refuses too (``run``)."""
+
+    mode, refuses_from = rules.mode_of(loaded, OTHER_SESSIONS_WORKTREE)
+    try:
+        message = other_sessions_worktree(data.get("session_id"), root, loaded, environ)
+    except Exception as error:
+        if mode == "refuse":
+            raise
+        message = None
+        refusal_log.record(
+            "worktree",
+            json.dumps(data),
+            f"WARNING: the {OTHER_SESSIONS_WORKTREE} check failed ({type(error).__name__}), "
+            "so it did not judge this call; the call was allowed.",
+            rule=OTHER_SESSIONS_WORKTREE,
+            mode=mode,
+        )
+    if message is None:
+        return None
+    fire = rules.Fire(OTHER_SESSIONS_WORKTREE, mode, message, refuses_from)
+    if mode == "refuse":
+        refusal_log.label(OTHER_SESSIONS_WORKTREE, mode)
+        print(rules.refusal([fire]), file=sys.stderr)
+        raise SystemExit(2)
+    refusal_log.record("worktree", json.dumps(data), f"WARNING: {message}", rule=OTHER_SESSIONS_WORKTREE, mode=mode)
+    return rules.answer([rules.context(fire)])
+
+
 def main() -> None:
     # First, so a misread settings file refuses every event, a read-only one
     # included.
@@ -1452,13 +1483,27 @@ def main() -> None:
     cwd = Path(data.get("cwd") or Path.cwd()).resolve()
     state = boundary.checkout_state(cwd)
     if not state:
+        # A proven read needs no checkout: it already runs from any checkout,
+        # owned or not, before ownership is asked. Admitting it here keeps
+        # the way back open for a shell Claude Code left in a folder no
+        # repository holds (an additional working directory, after a `cd`
+        # there): `cd <worktree>` is a read. Before this, every call from such
+        # a folder was refused, the `cd` back included, for the rest of the
+        # session (veda#335).
+        if data.get("tool_name") == "Bash":
+            values = data.get("tool_input")
+            command = boundary.tool_command(values) if isinstance(values, dict) else ""
+            if command and boundary.shell_is_read_only(command):
+                return
         # Quote git rather than paraphrase it. This denial fires for every
         # Bash, Edit and Write call, so a git that is broken for an unrelated
         # reason presents as a total ownership failure and sends the session
         # after its worktree instead of after the actual fault.
         boundary.deny(
             "cannot determine this session's repository checkout: "
-            f"{boundary.checkout_failure(cwd)}"
+            f"{boundary.checkout_failure(cwd)}. The shell is in {cwd}; reads still "
+            "run from there, and only they. If that folder is outside your "
+            "worktree, run `cd <your worktree>` alone to return, then retry"
         )
     root, linked, primary = state
     tool = data.get("tool_name")
@@ -1500,11 +1545,21 @@ def main() -> None:
     # that a worktree session finds outside its own (`clone_fences`) stay
     # refused as targets.
     fences: tuple[Fence, ...] = ()
-    clone = not linked and owns_plain_checkout(loaded.own_checkout, root, os.environ)
+    clone = not linked and boundary.owns_plain_checkout(loaded.own_checkout, root, os.environ)
     if clone:
         fences = clone_fences(root, loaded.own_checkout, os.environ)
     elif not linked or not boundary.is_claude_managed(root, primary):
         boundary.deny(not_owned(tool, values, cwd, targets, segments, loaded.push_hosts))
+    # A managed worktree passes the gate, but another live session's does not
+    # pass silently (veda#363): on trial it warns once the call is allowed,
+    # refusing it denies here. Before the trusted and reviewed returns, so it
+    # judges them too.
+    warning = None if clone else judge_other_sessions_worktree(data, root, loaded, os.environ)
+
+    def allow() -> None:
+        if warning is not None:
+            print(warning)
+
     # The consumer's `protectedPaths` hold in either kind of owned checkout.
     fences += protected_fences(root, loaded)
     way_out = CLONE_WAY_OUT if clone else WORKTREE_WAY_OUT
@@ -1515,10 +1570,12 @@ def main() -> None:
         # ownership above. What it writes is unproven, so it counts as
         # writing in the checkout while a push runs.
         refuse_during_push(tool, [root], root)
+        allow()
         return
     if tool == "Bash" and reviewed(
         boundary.tool_command(values), cwd, root, primary, loaded.reviewed_clis, fences, way_out
     ):
+        allow()
         return
     if targets is None:
         boundary.deny(unresolved(tool, values, cwd, loaded.push_hosts))
@@ -1550,6 +1607,7 @@ def main() -> None:
         if reason is not None:
             boundary.deny(reason)
     refuse_during_push(tool, targets, root)
+    allow()
 
 
 def run() -> None:

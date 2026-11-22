@@ -36,12 +36,15 @@ const optionalString = (v: unknown, where: string): string | undefined => {
   throw new Error(`lychee's report: ${where} is not a string`);
 };
 
+/** A 1-based line number. `Number.isSafeInteger` refuses any other type. */
+const isLineNumber = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 1;
+
 /** The part of lychee's `--format json` report read here (`error_map`); the rest is ignored. */
 const errorMap = (report: string): Array<[string, LycheeEntry[]]> => {
   const parsed: unknown = JSON.parse(report);
   if (!isRecord(parsed)) throw new Error("lychee's report is not a JSON object");
-  const map = parsed['error_map'];
-  if (map === undefined) return [];
+  // A clean run may leave error_map out; a null one is out of shape.
+  const { error_map: map = {} } = parsed;
   if (!isRecord(map)) throw new Error("lychee's report: error_map is not an object");
   return Object.entries(map).map(([source, entries]) => {
     if (!Array.isArray(entries)) throw new Error(`lychee's report: error_map["${source}"] is not a list`);
@@ -55,7 +58,7 @@ const errorMap = (report: string): Array<[string, LycheeEntry[]]> => {
         if (status !== undefined && !isRecord(status)) throw new Error(`lychee's report: ${where}.status is not an object`);
         if (span !== undefined && !isRecord(span)) throw new Error(`lychee's report: ${where}.span is not an object`);
         const line = span?.['line'];
-        if (line !== undefined && (typeof line !== 'number' || !Number.isSafeInteger(line) || line < 1)) throw new Error(`lychee's report: ${where}.span.line is not a positive integer`);
+        if (line !== undefined && !isLineNumber(line)) throw new Error(`lychee's report: ${where}.span.line is not a positive integer`);
         return { url: optionalString(entry['url'], `${where}.url`), status: optionalString(status?.['text'], `${where}.status.text`) ?? '', line };
       }),
     ];
@@ -121,28 +124,39 @@ export const lycheeRunner =
       maxBuffer: 256 * 1024 * 1024,
     });
     if (result.error !== undefined) {
-      if ((result.error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`${command} is not installed; the link check needs lychee (https://lychee.cli.rs)`);
-      throw result.error;
+      const code = (result.error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') throw new Error(`${command} is not installed; the link check needs lychee (https://lychee.cli.rs)`);
+      // EPIPE: lychee exited before it read the whole list. Its status and
+      // stderr say why, so they are reported, not the pipe. A status that
+      // would pass is no pass: lychee did not see every file.
+      if (code !== 'EPIPE') throw result.error;
+      if (result.status === 0 || result.status === 2) throw new Error(`lychee exited ${String(result.status)} before it read its file list, so not every file was checked: ${result.stderr}`);
     }
     // 0: every link resolves; 2: some do not, listed in the report.
     if (result.status !== 0 && result.status !== 2) throw new Error(`lychee exited ${String(result.status)}: ${result.stderr}`);
     return result.stdout;
   };
 
+/** Runs `file` in `cwd`; its stderr goes into the error it throws, not to this process's stderr. */
+const quietly = (file: string, args: readonly string[], cwd: string): void => {
+  execFileSync(file, args, { cwd, env: gitEnv(process.env), stdio: 'pipe' });
+};
+
 /** A directory holding the snapshot's tree, and how to let it go. */
 export const treeFor = (snapshot: RepoSnapshot): { dir: string; release: () => void } => {
   if (snapshot.source.kind !== 'ref') return { dir: snapshot.root, release: () => undefined };
   const dir = mkdtempSync(join(tmpdir(), 'doc-links-'));
+  const release = (): void => rmSync(dir, { recursive: true, force: true });
   try {
     const tar = join(dir, '.tree.tar');
-    execFileSync('git', [...PINNED, 'archive', '-o', tar, snapshot.source.ref], { cwd: snapshot.root, env: gitEnv(process.env), stdio: 'pipe' });
-    execFileSync('tar', ['-xf', tar, '-C', dir], { stdio: 'pipe' });
+    quietly('git', [...PINNED, 'archive', '-o', tar, snapshot.source.ref], snapshot.root);
+    quietly('tar', ['-xf', tar, '-C', dir], dir);
     rmSync(tar);
   } catch (e) {
-    rmSync(dir, { recursive: true, force: true });
+    release();
     throw e;
   }
-  return { dir, release: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, release };
 };
 
 /**
@@ -167,23 +181,21 @@ export const findLinkProblems = (config: Config, snapshot: RepoSnapshot, files: 
   const asked = new Set(docs);
   const kept = findings.filter((finding) => {
     if (!asked.has(finding.file)) return false;
-    const text = snapshot.read(finding.file)?.split('\n')[finding.line - 1];
-    if (text !== undefined && config.exemptMarker.test(text)) return false;
+    // A line past the doc's end, or a doc the snapshot lacks, has no text to exempt it.
+    if (snapshot.read(finding.file)?.split('\n')[finding.line - 1]?.match(config.exemptMarker)) return false;
     return !config.placeholder.test(finding.ref);
   });
-  const targetOf = (finding: LinkFinding): string | null => {
-    const path = finding.ref.replace(/#.*$/, '');
-    return path === '' ? null : normalizeRepoPath(posix.join(posix.dirname(finding.file), path));
-  };
-  const targets = kept.flatMap((finding) => {
-    const target = targetOf(finding);
+  // What the ignore rules are asked about for a finding: its target as a file
+  // and as a directory. An anchor in its own doc has no target, and no ignore
+  // rule covers a target outside the repository, so neither is asked about.
+  const askedFor = (finding: LinkFinding): string[] => {
+    const path = finding.ref.replace(/#.*/, '');
+    if (path === '') return [];
+    const target = normalizeRepoPath(posix.join(posix.dirname(finding.file), path));
     return target === null ? [] : [target, `${target}/`];
-  });
-  const ignored = snapshot.ignored([...new Set(targets)]);
+  };
+  const ignored = snapshot.ignored([...new Set(kept.flatMap(askedFor))]);
   return kept
-    .filter((finding) => {
-      const target = targetOf(finding);
-      return target === null || (!ignored.has(target) && !ignored.has(`${target}/`));
-    })
+    .filter((finding) => !askedFor(finding).some((path) => ignored.has(path)))
     .map((finding) => ({ check: 'DOC-DRIFT-01' as const, file: finding.file, line: finding.line, ref: finding.ref, reason: finding.reason }));
 };

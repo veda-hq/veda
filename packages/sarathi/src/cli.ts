@@ -11,10 +11,14 @@
  * one-off `claude -p` session (`page/page.ts`).
  *
  * `sarathi worktree`: the worktree lifecycle (`worktree/lifecycle.ts`), and
- * `sarathi worktree hook`, its archive guard (`worktree/hook.ts`).
+ * `sarathi worktree hook`, its archive guard (`worktree/hook.ts`), and
+ * `sarathi worktree pick`, the interactive picker (`worktree/pick.ts`), and
+ * `sarathi worktree cleanup`, which frees the disk worktrees and their
+ * tooling leave behind (`worktree/cleanup.ts`).
  *
  * `sarathi services`: the worktree's local services (`services/main.ts`), and
- * `sarathi services reap`, the sweep of deleted worktrees' services.
+ * `sarathi services reap`, the sweep of deleted worktrees' services, and
+ * `sarathi services prune`, the hourly Docker sweep (`services/prune.ts`).
  */
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -25,8 +29,10 @@ import { autofixCommand } from './hooks/autofix.ts';
 import { main as page } from './page/page.ts';
 import { runAll, type Outcome } from './run.ts';
 import { servicesMain } from './services/main.ts';
+import { cleanupMain } from './worktree/cleanup.ts';
 import { hookMain } from './worktree/hook.ts';
 import { lifecycleMain } from './worktree/lifecycle.ts';
+import { pickMain } from './worktree/pick.ts';
 import { parseSettings, SettingsError } from './worktree/settings.ts';
 
 export interface Io {
@@ -36,11 +42,16 @@ export interface Io {
   readonly readStdin: () => Promise<string>;
   readonly out: (text: string) => void;
   readonly err: (text: string) => void;
+  /**
+   * Shows a prompt on stderr and resolves the line typed, for `worktree pick`.
+   * Without one, the first line of stdin answers.
+   */
+  readonly ask?: (prompt: string) => Promise<string>;
   /** Runs handlers; replaced in tests. */
   readonly run?: (entries: Parameters<typeof runAll>[0], config: Config, input: string, cwd: string) => Promise<Outcome[]>;
 }
 
-export const VERSION = '0.7.8';
+export const VERSION = '0.8.0';
 
 const USAGE = `usage: sarathi hook <Event> [--config <file>]
        sarathi check [--config <file>] [--settings <file>]
@@ -52,9 +63,12 @@ const USAGE = `usage: sarathi hook <Event> [--config <file>]
        sarathi autofix list [--session <id>]
        sarathi worktree status|archive-check|begin --branch <name>|retire --pr <n> [--branch <successor>]
        sarathi worktree hook
+       sarathi worktree pick [--shell]
+       sarathi worktree cleanup [--dry-run]
        sarathi services up|down|status|web|server|<action> [args]
        sarathi services run -- <command>
        sarathi services reap
+       sarathi services prune install|run|run-now|status|uninstall [--dry-run] [--docker <path>] [--settings <file>]
        sarathi --version
 `;
 
@@ -295,6 +309,16 @@ export async function main(io: Io): Promise<number> {
   if (io.argv[0] === 'autofix') return autofixCommand(io.argv.slice(1), { ...io, now: () => new Date() });
   if (io.argv[0] === 'worktree') {
     if (io.argv[1] === 'hook' && io.argv.length === 2) return hookMain(await io.readStdin(), io.out);
+    if (io.argv[1] === 'pick') {
+      const ask =
+        io.ask ??
+        (async (prompt: string): Promise<string> => {
+          io.err(prompt);
+          return (await io.readStdin()).split('\n')[0] ?? '';
+        });
+      return pickMain(io.argv.slice(2), { ...io, ask });
+    }
+    if (io.argv[1] === 'cleanup') return cleanupMain(io.argv.slice(2), io);
     return lifecycleMain(io.argv.slice(1), io);
   }
   if (io.argv[0] === 'services') return servicesMain(io.argv.slice(1), io);

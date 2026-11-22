@@ -17,6 +17,8 @@ PACKAGE = HERE.parent / "kavach"
 sys.path.insert(0, str(PACKAGE))
 import refusal_log  # noqa: E402
 
+from .outside import run_outside  # noqa: E402
+
 GIT_ENV = {
     key: value for key, value in os.environ.items() if not key.startswith("GIT_")
 } | {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
@@ -32,6 +34,10 @@ class RefusalLogTest(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {"KAVACH_REFUSAL_LOG_OFF": ""})
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Logging runs in this process: under a mutant that drops the event's
+        # cwd, it logs to this cwd's repository, so the cwd is outside every
+        # repository (#387).
+        run_outside(self)
         self.log = self.repo / ".git" / "kavach" / refusal_log.FILE
 
     def event(self, **fields: object) -> str:
@@ -113,6 +119,67 @@ class RefusalLogTest(unittest.TestCase):
             [(row["guard"], row["reason"], row["excerpt"]) for row in self.rows()],
             [("worktree", "BLOCKED: by exit", "rm x"), ("command", "BLOCKED: by return", "git push -f")],
         )
+
+    def test_an_excerpt_is_the_first_200_characters(self) -> None:
+        text = "".join(chr(ord("a") + index % 26) for index in range(300))
+        self.assertEqual(refusal_log.excerpt({"command": text}), text[:200])
+        refusal_log.record("command", self.event(), "BLOCKED: " + text)
+        (row,) = self.rows()
+        self.assertEqual(row["reason"], ("BLOCKED: " + text)[:200])
+
+    def test_a_row_keeps_text_that_is_not_ascii_as_utf8(self) -> None:
+        refusal_log.record("command", self.event(tool_input={"command": "echo café"}), "BLOCKED: déjà")
+        text = self.log.read_text(encoding="utf-8")
+        self.assertEqual((text.count("café"), text.count("déjà"), text.count("\\u")), (1, 1, 0))
+
+    def test_the_log_folder_is_made_with_its_parents(self) -> None:
+        folder = self.repo / ".git" / "missing" / "kavach"
+        with mock.patch.object(refusal_log, "log_dir", return_value=folder):
+            refusal_log.record("command", self.event(), "BLOCKED: x")
+        self.assertEqual(len((folder / refusal_log.FILE).read_text(encoding="utf-8").splitlines()), 1)
+
+    def test_git_is_asked_once_with_a_timeout_and_its_failure_read(self) -> None:
+        def answer(returncode: int, stdout: str) -> tuple[Path | None, mock.MagicMock]:
+            run = mock.MagicMock(return_value=subprocess.CompletedProcess([], returncode, stdout, ""))
+            with mock.patch.object(subprocess, "run", run):
+                return refusal_log.log_dir(str(self.repo)), run
+
+        found, run = answer(0, "/common\n")
+        self.assertEqual(found, Path("/common", "kavach"))
+        run.assert_called_once_with(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=str(self.repo),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        # A git that fails says nothing usable, whatever it printed.
+        for returncode in (1, -1, 128):
+            with self.subTest(returncode=returncode):
+                self.assertIsNone(answer(returncode, "/common\n")[0])
+        self.assertIsNone(answer(0, "\n")[0])
+
+    def test_guarded_logs_only_an_exit_or_a_return_of_2(self) -> None:
+        def end(code: object) -> None:
+            sys.stderr.write("BLOCKED: %r\n" % (code,))
+            raise SystemExit(code)
+
+        with mock.patch.object(sys, "stdin", io.StringIO(self.event())), mock.patch.object(sys, "stderr", io.StringIO()):
+            for code in (0, 1, 3, None, "2"):
+                with self.subTest(code=code):
+                    with self.assertRaises(SystemExit):
+                        refusal_log.guarded("command", lambda: end(code), self.event)
+            for result in (0, 1, 3, "2"):
+                with self.subTest(result=result):
+                    self.assertEqual(refusal_log.guarded("command", lambda: result, self.event), result)
+        self.assertFalse(self.log.exists())
+        # The same calls with a 2 do write, here: the log above is the right one to watch.
+        with mock.patch.object(sys, "stderr", io.StringIO()):
+            with self.assertRaises(SystemExit):
+                refusal_log.guarded("command", lambda: end(2), self.event)
+            refusal_log.guarded("command", lambda: 2, self.event)
+        self.assertEqual(len(self.rows()), 2)
 
     def test_the_read_tee_reads_through(self) -> None:
         source = io.BytesIO(b"raw")

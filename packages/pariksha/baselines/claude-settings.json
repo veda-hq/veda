@@ -2,8 +2,6 @@
   "permissions.allow": {
     "includes": [
       "Edit(./**)",
-      "Write(./**)",
-      "NotebookEdit(./**)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
@@ -28,7 +26,7 @@
       "mcp__Claude_Browser__tabs_context",
       "mcp__claude-code-remote__send_message"
     ],
-    "why": "an agent edits inside its checkout, reads git and GitHub, publishes a draft pull request, binds it and turns on the desktop app's CI monitor, reads a page and reports to the session that started it, all without a prompt"
+    "why": "an agent edits inside its checkout (Edit(path) covers Write, NotebookEdit and MultiEdit too), reads git and GitHub, publishes a draft pull request, binds it and turns on the desktop app's CI monitor, reads a page and reports to the session that started it, all without a prompt"
   },
   "permissions.deny": {
     "includes": ["Bash(*--no-verify*)"],
@@ -44,7 +42,7 @@
       "Bash(*git push*--pru*)",
       "Bash(*git push* -d *)",
       "Bash(*git push* +*)",
-      "Bash(*git push* :*)",
+      "Bash(*git push* :**)",
       "Bash(*git branch* -D*)",
       "Bash(*git branch*-d*-f*)",
       "Bash(*git branch*-f*-d*)",
@@ -59,6 +57,6 @@
       "Bash(yarn add:*)",
       "Bash(yarn remove:*)"
     ],
-    "why": "a person approves each push that rewrites or deletes published history (a force push, a mirror, a delete, a prune, a + or empty-source refspec, and their abbreviations), each forced delete of a local branch, and each dependency command (add, remove, update)"
+    "why": "a person approves each push that rewrites or deletes published history (a force push, a mirror, a delete, a prune, a + refspec or an empty-source one such as :branch, and their abbreviations), each forced delete of a local branch, and each dependency command (add, remove, update)"
   }
 }

@@ -26,8 +26,9 @@ from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
+from .outside import outside
 
-PACKAGE = Path(__file__).resolve().parents[1] / "kavach"
+PACKAGE =Path(__file__).resolve().parents[1] / "kavach"
 MODULE_PATH = PACKAGE / "boundary.py"
 SPEC = importlib.util.spec_from_file_location("kavach_boundary_under_test", MODULE_PATH)
 assert SPEC and SPEC.loader
@@ -196,13 +197,15 @@ class BoundaryFixture(GuardFixture):
         tool_input: dict[str, str],
         env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        """The Claude adapter's verdict on one event, as the hook runs it."""
+        """The Claude adapter's verdict on one event, as the hook runs it,
+        from a folder outside every repository (#387)."""
 
         return subprocess.run(
             [sys.executable, str(ADAPTER_PATH)],
             input=json.dumps(
                 {"cwd": str(cwd), "tool_name": tool_name, "tool_input": tool_input}
             ),
+            cwd=outside(self),
             capture_output=True,
             text=True,
             check=False,
@@ -441,7 +444,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
                     "tool_input": {"command": "touch x"},
                 }
             ),
-            capture_output=True, text=True, check=False,
+            cwd=outside(self), capture_output=True, text=True, check=False,
             env=hermetic_git_env(),
         )
         self.assertEqual(result.returncode, 2, result.stderr)
@@ -474,6 +477,41 @@ class WorktreeBoundaryTest(BoundaryFixture):
                 self.assertIn(f"probe {index} is broken", message)
                 self.assertIn(" ".join(probe), message)
                 self.assertNotIn(str(self.claude), message)
+
+    def test_a_shell_in_no_repository_still_reads_and_returns(self) -> None:
+        """veda#335: a shell Claude Code left in a folder no repository holds
+        runs proven reads, the `cd` back among them, and nothing else."""
+
+        (self.external / "notes.md").write_text("x\n", encoding="utf-8")
+        for command in (
+            f"cd {self.claude}",
+            f"cd '{self.claude}' && pwd",
+            f"cd {self.main}",
+            "cat *.md",
+            "ls",
+            "pwd",
+        ):
+            with self.subTest(read=command):
+                result = self.claude_bash(self.external, command)
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
+        for label, result in (
+            ("touch", self.claude_bash(self.external, "touch x")),
+            ("cd back, then write", self.claude_bash(self.external, f"cd {self.claude} && touch x")),
+            ("write into the worktree", self.claude_bash(self.external, f"touch {self.claude}/x")),
+            ("unproven", self.claude_bash(self.external, "pnpm check")),
+            ("Write", self.invoke(self.external, tool_input={"file_path": str(self.claude / "x"), "content": "x\n"})),
+            ("Edit", self.invoke(
+                self.external,
+                tool_name="Edit",
+                tool_input={"file_path": str(self.claude / "x"), "old_string": "a", "new_string": "b"},
+            )),
+        ):
+            with self.subTest(refused=label):
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("cannot determine this session's repository checkout", result.stderr)
+                self.assertIn("not a git repository", result.stderr)
+                self.assertIn(f"The shell is in {self.external.resolve()}; reads still run", result.stderr)
+                self.assertIn("run `cd <your worktree>` alone to return", result.stderr)
 
     def test_quoted_commands_preserve_the_boundary(self) -> None:
         owned = self.claude

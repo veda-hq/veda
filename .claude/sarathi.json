@@ -21,6 +21,7 @@
         "timeout": 10
       }
     ],
+    "Stop": [{ "command": "bash \"$SARATHI_HOOKS\"/ask-gate.sh", "timeout": 10 }],
     "PostToolUseFailure": [{ "matcher": "mcp__ccd_pr__set_monitor", "command": "bash \"$SARATHI_HOOKS\"/autofix-watch.sh", "timeout": 10 }],
     "SessionStart": [
       {

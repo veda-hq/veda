@@ -10,13 +10,27 @@
 # Research is a WebSearch, a WebFetch, a browser page read, or the launch of a
 # research subagent, since the owner's last message: a user-role entry that
 # holds the person's own text, not a tool result, a system reminder, a task
-# notification or another session's report. For an ask that names repository
-# or session state (a path, a pull request or issue, a branch, a commit, CI),
-# a look at that state counts too: Read, Grep, Glob, the desktop app's PR
-# status, a read-only git or gh command, or a test run. A wrap_up with no ask,
+# notification or another session's report. For an ask about repository or
+# session state, a look at that state counts too: Read, Grep, Glob, the
+# desktop app's PR status, a read-only git or gh command, or a test run. It
+# counts when every unit of the ask (each AskUserQuestion question, a wrap_up
+# ask, a closing question's paragraph) names such state (a path, a pull
+# request or issue, a branch, a commit, CI) and nothing outside the
+# repository (an API, a price, credentials, an outside service by name, its
+# documentation). A wrap_up with no ask,
 # a go-ahead (yes/no buttons), or an app action first (commit, create_pr ...)
 # is an approval, which only the owner can give, and passes; so does a closing
 # question that names no alternatives.
+#
+# Before any of that, every ask names each GitHub issue, pull request or
+# comment it refers to by its full URL (README, "Links in asks"): an
+# AskUserQuestion or a wrap_up ask with a bare #N, PR N or comment N is
+# refused, and on Stop a closing message that asks with one goes on once.
+#
+# On Stop, then: a closing message that asks the owner (a line opening
+# "Needs you:", or one that ends on a question) in a turn whose wrap_up
+# carried no ask goes on once, told to make the ask, where the session has
+# the desktop app's wrap_up (README, "An ask the app does not see").
 #
 # On Stop the question is read from last_assistant_message, not from the
 # transcript, which may not hold the final message yet. Stop answers with
@@ -26,16 +40,20 @@
 #
 # The escape: a second held ask in the same turn passes, keyed on the turn
 # (the owner's last message), not the question text, so a rephrased question
-# does not loop; the PreToolUse and Stop paths share the key. A Stop with
-# stop_hook_active set passes. The key is kept in <dir>/<session id>, where
-# <dir> is SARATHI_ASK_GATE_DIR, else $XDG_STATE_HOME/sarathi/ask-gate, else
-# ~/.local/state/sarathi/ask-gate.
+# does not loop; the PreToolUse and Stop paths share the key. The one
+# exception is a relabel: an ask that puts a question held this turn with
+# only its Kind: fields added or changed is held once more, and anything
+# after that passes, so a turn holds at most twice. A Stop with
+# stop_hook_active set passes. The key, and the questions held, are kept in
+# <dir>/<session id>, where <dir> is SARATHI_ASK_GATE_DIR, else
+# $XDG_STATE_HOME/sarathi/ask-gate, else ~/.local/state/sarathi/ask-gate.
 #
 # A declared owner-only kind passes the first time: a line Kind: <kind> in
 # each AskUserQuestion question (its text or header), in the wrap_up ask, or
-# in the closing paragraphs on Stop, naming preference, approval, private,
-# money, irreversible or ambiguity (README, "Declaring the kind"). Ambiguity
-# passes only after a look. A declared researchable kind stays held.
+# in the closing paragraphs on Stop, naming approval, money or irreversible;
+# or preference, private or ambiguity after research or a look in the turn
+# (README, "Declaring the kind"). A declared researchable kind stays held,
+# and so does a relabel.
 #
 # Every gated ask is a line in the ask log (README, "The ask log"), and so is
 # the owner's answer to an AskUserQuestion, read on PostToolUse from
@@ -111,6 +129,22 @@ STATE = re.compile(
     r"|[\w.-]+/[\w./-]*\.[A-Za-z][A-Za-z0-9]{0,5}\b"
     r"|\b[\w-]+\.(ts|tsx|mjs|cjs|json|md|sh|py|ya?ml|toml|lock|rs|rb|java|kt|swift|css|html|sql)\b"
 )
+# An ask that names something outside the repository: an API or SDK, a
+# price, a bill or a quota, credentials, one of the outside tools and
+# services listed by name, their documentation or releases, case ignored.
+# No repository read settles such a question, so a look does not count for
+# it, whatever state it also names. A path or file named like one
+# (CHANGELOG.md, credentials.json, src/api/) is no such word. Words a
+# trade-off uses for the repository's own work (cost, docs-only, login,
+# endpoint) are left out: in local transcripts they named it more often
+# than anything outside. A service not listed is not seen.
+OUTSIDE = re.compile(
+    r"\$\s?\d"
+    r"|(?i:\b(apis?|sdks?|prices?|pricing|priced|billing|billed|credits|quotas?|subscriptions?|rate[ -]limits?"
+    r"|per (million|1k|1m|token)|credentials?|keychain|oauth"
+    r"|claude code|claude\.ai|anthropic|openai|marketplaces?|homebrew"
+    r"|(latest|newest) (version|release)|release notes|changelogs?|documentation)\b(?![./]\w))"
+)
 # A user-role entry the harness marks as not the person's: a background
 # task's report, another session's message, an app event that continues the
 # turn.
@@ -147,11 +181,14 @@ URL = re.compile(
     r"(?:[^\s()<>\[\]{}\x22\x27\x60,;|]|\([^\s()<>\[\]{}\x22\x27\x60,;|]*\))+",
     re.I,
 )
-# In a closing message: fenced code, inline code and quoted lines say no
-# question of the session's own; "... or not?" is a yes/no question.
+# In a closing message: fenced code, inline code, quoted lines and text in
+# double quotes say no question of the session's own; "... or not?" is a
+# yes/no question. Text in double quotes, straight or curly, is someone
+# else's words: a title, a quoted prompt, another session's question.
 FENCE = re.compile(r"^[ \t]*(\x60{3,}|~{3,})[\s\S]*?(^[ \t]*\1[^\n]*$|\Z)", re.M)
 INLINE_CODE = re.compile(r"\x60[^\x60\n]*\x60")
 QUOTED = re.compile(r"^[ \t]*>[^\n]*$", re.M)
+QUOTES = re.compile(r"\x22[^\x22\n]*\x22|“[^”\n]*”")
 OR_NOT = re.compile(r"\bor\s+not\b", re.I)
 PARAGRAPH = re.compile(r"\n[ \t]*\n")
 # A sentence ends at . ! or ? followed by a space, or at a line's end; a dot
@@ -188,8 +225,11 @@ RESEARCHABLE_KINDS = {
     "error": "error", "error meanings": "error", "convention": "convention", "conventions": "convention",
     "repository conventions": "convention", "state": "state",
 }
-# Ambiguity is the kind left after research: it passes only after a look.
-NEEDS_LOOK = {"ambiguity"}
+# Kinds that pass only after research or a look in the turn: a preference
+# among options nobody checked, a private fact the session could have read,
+# and ambiguity, the kind left after research. An approval, money and an
+# irreversible step are the owner's authority, and pass bare.
+NEEDS_LOOK = {"ambiguity", "preference", "private"}
 
 def passes():
     sys.exit(0)
@@ -289,6 +329,26 @@ def names_alternatives(text, pairs):
 def names_state(text):
     return bool(STATE_URL.search(text) or STATE.search(URL.sub(" ", text)))
 
+def names_outside(text):
+    return bool(OUTSIDE.search(URL.sub(" ", text)))
+
+def unit_words(tool, given):
+    """The words of each unit of an ask, read for state: each
+    AskUserQuestion question with its header and options; a wrap_up, whole."""
+    if tool != ASK:
+        return [ask_words(tool, given)]
+    units = []
+    for question in given.get("questions") or []:
+        if isinstance(question, dict):
+            units.append(ask_words(ASK, {"questions": [question]}))
+    return units or [""]
+
+def plain(text):
+    """A question as the relabel check compares it: its Kind: fields out,
+    lowercase, words only."""
+    text = DECLARED.sub(" ", text) if isinstance(text, str) else ""
+    return " ".join(re.sub(r"[^\w]+", " ", text.lower()).split())
+
 def choice_shaped(wrap):
     ask = wrap.get("ask")
     if not isinstance(ask, str) or not ask.strip():
@@ -311,21 +371,161 @@ def closing_paragraphs(message):
 
 def closing(message):
     """The choice-shaped questions in the last paragraphs of a closing
-    message, and the paragraphs that hold them, code and URLs kept: the
-    words read for repository state."""
-    found, holding = [], []
+    message, the paragraphs that hold them, code, URLs and quoted text kept
+    (the words read for repository state, one paragraph each), and for each
+    question the index of its paragraph. A question is judged with code,
+    URLs and quoted text left out, and kept with its quoted text, the words
+    the log and the relabel check compare."""
+    found, holding, where = [], [], []
     for paragraph in closing_paragraphs(message):
         here = []
-        for sentence in SENTENCE.split(URL.sub(" ", INLINE_CODE.sub(" ", paragraph))):
+        kept = URL.sub(" ", INLINE_CODE.sub(" ", paragraph))
+        # Quoted text blanked to its own length, so a span of one is a span
+        # of the other.
+        read = QUOTES.sub(lambda quote: " " * len(quote.group(0)), kept)
+        start = 0
+        for cut in [*SENTENCE.finditer(read), None]:
+            end = cut.start() if cut else len(read)
+            sentence, at = read[start:end], start
+            start = cut.end() if cut else end
             if "?" not in sentence:
                 continue
-            question = sentence[: sentence.rindex("?") + 1].strip()
-            if names_alternatives(OR_NOT.sub(" ", question), False):
-                here.append(question)
+            stop_at = at + sentence.rindex("?") + 1
+            if names_alternatives(OR_NOT.sub(" ", read[at:stop_at]), False):
+                here.append(kept[at:stop_at].strip())
         if here:
             found += here
+            where += [len(holding)] * len(here)
             holding.append(paragraph)
-    return "\n\n".join(holding), found
+    return holding, found, where
+
+# A closing message that waits on the owner: a line that opens "Needs you:"
+# (bold or not), or a line that ends asking, its QUOTES left out as on the
+# research hold; a question answered on its own line ("**Can it close?**
+# Yes, once ...") does not end that line.
+NEEDS_YOU = re.compile(r"^[ \t>*_#-]*needs you[*_]*[ \t]*:", re.I | re.M)
+ENDS_ASKING = re.compile(r"\?[\s*_\x29\]]*$")
+# The desktop app lists its wrap_up here for the session's hooks.
+APP_TOOLS = "CLAUDE_CODE_TERMINAL_MCP_TOOLS"
+
+def url_out(match):
+    """A URL taken out of a line, the question marks it ends in kept."""
+    url = match.group(0)
+    return " " + url[len(url.rstrip("?")):]
+
+def owner_ask(message):
+    """The line of a closing message that asks the owner something, from its
+    last paragraphs, or None: one opening "Needs you:", else the first that
+    ends on a question, with code, URLs and quoted text left out."""
+    asking = None
+    for paragraph in closing_paragraphs(message):
+        for line in paragraph.split("\n"):
+            if NEEDS_YOU.search(line):
+                return line.strip()
+            # A URL goes, but a question mark that ends it stays: the
+            # sentence's own ("Should we open https://example.com?").
+            text = QUOTES.sub(" ", URL.sub(url_out, INLINE_CODE.sub(" ", line)))
+            if asking is None and ENDS_ASKING.search(text):
+                asking = line.strip()
+    return asking
+
+def wrap_up_calls(entry):
+    """The wrap_up calls in a main-loop assistant entry."""
+    if not isinstance(entry, dict) or entry.get("type") != "assistant" or entry.get("isSidechain") is True:
+        return []
+    content = (entry.get("message") or {}).get("content")
+    return [
+        item for item in (content if isinstance(content, list) else [])
+        if isinstance(item, dict) and item.get("type") == "tool_use" and item.get("name") == WRAP_UP
+    ]
+
+def has_wrap_up(lines):
+    """Whether this session has the app's wrap_up: the desktop app names it
+    for the hooks, or the session has called it. A line that only mentions
+    the name (a file read, a settings file) is no call."""
+    if WRAP_UP in re.split(r"[\s,]+", os.environ.get(APP_TOOLS, "")):
+        return True
+    for line in lines:
+        if WRAP_UP not in line:
+            continue
+        try:
+            if wrap_up_calls(json.loads(line)):
+                return True
+        except Exception:
+            continue
+    return False
+
+def is_peer(entry):
+    """Another session's message, by the origin the harness stamps on it."""
+    origin = entry.get("origin")
+    kind = origin.get("kind") if isinstance(origin, dict) else None
+    return kind in ("peer", "peer-send-message") or entry.get("turnOrigin") == "peer"
+
+
+def is_task_report(entry):
+    """A background task's notification, by its origin or its leading tag."""
+    origin = entry.get("origin")
+    if (origin.get("kind") if isinstance(origin, dict) else None) == "task-notification":
+        return True
+    if entry.get("turnOrigin") == "task_notification":
+        return True
+    content = (entry.get("message") or {}).get("content")
+    if isinstance(content, list):
+        content = "\n".join(item.get("text") for item in content if isinstance(item, dict) and isinstance(item.get("text"), str))
+    # Reminders out first, then a look at what leads: one pass, no nested repeat to backtrack through.
+    return isinstance(content, str) and REMINDER.sub("", content).lstrip().startswith("<task-notification")
+
+def is_prompt(entry):
+    """A user-role entry that starts a turn, whoever sent it: the owner,
+    another session, an app event. Not a tool result, a Stop hook's feedback
+    or other meta text. Another session's message may be written as meta;
+    it carries its origin, which a Stop hook's feedback does not."""
+    if entry.get("type") != "user" or entry.get("isSidechain") is True:
+        return False
+    if entry.get("isCompactSummary") is True:
+        return False
+    if entry.get("isMeta") is True and not is_peer(entry):
+        return False
+    if entry.get("toolUseResult") is not None or entry.get("sourceToolUseID"):
+        return False
+    # A background task's report is no new ask of the owner: a wrap_up ask
+    # before it still stands, and repeating its question is no new ask.
+    if is_task_report(entry):
+        return False
+    content = (entry.get("message") or {}).get("content")
+    if isinstance(content, str):
+        texts = [content]
+    elif isinstance(content, list):
+        if any(isinstance(item, dict) and item.get("type") == "tool_result" for item in content):
+            return False
+        texts = [item.get("text") for item in content if isinstance(item, dict) and isinstance(item.get("text"), str)]
+        if any(isinstance(item, dict) and item.get("type") in ATTACHMENTS for item in content):
+            return True
+    else:
+        return False
+    # A row of system reminders alone, which the harness adds mid-turn, starts nothing.
+    return REMINDER.sub("", "\n".join(texts)).strip() != ""
+
+REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
+
+def asked_this_turn(lines):
+    """Whether a wrap_up since the turn's prompt carried an ask."""
+    asked = False
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if is_prompt(entry):
+            asked = False
+            continue
+        for item in wrap_up_calls(entry):
+            given = item.get("input")
+            ask = given.get("ask") if isinstance(given, dict) else None
+            asked = asked or (isinstance(ask, str) and bool(ask.strip()))
+    return asked
 
 def ask_words(tool, given):
     """The words of an ask: its question, header, options and buttons."""
@@ -358,6 +558,103 @@ def declared_units(tool, given):
             units.append(kinds(text))
     return units or [[]]
 
+# Links in asks: an ask of the owner names each GitHub issue, pull request
+# or comment by its full URL, which opens from the sidebar, the phone and the
+# needs-you band; a bare number opens nothing. A bare reference is #N,
+# owner/repo#N, PR, pull request, issue or comment followed by a number, or
+# a comment fragment on its own (#issuecomment-N, #discussion_rN ...), read
+# with the URLs taken out. A github.com URL anywhere in the ask that carries
+# the same number covers it, the number ending where its digits do.
+BARE_REF = re.compile(
+    r"(?<![\w&/#.-])(?:[\w.-]+/[\w.-]+)?#(\d+)\b"
+    r"|(?i:\b(?:PRs?|pull requests?|issues?|comments?)[ \t]+#?(\d+)\b)"
+    r"|(?<![\w/])#?(?:issuecomment-|discussion_r|discussioncomment-|pullrequestreview-)(\d+)\b"
+)
+# A URL covers only as a resource on an owner/repository route: its issue,
+# pull request or discussion number, and the comment or review number of
+# its fragment. A search, a query or a malformed path covers nothing.
+GITHUB_RESOURCE = re.compile(r"^https?://(?:www\.)?github\.com/[\w.-]+/[\w.-]+/(?:issues|pull|discussions)/(\d+)(?![\w-])", re.I)
+GITHUB_FRAGMENT = re.compile(r"^(?:issuecomment-|discussion_r|discussioncomment-|pullrequestreview-)(\d+)(?!\d)")
+# A sentence of a closing message that asks the owner something: it opens
+# on an imperative (a thumbs-up, approve, read, look at, check, open,
+# review, react, merge, close, answer, confirm, decide, reply), or holds a thumbs-up, please, a
+# could-you, a needs-you or a your-approval anywhere, or holds a question
+# mark once its URLs are out. A line that opens "Needs you:" asks whole.
+ASK_OPENER = re.compile(
+    r"^[\s>*_#-]*(?:\d+[.\x29][ \t]*)?(?:please[ \t]+)?"
+    r"(?:\U0001F44D|:\+1:|(?:approve|read|look at|check|open|review|react|merge|close|answer|confirm|decide|reply)"
+    r"(?![\w-])(?![ \t]+(?:of|by|on|in|for|is|was|found|passed|failed)\b))",
+    re.I,
+)
+ASK_ANYWHERE = re.compile(
+    r"\U0001F44D|:\+1:|\bplease\b|\b(?:could|can|would|will) you\b|\bneeds you\b"
+    r"|\byour (?:approval|review|yes|go-ahead|answer|decision|call|thumbs)",
+    re.I,
+)
+# Sentences as SENTENCE cuts them, and also after a bold or italic one: a
+# question answered on its own line (**Can it close?** Yes, once ... merges)
+# is two sentences.
+ASK_SENTENCE = re.compile(r"(?<=[.!?])\s+|(?<=[.!?][*_])\s+|(?<=[.!?][*_]{2})\s+|\n")
+
+def linked_numbers(text):
+    """The issue, pull request and comment numbers the github.com URLs in a
+    text carry."""
+    found = set()
+    for match in URL.finditer(text or ""):
+        url = match.group(0)
+        resource = GITHUB_RESOURCE.match(url)
+        if resource:
+            found.add(resource.group(1))
+            fragment = GITHUB_FRAGMENT.match(url.partition("#")[2])
+            if fragment:
+                found.add(fragment.group(1))
+    return found
+
+def bare_refs(text, covered):
+    """The references a text makes by number alone, each once, in order:
+    those no URL in covered (a set of numbers) carries."""
+    refs = []
+    for match in BARE_REF.finditer(URL.sub(" ", text or "")):
+        if (match.group(1) or match.group(2) or match.group(3)) not in covered:
+            refs.append(match.group(0).strip())
+    return list(dict.fromkeys(refs))
+
+def asking_sentences(message):
+    """The sentences of a closing message that ask the owner, fenced code,
+    quoted lines, inline code and text in double quotes left out: someone
+    else's words, as on the research hold. A line that opens "Needs you:"
+    or ends on a question asks whole, so the id one sentence before the
+    question counts (PR #382 is green. Merge it?)."""
+    found = []
+    for line in QUOTED.sub("", FENCE.sub("", message or "")).split("\n"):
+        line = QUOTES.sub(" ", INLINE_CODE.sub(" ", line))
+        if NEEDS_YOU.search(line) or ENDS_ASKING.search(URL.sub(url_out, line)):
+            found.append(line.strip())
+            continue
+        for sentence in ASK_SENTENCE.split(line):
+            if ASK_OPENER.search(sentence) or ASK_ANYWHERE.search(sentence) or "?" in URL.sub(url_out, sentence):
+                found.append(sentence.strip())
+    return [s for s in found if s]
+
+def unlinked(tool, given):
+    """The bare references of an ask: an AskUserQuestion's questions,
+    headers and options, or a wrap_up's ask and buttons, a URL in its recap
+    covering too, since its ask holds 100 characters."""
+    words = ask_words(tool, given)
+    covered = linked_numbers(words)
+    if tool == WRAP_UP and isinstance(given.get("recap"), str):
+        covered |= linked_numbers(given["recap"])
+    return bare_refs(words, covered)
+
+LINKS = (
+    "The owner opens an ask from the sidebar, the phone or the needs-you "
+    "band, where a number opens nothing. Write each issue, pull request or "
+    "comment as its full https://github.com/<owner>/<repo>/... URL: an issue "
+    "or pull request as .../issues/N or .../pull/N, a comment as "
+    ".../issues/N#issuecomment-M. A number that names nothing on GitHub "
+    "(a step, an option) reads as one: reword it (option 1, not #1). "
+)
+
 try:
     data = json.loads(sys.stdin.read() or "{}")
     path = data.get("transcript_path")
@@ -385,15 +682,75 @@ try:
         message = data.get("last_assistant_message")
         if data.get("stop_hook_active") is True or not isinstance(message, str):
             passes()
+        # An ask that names an issue, a pull request or a comment by number
+        # alone goes back first, read from the message as written: the turn
+        # goes on once to give the link. A URL anywhere in the message
+        # covers its number, since the owner sees the message whole. Like
+        # the nudge below, it comes before the research hold, which this
+        # continuation then skips.
+        covered = linked_numbers(message)
+        unlinked_asks = [(s, bare_refs(s, covered)) for s in asking_sentences(message)]
+        unlinked_asks = [(s, refs) for s, refs in unlinked_asks if refs]
+        if unlinked_asks:
+            refs = list(dict.fromkeys(r for _, refs in unlinked_asks for r in refs))
+            # An unreadable transcript only leaves the wrap_up hint out.
+            try:
+                with open(path) as handle:
+                    lines = handle.readlines()
+                filing = has_wrap_up(lines) and not asked_this_turn(lines)
+            except Exception:
+                filing = False
+            log({
+                "session": str(data.get("session_id") or os.path.basename(path)),
+                "via": STOP,
+                "questions": [{"question": s[:300], "options": []} for s, _ in unlinked_asks],
+                "refs": refs,
+                "outcome": "held: bare reference",
+            })
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": STOP, "additionalContext": (
+                "give the full link. Your closing message asks the owner about " + ", ".join(refs)[:200] +
+                " by number alone (" + " / ".join(s for s, _ in unlinked_asks)[:300] + "). " + LINKS +
+                "End the turn again with the ask rewritten, not the whole message" +
+                (", and call wrap_up first with it as ask, reply buttons as actions, and blocked: true "
+                 "if your work stops until they answer" if filing else "") +
+                ". If the sentence asks the owner nothing, end the turn again as it is."
+            )}}))
+            sys.exit(0)
+        # A closing message that asks the owner, in a turn whose wrap_up
+        # carried no ask: the app shows nothing to say the session waits, so
+        # the turn goes on once to make the ask. It comes before the research
+        # hold, which then meets that wrap_up on PreToolUse.
+        line = owner_ask(message)
+        if line is not None:
+            with open(path) as handle:
+                lines = handle.readlines()
+            if has_wrap_up(lines) and not asked_this_turn(lines):
+                log({
+                    "session": str(data.get("session_id") or os.path.basename(path)),
+                    "via": STOP,
+                    "questions": [{"question": line[:300], "options": []}],
+                    "outcome": "nudged: no wrap_up ask",
+                })
+                print(json.dumps({"hookSpecificOutput": {"hookEventName": STOP, "additionalContext": (
+                    "file the ask. Your closing message asks the owner something (" + line[:300] + "), "
+                    "but no wrap_up this turn carried it as its ask, so the app shows nothing to say "
+                    "this session waits on them. Call wrap_up now with the question as ask, reply "
+                    "buttons as actions, and blocked: true if your work stops until they answer; then "
+                    "end the turn without repeating your message. If the turn does not wait on the "
+                    "owner, end it again as it is."
+                )}}))
+                sys.exit(0)
         # The words read for state are the question's own paragraph: "PR #12
         # failed CI. Retry it or revert?" Wider, a closing summary that names
         # a file or a commit would pass most held questions.
-        words, choices = closing(message)
+        # Each question's paragraph is read on its own, so state named in one
+        # passes no question in another.
+        texts, choices, where = closing(message)
         if not choices:
             passes()
-        # A declaration is read from the same paragraphs, inline code left
+        # A declaration is read from the closing paragraphs, inline code left
         # out: a Kind: line of its own after a blank line declares too, and
-        # prose that quotes the field in code does not.
+        # prose that quotes the field in code does not. It is one unit.
         units = [kinds("\n\n".join(INLINE_CODE.sub(" ", p) for p in closing_paragraphs(message)))]
     else:
         stop = False
@@ -401,19 +758,47 @@ try:
         tool_input = data.get("tool_input")
         if tool not in (ASK, WRAP_UP) or not tool_input or not isinstance(tool_input, dict):
             passes()
+        # Any ask, a go-ahead or a declared kind included, names what it
+        # refers to by its full URL: refused before every pass below. The
+        # fix is always to hand, so nothing lets a repeat through.
+        refs = unlinked(tool, tool_input)
+        if refs:
+            log({
+                "session": str(data.get("session_id") or os.path.basename(path)),
+                "via": tool,
+                "tool_use_id": data.get("tool_use_id"),
+                "questions": asked(tool, tool_input),
+                "refs": refs,
+                "outcome": "held: bare reference",
+            })
+            print(
+                "BLOCKED: give the full link. This ask names " + ", ".join(refs)[:200] + " by number alone. " + LINKS +
+                ("The ask holds 100 characters: a URL in the recap covers its number too. " if tool == WRAP_UP else "") +
+                "Then ask again.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         if tool == WRAP_UP and not choice_shaped(tool_input):
             passes()
-        words = ask_words(tool, tool_input)
         questions = asked(tool, tool_input)
         units = declared_units(tool, tool_input)
+        texts = unit_words(tool, tool_input)
     if stop:
         questions = [{"question": choice, "options": []} for choice in choices]
-    if len(units) == len(questions):
-        for question, unit in zip(questions, units):
-            question["kind"] = ", ".join(unit) or None
-    else:
-        for question in questions:
-            question["kind"] = ", ".join(units[0]) or None
+    # Whether each text names repository state, and whether it names
+    # something outside: a look counts when every text names state and
+    # nothing outside. A text is an AskUserQuestion question, a wrap_up ask,
+    # or a closing question's paragraph; a closing message's declaration is
+    # one unit over all its paragraphs, outside when any of them is.
+    states = [names_state(t) for t in texts]
+    outsides = [names_outside(t) for t in texts]
+    unit_outsides = [any(outsides)] if stop else outsides
+    for number, question in enumerate(questions):
+        at = number if len(units) == len(questions) else 0
+        text = where[number] if stop else (number if len(texts) == len(questions) else 0)
+        question["kind"] = ", ".join(units[at]) or None
+        question["names_state"] = states[text]
+        question["names_outside"] = outsides[text]
     with open(path) as handle:
         lines = handle.readlines()
 except Exception:
@@ -543,7 +928,6 @@ def window(lines):
 
 turn, researched, looked = window(lines)
 session = str(data.get("session_id") or os.path.basename(path))
-state_names = bool(names_state(words))
 record = {
     "session": session,
     "turn": turn,
@@ -552,47 +936,119 @@ record = {
     "questions": questions,
     "researched": researched,
     "looked": looked,
-    "names_state": state_names,
+    # Every unit names repository state; some unit names something outside.
+    "names_state": all(states),
+    "names_outside": any(outsides),
     # The kinds an ask declares, each once, in order.
     "kind": ", ".join(dict.fromkeys(k for unit in units for k in unit)) or None,
 }
-if researched or (looked and state_names):
-    log(dict(record, outcome="passed: research" if researched else "passed: look"))
+if researched:
+    log(dict(record, outcome="passed: research"))
     passes()
-# An owner-only question passes the first time when every unit of the ask
-# declares an owner-only kind. It spends nothing: a later undeclared ask in
-# the turn is still held once.
-if all(owner_only(unit, looked) for unit in units):
-    log(dict(record, outcome="passed: declared " + record["kind"]))
+# A look counts when every unit is about the repository's state: it names
+# such state and nothing outside.
+if looked and all(s and not o for s, o in zip(states, outsides)):
+    log(dict(record, outcome="passed: look"))
     passes()
 
+# The state: the turn of the last hold, then a JSON line with the questions
+# it held (plain, with the kinds each declared) and whether a relabel was
+# held. A state of the turn alone, as 0.7.8 wrote it, holds no questions.
 folder = state_dir()
 state = os.path.join(folder, re.sub(r"[^A-Za-z0-9._-]", "_", session))
+kept, unreadable = None, False
 try:
     with open(state) as handle:
-        if handle.read().strip() == turn:
-            log(dict(record, outcome="passed: second ask"))
-            passes()
+        held_turn, _, rest = handle.read().partition("\n")
+    if held_turn.strip() == turn:
+        kept = {"held": [], "relabel_held": False}
+        if rest.strip():
+            loaded = json.loads(rest)
+            # Anything but the shape this handler writes is unreadable.
+            held_list = loaded.get("held") if isinstance(loaded, dict) else None
+            if not isinstance(held_list, list) or not isinstance(loaded.get("relabel_held"), bool) or not all(
+                isinstance(item, dict) and isinstance(item.get("question"), str)
+                and isinstance(item.get("kind"), list) and all(isinstance(k, str) for k in item["kind"])
+                for item in held_list
+            ):
+                raise ValueError("the held list is not the shape ask-gate writes")
+            kept = {"held": held_list, "relabel_held": loaded["relabel_held"]}
 except FileNotFoundError:
     pass
 except Exception:
+    # Unreadable, the state names no hold this turn; a hold this turn could
+    # not be told, so the ask passes once nothing else holds it.
+    kept, unreadable = None, True
+
+def unit_questions(number):
+    """The questions a unit puts, plain: one for an AskUserQuestion
+    question or a wrap_up, every choice of a closing message."""
+    if stop:
+        return [plain(c) for c in choices]
+    if tool == ASK:
+        return [plain(questions[number]["question"])] if number < len(questions) else []
+    return [plain(tool_input.get("ask"))]
+
+def relabelled():
+    """Whether, in the turn of a hold, the ask puts a question held then
+    with only its Kind: fields added or changed."""
+    if not kept:
+        return False
+    held = {}
+    for item in kept.get("held") or []:
+        if item["question"]:
+            held.setdefault(item["question"], []).append(sorted(item["kind"]))
+    for number, unit in enumerate(units):
+        for question in unit_questions(number):
+            if question in held and unit and sorted(unit) not in held[question]:
+                return True
+    return False
+
+relabel = relabelled()
+# An owner-only question passes the first time when every unit of the ask
+# declares an owner-only kind. It spends nothing: a later undeclared ask in
+# the turn is still held once. A Kind: line added to a question once it is
+# held passes nothing. For a kind that needs a look, a unit that names
+# something outside needs research: no repository read settles it.
+if not relabel and all(owner_only(unit, looked and not outside) for unit, outside in zip(units, unit_outsides)):
+    log(dict(record, outcome="passed: declared " + record["kind"]))
+    passes()
+if unreadable:
     log(dict(record, outcome="passed: state unreadable"))
     passes()
+# The second hold of a turn: a relabel, once. Any other ask after a hold, or
+# one after a relabel's hold, passes.
+if kept is not None and not (relabel and not kept.get("relabel_held")):
+    log(dict(record, outcome="passed: second ask", relabelled=relabel))
+    passes()
+if kept is None:
+    kept = {"held": [], "relabel_held": False}
+# A relabel's hold keeps the questions as first held, so the relabel asked
+# again still reads as one.
+kept["relabel_held"] = kept.get("relabel_held") is True or relabel
+if not relabel:
+    kept["held"] = list(kept.get("held") or []) + [
+        {"question": question, "kind": sorted(unit)}
+        for number, unit in enumerate(units) for question in unit_questions(number) if question
+    ]
 try:
     os.makedirs(folder, exist_ok=True)
     with open(state, "w") as handle:
-        handle.write(turn + "\n")
+        handle.write(turn + "\n" + json.dumps(kept, ensure_ascii=False) + "\n")
 except Exception:
     log(dict(record, outcome="passed: state unwritable"))
     passes()
-log(dict(record, outcome="held"))
+log(dict(record, outcome="held: relabelled" if relabel else "held"))
 
 LOOKED = (
     "Since the owner's last message there has been no WebSearch, WebFetch, "
-    "browser page read or research subagent (researcher, Explore ...), and for "
-    "a question about the repository or its state (a path, a pull request, a "
-    "branch, a commit, CI) no Read, Grep, Glob, read-only git or gh, or test "
-    "run either. "
+    "browser page read or research subagent (researcher, Explore ...). A look "
+    "at the repository (Read, Grep, Glob, read-only git or gh, a test run) "
+    "counts only for a question about the repository or its state (a path, a "
+    "pull request, a branch, a commit, CI) that names nothing outside it; "
+    + ("there was a look, but " if looked else "there was none either, and ") +
+    "a question about an outside tool, service, API, price or credentials "
+    "needs that research, since no repository read settles it. "
 )
 RULE = (
     "Settle what a source can settle first: the repository, "
@@ -605,23 +1061,44 @@ RULE = (
     "ambiguity left after research. "
 )
 DECLARE = (
-    "Next time, declare such a question on a line of its own, Kind: "
-    "preference (or approval, private, money, irreversible, ambiguity), and "
-    "it goes through the first time; ambiguity only after a look at the "
-    "sources. A declared researchable kind (api, default, version, limit, "
+    "When you first ask such a question, declare it on a line of its own, "
+    "Kind: approval (or money, irreversible), and it goes through; Kind: "
+    "preference (or private, ambiguity) goes through only after research or "
+    "a look at the sources. A Kind: line added once a question is held does "
+    "not pass it. A declared researchable kind (api, default, version, limit, "
     "error, convention, state) is held, and every declared kind is logged. "
 )
+RELABEL = (
+    "This question was held earlier in this turn, and only its Kind: line "
+    "is new: a label added after a hold passes nothing, and the relabel is "
+    "logged. "
+)
 if stop:
-    reason = (
-        "research before you ask. Your closing message asks the owner to "
-        "choose (" + " / ".join(choices)[:300] + "). " + LOOKED + RULE +
-        "Research and end the turn again with what you found and your "
-        "recommendation first. If the question is one of those kinds, end "
-        "the turn again and it goes through: the owner already sees the "
-        "question, so do not repeat it. " + DECLARE
-    )
+    if relabel:
+        reason = (
+            "research before you ask. " + RELABEL + LOOKED + RULE +
+            "Research and end the turn again with what you found and your "
+            "recommendation first; ended again, the turn ends."
+        )
+    else:
+        reason = (
+            "research before you ask. Your closing message asks the owner to "
+            "choose (" + " / ".join(choices)[:300] + "). " + LOOKED + RULE +
+            "Research and end the turn again with what you found and your "
+            "recommendation first. If the question is one of those kinds, end "
+            "the turn again and it goes through: the owner already sees the "
+            "question, so do not repeat it. " + DECLARE
+        )
     print(json.dumps({"hookSpecificOutput": {"hookEventName": STOP, "additionalContext": reason}}))
     sys.exit(0)
+if relabel:
+    print(
+        "BLOCKED: research before you ask. " + RELABEL + LOOKED + RULE +
+        "Research and ask again with what you found and your recommendation "
+        "first; asked once more, it goes through.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 print(
     "BLOCKED: research before you ask. " + LOOKED + RULE +
     "Research and ask again with what you "

@@ -110,8 +110,10 @@ describe('grep', () => {
       { file: 'b.ts', line: 12, text: 'z' },
     ]);
     assert.deepEqual(parseGrep('a b.ts:107:x:1:\nnot a hit\n\n'), [{ file: 'a b.ts', line: 107, text: 'x:1:' }]);
-    // `.` stops at a carriage return, so a line that holds one is no hit, as it never was.
-    assert.deepEqual(parseGrep('a.ts:3:x\r\n\rb.ts:4:y\n'), []);
+    // A CRLF line's one trailing carriage return is dropped; any other one still means no hit.
+    assert.deepEqual(parseGrep('a.ts:3:x\r\nHEAD:b.ts:4:y\r\n', 'HEAD:'), [{ file: 'b.ts', line: 4, text: 'y' }]);
+    assert.deepEqual(parseGrep('a.ts:3:x\r\n'), [{ file: 'a.ts', line: 3, text: 'x' }]);
+    assert.deepEqual(parseGrep('a.ts:3:x\r\r\n\rb.ts:4:y\nc.ts:5:z\ry\n'), []);
   });
 
   it('greps the index, a commit or the tree, and reads no match as no hit', () => {

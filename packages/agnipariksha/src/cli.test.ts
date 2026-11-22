@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
 import { execFileSync, type ChildProcess } from 'node:child_process';
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 import {
   bootstrap,
+  entry,
   inheritedEnv,
-  isEntry,
   main,
   MAX_LINE,
   parseArgs,
@@ -20,10 +21,13 @@ import {
   SCRATCH_TMP_PREFIX,
   scratchTmpEnv,
   selectLanes,
+  scratchVanished,
   spawnStryker,
+  stopAll,
   summaryLine,
   unfinishedMerge,
   type CliDeps,
+  type EntryProcess,
 } from './cli.ts';
 import { parseConfig, type Config } from './config.ts';
 import { FAILED_TESTS_HEADER } from './failed-tests.ts';
@@ -43,6 +47,8 @@ test('parseArgs: --base, --files, --no-reuse, --pushed-refs, and refusals', () =
   assert.match(parseArgs(['--base']) as string, /"--base"/);
   assert.match(parseArgs(['--files', '--no-reuse']) as string, /"--files"/);
   assert.match(parseArgs(['--ci']) as string, /"--ci"/);
+  assert.equal(parseArgs(['--ci', 'x']), 'unsupported or incomplete argument "--ci"', 'an unknown flag refuses even with a value after it');
+  assert.equal(parseArgs(['--base', 'a', 'b']), 'unsupported or incomplete argument "b"', 'a flag takes one value');
 });
 
 test('parseArgs: --lane is repeatable and comma-separated, and keeps spaces in a name', () => {
@@ -416,6 +422,8 @@ test('unfinishedMerge reads git paths relative to the root or absolute, names a 
     /^a merge \(MERGE_HEAD 111111111111\) is not committed: /,
   );
   assert.match(unfinishedMerge(relative, '/repo', ...on({ '/repo/.git/MERGE_HEAD': 'abc\n', '/repo/.git/MERGE_MSG': '\n' })) ?? '', /^a merge \(MERGE_HEAD abc\)/);
+  // The subject is the message's first line, trimmed.
+  assert.match(unfinishedMerge(relative, '/repo', ...on({ '/repo/.git/MERGE_HEAD': 'abc\n', '/repo/.git/MERGE_MSG': '  Merge side  \nbody\n' })) ?? '', /^"Merge side" \(MERGE_HEAD abc\) is not committed/);
   // There but unreadable (a permission, a race): the tree may still be half-merged, so it refuses.
   const unreadable = unfinishedMerge(relative, '/repo', () => undefined, (path) => path === '/repo/.git/MERGE_HEAD');
   assert.match(unreadable ?? '', /^a merge \(\/repo\/\.git\/MERGE_HEAD, unreadable\) is not committed: .*then run again$/);
@@ -491,6 +499,23 @@ test('a blocking file with a sibling suite, in a run narrowed to the owning suit
   const passing = withSibling(fake({ scripts: mutants('Killed') }));
   assert.equal(await main(['--files', 'scripts/a.ts', '--no-reuse'], { ...passing.deps, lanes: [narrowed] }), 0);
   assert.equal(passing.logs.some((line) => line.includes('not the owner')), false, 'nothing blocks, nothing to say');
+
+  // The owning suite was removed while Stryker ran: there is no owner to name, so nothing is said.
+  const vanished = withSibling(fake({ scripts: mutants('Survived') }));
+  const exists = vanished.deps.exists;
+  const run = vanished.deps.runStryker;
+  let ran = false;
+  vanished.deps.exists = (path) => !ran && exists(path);
+  vanished.deps.runStryker = async (cwd, args, env) => ((ran = true), run(cwd, args, env));
+  assert.equal(await main(['--files', 'scripts/a.ts', '--no-reuse'], { ...vanished.deps, lanes: [narrowed] }), 1);
+  assert.equal(vanished.logs.some((line) => line.includes('not the owner')), false, 'no owner now, no line');
+});
+
+test('a lane with two files names both in its stryker line, and the tracked list is asked for exactly', async () => {
+  const f = fake({ scripts: mutants('Killed') });
+  assert.equal(await main(['--files', 'scripts/a.ts,scripts/b.ts'], f.deps), 0);
+  assert.ok(f.logs.includes('agnipariksha: scripts: stryker run --mutate scripts/a.ts,scripts/b.ts'), f.logs.join('\n'));
+  assert.ok(f.gitCalls.some((args) => args.join(' ') === 'ls-files -z --cached --others --exclude-standard'), 'the reuse key reads every tracked and untracked file');
 });
 
 test('a lane whose first dry run flaked says so', async () => {
@@ -504,8 +529,10 @@ test('a lane whose first dry run flaked says so', async () => {
 });
 
 const node = process.execPath;
+// A mutant that keeps a run from settling fails the tests that spawn at 30 s, well inside a retry's 180 s.
+const HANG = { timeout: 30_000 };
 
-test("spawnStryker names the failing tests from Stryker's real output, split anywhere, and a last line with no newline", async () => {
+test("spawnStryker names the failing tests from Stryker's real output, split anywhere, and a last line with no newline", HANG, async () => {
   const children = new Set<ChildProcess>();
   const real = readFileSync(fileURLToPath(new URL('../test/fixture/stryker-failed-initial-run.txt', import.meta.url)), 'utf8');
   const cut = real.indexOf('the clock') + 4;
@@ -518,7 +545,7 @@ test("spawnStryker names the failing tests from Stryker's real output, split any
   assert.equal(cutShort.failedTests?.[0]?.length, MAX_LINE - 1, 'a line past the cap is cut, never held whole');
 });
 
-test('spawnStryker keeps a test name whole across chunks: a split character is joined, and an over-long line is its prefix only', async () => {
+test('spawnStryker keeps a test name whole across chunks: a split character is joined, and an over-long line is its prefix only', HANG, async () => {
   const children = new Set<ChildProcess>();
   // "é" is two bytes in UTF-8: the first chunk ends between them.
   const split = `const b = Buffer.from(${JSON.stringify(`${FAILED_TESTS_HEADER}\n\tcafé works\n`)}); const at = b.indexOf(0xc3) + 1; process.stdout.write(b.subarray(0, at)); setTimeout(() => process.stdout.write(b.subarray(at)), 50);`;
@@ -536,7 +563,7 @@ test('spawnStryker keeps a test name whole across chunks: a split character is j
   assert.deepEqual(names, [`${'a'.repeat(MAX_LINE - 1)}`, 'next test'], 'the prefix only, never the prefix spliced to the tail');
 });
 
-test('spawnStryker returns the exit code and the markers it saw, across chunks and streams', async () => {
+test('spawnStryker returns the exit code and the markers it saw, across chunks and streams', HANG, async () => {
   const children = new Set<ChildProcess>();
   const half = DRY_RUN_TIMEOUT.length >> 1;
   const failed = 'There were failed tests in the initial test run';
@@ -548,7 +575,7 @@ test('spawnStryker returns the exit code and the markers it saw, across chunks a
   assert.deepEqual(await spawnStryker([node, '-e', 'console.log("abc")'], children, ['abc'])('.', [], {}), { code: 0, seen: ['abc'] });
 });
 
-test('each Stryker run gets its own fresh temp directory, which no lane env can override, removed afterwards', async () => {
+test('each Stryker run gets its own fresh temp directory, which no lane env can override, removed afterwards', HANG, async () => {
   const children = new Set<ChildProcess>();
   const out = mkdtempSync(join(tmpdir(), 'agnipariksha-test-'));
   try {
@@ -572,7 +599,7 @@ test('each Stryker run gets its own fresh temp directory, which no lane env can 
   }
 });
 
-test('unsetEnv names are removed from what a Stryker run inherits; a lane env still sets one', async () => {
+test('unsetEnv names are removed from what a Stryker run inherits; a lane env still sets one', HANG, async () => {
   assert.deepEqual(inheritedEnv({ A: '1', B: '2', C: '3' }, ['B', 'Z']), { A: '1', C: '3' });
   const children = new Set<ChildProcess>();
   const out = mkdtempSync(join(tmpdir(), 'agnipariksha-test-'));
@@ -594,7 +621,7 @@ test('unsetEnv names are removed from what a Stryker run inherits; a lane env st
   }
 });
 
-test('a run whose temp directory vanished refuses, whatever it exited with', async () => {
+test('a run whose temp directory vanished refuses, whatever it exited with', HANG, async () => {
   // The child removes whatever TMPDIR it is given. A mutant that drops the
   // scratch variables hands it the test's own TMPDIR, so the test owns one:
   // under a gate run, the inherited TMPDIR is the gate's own scratch.
@@ -626,7 +653,130 @@ test('a temp directory that cannot be removed is left, never failing the run; an
   assert.doesNotThrow(() => removeLiveScratch());
 });
 
-test('realDeps reads, writes, removes and locks on the real filesystem', async () => {
+/** Wait, on real timers, until `path` holds text; give up after 30 s, so a failed test leaves nothing polling. */
+async function written(path: string): Promise<string> {
+  for (let tries = 0; tries < 1500; tries += 1) {
+    const text = readText(path);
+    if (text !== undefined && text !== '') return text;
+    await delay(20);
+  }
+  throw new Error(`nothing was written to ${path}`);
+}
+
+test('a run tees its output to the gate, inherits its stdin, and its temp directory is removed with what the child left in it', HANG, async () => {
+  const children = new Set<ChildProcess>();
+  const out = mkdtempSync(join(tmpdir(), 'agnipariksha-test-'));
+  const printed: string[] = [];
+  const write = process.stdout.write.bind(process.stdout);
+  try {
+    const script = `const fs = require('node:fs'); fs.writeFileSync(require('node:path').join(process.env.TMPDIR, 'left'), 'x'); const s = fs.fstatSync(0); fs.writeFileSync(process.env.OUT, JSON.stringify({ tmp: process.env.TMPDIR, stdin: [s.dev, s.ino] })); console.log('tee-check-1');`;
+    // Captured and still written: the test reporter's own lines go to stdout too.
+    process.stdout.write = ((chunk: string | Uint8Array) => (printed.push(String(chunk)), write(chunk))) as typeof process.stdout.write;
+    const result = await spawnStryker([node, '-e', script], children)('.', [], { OUT: join(out, 'seen.json') });
+    process.stdout.write = write;
+    assert.deepEqual(result, { code: 0, seen: [] });
+    assert.ok(printed.join('').includes('tee-check-1'), 'the child prints through the gate');
+    const seen = JSON.parse(readFileSync(join(out, 'seen.json'), 'utf8')) as { tmp: string; stdin: number[] };
+    const own = fstatSync(0);
+    assert.deepEqual(seen.stdin, [own.dev, own.ino], "the child's stdin is the gate's own");
+    assert.equal(existsSync(seen.tmp), false, 'removed, with the file the child left');
+  } finally {
+    process.stdout.write = write;
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test("a run's last partial character reads as U+FFFD, and a spawn that fails leaves no temp directory", HANG, async () => {
+  const children = new Set<ChildProcess>();
+  // On stderr: a line left open on stdout would run into the test reporter's next line.
+  const partial = `process.stderr.write(${JSON.stringify(`${FAILED_TESTS_HEADER}\n\tname`)}); process.stderr.write(Buffer.from([0xc3]));`;
+  assert.deepEqual((await spawnStryker([node, '-e', partial], children)('.', [], {})).failedTests, ['name�']);
+  const scratch = (): string[] => readdirSync(tmpdir()).filter((name) => name.startsWith(SCRATCH_TMP_PREFIX));
+  const before = scratch();
+  assert.deepEqual(await spawnStryker(['/nonexistent/stryker'], children)('.', [], {}), { code: 127, seen: [] });
+  assert.deepEqual(scratch(), before);
+});
+
+test('with no unset list, a run inherits every variable, even one named like a mutant', HANG, async () => {
+  const children = new Set<ChildProcess>();
+  const out = mkdtempSync(join(tmpdir(), 'agnipariksha-test-'));
+  const name = 'Stryker was here';
+  process.env[name] = 'kept';
+  try {
+    const script = `require('node:fs').writeFileSync(process.env.OUT, process.env[${JSON.stringify(name)}] ?? 'gone')`;
+    assert.deepEqual(await spawnStryker([node, '-e', script], children)('.', [], { OUT: join(out, 'env') }), { code: 0, seen: [] });
+    assert.equal(readFileSync(join(out, 'env'), 'utf8'), 'kept');
+  } finally {
+    delete process.env[name];
+    rmSync(out, { recursive: true, force: true });
+  }
+  assert.equal(children.size, 0);
+});
+
+test('stopAll stops a live run and removes its temp directory; a finished run is no longer live', HANG, async () => {
+  const children = new Set<ChildProcess>();
+  const out = mkdtempSync(join(tmpdir(), 'agnipariksha-test-'));
+  try {
+    const script = `require('node:fs').writeFileSync(process.env.OUT, process.env.TMPDIR); setTimeout(() => {}, 5000);`;
+    const running = spawnStryker([node, '-e', script], children)('.', [], { OUT: join(out, 'tmp') });
+    const tmp = await written(join(out, 'tmp'));
+    assert.equal(children.size, 1, 'the live child is held');
+    stopAll(children);
+    assert.equal(existsSync(tmp), false, 'its temp directory is removed at once');
+    const result = await running;
+    assert.equal(result.code, 1, 'SIGTERM ended it, long before its five seconds');
+    assert.equal(result.refusal, scratchVanished(tmp));
+    assert.equal(children.size, 0, 'a closed child is let go');
+
+    // Done, the run is no longer live: a directory at its old path is someone else's now.
+    mkdirSync(tmp);
+    stopAll(children);
+    assert.equal(existsSync(tmp), true);
+    rmSync(tmp, { recursive: true, force: true });
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test("realDeps runs the repository's own stryker, removes files that may be missing, and hooks the process's exit", HANG, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agnipariksha-'));
+  const logged: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  const listener = (): void => undefined;
+  try {
+    mkdirSync(join(dir, 'node_modules', '.bin'), { recursive: true });
+    writeFileSync(join(dir, 'node_modules', '.bin', 'stryker'), '#!/bin/sh\necho "$*" > "$OUT"\n');
+    chmodSync(join(dir, 'node_modules', '.bin', 'stryker'), 0o755);
+    const deps = realDeps(dir, new Set(), config);
+    assert.equal((await deps.runStryker(dir, ['run', 'x.mjs'], { OUT: join(dir, 'args') })).code, 0);
+    assert.equal(readFileSync(join(dir, 'args'), 'utf8'), 'run x.mjs\n');
+
+    assert.doesNotThrow(() => deps.removeFile(join(dir, 'missing')));
+    const lock = join(dir, 'lock');
+    writeFileSync(lock, '1');
+    deps.lock.remove(lock);
+    assert.equal(existsSync(lock), false);
+    assert.doesNotThrow(() => deps.lock.remove(lock));
+
+    const slept = deps.lock.sleep(1);
+    assert.ok(slept instanceof Promise);
+    await slept;
+
+    deps.atExit(listener);
+    assert.ok(process.listeners('exit').includes(listener));
+
+    process.stderr.write = ((chunk: string) => (logged.push(chunk), write(chunk))) as typeof process.stderr.write;
+    deps.lock.log('waiting');
+    process.stderr.write = write;
+    assert.deepEqual(logged, ['waiting\n']);
+  } finally {
+    process.stderr.write = write;
+    process.off('exit', listener);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('realDeps reads, writes, removes and locks on the real filesystem', HANG, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agnipariksha-'));
   try {
     const deps = realDeps(dir, new Set(), config);
@@ -664,29 +814,46 @@ test('realDeps reads, writes, removes and locks on the real filesystem', async (
   }
 });
 
-test('isEntry recognises this module only, through symlinks too', () => {
-  const cli = fileURLToPath(new URL('./cli.ts', import.meta.url));
-  assert.equal(isEntry(cli), true);
-  assert.equal(isEntry(fileURLToPath(import.meta.url)), false);
-  assert.equal(isEntry(undefined), false);
-  assert.equal(isEntry('/nonexistent/cli.ts'), false);
-  const dir = mkdtempSync(join(tmpdir(), 'agnipariksha-'));
-  try {
-    symlinkSync(cli, join(dir, 'linked.ts'));
-    assert.equal(isEntry(join(dir, 'linked.ts')), true);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+test('entry runs the arguments after the script, sets the exit code, exits 2 on a signal, and stops the children on exit', async () => {
+  const listeners = new Map<string, () => void>();
+  const exits: number[] = [];
+  const kills: string[] = [];
+  const proc: EntryProcess = {
+    argv: ['node', 'bin.js', '--files', 'a.ts'],
+    on: (event, listener) => listeners.set(event, listener),
+    exit: (code) => {
+      exits.push(code);
+    },
+  };
+  let ran: readonly string[] = [];
+  await entry(proc, async (argv, children) => {
+    ran = argv;
+    children.add({ kill: (signal: string) => kills.push(signal) } as unknown as ChildProcess);
+    return 3;
+  });
+  assert.deepEqual(ran, ['--files', 'a.ts']);
+  assert.equal(proc.exitCode, 3);
+  assert.deepEqual([...listeners.keys()], ['exit', 'SIGINT', 'SIGTERM', 'SIGHUP']);
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) listeners.get(signal)?.();
+  assert.deepEqual(exits, [2, 2, 2]);
+  listeners.get('exit')?.();
+  assert.deepEqual(kills, ['SIGTERM']);
 });
 
 test('bootstrap refuses with exit 2 on a bad argument, and outside a repository', async () => {
   assert.equal(await bootstrap(['--nope'], new Set()), 2);
   const here = process.cwd();
   const dir = mkdtempSync(join(tmpdir(), 'agnipariksha-'));
+  const printed: string[] = [];
+  const write = process.stdout.write.bind(process.stdout);
   try {
     process.chdir(dir);
+    process.stdout.write = ((chunk: string) => (printed.push(chunk), write(chunk))) as typeof process.stdout.write;
     assert.equal(await bootstrap([], new Set()), 2);
+    process.stdout.write = write;
+    assert.match(printed.join(''), /^agnipariksha REFUSED: Command failed: git rev-parse --show-toplevel\n/);
   } finally {
+    process.stdout.write = write;
     process.chdir(here);
     rmSync(dir, { recursive: true, force: true });
   }

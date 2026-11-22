@@ -561,26 +561,28 @@ def declared_units(tool, given):
 # Links in asks: an ask of the owner names each GitHub issue, pull request
 # or comment by its full URL, which opens from the sidebar, the phone and the
 # needs-you band; a bare number opens nothing. A bare reference is #N,
-# owner/repo#N, or PR, pull request, issue or comment followed by a number,
-# read with the URLs taken out. A github.com URL anywhere in the ask that
-# carries the same number covers it: /issues/N, /pull/N, #issuecomment-N and
-# the like, the number ending where its digits do.
+# owner/repo#N, PR, pull request, issue or comment followed by a number, or
+# a comment fragment on its own (#issuecomment-N, #discussion_rN ...), read
+# with the URLs taken out. A github.com URL anywhere in the ask that carries
+# the same number covers it, the number ending where its digits do.
 BARE_REF = re.compile(
     r"(?<![\w&/#.-])(?:[\w.-]+/[\w.-]+)?#(\d+)\b"
     r"|(?i:\b(?:PRs?|pull requests?|issues?|comments?)[ \t]+#?(\d+)\b)"
+    r"|(?<![\w/])#?(?:issuecomment-|discussion_r|discussioncomment-|pullrequestreview-)(\d+)\b"
 )
-GITHUB_HOST = re.compile(r"^https?://(www\.)?github\.com/", re.I)
-GITHUB_NUMBER = re.compile(
-    r"(?:/(?:issues|pull|discussions)/|#issuecomment-|#discussion_r|#discussioncomment-|#pullrequestreview-)(\d+)(?!\d)"
-)
+# A URL covers only as a resource on an owner/repository route: its issue,
+# pull request or discussion number, and the comment or review number of
+# its fragment. A search, a query or a malformed path covers nothing.
+GITHUB_RESOURCE = re.compile(r"^https?://(?:www\.)?github\.com/[\w.-]+/[\w.-]+/(?:issues|pull|discussions)/(\d+)(?![\w-])", re.I)
+GITHUB_FRAGMENT = re.compile(r"^(?:issuecomment-|discussion_r|discussioncomment-|pullrequestreview-)(\d+)(?!\d)")
 # A sentence of a closing message that asks the owner something: it opens
-# on an imperative (a thumbs-up, approve, read, look at, review, react,
-# merge, answer, confirm, decide, reply), or holds a thumbs-up, please, a
+# on an imperative (a thumbs-up, approve, read, look at, check, open,
+# review, react, merge, close, answer, confirm, decide, reply), or holds a thumbs-up, please, a
 # could-you, a needs-you or a your-approval anywhere, or holds a question
 # mark once its URLs are out. A line that opens "Needs you:" asks whole.
 ASK_OPENER = re.compile(
     r"^[\s>*_#-]*(?:\d+[.\x29][ \t]*)?(?:please[ \t]+)?"
-    r"(?:\U0001F44D|:\+1:|(?:approve|read|look at|review|react|merge|answer|confirm|decide|reply)"
+    r"(?:\U0001F44D|:\+1:|(?:approve|read|look at|check|open|review|react|merge|close|answer|confirm|decide|reply)"
     r"(?![\w-])(?![ \t]+(?:of|by|on|in|for|is|was|found|passed|failed)\b))",
     re.I,
 )
@@ -600,8 +602,12 @@ def linked_numbers(text):
     found = set()
     for match in URL.finditer(text or ""):
         url = match.group(0)
-        if GITHUB_HOST.match(url):
-            found.update(GITHUB_NUMBER.findall(url))
+        resource = GITHUB_RESOURCE.match(url)
+        if resource:
+            found.add(resource.group(1))
+            fragment = GITHUB_FRAGMENT.match(url.partition("#")[2])
+            if fragment:
+                found.add(fragment.group(1))
     return found
 
 def bare_refs(text, covered):
@@ -609,7 +615,7 @@ def bare_refs(text, covered):
     those no URL in covered (a set of numbers) carries."""
     refs = []
     for match in BARE_REF.finditer(URL.sub(" ", text or "")):
-        if (match.group(1) or match.group(2)) not in covered:
+        if (match.group(1) or match.group(2) or match.group(3)) not in covered:
             refs.append(match.group(0).strip())
     return list(dict.fromkeys(refs))
 

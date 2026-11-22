@@ -1249,6 +1249,11 @@ test('ask-gate links: an ask that names an issue, pull request or comment by num
     ['comment N on #N', '👍 comment 7068450411 on #376'],
     ['a URL that carries another number', '👍 #376: https://github.com/veda-hq/veda/issues/3760'],
     ['a URL off github.com', '👍 #376: https://example.com/issues/376'],
+    ['a comment fragment alone', '👍 #issuecomment-7068450411'],
+    ['a review comment fragment alone', '👍 discussion_r99 first'],
+    ['a GitHub search URL', '👍 #376: https://github.com/search?q=/issues/376'],
+    ['a GitHub URL with no owner/repository route', '👍 #376: https://github.com/issues/376'],
+    ['a comment number only in the query', '👍 comment 7 on https://github.com/veda-hq/veda/issues/376?c=issuecomment-7'],
   ] as const) {
     assert.equal(linkRun(WRAP_UP, goAhead(ask)).status, 2, `wrap_up: ${why}`);
     assert.equal(linkRun(ASK, askOf(ask)).status, 2, `AskUserQuestion: ${why}`);
@@ -1316,6 +1321,9 @@ test('ask-gate links on Stop: an ask by number alone goes back once, quoted, wit
     ['your approval', 'It waits on your approval on veda-hq/veda#376.'],
     ['a numbered step', 'Two things:\n\n1. Approve PR 382.\n2. Then tag it.'],
     ['the id a sentence before the question', 'PR #382 is green. Merge it?'],
+    ['check', 'Check PR #382.'],
+    ['open', 'Open #376 when you are back.'],
+    ['a comment fragment', 'Please 👍 #issuecomment-7068450411.'],
     ['a report, then a question, on one line', 'Fixed in #383. Anything else?'],
   ] as const) {
     assert.match(stopFeedbackOf(sideTurn(), message), /^give the full link\./, why);
@@ -1324,7 +1332,8 @@ test('ask-gate links on Stop: an ask by number alone goes back once, quoted, wit
 
 test('ask-gate links on Stop: a report, and an ask with its URL, end the turn', () => {
   for (const [why, message] of [
-    ['a report that mentions #383', 'Merged https://github.com/veda-hq/veda/pull/390. The old branch from #383 is deleted, and Secret scans pass again.'],
+    ['a URL that ends the sentence', `Please 👍 ${COMMENT_URL}.`],
+    ['a report that mentions #383','Merged https://github.com/veda-hq/veda/pull/390. The old branch from #383 is deleted, and Secret scans pass again.'],
     ['a report, then a question with no number', 'Fixed in #383.\n\nAnything else?'],
     ['a quoted ask in a report', 'The slip "👍 the Guards Proposal on #376 (comment 7068450411)" is now held.'],
     ['a curly-quoted ask in a report', 'The slip “Approve #376?” is now held.'],

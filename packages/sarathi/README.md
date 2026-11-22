@@ -326,12 +326,15 @@ GitHub issue, pull request or comment it refers to by its full URL, and the
 handler checks that before anything else, research, a look or a declared
 kind included:
 
-- **A bare reference** is `#N`, `owner/repo#N`, or `PR`, `pull request`,
+- **A bare reference** is `#N`, `owner/repo#N`, `PR`, `pull request`,
   `issue` or `comment` followed by a number (`PR 382`, `comment 7068450411`),
-  read with the URLs taken out. A `github.com` URL in the same ask that
-  carries the same number covers it: `/issues/N`, `/pull/N`,
-  `#issuecomment-N`, `#discussion_rN` and the like, so `#376 (https://…/issues/376)`
-  and `[veda-hq/veda#376](https://…/issues/376)` pass.
+  or a comment fragment on its own (`#issuecomment-N`, `discussion_rN`),
+  read with the URLs taken out. A `github.com` URL in the same ask covers
+  it when its path is an owner/repository resource carrying that number
+  (`/<owner>/<repo>/issues/N`, `/pull/N`, `/discussions/N`), or its
+  fragment carries it (`#issuecomment-N`, `#discussion_rN` and the like), so
+  `#376 (https://…/issues/376)` and `[veda-hq/veda#376](https://…/issues/376)`
+  pass. A search or a query string covers nothing.
 - **On PreToolUse**, an `AskUserQuestion` (questions, headers, options) or a
   `wrap_up` with an `ask` (its buttons too, and a URL in its `recap` covers,
   since the ask holds 100 characters) is refused with `BLOCKED: give the full
@@ -340,8 +343,8 @@ kind included:
   names nothing on GitHub is reworded (option 1, not #1).
 - **On Stop**, the closing message's asking sentences are read, fenced code,
   quoted lines, inline code and "quoted text" out: a sentence that opens on
-  an imperative (👍, approve, read, look at, review, react, merge, answer,
-  confirm, decide, reply), holds a 👍, `please`, a could-you, `needs you` or
+  an imperative (👍, approve, read, look at, check, open, review, react,
+  merge, close, answer, confirm, decide, reply), holds a 👍, `please`, a could-you, `needs you` or
   a your-approval, or holds a question mark. A line that opens `Needs you:`
   or ends on a question is read whole, so "PR #382 is green. Merge it?" is
   held; "Fixed in #383." with "Anything else?" in its own paragraph is not,

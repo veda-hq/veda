@@ -19,6 +19,15 @@ without suppressing them, and the traps of a gate scoped to a diff.
   test that passes a real dangerous path (such as `tmpdir()`) to a guarded delete is one mutant
   away from deleting it for real. Point `TMPDIR` or the target at a stand-in directory in such
   tests.
+- **An import-time entry guard starts a real gate.** With `if (isEntry(process.argv[1]))` at the
+  bottom of a CLI module, the mutant that forces the condition true runs the real CLI whenever a
+  test imports the module. For agnipariksha that is a real gate: it takes the machine lock and
+  rewrites `reports/agnipariksha/`, and the mutant reads as a Timeout that costs a 180 s retry.
+  Keep the entry in an exported function that a test calls with a fake process, and start it
+  from a bin shim beside it that holds no logic, has no suite, and that the package's `exports`
+  maps to `null`, so nothing can import it. agnipariksha's `src/bin.ts` and `entry()` in
+  `src/cli.ts` do this (veda#420).
+  <!-- held by: agnipariksha's smoke script (importing @veda-hq/agnipariksha/dist/bin.js must fail with ERR_PACKAGE_PATH_NOT_EXPORTED); other CLIs stay doc -->
 - **A hook-exported `GIT_DIR` and mutable guards.** Under a git hook `GIT_DIR` is exported and
   overrides cwd discovery, so a test that spawns `git init` with the default env re-initialises
   the real repository (symptoms: `core.bare=true`, a fixture `user.name` showing in the
@@ -79,6 +88,14 @@ without suppressing them, and the traps of a gate scoped to a diff.
   source-edited files, but when a file's covering test file changes it re-runs every mutant
   those tests cover, so near-zero reuse on test-editing pushes is expected, not a bug. The dry
   run always runs, so even full reuse costs a fraction of a full run.
+- **A test that swallows stdout hides failures from the tap runner's bail.** Under Stryker's
+  `tap` runner the test reporter's TAP lines go to stdout, so a test that replaces
+  `process.stdout.write` with a function that discards its input discards them too. If such a
+  test then hangs, the `not ok` of an earlier failed test never reaches the runner, `forceBail`
+  never fires, and the mutant costs its full 180 s retry. A capture must write through to the
+  real `write`. A mutant that hangs an async test also needs a per-test `timeout` (15 s in
+  agnipariksha's `src/cli.test.ts`), and every polling loop in a test needs a deadline, or the
+  failed suite never exits.
 
 ## Mutants Stryker misreports
 
@@ -106,6 +123,13 @@ without suppressing them, and the traps of a gate scoped to a diff.
   and can misjudge it. In tests of a rejection rule, assert the rejection reason, not only the
   line number; line-only assertions let mutants survive.
   <!-- when: error "stryNS_" -->
+- **Under a gate, every test runner shares TMPDIR.** Stryker's test runners all inherit the
+  run's one TMPDIR, so a test that lists `tmpdir()` before and after an action flakes under a
+  gate: other runners create and remove `agnipariksha-tmp-*` folders in it meanwhile. The flake
+  then kills mutants that change nothing, so the score overstates the suite. Give such a test a
+  TMPDIR of its own. To reproduce the flake, run N copies of the suite at once under one shared
+  TMPDIR, outside the repository: run inside it, the tests that check a run outside a
+  repository find one and start a real gate.
 
 ## Killing survivors without suppressing them
 

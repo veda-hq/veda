@@ -114,7 +114,8 @@ before(() => {
   chmodSync(join(repo, 'node_modules', '.bin', 'niyam'), 0o755);
   // A stand-in for the pinned agnipariksha's bin: it records its arguments,
   // and refuses when AGNIPARIKSHA_REFUSE is set, as a blocking mutant does.
-  writeFileSync(join(repo, 'node_modules', '.bin', 'agnipariksha'), '#!/bin/sh\necho "agnipariksha $*" >> "$AGNIPARIKSHA_CALLS"\n[ -z "${AGNIPARIKSHA_REFUSE:-}" ]\n');
+  // It also records its stdin, where the hook hands it git's ref lines (--pushed-refs).
+  writeFileSync(join(repo, 'node_modules', '.bin', 'agnipariksha'), '#!/bin/sh\necho "agnipariksha $*" >> "$AGNIPARIKSHA_CALLS"\ncat >> "$AGNIPARIKSHA_CALLS.stdin"\n[ -z "${AGNIPARIKSHA_REFUSE:-}" ]\n');
   chmodSync(join(repo, 'node_modules', '.bin', 'agnipariksha'), 0o755);
   writeFileSync(join(repo, 'package.json'), JSON.stringify({ devDependencies: { '@veda-hq/dvara': PIN, '@veda-hq/niyam': NIYAM_PIN } }));
   // veda's own stage lists, so a hook that strays from them fails here.
@@ -186,7 +187,9 @@ describe('pre-push', () => {
     assert.equal(result.code, 0, result.out);
     assert.equal(readFileSync(guardsCalls, 'utf8'), 'guards \n');
     // The first push has no origin/main yet, so the gate diffs against HEAD.
-    assert.equal(readFileSync(agniparikshaCalls, 'utf8'), 'agnipariksha --tracked-only --base HEAD\n');
+    assert.equal(readFileSync(agniparikshaCalls, 'utf8'), 'agnipariksha --tracked-only --pushed-refs --base HEAD\n');
+    // git's ref line for the push, handed over on stdin.
+    assert.equal(readFileSync(`${agniparikshaCalls}.stdin`, 'utf8'), `refs/heads/main ${git(repo, 'rev-parse', 'HEAD').stdout.trim()} refs/heads/main ${'0'.repeat(40)}\n`);
     assert.ok(!existsSync(pnpmCalls), 'the hook runs scripts/guards.sh itself, never a package.json script');
     assert.ok(!existsSync(niyamCalls), 'niyam runs only once .github/niyam.json is there');
   });
@@ -207,7 +210,7 @@ describe('pre-push', () => {
     assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
     // The gate ran on this push too, after the guards, with origin/main
     // there by now, so the refusal is the gate's.
-    assert.equal(readFileSync(agniparikshaCalls, 'utf8').split('\n').at(-2), 'agnipariksha --tracked-only --base origin/main');
+    assert.equal(readFileSync(agniparikshaCalls, 'utf8').split('\n').at(-2), 'agnipariksha --tracked-only --pushed-refs --base origin/main');
     assert.equal(readFileSync(guardsCalls, 'utf8'), 'guards \nguards \nguards \n');
     assert.notEqual(git(remote, 'rev-parse', 'main').stdout, git(repo, 'rev-parse', 'main').stdout);
   });

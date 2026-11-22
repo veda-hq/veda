@@ -10,7 +10,8 @@ export interface Changes {
   alwaysJudged: Set<string>;
 }
 
-const entries = (out: string): string[] => out.split('\0').filter((entry) => entry !== '');
+/** The paths of a `-z` git listing: NUL-separated, the empty one after the last NUL dropped. */
+export const entries = (out: string): string[] => out.split('\0').filter((entry) => entry !== '');
 
 /**
  * Merge-base of HEAD with `base` (default `upstream`) → working tree, plus

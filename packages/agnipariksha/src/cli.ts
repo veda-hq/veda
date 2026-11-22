@@ -1,24 +1,26 @@
-#!/usr/bin/env node
 /**
- * agnipariksha: a mutation gate over stock StrykerJS.
+ * agnipariksha: a mutation gate over stock StrykerJS. The bin, bin.ts, only
+ * calls `entry` here.
  *
- * Usage: agnipariksha [--base <sha>] [--files a,b] [--lane <name>[,<name>]]... [--tracked-only] [--no-reuse]
+ * Usage: agnipariksha [--base <sha>] [--files a,b] [--lane <name>[,<name>]]... [--tracked-only] [--pushed-refs] [--no-reuse]
  * The lanes come from agnipariksha.json at the repository root (config.ts);
  * `--lane`, repeatable, runs only the lanes it names. `--tracked-only` leaves
- * out untracked files, which a push does not carry.
+ * out untracked files, which a push does not carry. `--pushed-refs` reads
+ * git's pre-push ref lines on stdin and refuses a push of anything but the
+ * checked-out HEAD from a clean tracked tree (pushed-refs.ts).
  * Exit: 0 pass, 1 a blocking mutant, 2 refused or unable to judge.
  */
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { StringDecoder } from 'node:string_decoder';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { lanesOf, loadConfig, type Config } from './config.ts';
-import { changedFiles, commentOnly, type Changes, type Git } from './changed-files.ts';
+import { changedFiles, commentOnly, entries, type Git } from './changed-files.ts';
 import { judgeLane, MARKERS, overCutoff, planLane, type Lane, type LaneDeps, type LaneResult, type Plan } from './lanes.ts';
 import { acquireLock, pidAlive, type LockDeps } from './machine-lock.ts';
+import { checkPushedRefs, type PushCheck } from './pushed-refs.ts';
 import { incrementalKey, keyInputPaths, type KeyPolicy } from './reuse-key.ts';
 import { failedTestReader } from './failed-tests.ts';
 import { notTheOwner, ownerOf, siblingSuites, type Exists } from './suite-owner.ts';
@@ -36,24 +38,32 @@ export interface Args {
   reuse: boolean;
   /** Leave out untracked files: a push carries none (pre-push passes it). */
   trackedOnly: boolean;
+  /** Read git's pre-push ref lines on stdin, and judge only a push of HEAD from a clean tracked tree. */
+  pushedRefs: boolean;
 }
 
 const list = (value: string): string[] => value.split(',').filter((item) => item !== '');
 
 export function parseArgs(argv: readonly string[]): Args | string {
-  const args: Args = { reuse: true, trackedOnly: false };
-  for (let i = 0; i < argv.length; i += 1) {
-    const flag = argv[i];
+  const args: Args = { reuse: true, trackedOnly: false, pushedRefs: false };
+  // The loop steps itself, so no change to its body can make it spin in place.
+  let isValue = false;
+  for (const [i, flag] of argv.entries()) {
+    if (isValue) {
+      isValue = false;
+      continue;
+    }
     const value = argv[i + 1];
     if (flag === '--no-reuse') args.reuse = false;
     else if (flag === '--tracked-only') args.trackedOnly = true;
+    else if (flag === '--pushed-refs') args.pushedRefs = true;
     else if ((flag === '--base' || flag === '--files' || flag === '--lane') && value !== undefined && !value.startsWith('--')) {
+      isValue = true;
       if (flag === '--base') args.base = value;
       else if (flag === '--files') args.files = list(value);
       else if (list(value).length === 0) return '--lane names no lane';
       else args.lanes = [...(args.lanes ?? []), ...list(value)];
-      i += 1;
-    } else return `unsupported or incomplete argument "${String(flag)}"`;
+    } else return `unsupported or incomplete argument "${flag}"`;
   }
   return args;
 }
@@ -83,6 +93,8 @@ export interface CliDeps extends Omit<LaneDeps, 'reuseKey'> {
   /** Run `fn` when the process exits, signals included. */
   atExit: (fn: () => void) => void;
   log: (line: string) => void;
+  /** All of stdin: git's pre-push ref lines, read only under `--pushed-refs`. */
+  readStdin: () => string;
 }
 
 /**
@@ -102,8 +114,8 @@ export function unfinishedMerge(
   const gitPath = (name: string): string => resolve(root, git(['rev-parse', '--git-path', name]).trim());
   const headPath = gitPath('MERGE_HEAD');
   if (!pathExists(headPath)) return null;
-  const sha = readFile(headPath)?.trim().split(/\s+/)[0] ?? '';
-  const subject = readFile(gitPath('MERGE_MSG'))?.split('\n')[0]?.trim() ?? '';
+  const sha = readFile(headPath)?.trim().split(/\s/)[0] ?? '';
+  const subject = ((readFile(gitPath('MERGE_MSG')) ?? '').split('\n')[0] as string).trim();
   const merge = `${subject === '' ? 'a merge' : `"${subject}"`} (${sha === '' ? `${headPath}, unreadable` : `MERGE_HEAD ${sha.slice(0, 12)}`})`;
   return `${merge} is not committed: the working tree is half-merged, so a verdict now would say nothing about the branch. Commit the merge (git commit) or abort it (git merge --abort), then run again`;
 }
@@ -125,6 +137,25 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
   if (typeof lanes === 'string') {
     deps.log(`agnipariksha REFUSED: ${lanes}`);
     return 2;
+  }
+  if (args.pushedRefs) {
+    // Before the lock, as a merge's refusal is: a run that only refuses never waits.
+    let push: PushCheck;
+    try {
+      push = checkPushedRefs(deps.readStdin(), deps.git);
+    } catch (error: unknown) {
+      // fail-open: ref lines that cannot be read, or shas git cannot resolve, refuse (exit 2).
+      deps.log(`agnipariksha REFUSED: ${(error as Error).message}`);
+      return 2;
+    }
+    if (push.verdict === 'refuse') {
+      deps.log(`agnipariksha REFUSED: ${push.reason}`);
+      return 2;
+    }
+    if (push.verdict === 'nothing') {
+      deps.log(push.line);
+      return 0;
+    }
   }
   let merging: string | null;
   try {
@@ -161,24 +192,22 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
 }
 
 async function judgeAll(args: Args, deps: CliDeps): Promise<number> {
-  const changes: Changes =
-    args.files === undefined
-      ? changedFiles(deps.git, deps.upstream, args.base, args.trackedOnly)
-      : { base: args.base ?? '', files: args.files, alwaysJudged: new Set(args.files) };
+  // `--files` names the files and judges each whatever its diff, so it needs no base and nothing is comment-only.
+  const changes = args.files === undefined ? changedFiles(deps.git, deps.upstream, args.base, args.trackedOnly) : null;
+  const files = changes?.files ?? (args.files as string[]);
   let tracked: string[] | undefined;
-  const listTracked = (): string[] =>
-    (tracked ??= deps.git(['ls-files', '-z', '--cached', '--others', '--exclude-standard']).split('\0').filter(Boolean));
+  const listTracked = (): string[] => (tracked ??= entries(deps.git(['ls-files', '-z', '--cached', '--others', '--exclude-standard'])));
   const laneDeps: LaneDeps = {
     ...deps,
     reuseKey: (lane) =>
       args.reuse ? incrementalKey(keyInputPaths(lane.cwd, lane.config, listTracked(), deps.keyPolicy), (path) => deps.readFile(join(deps.root, path))) : null,
   };
   const isCommentOnly = (file: string): boolean =>
-    !changes.alwaysJudged.has(file) && commentOnly(deps.git(['diff', '-U0', '--no-color', changes.base, '--', file]));
+    changes !== null && !changes.alwaysJudged.has(file) && commentOnly(deps.git(['diff', '-U0', '--no-color', changes.base, '--', file]));
 
   const totals = { counted: 0, caught: 0, blocking: 0, refused: 0, lanes: 0, cutOff: 0 };
   for (const lane of deps.lanes) {
-    const plan = planLane(lane, changes.files, deps.exists, isCommentOnly);
+    const plan = planLane(lane, files, deps.exists, isCommentOnly);
     for (const line of plan.notJudged) deps.log(`  ${line}`);
     if (plan.targets.length === 0) {
       deps.log(`${lane.name}: nothing to judge - not run`);
@@ -201,8 +230,10 @@ async function judgeAll(args: Args, deps: CliDeps): Promise<number> {
     const narrowed = new Set(result.ownSuites);
     for (const file of new Set(result.judgement.blocking.map((m) => m.file).filter((file) => narrowed.has(file)))) {
       const owner = ownerOf(file, deps.exists);
-      const siblings = owner === null ? [] : siblingSuites(file, listTracked());
-      if (owner !== null && siblings.length > 0) deps.log(`  ${notTheOwner(file, owner, siblings)}`);
+      // A suite removed during the run owns nothing now, so there is no owner to name.
+      if (owner === null) continue;
+      const siblings = siblingSuites(file, listTracked());
+      if (siblings.length > 0) deps.log(`  ${notTheOwner(file, owner, siblings)}`);
     }
     for (const reason of result.refusals) deps.log(`  REFUSED ${lane.name}: ${reason}`);
     deps.log(summaryLine(plan, result));
@@ -241,8 +272,8 @@ export function scratchTmpEnv(dir: string): Record<(typeof TMPDIR_KEYS)[number],
 /** Temp directories of runs still going, removed if the gate exits first. */
 const liveScratch = new Set<string>();
 
-/** Remove a run's temp directory; one that cannot be removed is left, never failing the run. */
-export function removeScratchTmp(dir: string, rm: (path: string) => void = (path) => rmSync(path, { recursive: true, force: true })): void {
+/** Remove a run's temp directory; one that cannot be removed, or is gone already, is left, never failing the run. */
+export function removeScratchTmp(dir: string, rm: (path: string) => void = (path) => rmSync(path, { recursive: true })): void {
   liveScratch.delete(dir);
   try {
     rm(dir);
@@ -265,6 +296,8 @@ export const scratchVanished = (dir: string): string =>
 
 /** The longest partial line a run's tee holds while it waits for the newline. */
 export const MAX_LINE = 4096;
+/** A tee's line before its first character and after each newline. */
+const NO_TEXT = '';
 
 /** The gate's own environment, less the names `unset` removes. */
 export function inheritedEnv(env: NodeJS.ProcessEnv, unset: readonly string[]): NodeJS.ProcessEnv {
@@ -283,7 +316,6 @@ export function spawnStryker(
   markers: readonly string[] = MARKERS,
   unset: readonly string[] = [],
 ): LaneDeps['runStryker'] {
-  const keep = Math.max(...markers.map((marker) => marker.length));
   return (cwd, args, env) =>
     new Promise((done) => {
       // Short, under the gate's own tmpdir(): a Unix socket a test opens under it stays inside macOS's 104-byte limit.
@@ -299,28 +331,21 @@ export function spawnStryker(
       const failed = failedTestReader();
       const flushes: (() => void)[] = [];
       const tee = (out: NodeJS.WritableStream) => {
-        // One decoder a stream: a character split across two chunks is joined, never two U+FFFD.
-        const decoder = new StringDecoder('utf8');
-        let tail = '';
-        // Whole lines go to the reader. A line past the cap keeps its first MAX_LINE characters and
-        // drops the rest up to its newline, however the chunks split it.
-        let line = '';
-        let over = false;
+        // One decoder a stream (UTF-8, its default): a character split across two chunks is joined, never two U+FFFD.
+        const decoder = new StringDecoder();
+        // Whole lines go to the markers and the reader; every marker is one line. A line past the cap
+        // keeps its first MAX_LINE characters and drops the rest up to its newline, however the chunks split it.
+        let line = NO_TEXT;
         const add = (text: string): void => {
-          if (over) return;
-          line += text;
-          if (line.length > MAX_LINE) {
-            line = line.slice(0, MAX_LINE);
-            over = true;
-          }
+          line = (line + text).slice(0, MAX_LINE);
         };
         const end = (): void => {
+          for (const marker of markers) if (line.includes(marker)) seen.add(marker);
           failed.read(line);
-          line = '';
-          over = false;
+          line = NO_TEXT;
         };
         const take = (text: string): void => {
-          const [first = '', ...rest] = text.split('\n');
+          const [first, ...rest] = text.split('\n') as [string, ...string[]];
           add(first);
           for (const part of rest) {
             end();
@@ -333,15 +358,11 @@ export function spawnStryker(
         });
         return (chunk: Buffer) => {
           out.write(chunk);
-          const decoded = decoder.write(chunk);
-          const text = tail + decoded;
-          for (const marker of markers) if (text.includes(marker)) seen.add(marker);
-          tail = text.slice(-keep);
-          take(decoded);
+          take(decoder.write(chunk));
         };
       };
-      child.stdout?.on('data', tee(process.stdout));
-      child.stderr?.on('data', tee(process.stderr));
+      child.stdout.on('data', tee(process.stdout));
+      child.stderr.on('data', tee(process.stderr));
       child.on('error', () => {
         removeScratchTmp(scratch);
         done({ code: 127, seen: [] });
@@ -364,11 +385,12 @@ export function readText(path: string): string | undefined {
     return readFileSync(path, 'utf8');
   } catch {
     // fail-open: callers read undefined as missing, and refuse or run in full.
-    return undefined;
   }
+  return undefined;
 }
 
-export function realDeps(root: string, children: Set<ChildProcess>, config: Config): CliDeps {
+/** `stdin` is where `readStdin` reads: fd 0, or a file in a test. */
+export function realDeps(root: string, children: Set<ChildProcess>, config: Config, stdin: number | string = 0): CliDeps {
   const readFile = readText;
   const writeFile = (path: string, text: string): void => {
     mkdirSync(dirname(path), { recursive: true });
@@ -391,6 +413,7 @@ export function realDeps(root: string, children: Set<ChildProcess>, config: Conf
     keyPolicy: config.reuseKey,
     atExit: (fn) => process.on('exit', fn),
     log: (line) => process.stdout.write(`${line}\n`),
+    readStdin: () => readFileSync(stdin, 'utf8'),
     lock: {
       create: (path, text) => {
         try {
@@ -409,16 +432,6 @@ export function realDeps(root: string, children: Set<ChildProcess>, config: Conf
       log: (line) => process.stderr.write(`${line}\n`),
     },
   };
-}
-
-/** Whether this module is the process entry (under `node` or `tsx`). */
-export function isEntry(argv1: string | undefined): boolean {
-  try {
-    return argv1 !== undefined && realpathSync(argv1) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    // fail-open: a path that cannot be resolved is not this module.
-    return false;
-  }
 }
 
 /**
@@ -441,12 +454,28 @@ export async function bootstrap(argv: readonly string[], children: Set<ChildProc
   }
 }
 
-if (isEntry(process.argv[1])) {
+/** What `entry` needs of its process: the bin passes `process`, a test a fake. */
+export interface EntryProcess {
+  readonly argv: readonly string[];
+  exitCode?: number | string | null | undefined;
+  on: (event: string, listener: () => void) => unknown;
+  exit: (code: number) => void;
+}
+
+/** The gate is exiting: stop its Stryker children and remove the live runs' temp directories. */
+export function stopAll(children: Set<ChildProcess>): void {
+  for (const child of children) child.kill('SIGTERM');
+  removeLiveScratch();
+}
+
+/**
+ * The bin's whole work (bin.ts only calls this): on exit stop the children,
+ * on a signal exit 2, and set the exit code `run` returns. Imported, cli.ts
+ * runs nothing, so no test's import starts a gate.
+ */
+export async function entry(proc: EntryProcess, run: typeof bootstrap = bootstrap): Promise<void> {
   const children = new Set<ChildProcess>();
-  process.on('exit', () => {
-    children.forEach((child) => child.kill('SIGTERM'));
-    removeLiveScratch();
-  });
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => process.exit(2));
-  process.exitCode = await bootstrap(process.argv.slice(2), children);
+  proc.on('exit', () => stopAll(children));
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) proc.on(signal, () => proc.exit(2));
+  proc.exitCode = await run(proc.argv.slice(2), children);
 }

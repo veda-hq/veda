@@ -182,8 +182,8 @@ importers:
         specifier: 10.1.1
         version: 10.1.1(@stryker-mutator/core@10.1.1(@types/node@24.19.2))
       '@veda-hq/agnipariksha':
-        specifier: 0.7.9
-        version: 0.7.9(@stryker-mutator/core@10.1.1(@types/node@24.19.2))
+        specifier: 0.8.5
+        version: 0.8.5(@stryker-mutator/core@10.1.1(@types/node@24.19.2))
       '@veda-hq/dvara':
         specifier: 0.5.16
         version: 0.5.16(supports-color@7.2.0)
@@ -1032,8 +1032,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@veda-hq/agnipariksha@0.7.9':
-    resolution: {integrity: sha512-TNEON+bf0E7PFtSjv2oQVd/ayDfiBqLoevK9xrsOi4AqmmkR+seKAUxVclGOD9rrRHNiapg36p237lKQu8K3+A==}
+  '@veda-hq/agnipariksha@0.8.5':
+    resolution: {integrity: sha512-6A9SC5UK6c7wi9mWce08piJU2mJOrPg4QStQXQpvnZEI+koOqa1o/OdzmXTZ3jyv2wxM71UKvDv4XuZ8HP1mLw==}
     engines: {node: '>=24.15'}
     hasBin: true
     peerDependencies:
@@ -2808,7 +2808,7 @@ snapshots:
   '@typescript/typescript-win32-x64@7.0.2':
     optional: true
 
-  '@veda-hq/agnipariksha@0.7.9(@stryker-mutator/core@10.1.1(@types/node@24.19.2))':
+  '@veda-hq/agnipariksha@0.8.5(@stryker-mutator/core@10.1.1(@types/node@24.19.2))':
     dependencies:
       '@stryker-mutator/core': 10.1.1(@types/node@24.19.2)
 

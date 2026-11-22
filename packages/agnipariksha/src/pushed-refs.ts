@@ -17,7 +17,8 @@ export type PushCheck =
 
 /** A local sha of all zeros: the line deletes a remote ref and carries no commit. */
 const DELETION = /^0+$/;
-const HEX = /^[0-9a-f]+$/;
+/** git's pre-push line, every field present: a ref, a sha, a ref, a sha (of any hash's length). */
+const LINE = /^(\S+) ([0-9a-f]+) \S+ [0-9a-f]+$/;
 
 export const NOTHING_PUSHED = 'agnipariksha: the push carries no commit (up to date, or deletions only) - nothing to judge';
 
@@ -30,11 +31,11 @@ export const NOTHING_PUSHED = 'agnipariksha: the push carries no commit (up to d
 export function checkPushedRefs(text: string, git: Git): PushCheck {
   const pushed: { ref: string; sha: string }[] = [];
   for (const line of text.split('\n').filter((entry) => entry !== '')) {
-    const fields = line.split(' ');
-    if (fields.length !== 4 || !HEX.test(fields[1] as string)) {
+    const match = LINE.exec(line);
+    if (match === null) {
       return { verdict: 'refuse', reason: `--pushed-refs cannot read the ref line "${line}": git's pre-push lines are "<local ref> <local sha> <remote ref> <remote sha>"` };
     }
-    const [ref, sha] = fields as [string, string];
+    const [, ref, sha] = match as unknown as [string, string, string];
     if (!DELETION.test(sha)) pushed.push({ ref, sha });
   }
   if (pushed.length === 0) return { verdict: 'nothing', line: NOTHING_PUSHED };

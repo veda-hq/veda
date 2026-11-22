@@ -714,13 +714,15 @@ test('with no unset list, a run inherits every variable, even one named like a m
   const children = new Set<ChildProcess>();
   const out = mkdtempSync(join(tmpdir(), 'agnipariksha-test-'));
   const name = 'Stryker was here';
+  const saved = process.env[name];
   process.env[name] = 'kept';
   try {
     const script = `require('node:fs').writeFileSync(process.env.OUT, process.env[${JSON.stringify(name)}] ?? 'gone')`;
     assert.deepEqual(await spawnStryker([node, '-e', script], children)('.', [], { OUT: join(out, 'env') }), { code: 0, seen: [] });
     assert.equal(readFileSync(join(out, 'env'), 'utf8'), 'kept');
   } finally {
-    delete process.env[name];
+    if (saved === undefined) delete process.env[name];
+    else process.env[name] = saved;
     rmSync(out, { recursive: true, force: true });
   }
   assert.equal(children.size, 0);

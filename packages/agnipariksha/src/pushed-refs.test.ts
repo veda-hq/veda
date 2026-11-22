@@ -86,6 +86,11 @@ test('a line not in git\'s shape refuses, quoting it, and asks git nothing', () 
     `refs/heads/feat HEAD refs/heads/feat ${ZERO}`,
     `refs/heads/feat x${HEAD} refs/heads/feat ${ZERO}`,
     `refs/heads/feat ${HEAD}x refs/heads/feat ${ZERO}`,
+    `extra refs/heads/feat ${HEAD} refs/heads/feat ${ZERO}`,
+    ` ${HEAD} refs/heads/feat ${ZERO}`,
+    `refs/heads/feat ${HEAD}  ${ZERO}`,
+    `refs/heads/feat ${HEAD} refs/heads/feat xyz`,
+    `refs/heads/feat ${HEAD} refs/heads/feat `,
   ]) {
     assert.deepEqual(checkPushedRefs(`refs/heads/main ${HEAD} refs/heads/main ${ZERO}\n${line}\n`, git), unreadable(line));
   }

@@ -26,10 +26,11 @@ runs the repository's own `node_modules/.bin/stryker`.
   refusal names the merge; commit it or abort it, then run again.
 - **Only what the push carries, under `--pushed-refs`.** Stryker mutates
   the files on disk, so the gate judges the checked-out `HEAD` and its
-  working tree. A pre-push hook passes `--pushed-refs` and git's ref lines
-  (`<local ref> <local sha> <remote ref> <remote sha>`) on stdin, as in
-  `agnipariksha --tracked-only --pushed-refs --base "$base" <<< "$refs"`.
-  The gate then refuses with exit 2, before the machine lock and judging
+  working tree. To judge only what a push carries, a pre-push hook has to
+  pass `--pushed-refs` and git's ref lines
+  (`<local ref> <local sha> <remote ref> <remote sha>`) on stdin itself, as
+  in `agnipariksha --tracked-only --pushed-refs --base "$base" <<< "$refs"`,
+  where `$refs` holds the hook's own stdin. With it, the gate refuses with exit 2, before the machine lock and judging
   nothing, when a pushed sha is not `HEAD` (an annotated tag at `HEAD`
   passes), naming the ref: check it out and push again. It refuses too when
   a tracked file differs from `HEAD`, staged or not, naming the files:

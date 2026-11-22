@@ -94,7 +94,7 @@ the last one winning and read from the shell's folder, and `-w`, `-r` and
 `touch` in `.`, and such a line is unproven. So is one whose
 subcommand options this guard does not list before the program or script
 (for `pack`, anywhere on the line), or one with `--store-dir`, which pnpm
-reads from the workspace root.
+reads from the workspace root (from `--dir` only outside a workspace).
 
 pariksha's checks that only read their path options (`boundary`:
 `--root`, `--deny`; `own-provenance`: `--config`, `--root`) do not name

@@ -1967,6 +1967,22 @@ class ReportedFalseRefusalsTest(ProtectedFixture):
             with self.subTest(command=command, cwd="main"):
                 self.refused(self.bash(command, self.main), NOT_OWNED)
 
+    def test_a_plugin_clis_agent_wait_stays_refused(self) -> None:
+        # The fourth: a plugin's CLI on PATH, its result file outside every
+        # checkout. Its name is a stand-in (the real one is on this
+        # repository's deny list); kavach reads any program it does not know
+        # the same way, from a Bash call or a Monitor command alike.
+        results = self.external / "agents" / "results"
+        results.mkdir(parents=True)
+        for command in (
+            f"plugin-cli agent wait --out {results}/run.json",
+            f"plugin-cli agent wait --out '{results}/run.json' --timeout 60",
+        ):
+            with self.subTest(command=command):
+                self.refused(self.bash(command), UNRESOLVED, "a program whose writes the guard does not know")
+        # The wait the plugin's router can give instead already passes.
+        self.runs(f"until [ -e {results}/run.json ] || [ ! -e {results}/run.json.running ]; do sleep 1; done")
+
     def test_git_log_and_show_take_their_search_options(self) -> None:
         # The reported line: kavach 0.7.19 knew no `-i`. The exact-name
         # list stays, since some options run programs (`--ext-diff`,

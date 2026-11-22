@@ -75,12 +75,13 @@ main checkout's config file, with the value `.githooks`. git uses the last
 line it prints. A `global` or `system` line comes first and loses to the
 `local` one. The repository has `extensions.worktreeConfig` on, so a
 `worktree` line, from that worktree's own `config.worktree`, comes last and
-wins there, and that worktree runs another checkout's hooks. The Claude
-desktop app writes one, an absolute path to the main checkout's
-`.githooks`, into each worktree it creates, and again when a session opens
-there. sarathi's `worktree-hooks-path.sh`, the first SessionStart handler
-in `.claude/sarathi.json`, clears that scoped line in the session's own
-checkout and says so (veda#425). A `worktree` line still there after
+wins there, and that worktree skips its own branch's `.githooks`. Tools
+that create worktrees write one. The Claude desktop app writes an absolute
+path to the main checkout's `.githooks` into each worktree it creates, and
+again when a session opens there. Claude Code's EnterWorktree and Codex
+have been seen doing it too. sarathi's `worktree-hooks-path.sh`, the first
+SessionStart handler in `.claude/sarathi.json`, clears the scoped line in
+the session's own checkout, whatever wrote it, and says so (veda#425). A `worktree` line still there after
 session start, or a `global` or `system` one: tell Alok, and leave the
 setting alone. Never run `git config` on another worktree.
 

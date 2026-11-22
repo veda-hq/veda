@@ -692,10 +692,21 @@ test("a run's last partial character reads as U+FFFD, and a spawn that fails lea
   // On stderr: a line left open on stdout would run into the test reporter's next line.
   const partial = `process.stderr.write(${JSON.stringify(`${FAILED_TESTS_HEADER}\n\tname`)}); process.stderr.write(Buffer.from([0xc3]));`;
   assert.deepEqual((await spawnStryker([node, '-e', partial], children)('.', [], {})).failedTests, ['name�']);
-  const scratch = (): string[] => readdirSync(tmpdir()).filter((name) => name.startsWith(SCRATCH_TMP_PREFIX));
-  const before = scratch();
-  assert.deepEqual(await spawnStryker(['/nonexistent/stryker'], children)('.', [], {}), { code: 127, seen: [] });
-  assert.deepEqual(scratch(), before);
+  // A TMPDIR of its own: under a gate run, every test runner shares the inherited one and makes scratch in it.
+  const keys = ['TMPDIR', 'TEMP', 'TMP'] as const;
+  const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const owned = mkdtempSync(join(tmpdir(), 'agnipariksha-test-'));
+  for (const key of keys) process.env[key] = owned;
+  try {
+    assert.deepEqual(await spawnStryker(['/nonexistent/stryker'], children)('.', [], {}), { code: 127, seen: [] });
+    assert.deepEqual(readdirSync(owned), [], 'the failed spawn left nothing behind');
+  } finally {
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+    rmSync(owned, { recursive: true, force: true });
+  }
 });
 
 test('with no unset list, a run inherits every variable, even one named like a mutant', HANG, async () => {

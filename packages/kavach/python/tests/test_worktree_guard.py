@@ -23,6 +23,7 @@ from unittest import mock
 
 from kavach import refusal_log
 
+from .outside import outside
 from .test_boundary import (
     ADAPTER,
     ADAPTER_PATH,
@@ -238,6 +239,7 @@ class AdapterTest(BoundaryFixture):
         missing_input = subprocess.run(
             [sys.executable, str(ADAPTER_PATH)],
             input=json.dumps({"cwd": str(self.claude), "tool_name": "Bash"}),
+            cwd=outside(self),
             capture_output=True,
             text=True,
             check=False,
@@ -1941,6 +1943,7 @@ class ClaudeAgentMemoryTest(GuardFixture):
             input=json.dumps(
                 {"cwd": str(cwd), "tool_name": tool_name, "tool_input": tool_input}
             ),
+            cwd=outside(self),
             capture_output=True,
             text=True,
             check=False,
@@ -2233,6 +2236,7 @@ class SessionFoldersTest(GuardFixture):
         return subprocess.run(
             [sys.executable, str(ADAPTER_PATH)],
             input=json.dumps(payload),
+            cwd=outside(self),
             capture_output=True,
             text=True,
             check=False,
@@ -2517,6 +2521,7 @@ class OtherSessionsWorktreeTest(GuardFixture):
         return subprocess.run(
             [sys.executable, str(ADAPTER_PATH)],
             input=json.dumps(payload),
+            cwd=outside(self),
             capture_output=True,
             text=True,
             check=False,
@@ -2755,6 +2760,7 @@ class ClaudeHarnessStateTest(GuardFixture):
             input=json.dumps(
                 {"cwd": str(cwd), "tool_name": tool_name, "tool_input": tool_input}
             ),
+            cwd=outside(self),
             capture_output=True,
             text=True,
             check=False,
@@ -2964,6 +2970,7 @@ class ClaudeHarnessStateTest(GuardFixture):
                     },
                 }
             ),
+            cwd=outside(self),
             capture_output=True,
             text=True,
             check=False,

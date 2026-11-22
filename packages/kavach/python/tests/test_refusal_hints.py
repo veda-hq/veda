@@ -11,7 +11,6 @@ are kept, so earlier logs and searches still match.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -20,6 +19,7 @@ from pathlib import Path
 
 from kavach import git_safety
 
+from .outside import outside
 from .test_boundary import ADAPTER, BoundaryFixture, hermetic_git_env
 
 COMMAND_GUARD = Path(__file__).resolve().parents[1] / "kavach" / "command_guard.py"
@@ -235,12 +235,15 @@ class CommandGuardNamesTheWayOut(unittest.TestCase):
                 self.assertEqual(git_safety.with_way_out(reason), reason)
 
     def run_guard(self, command: str) -> subprocess.CompletedProcess[str]:
+        # Outside every repository, the call's cwd and the child's both: a
+        # mutant of the log's off switch must not log to the running one (#387).
         env = {**hermetic_git_env(), "KAVACH_REFUSAL_LOG_OFF": "1"}
         env.pop("KAVACH_CONFIG", None)
+        away = str(outside(self))
         return subprocess.run(
             [sys.executable, str(COMMAND_GUARD)],
-            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": os.getcwd()}),
-            capture_output=True, text=True, env=env, check=False, timeout=120,
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": away}),
+            cwd=away, capture_output=True, text=True, env=env, check=False, timeout=120,
         )
 
     def test_the_hook_appends_the_way_out(self) -> None:

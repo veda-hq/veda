@@ -26,8 +26,9 @@ from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
+from .outside import outside
 
-PACKAGE = Path(__file__).resolve().parents[1] / "kavach"
+PACKAGE =Path(__file__).resolve().parents[1] / "kavach"
 MODULE_PATH = PACKAGE / "boundary.py"
 SPEC = importlib.util.spec_from_file_location("kavach_boundary_under_test", MODULE_PATH)
 assert SPEC and SPEC.loader
@@ -196,13 +197,15 @@ class BoundaryFixture(GuardFixture):
         tool_input: dict[str, str],
         env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        """The Claude adapter's verdict on one event, as the hook runs it."""
+        """The Claude adapter's verdict on one event, as the hook runs it,
+        from a folder outside every repository (#387)."""
 
         return subprocess.run(
             [sys.executable, str(ADAPTER_PATH)],
             input=json.dumps(
                 {"cwd": str(cwd), "tool_name": tool_name, "tool_input": tool_input}
             ),
+            cwd=outside(self),
             capture_output=True,
             text=True,
             check=False,
@@ -441,7 +444,7 @@ class WorktreeBoundaryTest(BoundaryFixture):
                     "tool_input": {"command": "touch x"},
                 }
             ),
-            capture_output=True, text=True, check=False,
+            cwd=outside(self), capture_output=True, text=True, check=False,
             env=hermetic_git_env(),
         )
         self.assertEqual(result.returncode, 2, result.stderr)

@@ -13,6 +13,7 @@ from unittest import mock
 from kavach import refusal_log
 
 from . import running_log
+from .outside import run_outside
 from .test_boundary import hermetic_git_env
 
 
@@ -126,6 +127,7 @@ class LogPathsTest(unittest.TestCase):
         log = repo / ".git" / "kavach" / refusal_log.FILE
         self.assertEqual(running_log.RunningRepositoryLog.before, [(log, running_log.Mark(0, None, b""))])
         check.test_the_suite_wrote_no_row_to_the_running_repository_log()
+        run_outside(self)  # the row logs in this process: from outside every repository (#387)
         with mock.patch.dict(os.environ, {refusal_log.OFF_VAR: ""}):
             refusal_log.record("command", json.dumps({"cwd": str(repo)}), "BLOCKED: a leak")
         with self.assertRaises(AssertionError) as raised:

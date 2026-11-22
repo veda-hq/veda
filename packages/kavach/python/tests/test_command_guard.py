@@ -27,6 +27,7 @@ from pathlib import Path
 from kavach import git_safety, refusal_log
 
 from .command_guard_cases import CASES
+from .outside import outside
 
 KAVACH = Path(__file__).resolve().parents[1] / "kavach"
 GUARD = KAVACH / "command_guard.py"
@@ -337,12 +338,15 @@ class Loading(unittest.TestCase):
         )
 
     def test_run_by_a_relative_path_it_still_loads_its_module(self) -> None:
-        # Its cwd is the package's own folder, inside the running repository,
-        # so the refusal log is off: each run wrote a row to that repository's
-        # log (#368).
+        # Its cwd is the package's own folder: a copy outside every repository,
+        # with the refusal log off too. Run in the real folder, each run wrote
+        # a row to the running repository's log (#368), and under a mutant of
+        # the log's off switch it would again (#387).
+        package = outside(self) / "kavach"
+        shutil.copytree(KAVACH, package, ignore=shutil.ignore_patterns("__pycache__"))
         actual, stderr = Guard.run(
             make_input("git push --force origin main"),
-            str(KAVACH),
+            str(package),
             guard="command_guard.py",
             env={refusal_log.OFF_VAR: "1"},
         )
@@ -446,16 +450,20 @@ class Loading(unittest.TestCase):
 
 class Importing(unittest.TestCase):
     """Each guard is a module too: importing one runs nothing. Each run is a
-    child with stdin closed, so a guard that did run would end, not wait."""
+    child with stdin closed, so a guard that did run would end, not wait.
+    The child imports the package from its path and runs outside every
+    repository: a guard that did run refuses, and its row must not reach the
+    running repository's log (#387)."""
 
     def python(self, code: str, hook_input: str | None = None) -> tuple[int, str, str]:
         env = dict(BASE_ENV)
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(KAVACH.parent), env.get("PYTHONPATH"))))
         if hook_input is not None:
             env["HOOK_INPUT"] = hook_input
         result = subprocess.run(
             [sys.executable, "-c", code],
             stdin=subprocess.DEVNULL,
-            cwd=KAVACH.parent,
+            cwd=outside(self),
             env=env,
             capture_output=True,
             text=True,

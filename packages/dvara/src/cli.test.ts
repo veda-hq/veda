@@ -400,7 +400,12 @@ describe("isEntry", () => {
   });
 
   it("writes its own output a line at a time", (t) => {
-    const out = t.mock.method(process.stdout, "write", () => true);
+    // Writes through, so no TAP line of Stryker's tap runner is lost (see
+    // supervisor.test.ts).
+    const write = process.stdout.write.bind(process.stdout);
+    const out = t.mock.method(process.stdout, "write", ((
+      ...args: Parameters<typeof write>
+    ) => write(...args)) as typeof write);
     const err = t.mock.method(process.stderr, "write", () => true);
     processIo.out("a");
     processIo.err("b");

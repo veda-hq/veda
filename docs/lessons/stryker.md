@@ -93,9 +93,13 @@ without suppressing them, and the traps of a gate scoped to a diff.
   `process.stdout.write` with a function that discards its input discards them too. If such a
   test then hangs, the `not ok` of an earlier failed test never reaches the runner, `forceBail`
   never fires, and the mutant costs its full 180 s retry. A capture must write through to the
-  real `write`. A mutant that hangs an async test also needs a per-test `timeout` (15 s in
-  agnipariksha's `src/cli.test.ts`), and every polling loop in a test needs a deadline, or the
-  failed suite never exits.
+  real `write`. Even with every test passing, a discarding capture can fail the dry run: it
+  loses the queued `ok` line of the test before it, the subtest ends short of its plan, and
+  tap-parser marks the file failed with no test named ("There were failed tests in the initial
+  test run: src/supervisor.test.ts", veda#437). Plain `node --test` passes, since its results
+  do not travel over the file's stdout. A mutant that hangs an async test also needs a
+  per-test `timeout` (15 s in agnipariksha's `src/cli.test.ts`), and every polling loop in a
+  test needs a deadline, or the failed suite never exits.
 
 ## Mutants Stryker misreports
 

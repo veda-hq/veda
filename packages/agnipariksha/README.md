@@ -98,7 +98,15 @@ runs the repository's own `node_modules/.bin/stryker`.
   a.test.ts kills mutants of a.ts here`. Under a related filter any suite
   that imports the file runs, a sibling included, so there it says nothing.
 - **A timed-out mutant** is rerun once alone, with concurrency 1 and a
-  three-minute timeout; one that times out again counts as caught. The retry
+  three-minute timeout; one that times out again counts as caught. Stryker's
+  `--mutate` range takes in every mutant nested inside the one retried (a
+  BlockStatement holds all its block's), so the retry loads an ignorer of its
+  own, `agnipariksha-retry`, that drops them, and leaves out the file's other
+  mutators. What runs is the retried mutant and the other replacements its own
+  mutator makes at that node (`>` to `>=` and to `<=`). The lane's own
+  plugins, ignorers and exclusions stay. A retry that reports its mutant
+  Ignored refuses: the verdict would not count it. The retry
+  pass refuses once it has run 15 minutes, or when a retry's dry run times
   pass refuses once it has run 15 minutes, or when a retry's dry run times
   out: the machine is busy. A retry whose dry run fails on a test refuses as
   flaky, naming the tests Stryker printed: the lane's own run had passed

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { mutantRange, RETRY_BUDGET_MS, RETRY_TIMEOUT_MS, retryTimeouts, sameMutant, type RetryRun } from './timeout-retry.ts';
+import { mutantSpan, RETRY_BUDGET_MS, RETRY_TIMEOUT_MS, retryTimeouts, sameMutant, type RetryRun } from './timeout-retry.ts';
 import type { Mutant } from './verdict.ts';
 
 const mutant = (status: string, line = 3): Mutant => ({
@@ -20,9 +20,11 @@ test('the retry limit is three minutes and the pass budget fifteen', () => {
   assert.equal(RETRY_BUDGET_MS, 900_000);
 });
 
-test('a range keeps lines 1-based and moves report columns to 0-based', () => {
-  assert.equal(mutantRange(mutant('Timeout'), 'src/a.ts'), 'src/a.ts:3:4-3:8');
-  assert.equal(mutantRange({ ...mutant('Timeout'), endColumn: Number.NaN }, 'a.ts'), null);
+test('a span keeps lines 1-based and moves report columns to 0-based', () => {
+  assert.equal(mutantSpan({ ...mutant('Timeout'), endLine: 7 }), '3:4-7:8');
+  for (const field of ['line', 'column', 'endLine', 'endColumn'] as const) {
+    assert.equal(mutantSpan({ ...mutant('Timeout'), [field]: Number.NaN }), null, field);
+  }
 });
 
 test('sameMutant compares file, start, mutator and replacement', () => {
@@ -88,4 +90,15 @@ test('a pass past its budget stops before the next retry', async () => {
   assert.equal(runs, 1);
   assert.match(pass.refusals[0] ?? '', /15-minute budget/);
   assert.deepEqual(pass.mutants.map((m) => `${m.line}:${m.status}`), ['2:Killed']);
+});
+
+test('a retry that reports its own mutant Ignored refuses: the verdict would not count it', async () => {
+  const pass = await retryTimeouts(
+    [mutant('Timeout', 2), mutant('Timeout', 3)],
+    async (m) => ({ mutants: [mutant(m.line === 2 ? 'Ignored' : 'Killed', m.line)] }),
+    clock(0, 0, 0),
+  );
+  assert.deepEqual(pass.refusals, ['retry of scripts/a.ts:2 (StringLiteral): Stryker ignored the mutant it was retrying']);
+  assert.deepEqual(pass.mutants.map((m) => `${m.line}:${m.status}`), ['3:Killed']);
+  assert.equal(pass.retried, 1);
 });

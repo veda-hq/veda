@@ -1,11 +1,12 @@
 /** A lane is one Stryker config: plan its files, run it, judge it. */
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { nameTests } from './failed-tests.ts';
+import { RETRY_IGNORER_NAME, RETRY_SPAN_VAR } from './retry-ignorer.ts';
 import { forReuse, pruneToTargets } from './reuse-filter.ts';
 import { ownerOf, type Exists } from './suite-owner.ts';
-import { mutantRange, RETRY_TIMEOUT_MS, retryTimeouts, type RetryRun } from './timeout-retry.ts';
+import { mutantSpan, RETRY_TIMEOUT_MS, retryTimeouts, type RetryRun } from './timeout-retry.ts';
 import { judge, readMutants, type Judgement } from './verdict.ts';
 
 export interface Lane {
@@ -149,6 +150,29 @@ export function wrapperConfig(configPath: string, reportPath: string): string {
   ].join('\n');
 }
 
+/** The compiled retry ignorer, beside this module in `dist/`. */
+export const RETRY_PLUGIN = fileURLToPath(new URL('retry-ignorer.js', import.meta.url));
+
+/**
+ * A timeout retry's config: the wrapper's, plus the retry ignorer (which
+ * drops the mutants nested in the retried one) and the mutators to leave out
+ * (the file's others, which leaves only the retried node's own replacements).
+ * The lane's own plugins, ignorers and exclusions stay.
+ */
+export function retryConfig(configPath: string, reportPath: string, plugin: string, excluded: readonly string[]): string {
+  return [
+    `import base from ${JSON.stringify(pathToFileURL(configPath).href)};`,
+    'export default {',
+    '  ...base,',
+    `  jsonReporter: { ...base.jsonReporter, fileName: ${JSON.stringify(reportPath)} },`,
+    `  appendPlugins: [...(base.appendPlugins ?? []), ${JSON.stringify(plugin)}],`,
+    `  ignorers: [...(base.ignorers ?? []), ${JSON.stringify(RETRY_IGNORER_NAME)}],`,
+    `  mutator: { ...base.mutator, excludedMutations: [...(base.mutator?.excludedMutations ?? []), ...${JSON.stringify(excluded)}] },`,
+    '};',
+    '',
+  ].join('\n');
+}
+
 const BUSY = "Stryker's initial test run timed out: the machine is busy; push again when it is quieter";
 
 export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult> {
@@ -157,15 +181,16 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
   const cwd = join(deps.root, lane.cwd);
   const report = join(deps.reportsDir, `${slug}.json`);
   const wrapper = join(deps.reportsDir, `${slug}.stryker.config.mjs`);
+  const retryWrapper = join(deps.reportsDir, `${slug}.retry.stryker.config.mjs`);
   deps.writeFile(wrapper, wrapperConfig(join(cwd, lane.config), report));
   const local = (file: string): string => (lane.cwd === '' ? file : file.slice(lane.cwd.length + 1));
   const firstEnv = lane.env(plan.suites);
   const fallbackEnv = lane.fallback?.(plan.suites);
 
   type Run = RetryRun & { trigger?: string | undefined; failedTests?: readonly string[] };
-  const run = async (mutate: string[], extra: string[], env: Record<string, string>): Promise<Run> => {
+  const run = async (mutate: string[], extra: string[], env: Record<string, string>, config = wrapper): Promise<Run> => {
     deps.removeFile(report);
-    const result = await deps.runStryker(cwd, ['run', wrapper, ...extra, '--mutate', mutate.join(',')], env);
+    const result = await deps.runStryker(cwd, ['run', config, ...extra, '--mutate', mutate.join(',')], env);
     if (result.refusal !== undefined) return { refusal: result.refusal, busy: false };
     if (result.code !== 0) {
       if (result.seen.includes(DRY_RUN_TIMEOUT)) return { refusal: BUSY, busy: true };
@@ -238,10 +263,13 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
   const pass = await retryTimeouts(
     mutants,
     async (m) => {
-      const range = mutantRange(m, local(m.file));
-      if (range === null) return { refusal: 'its report gives no full location to retry it by', busy: false };
+      const span = mutantSpan(m);
+      if (span === null) return { refusal: 'its report gives no full location to retry it by', busy: false };
       const env = (ownSuite.has(m.file) ? fallbackEnv : undefined) ?? firstEnv;
-      const retry = await run([range], ['--concurrency', '1', '--timeoutMS', String(RETRY_TIMEOUT_MS)], env);
+      const excluded = [...new Set(mutants.filter((o) => o.file === m.file && o.mutator !== m.mutator).map((o) => o.mutator))];
+      deps.writeFile(retryWrapper, retryConfig(join(cwd, lane.config), report, RETRY_PLUGIN, excluded));
+      // Stryker mutates every node inside the `--mutate` range; the ignorer, given the span, drops those nested in this one.
+      const retry = await run([`${local(m.file)}:${span}`], ['--concurrency', '1', '--timeoutMS', String(RETRY_TIMEOUT_MS)], { ...env, [RETRY_SPAN_VAR]: span }, retryWrapper);
       // The lane's own run passed its initial test run, so a test failing in the retry's is flaky.
       return 'refusal' in retry && retry.trigger === FAILED_INITIAL_RUN ? { refusal: flakyRetry(retry.failedTests ?? []), busy: false } : retry;
     },

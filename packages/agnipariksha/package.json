@@ -35,13 +35,14 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node ../../scripts/fresh-tmpdir.mjs node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude=src/**/*.test.ts src/**/*.test.ts",
-    "smoke": "out=$(node dist/bin.js --lane smoke-no-such-lane); code=$?; echo \"$out\"; case \"$out\" in *'REFUSED: --lane names no lane in agnipariksha.json: \"smoke-no-such-lane\" (its lanes: \"agnipariksha\"'*) [ $code = 2 ] ;; *) false ;; esac && node --input-type=module -e \"const m = await import('@veda-hq/agnipariksha/arid-nodes'); const [p] = m.strykerPlugins; if (m.strykerPlugins.length !== 1 || p.kind !== 'Ignore' || p.name !== 'agnipariksha-arid-nodes' || typeof new p.injectableClass().shouldIgnore !== 'function') throw new Error('arid-nodes is not a Stryker Ignore plugin');\" && node --input-type=module -e \"try { await import('@veda-hq/agnipariksha/dist/bin.js'); } catch (e) { if (e.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') process.exit(0); throw e; } throw new Error('dist/bin.js imports, and importing it would start a gate');\"",
+    "smoke": "out=$(node dist/bin.js --lane smoke-no-such-lane); code=$?; echo \"$out\"; case \"$out\" in *'REFUSED: --lane names no lane in agnipariksha.json: \"smoke-no-such-lane\" (its lanes: \"agnipariksha\"'*) [ $code = 2 ] ;; *) false ;; esac && node --input-type=module -e \"const m = await import('@veda-hq/agnipariksha/arid-nodes'); const [p] = m.strykerPlugins; if (m.strykerPlugins.length !== 1 || p.kind !== 'Ignore' || p.name !== 'agnipariksha-arid-nodes' || typeof new p.injectableClass().shouldIgnore !== 'function') throw new Error('arid-nodes is not a Stryker Ignore plugin');\" && node --input-type=module -e \"const { RETRY_PLUGIN } = await import('@veda-hq/agnipariksha/dist/lanes.js'); const { pathToFileURL } = await import('node:url'); const m = await import(pathToFileURL(RETRY_PLUGIN).href); const [p] = m.strykerPlugins; if (m.strykerPlugins.length !== 1 || p.kind !== 'Ignore' || p.name !== 'agnipariksha-retry' || typeof new p.injectableClass({}).shouldIgnore !== 'function') throw new Error('the retry ignorer RETRY_PLUGIN names is not a Stryker Ignore plugin');\" && node --input-type=module -e \"try { await import('@veda-hq/agnipariksha/dist/bin.js'); } catch (e) { if (e.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') process.exit(0); throw e; } throw new Error('dist/bin.js imports, and importing it would start a gate');\"",
     "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
   },
   "peerDependencies": {
     "@stryker-mutator/core": ">=10.1.1 <11"
   },
   "devDependencies": {
+    "@stryker-mutator/instrumenter": "10.1.1",
     "@types/node": "24.19.2",
     "typescript": "5.9.3"
   }

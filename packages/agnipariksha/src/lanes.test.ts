@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   countLines,
@@ -15,6 +15,8 @@ import {
   MARKERS,
   overCutoff,
   planLane,
+  RETRY_PLUGIN,
+  retryConfig,
   wrapperConfig,
   type Lane,
   type LaneDeps,
@@ -189,17 +191,67 @@ test('an unreadable reuse file is removed; no key or no reuse means no --increme
   assert.equal(result.judgement.caught, 1);
 });
 
-test('a timed-out mutant is retried alone, with one worker and a 3-minute limit', async () => {
-  const { deps, runs, setPlan } = fakeDeps(
-    [report({ 'src/a.ts': [strykerMutant('Timeout')] }), report({ 'src/a.ts': [strykerMutant('Killed')] })],
+test('a timed-out mutant is retried alone, with one worker, a 3-minute limit, its span for the ignorer and the file\'s other mutators left out', async () => {
+  const other = (mutatorName: string, line: number) => ({ ...strykerMutant('Killed', line), mutatorName });
+  const { deps, files, runs, setPlan } = fakeDeps(
+    [
+      report({
+        'src/a.ts': [strykerMutant('Timeout'), strykerMutant('Killed', 4), other('ConditionalExpression', 5), other('ConditionalExpression', 6), other('BlockStatement', 7)],
+        'src/b.ts': [other('ArrayDeclaration', 1)],
+      }),
+      report({ 'src/a.ts': [strykerMutant('Killed')] }),
+    ],
     [],
     null,
   );
-  setPlan(webPlan);
-  const result = await judgeLane(webPlan, deps);
-  assert.deepEqual(runs[1]?.args, ['run', '/repo/reports/agnipariksha/apps-web.stryker.config.mjs', '--concurrency', '1', '--timeoutMS', '180000', '--mutate', 'src/a.ts:3:4-3:8']);
+  const plan: Plan = { ...webPlan, targets: ['apps/web/src/a.ts', 'apps/web/src/b.ts'] };
+  setPlan(plan);
+  const result = await judgeLane(plan, deps);
+  const retryWrapper = '/repo/reports/agnipariksha/apps-web.retry.stryker.config.mjs';
+  assert.deepEqual(runs[1], {
+    cwd: '/repo/apps/web',
+    args: ['run', retryWrapper, '--concurrency', '1', '--timeoutMS', '180000', '--mutate', 'src/a.ts:3:4-3:8'],
+    env: { X: '1', AGNIPARIKSHA_RETRY_SPAN: '3:4-3:8' },
+  });
+  assert.equal(files.get(retryWrapper), retryConfig('/repo/apps/web/stryker.config.mjs', '/repo/reports/agnipariksha/apps-web.json', RETRY_PLUGIN, ['ConditionalExpression', 'BlockStatement']));
+  assert.deepEqual(runs[0]?.env, { X: '1' }, 'the lane run carries no span');
   assert.equal(result.retried, 1);
-  assert.deepEqual(result.judgement.byStatus, { Killed: 1 });
+  assert.deepEqual(result.judgement.byStatus, { Killed: 6 });
+});
+
+test('the retry ignorer the retry config loads is the compiled one beside lanes', () => {
+  assert.equal(RETRY_PLUGIN, join(dirname(fileURLToPath(import.meta.url)), 'retry-ignorer.js'));
+});
+
+test('the retry config is the lane config with the report moved, the retry ignorer added and the other mutators left out', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agnipariksha-'));
+  try {
+    writeFileSync(
+      join(dir, 'base.mjs'),
+      "export default { testRunner: 'tap', jsonReporter: { spacer: 2 }, appendPlugins: ['/own.mjs'], ignorers: ['arid'], mutator: { plugins: ['x'], excludedMutations: ['Regex'] } };",
+    );
+    writeFileSync(join(dir, 'bare.mjs'), "export default { testRunner: 'tap' };");
+    writeFileSync(join(dir, 'retry.mjs'), retryConfig(join(dir, 'base.mjs'), '/r/out.json', '/p/retry-ignorer.js', ['BlockStatement', 'StringLiteral']));
+    writeFileSync(join(dir, 'bare-retry.mjs'), retryConfig(join(dir, 'bare.mjs'), '/r/out.json', '/p/retry-ignorer.js', []));
+    const loaded = (await import(pathToFileURL(join(dir, 'retry.mjs')).href)) as { default: unknown };
+    assert.deepEqual(loaded.default, {
+      testRunner: 'tap',
+      jsonReporter: { spacer: 2, fileName: '/r/out.json' },
+      appendPlugins: ['/own.mjs', '/p/retry-ignorer.js'],
+      ignorers: ['arid', 'agnipariksha-retry'],
+      mutator: { plugins: ['x'], excludedMutations: ['Regex', 'BlockStatement', 'StringLiteral'] },
+    });
+    const bare = (await import(pathToFileURL(join(dir, 'bare-retry.mjs')).href)) as { default: unknown };
+    assert.deepEqual(bare.default, {
+      testRunner: 'tap',
+      jsonReporter: { fileName: '/r/out.json' },
+      appendPlugins: ['/p/retry-ignorer.js'],
+      ignorers: ['agnipariksha-retry'],
+      mutator: { excludedMutations: [] },
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('a timed-out mutant with no location refuses', async () => {
@@ -268,7 +320,11 @@ test('a dry run failing on a trigger reruns once in the fallback mode, and only 
     setPlan(toolingPlan);
     const result = await judgeLane(toolingPlan, deps);
     assert.equal(result.fellBack, `its dry run failed: "${trigger}"`);
-    assert.deepEqual(runs.map((r) => r.env), [{ RELATED: '1' }, { RELATED: '0', SUITES: 'scripts/a.test.ts' }, { RELATED: '0', SUITES: 'scripts/a.test.ts' }], 'the retry keeps the fallback mode');
+    assert.deepEqual(
+      runs.map((r) => r.env),
+      [{ RELATED: '1' }, { RELATED: '0', SUITES: 'scripts/a.test.ts' }, { RELATED: '0', SUITES: 'scripts/a.test.ts', AGNIPARIKSHA_RETRY_SPAN: '3:4-3:8' }],
+      'the retry keeps the fallback mode',
+    );
     assert.deepEqual(result.judgement.byStatus, { Killed: 2 });
     assert.deepEqual(result.refusals, []);
   }
@@ -310,8 +366,8 @@ test('a file no related suite reached is rerun alone in own-suite mode; its time
     [
       ['scripts/a.ts,scripts/b.ts', { RELATED: '1' }],
       ['scripts/b.ts', own],
-      ['scripts/a.ts:3:4-3:8', { RELATED: '1' }],
-      ['scripts/b.ts:4:4-4:8', own],
+      ['scripts/a.ts:3:4-3:8', { RELATED: '1', AGNIPARIKSHA_RETRY_SPAN: '3:4-3:8' }],
+      ['scripts/b.ts:4:4-4:8', { ...own, AGNIPARIKSHA_RETRY_SPAN: '4:4-4:8' }],
     ],
   );
   assert.deepEqual(result.judgement.byStatus, { Killed: 4, Survived: 1 });

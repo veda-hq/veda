@@ -338,6 +338,7 @@ test('a fallback that fails too refuses; a busy dry run never falls back', async
   const result = await judgeLane(toolingPlan, both.deps);
   assert.equal(result.fellBack, 'its dry run failed: "There were failed tests in the initial test run"');
   assert.deepEqual(result.refusals, ['Stryker exited 2']);
+  assert.deepEqual(result.judgement, { blocking: [], unknown: [], byStatus: {}, counted: 0, caught: 0 }, 'a refused lane judges nothing');
 
   const busy = fakeDeps([], [{ code: 1, seen: [DRY_RUN_TIMEOUT] }]);
   busy.setPlan(toolingPlan);

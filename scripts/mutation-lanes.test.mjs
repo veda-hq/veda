@@ -1,16 +1,22 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { after, describe, test } from 'node:test';
+import { pathToFileURL } from 'node:url';
+import { after, beforeEach, describe, test } from 'node:test';
 
-import { gitIn, lanesToJudge, main, outputs, readText } from './mutation-lanes.mjs';
+import { entry, gitIn, lanesToJudge, main, outputs, readText } from './mutation-lanes.mjs';
 
 const roots = [];
 after(() => {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
+
+// The tests are synchronous. One turn of the event loop before each lets the
+// TAP line of a failed test reach stdout at once, so Stryker's tap runner
+// bails on a mutant's first failure instead of running the whole file.
+beforeEach(() => new Promise(resolve => setImmediate(resolve)));
 
 // A hook exports GIT_DIR and its family, which would point git at veda's own
 // repository: every fixture git runs without them, and without the user's config.
@@ -101,9 +107,43 @@ describe('lanesToJudge', () => {
     assert.deepEqual(lanesToJudge(root, 'main', git), []);
   });
 
+  test("plans veda's own scripts lane: a script beside its suite, but neither a suite alone nor released-pins.mjs", () => {
+    const veda = JSON.parse(readFileSync(new URL('../agnipariksha.json', import.meta.url), 'utf8'));
+    const { root, git } = fixture({ config: veda });
+    write(root, { 'scripts/x.mjs': 'export const x = 1;\n', 'scripts/x.test.mjs': "import './x.mjs';\n" });
+    write(root, { 'scripts/released-pins.mjs': 'export const r = 1;\n', 'scripts/released-pins.test.mjs': "import './released-pins.mjs';\n" });
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'scripts']);
+    git(['switch', '-q', '-c', 'scripts']);
+    write(root, { 'scripts/x.test.mjs': "import './x.mjs';\n// more\n", 'scripts/released-pins.mjs': 'export const r = 2;\n' });
+    git(['commit', '-q', '-am', 'a suite and released-pins.mjs']);
+    assert.deepEqual(lanesToJudge(root, 'feature', git), []);
+    write(root, { 'scripts/x.mjs': 'export const x = 2;\n' });
+    git(['commit', '-q', '-am', 'the script']);
+    assert.deepEqual(lanesToJudge(root, 'feature', git), ['scripts']);
+  });
+
   test('throws when there is no agnipariksha.json', () => {
     const { root, git } = fixture({ config: null });
     assert.throws(() => lanesToJudge(root, 'main', git), { message: `no agnipariksha.json at ${root}: it names the lanes to judge (see the package README)` });
+  });
+});
+
+describe('gitIn', () => {
+  test("throws git's own message on a failure, and prints nothing itself", () => {
+    const { root } = fixture();
+    const printed = [];
+    const write = process.stderr.write;
+    process.stderr.write = (text, ...rest) => {
+      printed.push(String(text));
+      return write.call(process.stderr, text, ...rest);
+    };
+    try {
+      assert.throws(() => gitIn(root, env)(['merge-base', 'no-such-ref', 'HEAD']), { message: /\nfatal: Not a valid object name no-such-ref\n/ });
+    } finally {
+      process.stderr.write = write;
+    }
+    assert.deepEqual(printed, []);
   });
 });
 
@@ -152,6 +192,15 @@ describe('main', () => {
     assert.deepEqual(stderr.lines, ['mutation-lanes: lanes to judge: alpha\n']);
   });
 
+  test('names every lane to judge on stderr, comma-separated', () => {
+    const { root, git } = fixture();
+    write(root, { 'alpha/src/a.ts': 'export const a = 2;\n', 'two/src/t.ts': 'export const t = 2;\n' });
+    git(['commit', '-q', '-am', 'feature']);
+    const stderr = sink();
+    assert.equal(main(['--base', 'main'], { root, git, stdout: sink(), stderr }), 0);
+    assert.deepEqual(stderr.lines, ['mutation-lanes: lanes to judge: alpha, two words\n']);
+  });
+
   test('says when no lane has a file to judge', () => {
     const { root, git } = fixture();
     const stdout = sink();
@@ -179,4 +228,33 @@ describe('main', () => {
       assert.deepEqual(stderr.lines, ['usage: mutation-lanes.mjs --base <ref>\n']);
     });
   }
+});
+
+describe('entry', () => {
+  const script = '/repo/scripts/mutation-lanes.mjs';
+  const url = pathToFileURL(script).href;
+
+  // In a child, so the import is the module's first; the child inherits Stryker's active mutant.
+  test("imported, it leaves the importer's exit code as it was", () => {
+    const own = new URL('./mutation-lanes.mjs', import.meta.url).href;
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', `process.exitCode = 7; await import(${JSON.stringify(own)});`], { encoding: 'utf8' });
+    assert.equal(r.status, 7, r.stderr);
+  });
+
+  test('runs main on the arguments after the script when node runs this module', () => {
+    const { root, git } = fixture();
+    write(root, { 'alpha/src/a.ts': 'export const a = 2;\n' });
+    git(['commit', '-q', '-am', 'feature']);
+    const stdout = sink();
+    assert.equal(entry(['node', script, '--base', 'main'], url, { root, git, stdout, stderr: sink() }), 0);
+    assert.deepEqual(stdout.lines, ['matrix={"include":[{"lane":"alpha"}]}\nany=true\n']);
+  });
+
+  test('runs nothing when node runs another file, or no file', () => {
+    const stderr = sink();
+    // A mutant that ran main anyway would find no agnipariksha.json here, and exit 2.
+    assert.equal(entry(['node', '/repo/scripts/other.mjs', '--base', 'main'], url, { root: '/nonexistent', stdout: sink(), stderr }), undefined);
+    assert.equal(entry(['node'], url, { root: '/nonexistent', stdout: sink(), stderr }), undefined);
+    assert.deepEqual(stderr.lines, []);
+  });
 });

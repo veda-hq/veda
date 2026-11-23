@@ -80,8 +80,11 @@ const slugOf = repository => repository.replace('https://github.com/', '');
 /** A full git commit id. */
 const COMMIT = /^[0-9a-f]{40}$/;
 
-/** The DER UTF8String of a short ASCII `text`, as Fulcio writes its v2 extensions. @param {string} text */
-const utf8String = text => Buffer.concat([Buffer.from([0x0c, text.length]), Buffer.from(text, 'ascii')]);
+/** The DER UTF8String of a short `text`, as Fulcio writes its v2 extensions. @param {string} text */
+const utf8String = text => {
+  const bytes = Buffer.from(text);
+  return Buffer.concat([Buffer.from([0x0c, bytes.length]), bytes]);
+};
 
 /**
  * Who must have signed the provenance of `version`: the release workflow of
@@ -137,10 +140,11 @@ export async function tagCommit(repository, version, fetchJson) {
  * A function that verifies a Sigstore bundle against a policy and throws when
  * it does not verify, trusting only the trusted root in `rootText`.
  * @param {string} rootText a trusted_root.json
+ * @param {typeof Verifier} [VerifierOf] the verifier class, @sigstore/verify's
  * @returns {(bundle: unknown, policy: ReturnType<typeof signingPolicy>) => void}
  */
-export function bundleVerifier(rootText) {
-  const verifier = new Verifier(toTrustMaterial(TrustedRoot.fromJSON(JSON.parse(rootText))), {
+export function bundleVerifier(rootText, VerifierOf = Verifier) {
+  const verifier = new VerifierOf(toTrustMaterial(TrustedRoot.fromJSON(JSON.parse(rootText))), {
     tlogThreshold: 1,
     ctlogThreshold: 1,
     timestampThreshold: 1,
@@ -225,13 +229,13 @@ export function provenanceFailures(pkg, document, verifyBundle, commit = undefin
   }
   if (fromMain) {
     const dependencies = statement?.predicate?.buildDefinition?.resolvedDependencies;
-    const source = (Array.isArray(dependencies) ? dependencies : []).find(d => d?.uri === `git+${repository}@${ref}`);
+    const source = Array.isArray(dependencies) ? dependencies.find(d => d?.uri === `git+${repository}@${ref}`) : undefined;
     const built = source?.digest?.gitCommit ?? null;
     if (built !== commit) failures.push(`${at}: built from commit ${JSON.stringify(built)}, not ${commit}, the commit ${slugOf(repository)}'s tag v${pkg.version} names`);
   }
   const digest = Buffer.from(pkg.integrity.slice('sha512-'.length), 'base64').toString('hex');
-  const subjects = Array.isArray(statement?.subject) ? statement.subject : [];
-  if (!subjects.some(s => s?.digest?.sha512 === digest)) failures.push(`${at}: the attested tarball is not the one the lockfile installs`);
+  const attested = Array.isArray(statement?.subject) && statement.subject.some(s => s?.digest?.sha512 === digest);
+  if (!attested) failures.push(`${at}: the attested tarball is not the one the lockfile installs`);
   return failures;
 }
 
@@ -268,29 +272,64 @@ export async function check(lockText, fetchJson, verifyBundle) {
   return { packages, failures };
 }
 
-/* node:coverage disable */
 /**
  * The JSON at `url`. GitHub is asked with the session's token when there is
  * one, so a busy address does not hit the anonymous rate limit.
  * @param {string} url
+ * @param {{ get?: typeof fetch, env?: Record<string, string | undefined> }} [options] the fetch to ask with, and the environment the token is read from
  */
-async function fetchJson(url) {
-  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+export async function fetchJson(url, { get = fetch, env = process.env } = {}) {
+  const token = env.GH_TOKEN || env.GITHUB_TOKEN;
   const github = url.startsWith(`${GITHUB_API}/`);
   /** @type {Record<string, string>} */
   const headers = github ? { accept: 'application/vnd.github+json', ...(token ? { authorization: `Bearer ${token}` } : {}) } : {};
-  const response = await fetch(url, { headers });
+  const response = await get(url, { headers });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const { packages, failures } = await check(readFileSync('pnpm-lock.yaml', 'utf8'), fetchJson, bundleVerifier(readFileSync(TRUSTED_ROOT, 'utf8')));
-  for (const failure of failures) console.error(`own-provenance: ${failure}`);
+/** A UTF-8 file's text. @param {string} path */
+export const readText = path => readFileSync(path, 'utf8');
+
+/**
+ * @typedef {{
+ *   readText?: (path: string) => string,
+ *   get?: typeof fetch,
+ *   env?: Record<string, string | undefined>,
+ *   stdout?: { write(text: string): unknown },
+ *   stderr?: { write(text: string): unknown },
+ * }} Io
+ */
+
+/**
+ * Checks the lockfile in the working directory: 1 with each failure on
+ * stderr, 0 with what was checked on stdout.
+ * @param {Io} [io]
+ * @returns {Promise<number>}
+ */
+export async function main({ readText: read = readText, get, env, stdout = process.stdout, stderr = process.stderr } = {}) {
+  const lockText = read('pnpm-lock.yaml');
+  const { packages, failures } = await check(lockText, url => fetchJson(url, { get, env }), bundleVerifier(read(TRUSTED_ROOT)));
+  for (const failure of failures) stderr.write(`own-provenance: ${failure}\n`);
   if (failures.length > 0) {
-    console.error(`own-provenance: ${SCOPE}* skips the release age only when its own repository's release built it.`);
-    process.exit(1);
+    stderr.write(`own-provenance: ${SCOPE}* skips the release age only when its own repository's release built it.\n`);
+    return 1;
   }
-  console.log(`own-provenance: ${packages.map(p => `${p.name}@${p.version} (${repositoryOf(p.name)})`).join(', ')} built and signed by ${WORKFLOW}`);
+  stdout.write(`own-provenance: ${packages.map(p => `${p.name}@${p.version} (${repositoryOf(p.name)})`).join(', ')} built and signed by ${WORKFLOW}\n`);
+  return 0;
 }
-/* node:coverage enable */
+
+/**
+ * The exit code of `node <argv[1]>` when `argv[1]` is the module at `url`, or
+ * undefined when it is not (the module was imported). A suite calls it
+ * in-process, so a mutant that would run main on import, or never, dies there.
+ * @param {readonly string[]} argv
+ * @param {string} url
+ * @param {Io} [io]
+ */
+export function entry(argv, url, io) {
+  return argv[1] && url === pathToFileURL(argv[1]).href ? main(io) : undefined;
+}
+
+// Imported, entry gives undefined, and the importer's exit code stands.
+process.exitCode = (await entry(process.argv, import.meta.url)) ?? process.exitCode;

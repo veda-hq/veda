@@ -257,6 +257,8 @@ describe("supervise", () => {
     await supervise([hook], opts);
     const [row] = rows(root);
     assert.ok(Number(row?.resourceSamples) >= 1);
+    // The real `ps` table, read as pid, ppid and rss, finds the hook's memory.
+    assert.ok(Number(row?.sampledPeakTreeRssKiB) > 0);
   });
 
   it("records the peaks of the hook's tree, not its last sample", async () => {
@@ -820,6 +822,19 @@ describe("quiet output", () => {
     assert.equal(existsSync(wrote), false);
   });
 
+  it("waits for output a short-lived leftover still writes, and keeps it", async () => {
+    const { root, hook } = repo(
+      "echo before\n(sleep 0.3; echo after) &\nexit 0",
+      "pre-commit",
+    );
+    const { opts } = options(root, { drainLimitMs: 5000 });
+    assert.equal(await supervise([hook], opts), 0);
+    assert.equal(
+      readFileSync(join(root, ".dvara", "pre-commit.log"), "utf8"),
+      "before\nafter\n",
+    );
+  });
+
   it("prints the verdict when the log cannot be written", async () => {
     const { root, hook } = repo("true", "pre-commit");
     mkdirSync(join(root, ".dvara", "pre-commit.log"), { recursive: true });
@@ -831,12 +846,18 @@ describe("quiet output", () => {
 
 describe("signals", () => {
   it("forwards a signal to the hook group and records the run cancelled", async () => {
-    const { root, hook } = repo("dvara_stage wait\nsleep 5");
+    // The hook runs in a group of its own, so the group signal reaches it;
+    // the trap marks that it did.
+    const got = join(scratch("dvara-group-"), "got");
+    const { root, hook } = repo(
+      `dvara_stage wait\ntrap ": > '${got}'; exit 0" TERM\nsleep 5 & wait`,
+    );
     const { opts, signals } = options(root);
     const run = supervise([hook], opts);
     await new Promise((done) => setTimeout(done, 300));
     signals.emit("SIGTERM");
     assert.equal(await run, 143);
+    assert.equal(existsSync(got), true);
     const [row] = rows(root);
     assert.equal(row?.status, "cancelled");
     assert.equal(row?.signal, "SIGTERM");

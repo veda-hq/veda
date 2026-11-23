@@ -86,6 +86,7 @@ const SOURCE = [
   "    const bonus = score * 2 + 1;",
   "    return bonus > 100 ? 'top' : 'pass';",
   '  }',
+  '  notify(score);',
   "  return 'fail';",
   '}',
   '',
@@ -155,4 +156,12 @@ test("a node's retry keeps only its own mutator's replacements: Stryker's option
   const { retry, target } = await retried((m) => m.mutatorName === 'EqualityOperator' && m.location.start.line === 1 && m.replacement === 'score >= 50');
   assert.deepEqual(live(retry).map((m) => `${m.mutator} ${m.replacement}`).sort(), ['EqualityOperator score <= 50', 'EqualityOperator score >= 50']);
   assert.ok(live(retry).some((m) => sameAs(m, target)));
+});
+
+// The CallExpression mutator keeps its mutant only when no other live mutant
+// shares its subtree. A retry only takes mutants out of that scope, so it keeps it.
+test("a CallExpression's retry keeps it through its mutator's filter", async () => {
+  const { retry, target } = await retried((m) => m.mutatorName === 'CallExpression' && m.location.start.line === 5);
+  assert.deepEqual(live(retry).map((m) => `${m.mutator} ${m.replacement}`), ['CallExpression ;']);
+  assert.ok(sameAs(live(retry)[0] as Mutant, target));
 });

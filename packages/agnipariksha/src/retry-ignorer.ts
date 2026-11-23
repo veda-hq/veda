@@ -34,7 +34,8 @@ export interface Span {
 
 /** The span a `RETRY_SPAN_VAR` value names, or null. */
 export function parseSpan(text: string | undefined): Span | null {
-  const match = /^(\d+):(\d+)-(\d+):(\d+)$/.exec(text ?? '');
+  // An unset variable reads as "undefined", which is no span.
+  const match = /^(\d+):(\d+)-(\d+):(\d+)$/.exec(String(text));
   if (match === null) return null;
   const [line, column, endLine, endColumn] = match.slice(1).map(Number) as [number, number, number, number];
   return { start: { line, column }, end: { line: endLine, column: endColumn } };

@@ -513,6 +513,34 @@ test('worktree-hooks-path names git’s default when no shared value is left', (
   assert.equal(result.stdout, "Cleared worktree-scoped core.hooksPath (/elsewhere); git's default hooks folder now applies\n");
 });
 
+test('worktree-hooks-path says an empty shared hooksPath runs no hooks, rather than git’s default', () => {
+  // Cleared or not, what applies after the scoped value is the empty shared
+  // one, under which git runs no hooks (git 2.54), not .git/hooks.
+  const repo = join(TMP, 'hp-empty-shared');
+  mkdirSync(repo, { recursive: true });
+  git(repo, 'init', '-q', '-b', 'main');
+  git(repo, 'config', 'extensions.worktreeConfig', 'true');
+  git(repo, 'config', 'core.hooksPath', '');
+  const runHere = (): Run => {
+    const result = spawnSync('bash', [hooksPath], { cwd: repo, input: JSON.stringify({ cwd: repo }), encoding: 'utf8', env: GIT_ENV, timeout: 10_000, killSignal: 'SIGKILL' });
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  };
+  git(repo, 'config', '--worktree', 'core.hooksPath', '/elsewhere');
+  assert.deepEqual(runHere(), { status: 0, stdout: 'Cleared worktree-scoped core.hooksPath (/elsewhere); the shared empty core.hooksPath (no hooks run) now applies\n', stderr: '' });
+  git(repo, 'config', '--worktree', 'core.hooksPath', '/elsewhere');
+  const file = configWorktree(repo);
+  writeFileSync(`${file}.lock`, '');
+  try {
+    assert.deepEqual(runHere(), {
+      status: 0,
+      stdout: `Could not clear the worktree-scoped core.hooksPath (/elsewhere) in ${file}: git still uses it here, not the shared empty core.hooksPath (no hooks run). Remove its hooksPath line by hand.\n`,
+      stderr: '',
+    });
+  } finally {
+    rmSync(`${file}.lock`, { force: true });
+  }
+});
+
 test('worktree-hooks-path leaves a single checkout’s shared hooksPath alone when worktreeConfig is off', () => {
   // `git config --worktree` falls back to .git/config here, so without the
   // extension check the project's own value would read as scoped and go.

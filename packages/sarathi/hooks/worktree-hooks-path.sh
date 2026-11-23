@@ -49,9 +49,17 @@ git config --worktree --get-all core.hooksPath >/dev/null 2>&1 || exit 0
 scoped=$(git config --worktree --get core.hooksPath 2>/dev/null || true)
 git config --worktree --unset-all core.hooksPath >/dev/null 2>&1 || true
 
-# The value that applies once the scoped one is gone, or git's default.
+# What applies once the scoped value is gone: $1 says whether another scope
+# sets the key at all, $2 is its value. An empty shared value runs no hooks,
+# as an empty scoped one does, so it is named as that, not as git's default.
 shared_name() {
-  if [ -n "$1" ]; then printf 'the shared %s' "$1"; else printf "git's default hooks folder"; fi
+  if [ "$1" != "set" ]; then
+    printf "git's default hooks folder"
+  elif [ -z "$2" ]; then
+    printf 'the shared empty core.hooksPath (no hooks run)'
+  else
+    printf 'the shared %s' "$2"
+  fi
 }
 
 # Read the key again rather than trust the unset's exit status: a failed
@@ -60,11 +68,11 @@ shared_name() {
 if git config --worktree --get-all core.hooksPath >/dev/null 2>&1; then
   # The scoped value still wins a plain read, so take the last value from
   # any other scope (git 2.26+ for --show-scope).
-  shared=""
+  present="" shared=""
   while IFS=$'\t' read -r scope value; do
-    [ "$scope" = "worktree" ] || shared=$value
+    [ "$scope" = "worktree" ] || { present=set; shared=$value; }
   done < <(git config --show-scope --get-all core.hooksPath 2>/dev/null || true)
-  shared_name=$(shared_name "$shared")
+  shared_name=$(shared_name "$present" "$shared")
   file=$(git rev-parse --path-format=absolute --git-path config.worktree 2>/dev/null || echo config.worktree)
   if [ -n "$scoped" ]; then
     printf 'Could not clear the worktree-scoped core.hooksPath (%s) in %s: git still uses it here, not %s. Remove its hooksPath line by hand.\n' "$scoped" "$file" "$shared_name"
@@ -72,7 +80,8 @@ if git config --worktree --get-all core.hooksPath >/dev/null 2>&1; then
     printf 'Could not clear the empty worktree-scoped core.hooksPath in %s: git runs no hooks here, not %s. Remove its hooksPath line by hand.\n' "$file" "$shared_name"
   fi
 else
-  shared_name=$(shared_name "$(git config --get core.hooksPath 2>/dev/null || true)")
+  if shared=$(git config --get core.hooksPath 2>/dev/null); then present=set; else present="" shared=""; fi
+  shared_name=$(shared_name "$present" "$shared")
   if [ -n "$scoped" ]; then
     printf 'Cleared worktree-scoped core.hooksPath (%s); %s now applies\n' "$scoped" "$shared_name"
   else

@@ -45,7 +45,11 @@ without writing options or programs, input redirection, `2>/dev/null`,
 `for` loops over literal words, `xargs` running a read-only command, `[`,
 `test`, read subcommands of `git` and `gh` (`gh api` with GET only), `git
 grep`, `ls-tree` and `cat-file` with their listing options (never `grep -O`,
-`--textconv` or `--filters`, which run programs), `shasum`, `base64` to
+`--textconv` or `--filters`, which run programs), `git config` reads
+wherever `-C` points (`get`, `list`, `--get`, `--get-all`, `--get-regexp`,
+`--get-urlmatch`, `--get-color`, `--get-colorbool`, `--list`, `-l` or a
+lone key, with display, type and location options by exact
+name; never a writer, `--`, an abbreviation or a computed word), `shasum`, `base64` to
 stdout, `openssl x509` printing a certificate, and `curl` printing what it
 fetches (display options only, `-o` only to `/dev/null`, `-X` only `GET` or
 `HEAD`, a `-w` with no `%output`), where no default config exists or `-q`

@@ -197,8 +197,8 @@ importers:
         specifier: 0.7.10
         version: 0.7.10(eslint@9.39.1(jiti@2.6.1)(supports-color@7.2.0))(typescript@5.9.3)
       '@veda-hq/sarathi':
-        specifier: 0.8.3
-        version: 0.8.3
+        specifier: 0.8.6
+        version: 0.8.6
       eslint:
         specifier: 9.39.1
         version: 9.39.1(jiti@2.6.1)(supports-color@7.2.0)
@@ -1077,8 +1077,8 @@ packages:
       typescript:
         optional: true
 
-  '@veda-hq/sarathi@0.8.3':
-    resolution: {integrity: sha512-XTzW9mZxDbrqkudYLeQcjuJmkmQJSlS9jZfuDs8QgG0svhC7JET9/6EHTI66NqZYVibbCOSKpj9tkoL/MBbMGQ==}
+  '@veda-hq/sarathi@0.8.6':
+    resolution: {integrity: sha512-H5PGKvAdhQcoFqfo1w3pkQOOBS3fEX8UPKuXJwl1dxgA4FO7dz91t9kNIxqiLHQ9hHE64HeeLwGmQJ296siF1w==}
     engines: {node: '>=24.15'}
     hasBin: true
 
@@ -2839,7 +2839,7 @@ snapshots:
       eslint: 9.39.1(jiti@2.6.1)(supports-color@7.2.0)
       typescript: 5.9.3
 
-  '@veda-hq/sarathi@0.8.3':
+  '@veda-hq/sarathi@0.8.6':
     dependencies:
       '@veda-hq/kavach': 0.8.3
 

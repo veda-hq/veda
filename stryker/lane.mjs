@@ -30,7 +30,8 @@ export function lane(cwd, env = process.env) {
       forceBail: true,
     },
     coverageAnalysis: 'perTest',
-    // A mutant's limit is timeoutFactor × the dry run's net time + timeoutMS.
+    // A mutant's limit is timeoutFactor × the dry run's net time + timeoutMS
+    // + the dry run's measured overhead (about 0.1 s).
     // Stryker's 5 s default flooded pariksha with Timeouts that were not
     // hangs (veda#461): the dry run times one suite alone, but at 17 runners
     // 17 spawn-heavy suites share the Mac, and a doc-references-gate.ts

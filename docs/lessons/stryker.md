@@ -100,7 +100,8 @@ without suppressing them, and the traps of a gate scoped to a diff.
   identical and cut one mutant phase from 143 s to 14 s. For a slow or Timeout static mutant,
   first find which file kills it and its position (`testsCompleted` in `mutation.json`).
 - **Stryker's default margin floods spawn-heavy suites at full concurrency.** A mutant's limit
-  is `timeoutFactor` × the dry run's net time + `timeoutMS` (1.5 and 5 s by default). The dry
+  is `timeoutFactor` × the dry run's net time + `timeoutMS` (1.5 and 5 s by default) + the dry
+  run's measured overhead, which Stryker prints with the net time. The dry
   run times the suite alone; the mutants then run at 17 runners at once. A suite that spawns
   processes slows 2 to 6.5× under that, so its killed mutants overrun a limit set from the
   quiet run and come back as Timeouts. pariksha's `doc-references-gate.ts` gave 526 Timeouts

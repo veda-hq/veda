@@ -29,9 +29,14 @@ reviews:
       - .github/workflows/niyam.yml
       # Lessons for agents, in prose.
       - docs/lessons/
-      # TypeScript and JavaScript test files: agnipariksha's mutation gate
-      # judges them, at pre-push and in the required Mutation check (#274).
-      # kavach's Python tests (packages/kavach/python/tests/) stay reviewed.
+      # TypeScript and JavaScript test files (#274). agnipariksha's mutation
+      # gate, at pre-push and in the required Mutation check, runs the suite
+      # that owns a changed source in a lane. A suite that owns none (a
+      # qualified x.integration.test.ts, or one outside every lane, such as
+      # kavach's corpus/ or needs-you's tests/) is neither judged nor
+      # reviewed: Alok chose skipping every test file over listing the gated
+      # ones, since these globs have no documented negation. kavach's Python
+      # tests (packages/kavach/python/tests/) stay reviewed.
       - "**/*.test.ts"
       - "**/*.test.tsx"
       - "**/*.test.mjs"

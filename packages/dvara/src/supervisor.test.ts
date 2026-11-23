@@ -27,13 +27,15 @@ import {
 const STAGES = resolve(import.meta.dirname, "..", "shell", "stages.sh");
 
 /**
- * Every test fails at 15 s. A mutant that keeps a run from settling would
- * otherwise hang its test until Stryker's own timeout, and each such Timeout
- * costs the gate a retry of up to 180 s; a dozen of them outgrew its
- * 15-minute retry budget (#459). Failing first, the test kills the mutant.
+ * Every test fails at 5 s; each takes under 1 s. A mutant that keeps a run
+ * from settling would otherwise hang its test until Stryker's own limit, and
+ * each such Timeout costs the gate a retry; 28 of them outgrew its 15-minute
+ * retry budget (#459). The limit is 1.5 × this suite's dry run (about 12 s)
+ * plus 5 s, and at 15 s a hung test, with start-up, still crossed it when 17
+ * runners shared the machine. Failing well inside it, the test kills the mutant.
  */
 const it = (name: string, fn: (t: TestContext) => void | Promise<void>) =>
-  test(name, { timeout: 15_000 }, fn);
+  test(name, { timeout: 5_000 }, fn);
 
 /**
  * Git hermetic for the whole process: the fixtures' git and the hooks the

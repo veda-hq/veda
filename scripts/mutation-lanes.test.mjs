@@ -129,6 +129,24 @@ describe('lanesToJudge', () => {
   });
 });
 
+describe('gitIn', () => {
+  test("throws git's own message on a failure, and prints nothing itself", () => {
+    const { root } = fixture();
+    const printed = [];
+    const write = process.stderr.write;
+    process.stderr.write = (text, ...rest) => {
+      printed.push(String(text));
+      return write.call(process.stderr, text, ...rest);
+    };
+    try {
+      assert.throws(() => gitIn(root, env)(['merge-base', 'no-such-ref', 'HEAD']), { message: /\nfatal: Not a valid object name no-such-ref\n/ });
+    } finally {
+      process.stderr.write = write;
+    }
+    assert.deepEqual(printed, []);
+  });
+});
+
 describe('outputs', () => {
   test('a matrix of the lanes and whether there is any', () => {
     assert.equal(outputs(['alpha', 'two words']), 'matrix={"include":[{"lane":"alpha"},{"lane":"two words"}]}\nany=true\n');
@@ -227,8 +245,9 @@ describe('entry', () => {
 
   test('runs nothing when node runs another file, or no file', () => {
     const stderr = sink();
-    assert.equal(entry(['node', '/repo/scripts/other.mjs', '--base', 'main'], url, { stderr }), undefined);
-    assert.equal(entry(['node'], url, { stderr }), undefined);
+    // A mutant that ran main anyway would find no agnipariksha.json here, and exit 2.
+    assert.equal(entry(['node', '/repo/scripts/other.mjs', '--base', 'main'], url, { root: '/nonexistent', stdout: sink(), stderr }), undefined);
+    assert.equal(entry(['node'], url, { root: '/nonexistent', stdout: sink(), stderr }), undefined);
     assert.deepEqual(stderr.lines, []);
   });
 });

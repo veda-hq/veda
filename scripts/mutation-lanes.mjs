@@ -33,8 +33,9 @@ export function readText(path) {
 /** git in `root`, as agnipariksha runs it. @param {string} root @param {NodeJS.ProcessEnv} [env] */
 export function gitIn(root, env = process.env) {
   /** @param {string[]} args */
-  // stderr is captured, so a failed command's own message is in the error.
-  return args => execFileSync('git', args, { cwd: root, env, encoding: 'utf8', maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'pipe'] });
+  // stderr is captured, not printed as well: a failed command's own message
+  // is in the error, and main prints that once.
+  return args => execFileSync('git', args, { cwd: root, env, encoding: 'utf8', maxBuffer: 1 << 28, stdio: 'pipe' });
 }
 
 /**

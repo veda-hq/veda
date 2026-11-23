@@ -119,9 +119,14 @@ review thread is resolved. Nobody clicks merge.
 
 Cubic reviews pull requests again: its monthly review allowance reset, Alok
 said on 2026-11-19. `cubic.yaml` at the root lists the files it skips, so
-the allowance goes on sources, tests, scripts, guards and hooks; what it
-skips is Alok's call. Each Cubic finding is a review thread, and the merge
-waits for all of them:
+the allowance goes on sources, scripts, guards and hooks; what it skips is
+Alok's call. It skips TypeScript and JavaScript test files (`*.test.ts`,
+`*.test.tsx`, `*.test.mjs`): agnipariksha's mutation gate judges them, at
+pre-push and in the required `Mutation` check (#274). The gate runs only
+the suite that owns a changed source, so a qualified suite
+(`x.integration.test.ts`) or a suite outside every lane is neither judged
+nor reviewed; Alok chose that. kavach's Python tests stay reviewed. Each
+Cubic finding is a review thread, and the merge waits for all of them:
 
 - Fix a real finding, push the fix and wait for green before resolving its
   thread. With auto-merge on, resolving the last thread merges the head as

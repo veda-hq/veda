@@ -42,13 +42,50 @@ git rev-parse --show-toplevel >/dev/null 2>&1 || exit 0
 # checkout it falls back to the shared config, whose value is the project's:
 # so nothing is read or unset unless the extension is on.
 [ "$(git config --bool --get extensions.worktreeConfig 2>/dev/null)" = "true" ] || exit 0
+# Presence, not a non-empty value: `hooksPath =` reads back as an empty line
+# with exit 0, and under it git runs no hooks at all (git 2.54), while the
+# scoped value still outranks the shared one.
+git config --worktree --get-all core.hooksPath >/dev/null 2>&1 || exit 0
 scoped=$(git config --worktree --get core.hooksPath 2>/dev/null || true)
-if [ -n "$scoped" ] && git config --worktree --unset-all core.hooksPath 2>/dev/null; then
-  shared=$(git config --get core.hooksPath 2>/dev/null || true)
-  if [ -n "$shared" ]; then
-    printf 'Cleared worktree-scoped core.hooksPath (%s); the shared %s now applies\n' "$scoped" "$shared"
+git config --worktree --unset-all core.hooksPath >/dev/null 2>&1 || true
+
+# What applies once the scoped value is gone: $1 says whether another scope
+# sets the key at all, $2 is its value. An empty shared value runs no hooks,
+# as an empty scoped one does, so it is named as that, not as git's default.
+shared_name() {
+  if [ "$1" != "set" ]; then
+    printf "git's default hooks folder"
+  elif [ -z "$2" ]; then
+    printf 'the shared empty core.hooksPath (no hooks run)'
   else
-    printf "Cleared worktree-scoped core.hooksPath (%s); git's default hooks folder now applies\n" "$scoped"
+    printf 'the shared %s' "$2"
+  fi
+}
+
+# Read the key again rather than trust the unset's exit status: a failed
+# clear (a held config.worktree.lock, a read-only file) leaves the worktree
+# on another checkout's hooks, and the session should say so.
+if git config --worktree --get-all core.hooksPath >/dev/null 2>&1; then
+  # The scoped value still wins a plain read, so take the last value from
+  # any other scope (git 2.26+ for --show-scope).
+  present="" shared=""
+  while IFS=$'\t' read -r scope value; do
+    [ "$scope" = "worktree" ] || { present=set; shared=$value; }
+  done < <(git config --show-scope --get-all core.hooksPath 2>/dev/null || true)
+  shared_name=$(shared_name "$present" "$shared")
+  file=$(git rev-parse --path-format=absolute --git-path config.worktree 2>/dev/null || echo config.worktree)
+  if [ -n "$scoped" ]; then
+    printf 'Could not clear the worktree-scoped core.hooksPath (%s) in %s: git still uses it here, not %s. Remove its hooksPath line by hand.\n' "$scoped" "$file" "$shared_name"
+  else
+    printf 'Could not clear the empty worktree-scoped core.hooksPath in %s: git runs no hooks here, not %s. Remove its hooksPath line by hand.\n' "$file" "$shared_name"
+  fi
+else
+  if shared=$(git config --get core.hooksPath 2>/dev/null); then present=set; else present="" shared=""; fi
+  shared_name=$(shared_name "$present" "$shared")
+  if [ -n "$scoped" ]; then
+    printf 'Cleared worktree-scoped core.hooksPath (%s); %s now applies\n' "$scoped" "$shared_name"
+  else
+    printf 'Cleared an empty worktree-scoped core.hooksPath, under which git ran no hooks; %s now applies\n' "$shared_name"
   fi
 fi
 exit 0

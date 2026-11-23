@@ -430,6 +430,62 @@ test('worktree-hooks-path clears the session worktree’s scoped hooksPath, not 
   git(HP_MAIN, 'config', '--worktree', '--unset-all', 'core.hooksPath');
 });
 
+/** Whether the scoped key is present at all: `--get-all` exits 0 even for an empty value. */
+const hasScoped = (cwd: string): boolean =>
+  spawnSync('git', ['config', '--worktree', '--get-all', 'core.hooksPath'], { cwd, env: GIT_ENV, encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL' }).status === 0;
+const configWorktree = (cwd: string): string => git(cwd, 'rev-parse', '--path-format=absolute', '--git-path', 'config.worktree').trim();
+
+test('worktree-hooks-path clears an empty scoped hooksPath, under which git runs no hooks', () => {
+  // git 2.54 runs no hook at all with `hooksPath =`, and the empty scoped
+  // value outranks the shared .githooks.
+  git(HP_WT, 'config', '--worktree', 'core.hooksPath', '');
+  assert.equal(hasScoped(HP_WT), true);
+  const run = hooksPathRun(JSON.stringify({ cwd: HP_WT }));
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout, 'Cleared an empty worktree-scoped core.hooksPath, under which git ran no hooks; the shared .githooks now applies\n');
+  assert.equal(hasScoped(HP_WT), false);
+  assert.equal(git(HP_WT, 'config', '--get', 'core.hooksPath').trim(), '.githooks');
+});
+
+test('worktree-hooks-path warns when the scoped hooksPath cannot be cleared, and still exits 0', () => {
+  const file = configWorktree(HP_WT);
+  const stale = join(HP_MAIN, '.githooks');
+  git(HP_WT, 'config', '--worktree', 'core.hooksPath', stale);
+  // A held lock makes git refuse to rewrite config.worktree.
+  writeFileSync(`${file}.lock`, '');
+  try {
+    const run = hooksPathRun(JSON.stringify({ cwd: HP_WT }));
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(
+      run.stdout,
+      `Could not clear the worktree-scoped core.hooksPath (${stale}) in ${file}: git still uses it here, not the shared .githooks. Remove its hooksPath line by hand.\n`,
+    );
+    assert.equal(hasScoped(HP_WT), true);
+    assert.equal(scoped(HP_WT), stale);
+  } finally {
+    rmSync(`${file}.lock`, { force: true });
+    git(HP_WT, 'config', '--worktree', '--unset-all', 'core.hooksPath');
+  }
+});
+
+test('worktree-hooks-path warns about an empty scoped hooksPath it cannot clear', () => {
+  const file = configWorktree(HP_WT);
+  git(HP_WT, 'config', '--worktree', 'core.hooksPath', '');
+  writeFileSync(`${file}.lock`, '');
+  try {
+    const run = hooksPathRun(JSON.stringify({ cwd: HP_WT }));
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(
+      run.stdout,
+      `Could not clear the empty worktree-scoped core.hooksPath in ${file}: git runs no hooks here, not the shared .githooks. Remove its hooksPath line by hand.\n`,
+    );
+    assert.equal(hasScoped(HP_WT), true);
+  } finally {
+    rmSync(`${file}.lock`, { force: true });
+    git(HP_WT, 'config', '--worktree', '--unset-all', 'core.hooksPath');
+  }
+});
+
 test('worktree-hooks-path says nothing when there is no scoped value, or no checkout', () => {
   assert.deepEqual(hooksPathRun(JSON.stringify({ cwd: HP_WT })), { status: 0, stdout: '', stderr: '' });
   assert.deepEqual(hooksPathRun(JSON.stringify({ cwd: BIN })), { status: 0, stdout: '', stderr: '' });
@@ -455,6 +511,34 @@ test('worktree-hooks-path names git’s default when no shared value is left', (
   const result = spawnSync('bash', [hooksPath], { cwd: bare, input: JSON.stringify({ cwd: bare }), encoding: 'utf8', env: GIT_ENV });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "Cleared worktree-scoped core.hooksPath (/elsewhere); git's default hooks folder now applies\n");
+});
+
+test('worktree-hooks-path says an empty shared hooksPath runs no hooks, rather than git’s default', () => {
+  // Cleared or not, what applies after the scoped value is the empty shared
+  // one, under which git runs no hooks (git 2.54), not .git/hooks.
+  const repo = join(TMP, 'hp-empty-shared');
+  mkdirSync(repo, { recursive: true });
+  git(repo, 'init', '-q', '-b', 'main');
+  git(repo, 'config', 'extensions.worktreeConfig', 'true');
+  git(repo, 'config', 'core.hooksPath', '');
+  const runHere = (): Run => {
+    const result = spawnSync('bash', [hooksPath], { cwd: repo, input: JSON.stringify({ cwd: repo }), encoding: 'utf8', env: GIT_ENV, timeout: 10_000, killSignal: 'SIGKILL' });
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  };
+  git(repo, 'config', '--worktree', 'core.hooksPath', '/elsewhere');
+  assert.deepEqual(runHere(), { status: 0, stdout: 'Cleared worktree-scoped core.hooksPath (/elsewhere); the shared empty core.hooksPath (no hooks run) now applies\n', stderr: '' });
+  git(repo, 'config', '--worktree', 'core.hooksPath', '/elsewhere');
+  const file = configWorktree(repo);
+  writeFileSync(`${file}.lock`, '');
+  try {
+    assert.deepEqual(runHere(), {
+      status: 0,
+      stdout: `Could not clear the worktree-scoped core.hooksPath (/elsewhere) in ${file}: git still uses it here, not the shared empty core.hooksPath (no hooks run). Remove its hooksPath line by hand.\n`,
+      stderr: '',
+    });
+  } finally {
+    rmSync(`${file}.lock`, { force: true });
+  }
 });
 
 test('worktree-hooks-path leaves a single checkout’s shared hooksPath alone when worktreeConfig is off', () => {

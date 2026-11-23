@@ -160,7 +160,14 @@ describe('run bp-rules', () => {
 
 describe('consoleIo.write', () => {
   it('writes the text to the stream as it is, adding no line ending', (t) => {
-    const stdout = t.mock.method(process.stdout, 'write', () => true);
+    // The capture writes through, so under Stryker's tap runner, where
+    // node:test's TAP goes to this process's stdout, no queued `ok` line is
+    // lost (veda#437). A chunk is ended with a line break so it cannot run
+    // into the next TAP line.
+    const write = process.stdout.write.bind(process.stdout);
+    const stdout = t.mock.method(process.stdout, 'write', (chunk: string | Uint8Array) =>
+      write(String(chunk).endsWith('\n') ? chunk : `${String(chunk)}\n`),
+    );
     const stderr = t.mock.method(process.stderr, 'write', () => true);
     consoleIo.write?.('out', 'a\nb');
     consoleIo.write?.('err', '\nc\n');

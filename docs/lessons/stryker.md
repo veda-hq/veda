@@ -34,6 +34,13 @@ without suppressing them, and the traps of a gate scoped to a diff.
   session). Mutation testing also blanks guard literals such as `"GIT_DIR"`, so a guard made of
   mutable data is defeatable: enforce at a spawn boundary mutants cannot reach, or unset
   `GIT_*` in the hook script itself.
+- **An outer dvara run's `DVARA_` variables.** veda's pre-push runs the gate under dvara, so
+  every suite the gate runs inherits the outer run's `DVARA_STAGE_FILE` and `DVARA_RECORD_FILE`.
+  A mutant of the env a test hands its own hook (in dvara's `supervisor.ts`, the spawn env)
+  then lets that hook's `dvara_stage lint` write into the outer run's stage file. The gate
+  passed, but the push was refused with "pre-push marked stage "lint"". A suite that runs dvara
+  hooks drops every inherited `DVARA_` variable when it loads, as it does `GIT_`, and puts them
+  back in `after` (`packages/dvara/src/supervisor.test.ts`, veda#459).
 - **The step summary overflows in CI.** Under GitHub Actions, Vitest adds its github-actions
   reporter and appends to the step summary on every run, which under Stryker means once per
   mutant and overflows `$GITHUB_STEP_SUMMARY`. Unset `GITHUB_ACTIONS` and `GITHUB_STEP_SUMMARY`

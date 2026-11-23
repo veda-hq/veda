@@ -40,7 +40,10 @@ without suppressing them, and the traps of a gate scoped to a diff.
   in the env Stryker passes to its test runner.
 
 - **One lane of veda's own gate by hand.** veda's lanes are in `agnipariksha.json` at the root,
-  one per package, each on the `tap` runner through `stryker/lane.mjs`. Judge files by hand with
+  each on the `tap` runner through `stryker/lane.mjs`. There is one per package, and a `scripts`
+  lane for the root's `scripts/*.mjs` (all but `released-pins.mjs`, a hook file). That lane runs
+  from the root, and `stryker/scripts.config.mjs` keeps its sandbox to `scripts/`,
+  `package.json` and `agnipariksha.json`. Judge files by hand with
   `pnpm exec agnipariksha --lane <name> --files <repo-relative paths> --no-reuse`. Naming the lane
   judges it whatever the cut-off. Without `--files`, it judges what the branch changed. The
   reports land in `reports/agnipariksha/`, which git ignores.

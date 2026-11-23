@@ -2020,6 +2020,90 @@ class ReportedFalseRefusalsTest(ProtectedFixture):
         )
 
 
+class GitConfigReadUnderCTest(ProtectedFixture):
+    """A `git config` read writes nothing, wherever `-C` points (veda#436).
+
+    kavach 0.8.3 read `git -C <dir> config --get-all core.hooksPath` as a
+    write to <dir>: refused for the main checkout, which holds the session's
+    protected `.githooks/`, and for another worktree, which is not the
+    session's. Every write form under `-C` stays refused."""
+
+    READS = (
+        "config --show-scope --show-origin --get-all core.hooksPath",
+        "config --get core.hooksPath",
+        "config --get-all core.hooksPath",
+        "config --get-regexp '^core\\.'",
+        "config --list",
+        "config -l --show-origin",
+        "config --list --name-only -z",
+        "config --worktree --list",
+        "config --local --get remote.origin.url",
+        "config --global --get user.name",
+        "config --type=bool --get core.bare",
+        "config --type bool --default false --get core.bare",
+        "config --file .gitmodules --get-regexp path",
+        "config --includes --get-urlmatch http.proxy https://example.com",
+        "config --get-color color.diff.new green",
+        "config core.hooksPath",
+        "config get --show-origin --all core.hooksPath",
+        "config get --value=x --fixed-value core.hooksPath",
+        "config list --show-scope",
+    )
+    WRITES = (
+        "config --unset core.hooksPath",
+        "config --unset-all core.hooksPath",
+        "config --worktree --unset-all core.hooksPath",
+        "config --add core.hooksPath /dev/null",
+        "config --replace-all core.hooksPath /dev/null",
+        "config --remove-section core",
+        "config --rename-section core other",
+        "config core.hooksPath /dev/null",
+        "config user.name corpus",
+        "config set core.hooksPath /dev/null",
+        "config unset core.hooksPath",
+        "config --edit",
+        "config -e",
+        "config edit",
+        # Not reads as written: `--` makes `--list` a value, `--get-al` is
+        # git's abbreviation, `-le` a cluster holding --edit, and a value
+        # option given an option instead of its value.
+        "config -- core.hooksPath --list",
+        "config --get-al core.hooksPath",
+        "config -le",
+        "config --file --unset core.hooksPath",
+    )
+
+    def test_a_read_passes_against_the_main_checkout_and_another_worktree(self) -> None:
+        for folder in (self.main, self.manual, self.claude):
+            for read in self.READS:
+                command = f"git -C {folder} {read}"
+                with self.subTest(command=command):
+                    result = self.bash(command)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_write_under_c_stays_refused(self) -> None:
+        for folder in (self.main, self.manual):
+            for write in self.WRITES:
+                command = f"git -C {folder} {write}"
+                with self.subTest(command=command):
+                    result = self.bash(command)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("BLOCKED", result.stderr)
+
+    def test_the_reads_options_are_what_keeps_it_a_read(self) -> None:
+        # A computed word could be --unset; a global option before the
+        # subcommand could select another repository or configuration.
+        for command in (
+            f"git -C {self.main} config --get $KEY",
+            f"git -C {self.main} config --get core.*",
+            f"git --git-dir={self.main}/.git config --get core.hooksPath",
+            f"git -c core.pager=x -C {self.main} config --get core.hooksPath",
+        ):
+            with self.subTest(command=command):
+                result = self.bash(command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+
+
 class ReviewedCLIWordsTest(unittest.TestCase):
     """`reviewed_cli_words` and `reviewed_cli_paths` need no settings module."""
 

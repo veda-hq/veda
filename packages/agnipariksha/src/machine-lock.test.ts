@@ -114,9 +114,22 @@ test('a live holder is waited for, announced once, then the lock is taken', asyn
   assert.match(files.get('/lock') ?? '', /^42 /);
 });
 
-test('a live holder past the limit refuses', async () => {
-  const { deps } = fakeLock(() => true, '7 2026-11-14');
-  await assert.rejects(acquireLock('/lock', 42, deps, 12_000), /pid 7 2026-11-14\) held \/lock for over 0 min/);
+test('a wait past the limit refuses, counting the runs that held the lock in turn and naming the last', async () => {
+  let polls = 0;
+  const { deps, logs } = fakeLock(() => true, '7 2026-11-14', (held) => {
+    polls += 1;
+    if (polls === 1) held.set('/lock', '8 2026-11-15');
+    if (polls === 2) held.set('/lock', '9 2026-11-16');
+  });
+  await assert.rejects(acquireLock('/lock', 42, deps, 60_000), {
+    message: 'waited over 1 min for /lock: 3 other run(s) held it in turn, the last pid 9 2026-11-16',
+  });
+  assert.equal(polls, 12, 'the last holder was polled until the wait ran out');
+  assert.deepEqual(logs, [
+    'agnipariksha: waiting for pid 7 2026-11-14, which holds /lock',
+    'agnipariksha: waiting for pid 8 2026-11-15, which holds /lock',
+    'agnipariksha: waiting for pid 9 2026-11-16, which holds /lock',
+  ]);
 });
 
 test('pidAlive: signal 0 succeeds or EPERM is alive, anything else is dead', () => {

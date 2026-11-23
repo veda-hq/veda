@@ -313,7 +313,7 @@ test('a bad argument or a held lock refuses with exit 2', async () => {
   let clock = 0;
   held.deps.lock.now = () => (clock += 60 * 60_000);
   assert.equal(await main([], held.deps), 2);
-  assert.match(held.logs[0] ?? '', /REFUSED: another mutation run \(pid 7 then\)/);
+  assert.deepEqual(held.logs, ['agnipariksha REFUSED: waited over 30 min for /repo/.git/agnipariksha.lock: 1 other run(s) held it in turn, the last pid 7 then']);
 });
 
 const LOCK = '/repo/.git/agnipariksha.lock';

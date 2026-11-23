@@ -1045,10 +1045,14 @@ describe("the watchdog", () => {
   it("starts no watchdog for a hook that could not start", async () => {
     const { root, hook } = repo("true");
     const calls: string[] = [];
+    const imposing = module(
+      { exitDisposition: () => ({ code: 124, status: "deadlock" }) },
+      calls,
+    );
     const { opts } = options(
       root,
       {
-        loadWatchdog: async () => module({}, calls),
+        loadWatchdog: async () => imposing,
         env: { PATH: "/nonexistent" },
       },
       { watchdog: "w.mjs" },
@@ -1082,9 +1086,34 @@ describe("the watchdog", () => {
 
   it("runs the hook without a watchdog that cannot start", async () => {
     const { root, hook } = repo("true");
+    // Its exitDisposition would stop the run, but a watchdog that never
+    // started decides nothing.
     const broken = module({
       createWatchdog: () => {
         throw new Error("no");
+      },
+      exitDisposition: () => ({ code: 124, status: "deadlock" }),
+    });
+    const { opts } = options(
+      root,
+      { loadWatchdog: async () => broken },
+      { watchdog: "w.mjs" },
+    );
+    assert.equal(await supervise([hook], opts), 0);
+    const [row] = rows(root);
+    assert.equal(row?.status, "success");
+    assert.deepEqual(row?.watchdog, {
+      mode: "unavailable",
+      error: "no",
+    });
+  });
+
+  it("records a watchdog start that throws something other than an Error", async () => {
+    const { root, hook } = repo("true");
+    const broken = module({
+      createWatchdog: () => {
+        // A module may throw anything, not only an Error.
+        throw "nope";
       },
     });
     const { opts } = options(
@@ -1095,7 +1124,7 @@ describe("the watchdog", () => {
     assert.equal(await supervise([hook], opts), 0);
     assert.deepEqual(rows(root)[0]?.watchdog, {
       mode: "unavailable",
-      error: "no",
+      error: "nope",
     });
   });
 

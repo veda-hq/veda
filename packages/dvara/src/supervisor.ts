@@ -324,21 +324,28 @@ export const supervise = async (
   // Why a watchdog module failed to start, for the row: a silent failure would
   // read the same as a run with no watchdog configured.
   let watchdogError: string | undefined;
+  // Only a watchdog that started may decide the outcome. One that failed to
+  // start, or had no hook to watch, leaves the hook's verdict alone, as no
+  // watchdog would.
+  let disposition: WatchdogModule["exitDisposition"] | undefined;
   if (watchdogModule && spawned.pid !== undefined) {
+    const module = watchdogModule;
     try {
-      watchdog = watchdogModule.createWatchdog({
+      watchdog = module.createWatchdog({
         rootPid: spawned.pid,
         stageFile: events,
         hangsDir: resolve(dir, "hangs"),
         runId: id,
-        config: watchdogModule.resolveWatchdogConfig(
+        config: module.resolveWatchdogConfig(
           env,
           platform,
           perfLevelNames(platform),
         ),
       });
+      disposition = (summary) => module.exitDisposition(summary);
     } catch (error) {
-      watchdogError = (error as Error).message;
+      // A module may throw anything, not only an Error.
+      watchdogError = error instanceof Error ? error.message : String(error);
     }
   }
   let peakTreeRssKiB = 0;
@@ -417,7 +424,7 @@ export const supervise = async (
     };
     // An enforced stop decides the outcome: the hook exited because the
     // watchdog stopped it, so its own status is not the story.
-    const imposed = watchdogModule?.exitDisposition(watchdogSummary) ?? null;
+    const imposed = disposition?.(watchdogSummary) ?? null;
     if (imposed) code = imposed.code;
     const ended = Date.now();
     const marks = parseStages(readOrNull(events), bootstrapMs);

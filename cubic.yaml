@@ -7,7 +7,7 @@
 # whole and the dashboard settings apply, so keep it to the schema's keys.
 #
 # Which files Cubic reviews is Alok's call: its monthly review allowance goes
-# on package sources, tests, scripts, guards and hooks. Files skipped here
+# on package sources, scripts, guards and hooks. Files skipped here
 # spend none of it.
 version: 1
 reviews:
@@ -29,3 +29,9 @@ reviews:
       - .github/workflows/niyam.yml
       # Lessons for agents, in prose.
       - docs/lessons/
+      # TypeScript and JavaScript test files: agnipariksha's mutation gate
+      # judges them, at pre-push and in the required Mutation check (#274).
+      # kavach's Python tests (packages/kavach/python/tests/) stay reviewed.
+      - "**/*.test.ts"
+      - "**/*.test.tsx"
+      - "**/*.test.mjs"

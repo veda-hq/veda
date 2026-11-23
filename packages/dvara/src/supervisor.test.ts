@@ -42,6 +42,12 @@ const it = (name: string, fn: (t: TestContext) => void | Promise<void>) =>
  * supervisor runs spawn git with this process's environment. A global trace2
  * event target (a daemon's socket) could otherwise write into a fixture's
  * .git while after() removes it, and fail it with ENOTEMPTY.
+ *
+ * dvara's own variables go too. Run under a real hook, as veda's pre-push
+ * runs its mutation gate, this process has the outer run's DVARA_STAGE_FILE
+ * and DVARA_RECORD_FILE. A mutant that drops them from the hook's env would
+ * have a test hook's `dvara_stage lint` write into the outer run's stage
+ * file, and the outer pre-push would refuse its own stage list (#459).
  */
 const HERMETIC = {
   GIT_CONFIG_GLOBAL: "/dev/null",
@@ -51,8 +57,8 @@ const HERMETIC = {
   GIT_TRACE2_EVENT: "0",
   GIT_TRACE2_PERF: "0",
 };
-const inherited = Object.entries(process.env).filter(([name]) =>
-  name.startsWith("GIT_"),
+const inherited = Object.entries(process.env).filter(
+  ([name]) => name.startsWith("GIT_") || name.startsWith("DVARA_"),
 );
 for (const [name] of inherited) delete process.env[name];
 Object.assign(process.env, HERMETIC);

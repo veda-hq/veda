@@ -551,6 +551,12 @@ describe('main, in-process: approval', () => {
 describe('entry', () => {
   const url = pathToFileURL(SCRIPT).href;
 
+  // In a child, so the import is the module's first; the child inherits Stryker's active mutant.
+  test("imported, it leaves the importer's exit code as it was", () => {
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', `process.exitCode = 7; await import(${JSON.stringify(url)});`], { encoding: 'utf8' });
+    assert.equal(r.status, 7, r.stderr);
+  });
+
   test('run as the script, it runs main on the arguments after it', async () => {
     const f = fakeIo({ cwd: folder({ 'package.json': '0.5.1' }) });
     assert.equal(await entry(['node', SCRIPT, 'pending'], url, f.io), 0);

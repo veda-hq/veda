@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -233,6 +233,13 @@ describe('main', () => {
 describe('entry', () => {
   const script = '/repo/scripts/mutation-lanes.mjs';
   const url = pathToFileURL(script).href;
+
+  // In a child, so the import is the module's first; the child inherits Stryker's active mutant.
+  test("imported, it leaves the importer's exit code as it was", () => {
+    const own = new URL('./mutation-lanes.mjs', import.meta.url).href;
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', `process.exitCode = 7; await import(${JSON.stringify(own)});`], { encoding: 'utf8' });
+    assert.equal(r.status, 7, r.stderr);
+  });
 
   test('runs main on the arguments after the script when node runs this module', () => {
     const { root, git } = fixture();

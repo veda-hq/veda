@@ -390,6 +390,12 @@ describe('main', () => {
 
 describe('entry', () => {
   const url = pathToFileURL(SCRIPT).href;
+
+  // In a child, so the import is the module's first; the child inherits Stryker's active mutant.
+  test("imported, it leaves the importer's exit code as it was", () => {
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', `process.exitCode = 7; await import(${JSON.stringify(url)});`], { encoding: 'utf8' });
+    assert.equal(r.status, 7, r.stderr);
+  });
   /** Every effect of a run faked, so a mutant that runs main where it should not touches nothing real. */
   function fakes() {
     const child = fakeChild();

@@ -2,6 +2,7 @@
 // or are real ones saved under fixtures/.
 import { beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import {
@@ -643,6 +644,13 @@ test('readText reads a file as text', () => {
 });
 
 describe('main and entry', () => {
+  // In a child, so the import is the module's first; the child inherits Stryker's active mutant.
+  test("imported, it leaves the importer's exit code as it was", () => {
+    const own = new URL('./own-provenance.mjs', import.meta.url).href;
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', `process.exitCode = 7; await import(${JSON.stringify(own)});`], { encoding: 'utf8' });
+    assert.equal(r.status, 7, r.stderr);
+  });
+
   /** @param {string} name */
   const fixture = name => JSON.parse(readFileSync(new URL(`fixtures/${name}`, import.meta.url), 'utf8'));
   const KAVACH_INTEGRITY = 'sha512-Oc8MEAjnvKsmIYahAQ561gv4jTvktVLeMBo8otnDwqF0ywsK63H6cpVdkfrBGROqeuKO7v0slO5bl6tcWAFMdQ==';

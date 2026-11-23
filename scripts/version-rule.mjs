@@ -309,4 +309,5 @@ export function entry(argv, url, io = realIo()) {
   return argv[1] && url === pathToFileURL(argv[1]).href ? main(argv.slice(2), io) : undefined;
 }
 
-process.exitCode = await entry(process.argv, import.meta.url);
+// Imported, entry gives undefined, and the importer's exit code stands.
+process.exitCode = (await entry(process.argv, import.meta.url)) ?? process.exitCode;

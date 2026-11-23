@@ -180,6 +180,8 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
   const slug = lane.name.replace(/[^A-Za-z0-9]+/g, '-');
   const cwd = join(deps.root, lane.cwd);
   const report = join(deps.reportsDir, `${slug}.json`);
+  /** Names the tests a failed dry run named, after `lead`; '' when it named none. */
+  const on = (failedTests: readonly string[], lead = ' on '): string => (failedTests.length > 0 ? `${lead}${nameTests(failedTests)}` : '');
   const wrapper = join(deps.reportsDir, `${slug}.stryker.config.mjs`);
   const retryWrapper = join(deps.reportsDir, `${slug}.retry.stryker.config.mjs`);
   deps.writeFile(wrapper, wrapperConfig(join(cwd, lane.config), report));
@@ -187,17 +189,22 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
   const firstEnv = lane.env(plan.suites);
   const fallbackEnv = lane.fallback?.(plan.suites);
 
-  type Run = RetryRun & { trigger?: string | undefined; failedTests?: readonly string[] };
+  /** A `FALLBACK_TRIGGERS` line the run's output carried, and the tests it names (only `FAILED_INITIAL_RUN` names any). */
+  interface Trigger {
+    line: string;
+    failedTests: readonly string[];
+  }
+  type Run = RetryRun & { trigger?: Trigger };
   const run = async (mutate: string[], extra: string[], env: Record<string, string>, config = wrapper): Promise<Run> => {
     deps.removeFile(report);
     const result = await deps.runStryker(cwd, ['run', config, ...extra, '--mutate', mutate.join(',')], env);
     if (result.refusal !== undefined) return { refusal: result.refusal, busy: false };
     if (result.code !== 0) {
       if (result.seen.includes(DRY_RUN_TIMEOUT)) return { refusal: BUSY, busy: true };
-      const trigger = FALLBACK_TRIGGERS.find((line) => result.seen.includes(line));
-      const failedTests = trigger === FAILED_INITIAL_RUN ? (result.failedTests ?? []) : [];
-      const why = trigger === undefined ? '' : ` (${trigger}${failedTests.length > 0 ? `: ${nameTests(failedTests)}` : ''})`;
-      return { refusal: `Stryker exited ${result.code}${why}`, busy: false, trigger, failedTests };
+      const line = FALLBACK_TRIGGERS.find((marker) => result.seen.includes(marker));
+      if (line === undefined) return { refusal: `Stryker exited ${result.code}`, busy: false };
+      const failedTests = line === FAILED_INITIAL_RUN ? (result.failedTests ?? []) : [];
+      return { refusal: `Stryker exited ${result.code} (${line}${on(failedTests, ': ')})`, busy: false, trigger: { line, failedTests } };
     }
     const text = deps.readFile(report);
     if (text === undefined) return { refusal: `Stryker wrote no report at ${report}`, busy: false };
@@ -216,8 +223,8 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
   const reuseArgs: string[] = [];
   if (key !== null) {
     const file = join(deps.reportsDir, `${slug}.incremental-${key}.json`);
-    const stored = deps.readFile(file);
-    const kept = stored === undefined ? null : forReuse(stored);
+    // An absent file reads as "undefined", which is no reuse file.
+    const kept = forReuse(String(deps.readFile(file)));
     if (kept === null) deps.removeFile(file);
     else deps.writeFile(file, kept);
     reuseArgs.push('--incremental', '--incrementalFile', file);
@@ -227,24 +234,24 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
   /** Files judged in the fallback mode; their timeouts retry in it too. */
   const ownSuite = new Set<string>();
   let fellBack: string | null = null;
-  let flaky: string | undefined;
-  const on = (failedTests: readonly string[] | undefined): string =>
-    failedTests !== undefined && failedTests.length > 0 ? ` on ${nameTests(failedTests)}` : '';
+  /** The tests the first dry run failed on, when a lane with no fallback ran it again. */
+  let failedFirst: readonly string[] | null = null;
   let first = await run(plan.targets.map(local), reuseArgs, firstEnv);
   if ('refusal' in first && first.trigger !== undefined && fallbackEnv !== undefined) {
-    fellBack = `its dry run failed: "${first.trigger}"${on(first.failedTests)}`;
+    fellBack = `its dry run failed: "${first.trigger.line}"${on(first.trigger.failedTests)}`;
     plan.targets.forEach((target) => ownSuite.add(target));
     first = await run(plan.targets.map(local), reuseArgs, fallbackEnv);
-  } else if ('refusal' in first && first.trigger === FAILED_INITIAL_RUN) {
+  } else if ('refusal' in first && first.trigger?.line === FAILED_INITIAL_RUN) {
     // No fallback mode: run the same dry run once more, as a lane with one reruns in it.
-    const failedFirst = first.failedTests;
+    failedFirst = first.trigger.failedTests;
     first = await run(plan.targets.map(local), reuseArgs, firstEnv);
-    if ('refusal' in first && first.trigger === FAILED_INITIAL_RUN) {
+    if ('refusal' in first && first.trigger?.line === FAILED_INITIAL_RUN) {
       return refused(`the initial test run failed on both runs, the second time: ${first.refusal}; fix those tests, then run again`, null);
     }
-    if (!('refusal' in first)) flaky = `its initial test run failed${on(failedFirst)}, then passed when run again: the test is flaky; ${FIX_THE_FLAKE}`;
   }
   if ('refusal' in first) return refused(first.refusal, fellBack);
+  // It failed, then passed when run again.
+  const flaky = failedFirst === null ? undefined : `its initial test run failed${on(failedFirst)}, then passed when run again: the test is flaky; ${FIX_THE_FLAKE}`;
   let mutants = first.mutants;
 
   // A file whose every live mutant is NoCoverage had no related suite reach it
@@ -271,7 +278,7 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
       // Stryker mutates every node inside the `--mutate` range; the ignorer, given the span, drops those nested in this one.
       const retry = await run([`${local(m.file)}:${span}`], ['--concurrency', '1', '--timeoutMS', String(RETRY_TIMEOUT_MS)], { ...env, [RETRY_SPAN_VAR]: span }, retryWrapper);
       // The lane's own run passed its initial test run, so a test failing in the retry's is flaky.
-      return 'refusal' in retry && retry.trigger === FAILED_INITIAL_RUN ? { refusal: flakyRetry(retry.failedTests ?? []), busy: false } : retry;
+      return 'refusal' in retry && retry.trigger?.line === FAILED_INITIAL_RUN ? { refusal: flakyRetry(retry.trigger.failedTests), busy: false } : retry;
     },
     deps.now,
   );

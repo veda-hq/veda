@@ -34,6 +34,7 @@ test('nestedIn: inside the span and not the span itself', () => {
   const cases: [string, boolean][] = [
     ['2:4-5:6', false],
     ['3:0-4:9', true],
+    ['3:4-4:6', true],
     ['2:4-5:5', true],
     ['2:5-5:6', true],
     ['2:4-2:9', true],

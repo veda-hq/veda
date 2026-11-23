@@ -282,6 +282,8 @@ test('Stryker failing, a busy dry run, a missing, non-JSON or malformed report, 
     const result = await judgeLane(webPlan, deps);
     assert.match(result.refusals[0] ?? '', expected);
     assert.equal(result.fellBack, null);
+    assert.deepEqual(result.noMutants, []);
+    assert.deepEqual(result.ownSuites, []);
   }
 });
 
@@ -500,4 +502,104 @@ test("a timeout retry whose dry run fails on a test says the run was flaky, name
   const otherRetry = fakeDeps([report({ 'src/a.ts': [strykerMutant('Timeout')] })], [{ code: 0, seen: [] }, { code: 1, seen: ['No tests were executed'] }], null);
   otherRetry.setPlan(webPlan);
   assert.deepEqual((await judgeLane(webPlan, otherRetry.deps)).refusals, ['retry of apps/web/src/a.ts:3 (StringLiteral): Stryker exited 1 (No tests were executed)']);
+});
+
+test('the configs are written one statement a line', () => {
+  assert.equal(
+    wrapperConfig('/l/stryker.config.mjs', '/r/out.json'),
+    'import base from "file:///l/stryker.config.mjs";\nexport default { ...base, jsonReporter: { ...base.jsonReporter, fileName: "/r/out.json" } };\n',
+  );
+  assert.equal(
+    retryConfig('/l/stryker.config.mjs', '/r/out.json', '/p/retry-ignorer.js', ['BlockStatement']),
+    [
+      'import base from "file:///l/stryker.config.mjs";',
+      'export default {',
+      '  ...base,',
+      '  jsonReporter: { ...base.jsonReporter, fileName: "/r/out.json" },',
+      '  appendPlugins: [...(base.appendPlugins ?? []), "/p/retry-ignorer.js"],',
+      '  ignorers: [...(base.ignorers ?? []), "agnipariksha-retry"],',
+      '  mutator: { ...base.mutator, excludedMutations: [...(base.mutator?.excludedMutations ?? []), ...["BlockStatement"]] },',
+      '};',
+      '',
+    ].join('\n'),
+  );
+});
+
+test("a lane's file names collapse each run of other characters in its name to one hyphen", async () => {
+  const spaced: Plan = { ...webPlan, lane: { ...web, name: 'apps / web' } };
+  const { deps, runs, setPlan } = fakeDeps([report({ 'src/a.ts': [] })], [], null);
+  setPlan(spaced);
+  await judgeLane(spaced, deps);
+  assert.equal(runs[0]?.args[1], '/repo/reports/agnipariksha/apps-web.stryker.config.mjs');
+});
+
+const twoTimeouts = () => report({ 'src/a.ts': [strykerMutant('Timeout'), strykerMutant('Timeout', 7)] });
+const where = 'retry of apps/web/src/a.ts:3 (StringLiteral)';
+
+test('a retry that fails refuses that mutant, and only a busy dry run stops the pass', async () => {
+  const goesOn: [string, string | undefined, { code: number; seen: string[]; refusal?: string; failedTests?: string[] }][] = [
+    ['its temp directory vanished', report({ 'src/a.ts': [strykerMutant('Killed')] }), { code: 0, seen: [], refusal: 'its temp directory vanished' }],
+    ['Stryker exited 1', undefined, { code: 1, seen: [] }],
+    // Only the initial test run's failure names tests.
+    ['Stryker exited 1 (No tests were executed)', undefined, { code: 1, seen: ['No tests were executed'], failedTests: ['x'] }],
+    // The lane's own report is removed first, so a retry that writes none is not read as the lane's.
+    ['Stryker wrote no report at /repo/reports/agnipariksha/apps-web.json', undefined, { code: 0, seen: [] }],
+    ["Stryker's report /repo/reports/agnipariksha/apps-web.json is not JSON", '{', { code: 0, seen: [] }],
+    ['the report has no `files`', '[]', { code: 0, seen: [] }],
+    [flakyRetry(['t']), undefined, { code: 1, seen: [FAILED_INITIAL_RUN], failedTests: ['t'] }],
+  ];
+  for (const [refusal, text, code] of goesOn) {
+    const { deps, runs, setPlan } = fakeDeps([twoTimeouts(), text, report({ 'src/a.ts': [strykerMutant('Killed', 7)] })], [{ code: 0, seen: [] }, code], null);
+    setPlan(webPlan);
+    const result = await judgeLane(webPlan, deps);
+    assert.deepEqual(result.refusals, [`${where}: ${refusal}`], refusal);
+    assert.equal(runs.length, 3, refusal);
+    assert.equal(result.retried, 1, refusal);
+  }
+
+  const busy = fakeDeps([twoTimeouts()], [{ code: 0, seen: [] }, { code: 1, seen: [DRY_RUN_TIMEOUT] }], null);
+  busy.setPlan(webPlan);
+  const stopped = await judgeLane(webPlan, busy.deps);
+  assert.equal(busy.runs.length, 2);
+  assert.deepEqual(stopped.refusals, [`${where}: Stryker's initial test run timed out: the machine is busy; push again when it is quieter`]);
+
+  const noEnd = { ...strykerMutant('Timeout'), location: { start: { line: 3, column: 5 } } };
+  const located = fakeDeps([report({ 'src/a.ts': [noEnd, strykerMutant('Timeout', 7)] }), report({ 'src/a.ts': [strykerMutant('Killed', 7)] })], [], null);
+  located.setPlan(webPlan);
+  const unlocated = await judgeLane(webPlan, located.deps);
+  assert.equal(located.runs.length, 2);
+  assert.equal(unlocated.retried, 1);
+  assert.deepEqual(unlocated.refusals, [`${where}: its report gives no full location to retry it by`]);
+});
+
+test('a lane that fell back already never reruns a NoCoverage file', async () => {
+  const { deps, runs, setPlan } = fakeDeps(
+    [undefined, report({ 'scripts/a.ts': [strykerMutant('Killed')], 'scripts/b.ts': [strykerMutant('NoCoverage')] })],
+    [{ code: 1, seen: ['No tests were executed'] }],
+  );
+  setPlan(twoFiles);
+  const result = await judgeLane(twoFiles, deps);
+  assert.equal(runs.length, 2);
+  assert.equal(result.fellBack, 'its dry run failed: "No tests were executed"');
+  assert.deepEqual(result.judgement.blocking.map((m) => `${m.file}:${m.status}`), ['scripts/b.ts:NoCoverage']);
+});
+
+test('the NoCoverage rerun names every file it reruns', async () => {
+  const { deps, runs, setPlan } = fakeDeps([
+    report({ 'scripts/a.ts': [strykerMutant('NoCoverage')], 'scripts/b.ts': [strykerMutant('NoCoverage')] }),
+    report({ 'scripts/a.ts': [strykerMutant('Killed')], 'scripts/b.ts': [strykerMutant('Killed')] }),
+  ]);
+  setPlan(twoFiles);
+  const result = await judgeLane(twoFiles, deps);
+  assert.equal(result.fellBack, 'every mutant of scripts/a.ts, scripts/b.ts was NoCoverage under the related filter');
+  assert.equal(runs[1]?.args.at(-1), 'scripts/a.ts,scripts/b.ts');
+});
+
+test('a target with no mutants in the report is named; one with mutants is not', async () => {
+  const plan: Plan = { ...webPlan, targets: ['apps/web/src/a.ts', 'apps/web/src/b.ts'] };
+  const { deps, setPlan } = fakeDeps([report({ 'src/a.ts': [strykerMutant('Killed')] })], [], null);
+  setPlan(plan);
+  const result = await judgeLane(plan, deps);
+  assert.deepEqual(result.noMutants, ['apps/web/src/b.ts']);
+  assert.equal('flaky' in result, false, 'no flake, no key');
 });

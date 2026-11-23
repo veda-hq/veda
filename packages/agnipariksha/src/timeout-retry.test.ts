@@ -31,6 +31,9 @@ test('sameMutant compares file, start, mutator and replacement', () => {
   assert.equal(sameMutant(mutant('Killed'), mutant('Timeout')), true);
   assert.equal(sameMutant(mutant('Killed'), { ...mutant('Killed'), replacement: '"x"' }), false);
   assert.equal(sameMutant(mutant('Killed'), mutant('Killed', 4)), false);
+  assert.equal(sameMutant(mutant('Killed'), { ...mutant('Killed'), file: 'scripts/b.ts' }), false);
+  assert.equal(sameMutant(mutant('Killed'), { ...mutant('Killed'), column: 6 }), false);
+  assert.equal(sameMutant(mutant('Killed'), { ...mutant('Killed'), mutator: 'BooleanLiteral' }), false);
 });
 
 const clock = (...times: number[]) => () => times.shift() ?? 0;
@@ -90,6 +93,18 @@ test('a pass past its budget stops before the next retry', async () => {
   assert.equal(runs, 1);
   assert.match(pass.refusals[0] ?? '', /15-minute budget/);
   assert.deepEqual(pass.mutants.map((m) => `${m.line}:${m.status}`), ['2:Killed']);
+});
+
+test('the budget counts from the pass start: a retry starts at exactly the budget, and one past it stops the pass once', async () => {
+  const B = RETRY_BUDGET_MS;
+  const retry = async (m: Mutant): Promise<RetryRun> => ({ mutants: [mutant('Killed', m.line)] });
+  const atBudget = await retryTimeouts([mutant('Timeout', 2), mutant('Timeout', 3)], retry, clock(B, B + 10, 2 * B));
+  assert.deepEqual(atBudget.mutants.map((m) => `${m.line}:${m.status}`), ['2:Killed', '3:Killed'], 'elapsed is now minus the start, and the budget itself is in');
+  assert.deepEqual(atBudget.refusals, []);
+
+  const past = await retryTimeouts([mutant('Timeout', 2), mutant('Timeout', 3), mutant('Timeout', 4)], retry, clock(0, 0, B + 1, B + 2));
+  assert.deepEqual(past.mutants.map((m) => m.line), [2]);
+  assert.equal(past.refusals.length, 1, 'once stopped, the pass refuses once');
 });
 
 test('a retry that reports its own mutant Ignored refuses: the verdict would not count it', async () => {

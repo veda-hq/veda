@@ -69,7 +69,9 @@ onboard now reads `.githooks/pre-push` as its own and leaves it alone. A
 Claude cloud session's fresh clone has no such config, so niyam's session
 start writes its own pre-push into that clone's git directory. Check the
 setting with `git config --show-scope --show-origin --get-all core.hooksPath`,
-run inside the checkout or worktree you mean. Outside a repository it reads
+run inside the checkout or worktree you mean, or pointed at it with
+`git -C <dir> config …`: kavach lets a config read through wherever `-C`
+points (veda#436). Outside a repository it reads
 only global and system config. It should print one `local` line, from the
 main checkout's config file, with the value `.githooks`. git uses the last
 line it prints. A `global` or `system` line comes first and loses to the
@@ -83,7 +85,8 @@ have been seen doing it too. sarathi's `worktree-hooks-path.sh`, the first
 SessionStart handler in `.claude/sarathi.json`, clears the scoped line in
 the session's own checkout, whatever wrote it, and says so (veda#425). A `worktree` line still there after
 session start, or a `global` or `system` one: tell Alok, and leave the
-setting alone. Never run `git config` on another worktree.
+setting alone. Read another worktree's config as you like, but never write
+it: no `--unset`, `--add`, `set` or `key value` there.
 
 **Agents do not change the hooks or what they run** (veda#235). That is
 `.githooks/`, `scripts/guards.sh`, `scripts/released-pins.mjs`,

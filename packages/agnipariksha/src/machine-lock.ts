@@ -18,7 +18,10 @@ export const LOCK_POLL_MS = 5_000;
 export async function acquireLock(path: string, pid: number, deps: LockDeps, waitMs = LOCK_WAIT_MS): Promise<() => void> {
   const mine = `${pid} ${new Date(deps.now()).toISOString()}`;
   const startedAt = deps.now();
-  let announced = '';
+  /** The holder last announced; none before the first wait. */
+  let announced: string | undefined;
+  /** Live holders seen while waiting, each counted once. */
+  let holders = 0;
   let sawEmpty = false;
   for (;;) {
     if (deps.create(path, mine)) {
@@ -43,11 +46,14 @@ export async function acquireLock(path: string, pid: number, deps: LockDeps, wai
       }
       continue;
     }
-    if (deps.now() - startedAt >= waitMs) {
-      throw new Error(`another mutation run (pid ${held.trim()}) held ${path} for over ${Math.round(waitMs / 60_000)} min`);
-    }
-    if (announced !== held) deps.log(`agnipariksha: waiting for pid ${held.trim()}, which holds ${path}`);
+    // A run that takes the lock while this one waits is a new holder: the wait is this run's own, across them all.
+    const newHolder = announced !== held;
+    if (newHolder) holders += 1;
     announced = held;
+    if (deps.now() - startedAt >= waitMs) {
+      throw new Error(`waited over ${Math.round(waitMs / 60_000)} min for ${path}: ${holders} other run(s) held it in turn, the last pid ${held.trim()}`);
+    }
+    if (newHolder) deps.log(`agnipariksha: waiting for pid ${held.trim()}, which holds ${path}`);
     await deps.sleep(LOCK_POLL_MS);
   }
 }

@@ -125,8 +125,15 @@ runs the repository's own `node_modules/.bin/stryker`.
   its dry run fails because no related test was found or one failed, and
   reruns in it any file whose every mutant was `NoCoverage`.
 - **One run per machine.** A lock in the git common directory, which every
-  worktree shares, holds a second run until the first ends, and refuses after
-  30 minutes. A lock whose process is gone is taken over.
+  worktree shares, holds a second run until the first ends. It refuses after
+  30 minutes of its own wait, however many runs held the lock in turn, and
+  says how many did and which held it last. A lock whose process is gone is
+  taken over. The gate plans every lane before the lock. A run whose plan
+  gives Stryker no file (every lane has nothing to judge, or is over its
+  cut-off and left to CI) prints its lines and exits 0 without waiting. Any
+  other run takes the lock and plans again under it, since the tree can
+  change while it waits. It judges that second plan, which may give Stryker
+  nothing, and then it releases the lock having run none.
 
 ## `agnipariksha.json`
 

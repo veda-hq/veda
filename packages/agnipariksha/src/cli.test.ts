@@ -177,7 +177,6 @@ function fake(reports: Record<string, string>, over: Partial<CliDeps> = {}): Fak
   const files = new Map<string, string>([['/repo/scripts.mjs', 'config'], ['/repo/pnpm-lock.yaml', 'lock'], ['/repo/node_modules/@stryker-mutator/core/package.json', '{}']]);
   const exits: (() => void)[] = [];
   const outputs: Record<string, string> = {
-    'rev-parse': '.git\n',
     'merge-base': 'base1\n',
     diff: 'scripts/a.ts\0scripts/b.ts\0scripts/c.ts\0docs/x.md\0',
     'ls-files': 'tools/new.ts\0',
@@ -188,6 +187,12 @@ function fake(reports: Record<string, string>, over: Partial<CliDeps> = {}): Fak
     git: (args) => {
       gitCalls.push(args);
       if (args[0] === 'diff' && args[1] === '-U0') return args.at(-1) === 'scripts/b.ts' ? '@@ -1 +1 @@\n+// note\n' : '@@ -1 +1 @@\n+x();\n';
+      // Strict: a rev-parse the gate does not make throws, so a mutated argument refuses the run.
+      if (args[0] === 'rev-parse') {
+        if (args.join(' ') === 'rev-parse --git-common-dir') return '.git\n';
+        if (args[1] === '--git-path' && args.length === 3) return `.git/${args[2]}\n`;
+        throw new Error(`fatal: unexpected git ${args.join(' ')}`);
+      }
       return outputs[args[0] as string] ?? '';
     },
     exists: (path) => path.endsWith('.test.ts') && !path.startsWith('scripts/c.'),
@@ -313,10 +318,12 @@ test('a bad argument or a held lock refuses with exit 2', async () => {
   let clock = 0;
   held.deps.lock.now = () => (clock += 60 * 60_000);
   assert.equal(await main([], held.deps), 2);
-  assert.match(held.logs[0] ?? '', /REFUSED: another mutation run \(pid 7 then\)/);
+  assert.deepEqual(held.logs, ['agnipariksha REFUSED: waited over 30 min for /repo/.git/agnipariksha.lock: 1 other run(s) held it in turn, the last pid 7 then']);
 });
 
-test('a git failure refuses with exit 2 and releases the lock', async () => {
+const LOCK = '/repo/.git/agnipariksha.lock';
+
+test('a git failure while planning refuses with exit 2, before the lock', async () => {
   const f = fake({});
   const git = f.deps.git;
   f.deps.git = (args) => {
@@ -325,7 +332,101 @@ test('a git failure refuses with exit 2 and releases the lock', async () => {
   };
   assert.equal(await main([], f.deps), 2);
   assert.deepEqual(f.logs, ['agnipariksha REFUSED: no origin/main']);
-  assert.equal(f.files.has('/repo/.git/agnipariksha.lock'), false);
+  assert.equal(f.files.has(LOCK), false);
+  assert.equal(f.exits.length, 0, 'no lock taken');
+  assert.equal(f.gitCalls.some((args) => args.includes('--git-common-dir')), false);
+});
+
+test('a git failure under the lock refuses with exit 2 and releases the lock', async () => {
+  const f = fake({});
+  const git = f.deps.git;
+  let bases = 0;
+  f.deps.git = (args) => {
+    if (args[0] === 'merge-base' && (bases += 1) > 1) throw new Error('origin/main is gone');
+    return git(args);
+  };
+  assert.equal(await main([], f.deps), 2);
+  assert.deepEqual(f.logs, ['agnipariksha REFUSED: origin/main is gone']);
+  assert.equal(f.exits.length, 1, 'the lock was taken');
+  assert.equal(f.files.has(LOCK), false, 'and released');
+  assert.deepEqual(f.strykerRuns, []);
+});
+
+/** Another live pid holds the lock, and any use of the lock's deps fails the run; returns the uses. */
+function lockHeld(f: Fake): string[] {
+  const used: string[] = [];
+  f.files.set(LOCK, '7 then');
+  const use = (name: string) => (): never => {
+    used.push(name);
+    throw new Error(`the lock's ${name} was called`);
+  };
+  f.deps.lock = { create: use('create'), read: use('read'), remove: use('remove'), alive: use('alive'), now: use('now'), sleep: use('sleep'), log: use('log') };
+  return used;
+}
+
+/** Asserts the run never went near the lock: no lock dep, no common-dir lookup, no release, the holder's file intact. */
+function lockUntouched(f: Fake, used: readonly string[]): void {
+  assert.deepEqual(used, []);
+  assert.equal(f.gitCalls.some((args) => args.includes('--git-common-dir')), false);
+  assert.equal(f.exits.length, 0);
+  assert.equal(f.files.get(LOCK), '7 then');
+  assert.deepEqual(f.strykerRuns, []);
+}
+
+test('nothing to judge: a docs-only change exits 0 at once, never waiting on a lock another run holds', async () => {
+  const f = fake({});
+  const git = f.deps.git;
+  f.deps.git = (args) => (args[0] === 'diff' && args[1] === '--name-only' ? 'docs/x.md\0' : git(args));
+  const used = lockHeld(f);
+  assert.equal(await main(['--tracked-only'], f.deps), 0);
+  assert.deepEqual(f.logs, [
+    'scripts: nothing to judge - not run',
+    'tools: nothing to judge - not run',
+    'docs: nothing to judge - not run',
+    'agnipariksha total: 0 killed of 0 in 0 lane(s), 0 blocking, 0 refused - exit 0',
+  ]);
+  lockUntouched(f, used);
+});
+
+test('nothing to judge: a change only in a lane over its cut-off exits 0 at once, never waiting on a lock another run holds', async () => {
+  const f = cutOff(2, {});
+  const used = lockHeld(f);
+  assert.equal(await main(['--tracked-only'], f.deps), 0);
+  assert.deepEqual(f.logs, [
+    '  not judged (comment-only change): scripts/b.ts',
+    '  not judged (no colocated suite): scripts/c.ts',
+    SCRIPTS_OVER,
+    'tools: nothing to judge - not run',
+    'docs: nothing to judge - not run',
+    'agnipariksha total: 0 killed of 0 in 0 lane(s), 0 blocking, 0 refused, 1 over the cut-off for CI - exit 0',
+  ]);
+  lockUntouched(f, used);
+});
+
+test('a run that waits for the lock plans again under it, and judges the tree as it is then', async () => {
+  const f = fake({ scripts: mutants('Killed') });
+  let diff = 'scripts/a.ts\0';
+  const git = f.deps.git;
+  f.deps.git = (args) => (args[0] === 'diff' && args[1] === '--name-only' ? diff : git(args));
+  f.files.set(LOCK, '7 then');
+  const waits: string[] = [];
+  f.deps.lock.log = (line) => waits.push(line);
+  // The holder finishes, and meanwhile the change to scripts/a.ts is undone.
+  f.deps.lock.sleep = async () => {
+    f.files.delete(LOCK);
+    diff = 'docs/x.md\0';
+  };
+  assert.equal(await main(['--tracked-only'], f.deps), 0);
+  assert.deepEqual(waits, ['agnipariksha: waiting for pid 7 then, which holds /repo/.git/agnipariksha.lock']);
+  assert.deepEqual(f.logs, [
+    'scripts: nothing to judge - not run',
+    'tools: nothing to judge - not run',
+    'docs: nothing to judge - not run',
+    'agnipariksha total: 0 killed of 0 in 0 lane(s), 0 blocking, 0 refused - exit 0',
+  ]);
+  assert.deepEqual(f.strykerRuns, []);
+  assert.equal(f.exits.length, 1, 'the lock was taken');
+  assert.equal(f.files.has(LOCK), false, 'and released');
 });
 
 test('an unfinished merge refuses before the lock, naming the merge and the way out', async () => {

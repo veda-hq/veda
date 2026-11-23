@@ -170,6 +170,17 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
     deps.log(`agnipariksha REFUSED: ${merging}`);
     return 2;
   }
+  const judged = { ...deps, lanes };
+  let planned: Planned[];
+  try {
+    planned = planAll(args, judged);
+  } catch (error: unknown) {
+    // fail-open: a failed git or file read judged nothing: refuse (exit 2), never a blocking exit 1.
+    deps.log(`agnipariksha REFUSED: ${(error as Error).message}`);
+    return 2;
+  }
+  // Before the lock: a run that gives Stryker nothing never waits on another worktree's.
+  if (!planned.some(runsStryker)) return judgeAll(args, judged, planned);
   let release: () => void;
   try {
     const lockPath = join(resolve(deps.root, deps.git(['rev-parse', '--git-common-dir']).trim()), LOCK_FILE);
@@ -181,7 +192,8 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
   }
   deps.atExit(release);
   try {
-    return await judgeAll(args, { ...deps, lanes });
+    // Planned again under the lock: the tree can change while the run waits for it.
+    return await judgeAll(args, judged, planAll(args, judged));
   } catch (error: unknown) {
     // fail-open: a failed git or file read judged nothing: refuse (exit 2), never a blocking exit 1.
     deps.log(`agnipariksha REFUSED: ${(error as Error).message}`);
@@ -191,10 +203,34 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
   }
 }
 
-async function judgeAll(args: Args, deps: CliDeps): Promise<number> {
+/** A lane's plan, and why this run leaves it to CI (its cut-off), or null. */
+export interface Planned {
+  plan: Plan;
+  over: string | null;
+}
+
+/**
+ * Every lane's plan, reading git and the files but writing and logging
+ * nothing, so it can run before the lock as well as under it.
+ */
+export function planAll(args: Args, deps: CliDeps): Planned[] {
   // `--files` names the files and judges each whatever its diff, so it needs no base and nothing is comment-only.
   const changes = args.files === undefined ? changedFiles(deps.git, deps.upstream, args.base, args.trackedOnly) : null;
   const files = changes?.files ?? (args.files as string[]);
+  const isCommentOnly = (file: string): boolean =>
+    changes !== null && !changes.alwaysJudged.has(file) && commentOnly(deps.git(['diff', '-U0', '--no-color', changes.base, '--', file]));
+  return deps.lanes.map((lane) => {
+    const plan = planLane(lane, files, deps.exists, isCommentOnly);
+    // A run that names its lanes judges them whatever their size: each CI job names its own.
+    const over = args.lanes === undefined ? overCutoff(plan, (file) => deps.readFile(join(deps.root, file))) : null;
+    return { plan, over };
+  });
+}
+
+/** Whether a lane's plan gives Stryker a file to run: one target or more, and not left to CI. */
+export const runsStryker = ({ plan, over }: Planned): boolean => plan.targets.length > 0 && over === null;
+
+async function judgeAll(args: Args, deps: CliDeps, planned: readonly Planned[]): Promise<number> {
   let tracked: string[] | undefined;
   const listTracked = (): string[] => (tracked ??= entries(deps.git(['ls-files', '-z', '--cached', '--others', '--exclude-standard'])));
   const laneDeps: LaneDeps = {
@@ -202,19 +238,15 @@ async function judgeAll(args: Args, deps: CliDeps): Promise<number> {
     reuseKey: (lane) =>
       args.reuse ? incrementalKey(keyInputPaths(lane.cwd, lane.config, listTracked(), deps.keyPolicy), (path) => deps.readFile(join(deps.root, path))) : null,
   };
-  const isCommentOnly = (file: string): boolean =>
-    changes !== null && !changes.alwaysJudged.has(file) && commentOnly(deps.git(['diff', '-U0', '--no-color', changes.base, '--', file]));
 
   const totals = { counted: 0, caught: 0, blocking: 0, refused: 0, lanes: 0, cutOff: 0 };
-  for (const lane of deps.lanes) {
-    const plan = planLane(lane, files, deps.exists, isCommentOnly);
+  for (const { plan, over } of planned) {
+    const { lane } = plan;
     for (const line of plan.notJudged) deps.log(`  ${line}`);
     if (plan.targets.length === 0) {
       deps.log(`${lane.name}: nothing to judge - not run`);
       continue;
     }
-    // A run that names its lanes judges them whatever their size: each CI job names its own.
-    const over = args.lanes === undefined ? overCutoff(plan, (file) => deps.readFile(join(deps.root, file))) : null;
     if (over !== null) {
       deps.log(over);
       totals.cutOff += 1;

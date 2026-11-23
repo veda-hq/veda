@@ -121,7 +121,7 @@
   },
   "packages/sarathi/src/cli.ts": {
     "shuddhi/no-swallowed-catch": {
-      "count": 5
+      "count": 4
     }
   },
   "packages/sarathi/src/hooks/format-before-write.ts": {

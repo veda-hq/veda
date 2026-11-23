@@ -159,7 +159,7 @@ async function hook(io: Io, options: Options): Promise<number> {
   try {
     parsed = JSON.parse(input);
   } catch {
-    // Input that is not JSON leaves parsed undefined, which the check below refuses.
+    // fail-open: input that is not JSON leaves parsed undefined, which the check below refuses.
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     io.err(`${refuse ? 'BLOCKED: ' : ''}sarathi: the ${event} event on stdin is not a JSON object, so no handler ran.\n`);

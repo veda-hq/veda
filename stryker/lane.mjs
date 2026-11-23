@@ -45,7 +45,13 @@ export function lane(cwd, env = process.env) {
     // agnipariksha's wrapper config moves the report into reports/agnipariksha/.
     jsonReporter: { fileName: 'reports/mutation/mutation.json' },
     tempDirName: '.stryker-tmp',
-    cleanTempDir: true,
+    // `true` deletes the sandbox only after a successful run, so every failed
+    // dry run left one in the package's .stryker-tmp/, two per refused gate
+    // run (veda#437). `always` deletes it however the run ends; it removes
+    // only this run's own sandbox-*, and .stryker-tmp/ itself only when empty.
+    // A run killed mid-way still leaves its sandbox. To keep one for a look,
+    // pass `--cleanTempDir false` on a hand run.
+    cleanTempDir: 'always',
     incremental: false,
   };
 }

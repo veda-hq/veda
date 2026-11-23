@@ -6,7 +6,7 @@ lane by lane, and blocks the push on a mutant no test kills. Part of
 [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/agnipariksha@0.8.7 [--base <ref>] [--files a,b] [--lane <name>]... [--tracked-only] [--pushed-refs] [--no-reuse]
+npx @veda-hq/agnipariksha@0.8.8 [--base <ref>] [--files a,b] [--lane <name>]... [--tracked-only] [--pushed-refs] [--no-reuse]
 ```
 
 Exit 0 when every judged mutant is caught, 1 on a blocking mutant, and 2 when

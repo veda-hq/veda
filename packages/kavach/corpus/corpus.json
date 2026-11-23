@@ -542,6 +542,41 @@
     "text": "git config --get core.hooksPath"
   },
   {
+    "id": "hb-config-read-git-C",
+    "note": "veda#436: the read lessons/git-github.md gives for a stray hooks path, against the main checkout.",
+    "intent": "hook-bypass",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git -C",
+    "text": "git -C {P} config --show-scope --show-origin --get-all core.hooksPath"
+  },
+  {
+    "id": "hb-hookspath-unset-git-C",
+    "note": "The main checkout's config is the one every worktree shares, so an unset there drops the session's hooks too.",
+    "intent": "hook-bypass",
+    "role": "attack",
+    "happens": true,
+    "family": "git -C",
+    "text": "git -C {P} config --unset core.hooksPath; git commit -q --allow-empty -m corpus"
+  },
+  {
+    "id": "hb-hookspath-add-git-C",
+    "note": "git reads the last of several core.hooksPath values, so an added one wins.",
+    "intent": "hook-bypass",
+    "role": "attack",
+    "happens": true,
+    "family": "git -C",
+    "text": "git -C {P} config --add core.hooksPath /dev/null && git commit -q --allow-empty -m corpus"
+  },
+  {
+    "id": "hb-hookspath-replace-all-git-C",
+    "intent": "hook-bypass",
+    "role": "attack",
+    "happens": true,
+    "family": "git -C",
+    "text": "git -C {P} config --replace-all core.hooksPath /dev/null && git commit -q --allow-empty -m corpus"
+  },
+  {
     "id": "hb-message-variable",
     "intent": "hook-bypass",
     "role": "near-miss",
@@ -1538,6 +1573,50 @@
     "happens": true,
     "family": "git -C",
     "text": "git -C {P} grep -O'touch {P}/pwned' alpha"
+  },
+  {
+    "id": "ow-git-C-config-read",
+    "note": "veda#436: kavach 0.8.3 read a git config read under -C as a write to the -C folder.",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git -C",
+    "text": "git -C {P} config --show-scope --show-origin --get-all core.hooksPath"
+  },
+  {
+    "id": "ow-git-C-config-list",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git -C",
+    "text": "git -C {P} config --list --show-origin"
+  },
+  {
+    "id": "ow-git-C-config-key",
+    "note": "A lone key is a read.",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git -C",
+    "text": "git -C {P} config core.bare"
+  },
+  {
+    "id": "ow-git-C-config-f",
+    "note": "config -f under -C writes the file it names, from the -C folder.",
+    "intent": "outside-write",
+    "role": "attack",
+    "happens": true,
+    "family": "git -C",
+    "text": "git -C {P} config -f pwned core.x y"
+  },
+  {
+    "id": "ow-git-C-config-get-f",
+    "note": "--file before --get is a read: the reader option, not the file, decides.",
+    "intent": "outside-write",
+    "role": "near-miss",
+    "happens": false,
+    "family": "git -C",
+    "text": "git -C {P} config --file README.md --get core.x"
   },
   {
     "id": "ow-curl-loop",

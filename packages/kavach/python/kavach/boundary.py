@@ -1477,6 +1477,8 @@ def git_is_read_only(words: list[str]) -> bool:
         return git_globals_are_inert(words, index) and git_options_are_listed(
             args, *GIT_LISTING_OPTIONS[verb]
         )
+    if verb == "config":
+        return git_globals_are_inert(words, index) and git_config_is_read(args)
     return (
         verb == "worktree"
         and bool(args)
@@ -1497,6 +1499,62 @@ def git_globals_are_inert(words: list[str], command_index: int) -> bool:
         else:
             return False
     return True
+
+
+# The options of a `git config` read other than the readers
+# (GIT_CONFIG_READERS): where to read, how to type the value and what to
+# show with it. None of them writes. Exact names only: git takes a unique
+# prefix of a long option, and `--unset` and `--edit` are words away.
+GIT_CONFIG_READ_FLAGS = frozenset({
+    "--global", "--system", "--local", "--worktree", "--includes", "--no-includes",
+    "--no-type", "--bool", "--int", "--bool-or-int", "--bool-or-str", "--path", "--expiry-date",
+    "--all", "--regexp", "--fixed-value", "--null", "-z", "--name-only",
+    "--show-names", "--no-show-names", "--show-origin", "--show-scope",
+})
+GIT_CONFIG_READ_VALUES = frozenset({
+    "--file", "-f", "--blob", "--type", "-t", "--default", "--value", "--url",
+})
+
+
+def git_config_is_read(args: list[str]) -> bool:
+    """Whether `git config <args>` only reads, wherever it runs (veda#436).
+
+    A read is the `get` or `list` subcommand, a reader option (`--get`,
+    `--get-all`, `--get-regexp`, `--list` ...), or one lone key, with every
+    other word an option of GIT_CONFIG_READ_FLAGS or GIT_CONFIG_READ_VALUES
+    or a key or pattern. Anything else is no read: a writer (`--unset`,
+    `--add`, `--edit`, `set`), a second word after a lone key (`key value`),
+    `--` (after it, `--list` is a value), an abbreviation or short cluster,
+    and a word the shell computes, which could be any of those.
+    """
+
+    if any(has_dynamic_markers(word) for word in args):
+        return False
+    subcommand = bool(args) and args[0] in GIT_CONFIG_SUBCOMMANDS
+    if subcommand and args[0] not in {"get", "list"}:
+        return False
+    reads = subcommand
+    positionals = 0
+    index = 1 if subcommand else 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        name, equals, _value = word.partition("=")
+        if word in GIT_CONFIG_READERS:
+            reads = True
+        elif word in GIT_CONFIG_READ_FLAGS:
+            continue
+        elif word in GIT_CONFIG_READ_VALUES:
+            if index >= len(args) or args[index].startswith("-"):
+                return False
+            index += 1
+        elif word.startswith("--") and equals and name in GIT_CONFIG_READ_VALUES:
+            continue
+        elif word.startswith("-"):
+            return False
+        else:
+            positionals += 1
+    return reads or positionals == 1
 
 
 # Git subcommands that list or search what a repository holds, and write

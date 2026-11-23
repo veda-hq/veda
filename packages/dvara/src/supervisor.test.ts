@@ -258,7 +258,14 @@ describe("supervise", () => {
   });
 
   it("writes to the process and exits it by default", async (t) => {
-    const out = t.mock.method(process.stdout, "write", () => true);
+    // The capture writes through: under Stryker's tap runner, node:test's
+    // reporter writes its TAP to this process's stdout, and a discarding
+    // capture loses the queued `ok` line of the test before this one, which
+    // fails the whole file.
+    const write = process.stdout.write.bind(process.stdout);
+    const out = t.mock.method(process.stdout, "write", ((
+      ...args: Parameters<typeof write>
+    ) => write(...args)) as typeof write);
     const err = t.mock.method(process.stderr, "write", () => true);
     const exit = t.mock.method(process, "exit", () => undefined as never);
     const pass = repo("true", "pre-commit");

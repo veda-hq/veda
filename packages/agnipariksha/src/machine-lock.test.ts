@@ -50,12 +50,12 @@ test('release leaves a lock another run has since taken', async () => {
   assert.equal(files.get('/lock'), '7 later');
 });
 
-test('a dead holder or an unreadable lock is stale and taken over', async () => {
-  for (const initial of ['99 2026-01-01', 'garbage']) {
+test('a dead holder or an unreadable lock is stale and taken over, named without its newline', async () => {
+  for (const [initial, named] of [['99 2026-01-01\n', '99 2026-01-01'], ['garbage', 'garbage']]) {
     const { deps, files, logs } = fakeLock((pid) => pid !== 99, initial);
     await acquireLock('/lock', 42, deps);
     assert.match(files.get('/lock') ?? '', /^42 /);
-    assert.match(logs[0] ?? '', /stale lock/);
+    assert.deepEqual(logs, [`agnipariksha: taking over a stale lock (${named})`]);
   }
 });
 
@@ -104,11 +104,14 @@ test('a stale lock replaced before removal is left alone', async () => {
 
 test('a live holder is waited for, announced once, then the lock is taken', async () => {
   let polls = 0;
-  const { deps, files, logs } = fakeLock(() => true, '7 2026-11-14', (held) => {
+  const { deps, files, logs } = fakeLock(() => true, '7 2026-11-14\n', (held) => {
     polls += 1;
     if (polls === 3) held.delete('/lock');
   });
-  await acquireLock('/lock', 42, deps);
+  // A real clock is far from 0: the wait is measured from when it started, so a short one is no timeout.
+  const now = deps.now;
+  deps.now = () => now() + Date.UTC(2026, 10, 23);
+  await acquireLock('/lock', 42, deps, 60_000);
   assert.equal(polls, 3);
   assert.deepEqual(logs, ['agnipariksha: waiting for pid 7 2026-11-14, which holds /lock']);
   assert.match(files.get('/lock') ?? '', /^42 /);
@@ -119,7 +122,7 @@ test('a wait past the limit refuses, counting the runs that held the lock in tur
   const { deps, logs } = fakeLock(() => true, '7 2026-11-14', (held) => {
     polls += 1;
     if (polls === 1) held.set('/lock', '8 2026-11-15');
-    if (polls === 2) held.set('/lock', '9 2026-11-16');
+    if (polls === 2) held.set('/lock', '9 2026-11-16\n');
   });
   await assert.rejects(acquireLock('/lock', 42, deps, 60_000), {
     message: 'waited over 1 min for /lock: 3 other run(s) held it in turn, the last pid 9 2026-11-16',
@@ -134,6 +137,8 @@ test('a wait past the limit refuses, counting the runs that held the lock in tur
 
 test('pidAlive: signal 0 succeeds or EPERM is alive, anything else is dead', () => {
   assert.equal(pidAlive(process.pid), true);
+  // No such process (above every system's pid limit); signal 0 only asks, it sends nothing.
+  assert.equal(pidAlive(2_147_483_647), false);
   assert.equal(pidAlive(1, () => undefined), true);
   const fail = (code: string) => () => {
     throw Object.assign(new Error(code), { code });

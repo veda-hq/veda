@@ -18,7 +18,8 @@ export const LOCK_POLL_MS = 5_000;
 export async function acquireLock(path: string, pid: number, deps: LockDeps, waitMs = LOCK_WAIT_MS): Promise<() => void> {
   const mine = `${pid} ${new Date(deps.now()).toISOString()}`;
   const startedAt = deps.now();
-  let announced = '';
+  /** The holder last announced; none before the first wait. */
+  let announced: string | undefined;
   /** Live holders seen while waiting, each counted once. */
   let holders = 0;
   let sawEmpty = false;

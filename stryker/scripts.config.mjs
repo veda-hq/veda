@@ -9,6 +9,9 @@
 // sigstore-trusted-root.json among it), package.json, and agnipariksha.json,
 // which mutation-lanes.test.mjs plans veda's own lanes from. Stryker links
 // node_modules into the sandbox itself, so everything else stays out.
+// pnpm-lock.yaml must stay out too: the mutants that force own-provenance.mjs's
+// entry condition true run its real check on import, and with no lockfile in
+// the sandbox they die on ENOENT before any request leaves the machine.
 //
 // A hand run must name the suites (AGNIPARIKSHA_SUITES, as agnipariksha
 // does): without them the tap runner's default finds every suite in

@@ -115,7 +115,7 @@ export function releaseTags(tagNames) {
 
 /**
  * The rule over a repository's state.
- * @param {{ tags: readonly string[], manifests: readonly { path: string, version: string }[], tag?: string }} input
+ * @param {{ tags: readonly string[], manifests: readonly { path: string, version: string }[], tag?: string | undefined }} input
  * @returns {{ bump: Bump, version?: string, previous?: string, errors: string[] }}
  */
 export function check(input) {
@@ -178,15 +178,19 @@ export function majorApproved(input) {
     (a) =>
       a.state === 'approved' &&
       a.user?.login === MAJOR_DECIDER &&
-      (a.environments ?? []).some((e) => e.name === MAJOR_ENVIRONMENT),
+      a.environments?.some((e) => e.name === MAJOR_ENVIRONMENT) === true,
   );
 }
 
-/** @param {string} root @returns {string[]} packages/*\/package.json, else package.json */
-export function defaultManifests(root) {
+/**
+ * @param {string} root
+ * @param {(dir: string) => { name: string, isDirectory(): boolean }[]} [list] a folder's entries, in whatever order the filesystem gives them
+ * @returns {string[]} packages/*\/package.json, else package.json
+ */
+export function defaultManifests(root, list = (dir) => readdirSync(dir, { withFileTypes: true })) {
   const dir = join(root, 'packages');
   if (existsSync(dir)) {
-    const found = readdirSync(dir, { withFileTypes: true })
+    const found = list(dir)
       .filter((d) => d.isDirectory() && existsSync(join(dir, d.name, 'package.json')))
       .map((d) => join('packages', d.name, 'package.json'))
       .sort();
@@ -218,19 +222,20 @@ export async function main(argv, io) {
   const paths = rest.length > 0 ? rest : defaultManifests(io.cwd);
   const manifests = paths.map((path) => ({
     path,
-    version: String(JSON.parse(readFileSync(join(io.cwd, path), 'utf8')).version),
+    // A Buffer parses as its UTF-8 text, so no encoding is named.
+    version: String(JSON.parse(String(readFileSync(join(io.cwd, path)))).version),
   }));
-  const result = check({ tags: io.gitTags(io.cwd), manifests, ...(tag === undefined ? {} : { tag }) });
+  const result = check({ tags: io.gitTags(io.cwd), manifests, tag });
   const output = io.env.GITHUB_OUTPUT;
   if (output) appendFileSync(output, `bump=${result.bump}\nversion=${result.version ?? ''}\n`);
   for (const e of result.errors) io.err(`::error::${e}`);
   if (result.errors.length > 0) return 1;
-  if (result.bump === 'major') {
-    io.err(`::warning::${askAlok(result.version ?? '')} The release waits on that.`);
-  } else if (result.version) {
-    io.out(`version rule: ${result.version} is the ${result.bump} release after ${result.previous ?? 'none'}.`);
-  } else {
+  if (!result.version) {
     io.out(`version rule: nothing unreleased; the next release after ${result.previous ?? 'none'} is ${result.previous ? format(nextLegal(/** @type {Version} */ (parse(result.previous)))) : 'any 0.y.z'}.`);
+  } else if (result.bump === 'major') {
+    io.err(`::warning::${askAlok(result.version)} The release waits on that.`);
+  } else {
+    io.out(`version rule: ${result.version} is the ${result.bump} release after ${result.previous ?? 'none'}.`);
   }
   return 0;
 }
@@ -257,21 +262,51 @@ async function approval(io) {
   return 0;
 }
 
-// The process entry, exercised by the spawned tests rather than in-process.
-/* node:coverage disable */
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exitCode = await main(process.argv.slice(2), {
+/**
+ * The repository's v* tags.
+ * @param {string} cwd
+ * @param {(file: string, args: string[], options: { cwd: string, encoding: 'utf8' }) => string} [exec]
+ */
+export function gitTags(cwd, exec = execFileSync) {
+  return exec('git', ['tag', '--list', 'v*'], { cwd, encoding: 'utf8' }).split('\n').filter(Boolean);
+}
+
+/**
+ * A GitHub API GET's JSON body, or undefined when the response is not ok.
+ * @param {string} url
+ * @param {string} token
+ * @param {(url: string, init: { headers: Record<string, string> }) => Promise<{ ok: boolean, json(): Promise<unknown> }>} [fetchImpl]
+ */
+export async function fetchJson(url, token, fetchImpl = fetch) {
+  const res = await fetchImpl(url, {
+    headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${token}`, 'x-github-api-version': '2022-11-28' },
+  });
+  return res.ok ? res.json() : undefined;
+}
+
+/** The real I/O: this process's folder and environment, git, GitHub's API, and the console. @returns {Io} */
+export function realIo() {
+  return {
     cwd: process.cwd(),
     env: process.env,
-    gitTags: (cwd) => execFileSync('git', ['tag', '--list', 'v*'], { cwd, encoding: 'utf8' }).split('\n').filter(Boolean),
-    fetchJson: async (url, token) => {
-      const res = await fetch(url, {
-        headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${token}`, 'x-github-api-version': '2022-11-28' },
-      });
-      return res.ok ? res.json() : undefined;
-    },
+    gitTags,
+    fetchJson,
     out: (line) => console.log(line),
     err: (line) => console.error(line),
-  });
+  };
 }
-/* node:coverage enable */
+
+/**
+ * The exit code of `node <argv[1]> …` when `argv[1]` is the module at `url`,
+ * or undefined when it is not (the module was imported). A suite calls it
+ * in-process, so a mutant that would run main on import, or never, dies there.
+ * @param {readonly string[]} argv
+ * @param {string} url
+ * @param {Io} [io]
+ * @returns {Promise<number> | undefined}
+ */
+export function entry(argv, url, io = realIo()) {
+  return argv[1] && url === pathToFileURL(argv[1]).href ? main(argv.slice(2), io) : undefined;
+}
+
+process.exitCode = await entry(process.argv, import.meta.url);

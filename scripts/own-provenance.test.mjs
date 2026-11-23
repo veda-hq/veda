@@ -1,16 +1,21 @@
 // scripts/own-provenance.mjs, offline: the registry's answers are built here,
 // or are real ones saved under fixtures/.
-import { describe, test } from 'node:test';
+import { beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import {
   attestationsUrl,
   bundleVerifier,
   check,
+  entry,
+  fetchJson,
   ISSUER,
+  main,
   OTHER_REPOSITORIES,
   ownPackages,
   provenanceFailures,
+  readText,
   REPOSITORY,
   repositoryOf,
   signingPolicy,
@@ -20,6 +25,11 @@ import {
   TRUSTED_ROOT,
   WORKFLOW,
 } from './own-provenance.mjs';
+
+// Most tests are synchronous. One turn of the event loop before each lets the
+// TAP line of a failed test reach stdout at once, so Stryker's tap runner
+// bails on a mutant's first failure instead of running the whole file.
+beforeEach(() => new Promise(resolve => setImmediate(resolve)));
 
 /** Signature checks are tested on real bundles below; the statement tests accept any. */
 const accept = () => {};
@@ -108,6 +118,24 @@ describe('ownPackages', () => {
     ].join('\n');
     assert.deepEqual(ownPackages(lock), { packages: [], unread: ['@veda-hq/dvara@0.7.0-rc.1', '@veda-hq/niyam@0.6.14', '@veda-hq/pariksha@0.5.20'] });
   });
+  test('reads a key at two spaces, quoted or not, with any number of digits, and nothing after its integrity', () => {
+    const lock = [
+      'packages:',
+      '  @veda-hq/kavach@10.20.30:',
+      `    resolution: {integrity: ${INTEGRITY}}`,
+      "   '@veda-hq/dvara@1.0.0':",
+      `    resolution: {integrity: ${INTEGRITY}}`,
+      "  '@veda-hq/sarathi@1.0.0':",
+      `    resolution: {integrity: ${INTEGRITY}} # x`,
+      "  '@veda-hq/local@link:packages/local':",
+      '    resolution: {directory: packages/local}',
+      '',
+    ].join('\n');
+    assert.deepEqual(ownPackages(lock), {
+      packages: [{ name: '@veda-hq/kavach', version: '10.20.30', integrity: INTEGRITY }],
+      unread: ['@veda-hq/sarathi@1.0.0', '@veda-hq/local@link:packages/local'],
+    });
+  });
 });
 
 test('attestationsUrl escapes the scope', () => {
@@ -153,6 +181,35 @@ describe('provenanceFailures', () => {
     const failures = provenanceFailures(pkg, served({}), accept);
     assert.equal(failures.length, 4);
     assert.match(failures[0], /repository null/);
+  });
+
+  test('an attestation or bundle missing a field reads as no provenance, not a crash', () => {
+    const good = release('0.6.0').attestations[1];
+    assert.deepEqual(provenanceFailures(pkg, { attestations: [null, good] }, accept), []);
+    for (const attestations of [[{ predicateType: SLSA }], [{ predicateType: SLSA, bundle: {} }], [{ predicateType: SLSA, bundle: { dsseEnvelope: { payload: 7 } } }]]) {
+      assert.deepEqual(provenanceFailures(pkg, { attestations }, accept), ['@veda-hq/sarathi@0.6.0: it has no SLSA provenance']);
+    }
+  });
+
+  test('a statement cut short at any depth fails on each field, not a crash', () => {
+    const everything = [
+      '@veda-hq/sarathi@0.6.0: built with workflow repository null, not "https://github.com/veda-hq/veda"',
+      '@veda-hq/sarathi@0.6.0: built with workflow path null, not ".github/workflows/release.yml"',
+      '@veda-hq/sarathi@0.6.0: built with workflow ref null, not "refs/tags/v0.6.0"',
+      '@veda-hq/sarathi@0.6.0: the attested tarball is not the one the lockfile installs',
+    ];
+    for (const statement of [null, {}, { predicate: {} }, { predicate: { buildDefinition: {} } }, { predicate: { buildDefinition: { externalParameters: {} } } }]) {
+      assert.deepEqual(provenanceFailures(pkg, served(statement), accept), everything);
+    }
+  });
+
+  test('the attested tarball is found among subjects of any shape, and only in a list', () => {
+    const workflow = { repository: REPOSITORY, path: WORKFLOW, ref: 'refs/tags/v0.6.0' };
+    const predicate = { buildDefinition: { externalParameters: { workflow } } };
+    assert.deepEqual(provenanceFailures(pkg, served({ subject: [null, {}, { digest: {} }, { digest: { sha512: DIGEST } }], predicate }), accept), []);
+    assert.deepEqual(provenanceFailures(pkg, served({ subject: { digest: { sha512: DIGEST } }, predicate }), accept), [
+      '@veda-hq/sarathi@0.6.0: the attested tarball is not the one the lockfile installs',
+    ]);
   });
 });
 
@@ -241,11 +298,32 @@ describe('niyam, released from main', () => {
   });
 
   test('with no tag commit to bind it to, it is refused before anything is read', () => {
-    for (const commit of [undefined, '', 'c7299473', TAGGED.toUpperCase()]) {
+    for (const commit of [undefined, '', 'c7299473', TAGGED.toUpperCase(), `x${TAGGED}`, `${TAGGED}0`, [TAGGED]]) {
       assert.deepEqual(provenanceFailures(niyam, niyamRelease('0.7.1', TAGGED), () => assert.fail('nothing to verify'), commit), [
         "@veda-hq/niyam@0.7.1: no commit of veda-hq/niyam's tag v0.7.1 was given, so nothing binds its build from main to its version",
       ]);
     }
+  });
+
+  test('a statement cut short at any depth, or with its source missing a field, names no commit, not a crash', () => {
+    const at = '@veda-hq/niyam@0.7.1';
+    const noCommit = `${at}: built from commit null, not ${TAGGED}, the commit veda-hq/niyam's tag v0.7.1 names`;
+    const noWorkflow = ['repository null, not "https://github.com/veda-hq/niyam"', 'path null, not ".github/workflows/release.yml"', 'ref null, not "refs/heads/main"'].map(
+      field => `${at}: built with workflow ${field}`,
+    );
+    const noTarball = `${at}: the attested tarball is not the one the lockfile installs`;
+    for (const statement of [null, {}, { predicate: {} }, { predicate: { buildDefinition: {} } }]) {
+      assert.deepEqual(provenanceFailures(niyam, served(statement), accept, TAGGED), [...noWorkflow, noCommit, noTarball]);
+    }
+    const fields = { repository: NIYAM_REPO, path: WORKFLOW, ref: 'refs/heads/main' };
+    const uri = 'git+https://github.com/veda-hq/niyam@refs/heads/main';
+    /** @param {unknown} resolvedDependencies */
+    const builtWith = resolvedDependencies =>
+      served({ subject: [{ digest: { sha512: DIGEST } }], predicate: { buildDefinition: { externalParameters: { workflow: fields }, resolvedDependencies } } });
+    for (const dependencies of [[null, { uri }], [{ uri, digest: {} }], { uri, digest: { gitCommit: TAGGED } }, [{ uri: `${uri}2`, digest: { gitCommit: TAGGED } }]]) {
+      assert.deepEqual(provenanceFailures(niyam, builtWith(dependencies), accept, TAGGED), [noCommit]);
+    }
+    assert.deepEqual(provenanceFailures(niyam, builtWith([null, {}, { uri, digest: { gitCommit: TAGGED } }]), accept, TAGGED), []);
   });
 
   test('any other own package built from main is still refused, whatever commit is given', () => {
@@ -292,16 +370,46 @@ describe('tagCommit', () => {
       problem: "veda-hq/niyam's tag v0.7.1 could not be read from GitHub (HTTP 404), so nothing binds its build from main to v0.7.1",
     });
     const annotatedGone = { [REF]: { object: { type: 'tag', sha: TAG_OBJECT } } };
-    assert.match(/** @type {any} */ (await tagCommit(NIYAM_REPO, '0.7.1', github(annotatedGone))).problem, /could not be read from GitHub \(HTTP 404\)/);
+    assert.deepEqual(await tagCommit(NIYAM_REPO, '0.7.1', github(annotatedGone)), {
+      problem: "veda-hq/niyam's tag v0.7.1 could not be read from GitHub (HTTP 404), so nothing binds its build from main to v0.7.1",
+    });
   });
 
+  /** The problem of a tag whose object is `json`. @param {string} json */
+  const namesNoCommit = json => ({ problem: `veda-hq/niyam's tag v0.7.1 names no commit on GitHub (its object is ${json}), so nothing binds its build from main to v0.7.1` });
+
   test('an answer that names no commit is a problem', async () => {
-    for (const answer of [null, {}, [], { object: { type: 'tree', sha: TAGGED } }, { object: { type: 'commit', sha: 'c7299473' } }, { object: { type: 'commit', sha: 7 } }]) {
-      const result = /** @type {any} */ (await tagCommit(NIYAM_REPO, '0.7.1', github({ [REF]: answer })));
-      assert.match(result.problem, /^veda-hq\/niyam's tag v0\.7\.1 names no commit on GitHub \(its object is .+\), so nothing binds its build from main to v0\.7\.1$/);
+    const answers = [
+      [null, 'null'],
+      [{}, 'null'],
+      [[], 'null'],
+      [{ object: { type: 'tree', sha: TAGGED } }, `{"type":"tree","sha":"${TAGGED}"}`],
+      [{ object: { type: 'commit', sha: 'c7299473' } }, '{"type":"commit","sha":"c7299473"}'],
+      [{ object: { type: 'commit', sha: `x${TAGGED}` } }, `{"type":"commit","sha":"x${TAGGED}"}`],
+      [{ object: { type: 'commit', sha: `${TAGGED}0` } }, `{"type":"commit","sha":"${TAGGED}0"}`],
+      [{ object: { type: 'commit', sha: 7 } }, '{"type":"commit","sha":7}'],
+      [{ object: { type: 'commit', sha: [TAGGED] } }, `{"type":"commit","sha":["${TAGGED}"]}`],
+    ];
+    for (const [answer, json] of answers) {
+      assert.deepEqual(await tagCommit(NIYAM_REPO, '0.7.1', github({ [REF]: answer })), namesNoCommit(json));
     }
     const nested = { [REF]: { object: { type: 'tag', sha: TAG_OBJECT } }, [ANNOTATED]: { object: { type: 'tag', sha: TAG_OBJECT } } };
-    assert.match(/** @type {any} */ (await tagCommit(NIYAM_REPO, '0.7.1', github(nested))).problem, /names no commit/);
+    assert.deepEqual(await tagCommit(NIYAM_REPO, '0.7.1', github(nested)), namesNoCommit(`{"type":"tag","sha":"${TAG_OBJECT}"}`));
+  });
+
+  test('an annotated tag GitHub answers with nothing names no commit', async () => {
+    assert.deepEqual(await tagCommit(NIYAM_REPO, '0.7.1', github({ [REF]: { object: { type: 'tag', sha: TAG_OBJECT } }, [ANNOTATED]: null })), namesNoCommit('null'));
+  });
+
+  test('a tag object with no commit id is not followed', async () => {
+    const asked = [];
+    const answer = { object: { type: 'tag', sha: 'not-a-commit' } };
+    const ask = async url => {
+      asked.push(url);
+      return github({ [REF]: answer })(url);
+    };
+    assert.deepEqual(await tagCommit(NIYAM_REPO, '0.7.1', ask), namesNoCommit('{"type":"tag","sha":"not-a-commit"}'));
+    assert.deepEqual(asked, [REF]);
   });
 });
 
@@ -475,5 +583,168 @@ describe('the Sigstore bundle, on real attestations', () => {
     const failures = provenanceFailures(kavach, KAVACH, empty);
     assert.equal(failures.length, 1);
     assert.match(failures[0], /^@veda-hq\/kavach@0\.6\.0: its provenance is not signed by veda-hq\/veda's release of v0\.6\.0 \(.+\)$/);
+  });
+
+  test('the verifier asks for at least one transparency log entry, certificate timestamp and timestamp', () => {
+    const made = [];
+    class Recording {
+      /** @param {unknown} material @param {unknown} options */
+      constructor(material, options) {
+        made.push(options);
+      }
+    }
+    bundleVerifier(readFileSync(TRUSTED_ROOT, 'utf8'), /** @type {any} */ (Recording));
+    assert.deepEqual(made, [{ tlogThreshold: 1, ctlogThreshold: 1, timestampThreshold: 1 }]);
+  });
+});
+
+describe('fetchJson', () => {
+  /** A fetch that records what it is asked and answers `response`. @param {unknown[]} calls @param {object} response */
+  const recording = (calls, response) => /** @type {any} */ (async (url, init) => (calls.push([url, init]), response));
+  const answer = { object: { type: 'commit' } };
+  const ok = { ok: true, status: 200, json: async () => answer };
+  const TAG = 'https://api.github.com/repos/veda-hq/niyam/git/ref/tags/v0.7.1';
+  const GITHUB = { accept: 'application/vnd.github+json' };
+
+  test('asks GitHub with the GH_TOKEN before the GITHUB_TOKEN, and returns the JSON', async () => {
+    const calls = [];
+    assert.equal(await fetchJson(TAG, { get: recording(calls, ok), env: { GH_TOKEN: 'gh', GITHUB_TOKEN: 'actions' } }), answer);
+    assert.deepEqual(calls, [[TAG, { headers: { ...GITHUB, authorization: 'Bearer gh' } }]]);
+  });
+
+  test('asks GitHub with the GITHUB_TOKEN alone, or with no token', async () => {
+    const calls = [];
+    await fetchJson(TAG, { get: recording(calls, ok), env: { GITHUB_TOKEN: 'actions' } });
+    await fetchJson(TAG, { get: recording(calls, ok), env: { GH_TOKEN: '' } });
+    assert.deepEqual(calls, [
+      [TAG, { headers: { ...GITHUB, authorization: 'Bearer actions' } }],
+      [TAG, { headers: GITHUB }],
+    ]);
+  });
+
+  test('never sends the token anywhere but GitHub', async () => {
+    const calls = [];
+    const registry = attestationsUrl('@veda-hq/kavach', '0.6.0');
+    await fetchJson(registry, { get: recording(calls, ok), env: { GH_TOKEN: 'gh' } });
+    await fetchJson('https://api.github.com.example/x', { get: recording(calls, ok), env: { GH_TOKEN: 'gh' } });
+    assert.deepEqual(calls, [
+      [registry, { headers: {} }],
+      ['https://api.github.com.example/x', { headers: {} }],
+    ]);
+  });
+
+  test('an answer that is not OK is an error naming its status', async () => {
+    await assert.rejects(fetchJson(TAG, { get: recording([], { ok: false, status: 404, json: async () => answer }), env: {} }), { message: 'HTTP 404' });
+  });
+});
+
+test('readText reads a file as text', () => {
+  assert.equal(readText(TRUSTED_ROOT), readFileSync(TRUSTED_ROOT, 'utf8'));
+});
+
+describe('main and entry', () => {
+  /** @param {string} name */
+  const fixture = name => JSON.parse(readFileSync(new URL(`fixtures/${name}`, import.meta.url), 'utf8'));
+  const KAVACH_INTEGRITY = 'sha512-Oc8MEAjnvKsmIYahAQ561gv4jTvktVLeMBo8otnDwqF0ywsK63H6cpVdkfrBGROqeuKO7v0slO5bl6tcWAFMdQ==';
+  const NIYAM_INTEGRITY = 'sha512-99aRxQsWROgoTMsGr57fLk+HYDFuKyVcA181W/oFB0itm1PCMCqFl4l03uSOedsUBJBgK7cRHEWZQ/ONbuQZiA==';
+  const lock = [
+    'packages:',
+    '',
+    "  '@veda-hq/kavach@0.6.0':",
+    `    resolution: {integrity: ${KAVACH_INTEGRITY}}`,
+    '',
+    "  '@veda-hq/niyam@0.7.1':",
+    `    resolution: {integrity: ${NIYAM_INTEGRITY}}`,
+    '',
+  ].join('\n');
+  const TAG = 'https://api.github.com/repos/veda-hq/niyam/git/ref/tags/v0.7.1';
+  const KAVACH_URL = 'https://registry.npmjs.org/-/npm/v1/attestations/@veda-hq%2fkavach@0.6.0';
+  const NIYAM_URL = 'https://registry.npmjs.org/-/npm/v1/attestations/@veda-hq%2fniyam@0.7.1';
+  const registry = {
+    [TAG]: { object: { type: 'commit', sha: TAGGED } },
+    [KAVACH_URL]: fixture('attestations-kavach-0.6.0.json'),
+    [NIYAM_URL]: fixture('attestations-niyam-0.7.1.json'),
+  };
+  const root = readFileSync(TRUSTED_ROOT, 'utf8');
+
+  /** Only the lockfile and the trusted root are read. @param {string} lockText */
+  const files = lockText => path => {
+    if (path === 'pnpm-lock.yaml') return lockText;
+    if (path === TRUSTED_ROOT) return root;
+    return assert.fail(`unexpected read of ${path}`);
+  };
+  /** A fetch that answers from `answers`, 404s the rest, and records each call. @param {Record<string, unknown>} answers @param {unknown[]} calls */
+  const network = (answers, calls) =>
+    /** @type {any} */ (
+      async (url, init) => {
+        calls.push([url, init]);
+        return Object.hasOwn(answers, url) ? { ok: true, status: 200, json: async () => answers[url] } : { ok: false, status: 404 };
+      }
+    );
+  const sink = () => {
+    const sink = { text: '', write: text => void (sink.text += text) };
+    return sink;
+  };
+
+  test('every own package built and signed by its release: 0, and what was checked on stdout', async () => {
+    const calls = [];
+    const stdout = sink();
+    const stderr = sink();
+    assert.equal(await main({ readText: files(lock), get: network(registry, calls), env: { GH_TOKEN: 'gh' }, stdout, stderr }), 0);
+    assert.equal(
+      stdout.text,
+      'own-provenance: @veda-hq/kavach@0.6.0 (https://github.com/veda-hq/veda), @veda-hq/niyam@0.7.1 (https://github.com/veda-hq/niyam) built and signed by .github/workflows/release.yml\n',
+    );
+    assert.equal(stderr.text, '');
+    assert.deepEqual(calls, [
+      [KAVACH_URL, { headers: {} }],
+      [TAG, { headers: { accept: 'application/vnd.github+json', authorization: 'Bearer gh' } }],
+      [NIYAM_URL, { headers: {} }],
+    ]);
+  });
+
+  test('a failure: 1, with each failure and why on stderr', async () => {
+    const stdout = sink();
+    const stderr = sink();
+    const answers = { [KAVACH_URL]: registry[KAVACH_URL] };
+    assert.equal(await main({ readText: files(lock), get: network(answers, []), env: {}, stdout, stderr }), 1);
+    assert.equal(stdout.text, '');
+    assert.equal(
+      stderr.text,
+      [
+        "own-provenance: @veda-hq/niyam@0.7.1: veda-hq/niyam's tag v0.7.1 could not be read from GitHub (HTTP 404), so nothing binds its build from main to v0.7.1",
+        "own-provenance: @veda-hq/* skips the release age only when its own repository's release built it.",
+        '',
+      ].join('\n'),
+    );
+  });
+
+  test('every failure is printed', async () => {
+    const stderr = sink();
+    assert.equal(await main({ readText: files('packages:\n'), get: network({}, []), env: {}, stdout: sink(), stderr }), 1);
+    assert.equal(
+      stderr.text,
+      [
+        'own-provenance: the lockfile resolves no @veda-hq/ package, so nothing was checked',
+        "own-provenance: @veda-hq/* skips the release age only when its own repository's release built it.",
+        '',
+      ].join('\n'),
+    );
+  });
+
+  const script = '/repo/scripts/own-provenance.mjs';
+  const url = pathToFileURL(script).href;
+
+  test('run as the script, it returns main’s exit code', async () => {
+    const stdout = sink();
+    assert.equal(await entry(['node', script], url, { readText: files(lock), get: network(registry, []), env: {}, stdout, stderr: sink() }), 0);
+    assert.match(stdout.text, /^own-provenance: @veda-hq\/kavach@0\.6\.0 /);
+  });
+
+  test('imported, it reads, asks and prints nothing', () => {
+    const never = () => assert.fail('nothing runs on import');
+    const io = { readText: never, get: /** @type {any} */ (never), env: {}, stdout: { write: never }, stderr: { write: never } };
+    assert.equal(entry(['node', '/repo/scripts/other.mjs'], url, io), undefined);
+    assert.equal(entry(['node'], url, io), undefined);
   });
 });

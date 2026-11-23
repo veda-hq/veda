@@ -11,7 +11,7 @@
 // is named as a full path and the run fails, even when the command passed.
 // The directory is removed either way. docs/lessons/testing.md, "Temp
 // folders", says how to read the failure.
-import { spawn } from 'node:child_process';
+import { spawn as nodeSpawn } from 'node:child_process';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { constants, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -86,12 +86,12 @@ export function exitCode(code, signal) {
  * The signal handlers go on before the directory is made, so a signal never
  * takes Node's default exit between the two and leaves the directory behind.
  * @param {readonly string[]} command
- * @param {{ env?: NodeJS.ProcessEnv, base?: string, stderr?: { write(text: string): unknown }, signals?: NodeJS.EventEmitter, read?: (dir: string) => string[], remove?: (dir: string) => void }} [options]
+ * @param {{ env?: NodeJS.ProcessEnv, base?: string, stderr?: { write(text: string): unknown }, signals?: NodeJS.EventEmitter, read?: (dir: string) => string[], remove?: (dir: string) => void, spawn?: typeof nodeSpawn }} [options]
  * @returns {Promise<number>}
  */
 export function run(
   command,
-  { env = process.env, base = tmpdir(), stderr = process.stderr, signals = process, read = readdirSync, remove = dir => rmSync(dir, { recursive: true, force: true }) } = {},
+  { env = process.env, base = tmpdir(), stderr = process.stderr, signals = process, read = readdirSync, remove = dir => rmSync(dir, { recursive: true, force: true }), spawn = nodeSpawn } = {},
 ) {
   /** @type {import('node:child_process').ChildProcess | undefined} */
   let child;
@@ -150,7 +150,8 @@ export function run(
     };
     started.on('error', error => {
       stderr.write(`fresh-tmpdir: ${command[0]}: ${error.message}\n`);
-      // A command that never started gets no 'close'; one that did still ends with its own.
+      // A command that never started ends here: the 'close' Node sends after it,
+      // with a negative code, finds the run done. One that did start still ends with its own 'close'.
       if (started.pid === undefined) finish(NOT_STARTED);
     });
     started.on('close', (code, signal) => finish(exitCode(code, signal)));
@@ -166,8 +167,16 @@ export async function main(argv, options = {}) {
   return run(argv, options);
 }
 
-/* node:coverage disable */
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exitCode = await main(process.argv.slice(2));
+/**
+ * The exit code of `node <argv[1]> …` when `argv[1]` is the module at `url`,
+ * or undefined when it is not (the module was imported). A suite calls it
+ * in-process, so a mutant that would run main on import, or never, dies there.
+ * @param {readonly string[]} argv
+ * @param {string} url
+ * @param {Parameters<typeof run>[1]} [options]
+ */
+export function entry(argv, url, options) {
+  return argv[1] && url === pathToFileURL(argv[1]).href ? main(argv.slice(2), options) : undefined;
 }
-/* node:coverage enable */
+
+process.exitCode = await entry(process.argv, import.meta.url);

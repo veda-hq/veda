@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   countLines,
@@ -15,6 +15,8 @@ import {
   MARKERS,
   overCutoff,
   planLane,
+  RETRY_PLUGIN,
+  retryConfig,
   wrapperConfig,
   type Lane,
   type LaneDeps,
@@ -189,17 +191,67 @@ test('an unreadable reuse file is removed; no key or no reuse means no --increme
   assert.equal(result.judgement.caught, 1);
 });
 
-test('a timed-out mutant is retried alone, with one worker and a 3-minute limit', async () => {
-  const { deps, runs, setPlan } = fakeDeps(
-    [report({ 'src/a.ts': [strykerMutant('Timeout')] }), report({ 'src/a.ts': [strykerMutant('Killed')] })],
+test('a timed-out mutant is retried alone, with one worker, a 3-minute limit, its span for the ignorer and the file\'s other mutators left out', async () => {
+  const other = (mutatorName: string, line: number) => ({ ...strykerMutant('Killed', line), mutatorName });
+  const { deps, files, runs, setPlan } = fakeDeps(
+    [
+      report({
+        'src/a.ts': [strykerMutant('Timeout'), strykerMutant('Killed', 4), other('ConditionalExpression', 5), other('ConditionalExpression', 6), other('BlockStatement', 7)],
+        'src/b.ts': [other('ArrayDeclaration', 1)],
+      }),
+      report({ 'src/a.ts': [strykerMutant('Killed')] }),
+    ],
     [],
     null,
   );
-  setPlan(webPlan);
-  const result = await judgeLane(webPlan, deps);
-  assert.deepEqual(runs[1]?.args, ['run', '/repo/reports/agnipariksha/apps-web.stryker.config.mjs', '--concurrency', '1', '--timeoutMS', '180000', '--mutate', 'src/a.ts:3:4-3:8']);
+  const plan: Plan = { ...webPlan, targets: ['apps/web/src/a.ts', 'apps/web/src/b.ts'] };
+  setPlan(plan);
+  const result = await judgeLane(plan, deps);
+  const retryWrapper = '/repo/reports/agnipariksha/apps-web.retry.stryker.config.mjs';
+  assert.deepEqual(runs[1], {
+    cwd: '/repo/apps/web',
+    args: ['run', retryWrapper, '--concurrency', '1', '--timeoutMS', '180000', '--mutate', 'src/a.ts:3:4-3:8'],
+    env: { X: '1', AGNIPARIKSHA_RETRY_SPAN: '3:4-3:8' },
+  });
+  assert.equal(files.get(retryWrapper), retryConfig('/repo/apps/web/stryker.config.mjs', '/repo/reports/agnipariksha/apps-web.json', RETRY_PLUGIN, ['ConditionalExpression', 'BlockStatement']));
+  assert.deepEqual(runs[0]?.env, { X: '1' }, 'the lane run carries no span');
   assert.equal(result.retried, 1);
-  assert.deepEqual(result.judgement.byStatus, { Killed: 1 });
+  assert.deepEqual(result.judgement.byStatus, { Killed: 6 });
+});
+
+test('the retry ignorer the retry config loads is the compiled one beside lanes', () => {
+  assert.equal(RETRY_PLUGIN, join(dirname(fileURLToPath(import.meta.url)), 'retry-ignorer.js'));
+});
+
+test('the retry config is the lane config with the report moved, the retry ignorer added and the other mutators left out', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agnipariksha-'));
+  try {
+    writeFileSync(
+      join(dir, 'base.mjs'),
+      "export default { testRunner: 'tap', jsonReporter: { spacer: 2 }, appendPlugins: ['/own.mjs'], ignorers: ['arid'], mutator: { plugins: ['x'], excludedMutations: ['Regex'] } };",
+    );
+    writeFileSync(join(dir, 'bare.mjs'), "export default { testRunner: 'tap' };");
+    writeFileSync(join(dir, 'retry.mjs'), retryConfig(join(dir, 'base.mjs'), '/r/out.json', '/p/retry-ignorer.js', ['BlockStatement', 'StringLiteral']));
+    writeFileSync(join(dir, 'bare-retry.mjs'), retryConfig(join(dir, 'bare.mjs'), '/r/out.json', '/p/retry-ignorer.js', []));
+    const loaded = (await import(pathToFileURL(join(dir, 'retry.mjs')).href)) as { default: unknown };
+    assert.deepEqual(loaded.default, {
+      testRunner: 'tap',
+      jsonReporter: { spacer: 2, fileName: '/r/out.json' },
+      appendPlugins: ['/own.mjs', '/p/retry-ignorer.js'],
+      ignorers: ['arid', 'agnipariksha-retry'],
+      mutator: { plugins: ['x'], excludedMutations: ['Regex', 'BlockStatement', 'StringLiteral'] },
+    });
+    const bare = (await import(pathToFileURL(join(dir, 'bare-retry.mjs')).href)) as { default: unknown };
+    assert.deepEqual(bare.default, {
+      testRunner: 'tap',
+      jsonReporter: { fileName: '/r/out.json' },
+      appendPlugins: ['/p/retry-ignorer.js'],
+      ignorers: ['agnipariksha-retry'],
+      mutator: { excludedMutations: [] },
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('a timed-out mutant with no location refuses', async () => {
@@ -230,6 +282,8 @@ test('Stryker failing, a busy dry run, a missing, non-JSON or malformed report, 
     const result = await judgeLane(webPlan, deps);
     assert.match(result.refusals[0] ?? '', expected);
     assert.equal(result.fellBack, null);
+    assert.deepEqual(result.noMutants, []);
+    assert.deepEqual(result.ownSuites, []);
   }
 });
 
@@ -268,7 +322,11 @@ test('a dry run failing on a trigger reruns once in the fallback mode, and only 
     setPlan(toolingPlan);
     const result = await judgeLane(toolingPlan, deps);
     assert.equal(result.fellBack, `its dry run failed: "${trigger}"`);
-    assert.deepEqual(runs.map((r) => r.env), [{ RELATED: '1' }, { RELATED: '0', SUITES: 'scripts/a.test.ts' }, { RELATED: '0', SUITES: 'scripts/a.test.ts' }], 'the retry keeps the fallback mode');
+    assert.deepEqual(
+      runs.map((r) => r.env),
+      [{ RELATED: '1' }, { RELATED: '0', SUITES: 'scripts/a.test.ts' }, { RELATED: '0', SUITES: 'scripts/a.test.ts', AGNIPARIKSHA_RETRY_SPAN: '3:4-3:8' }],
+      'the retry keeps the fallback mode',
+    );
     assert.deepEqual(result.judgement.byStatus, { Killed: 2 });
     assert.deepEqual(result.refusals, []);
   }
@@ -280,6 +338,7 @@ test('a fallback that fails too refuses; a busy dry run never falls back', async
   const result = await judgeLane(toolingPlan, both.deps);
   assert.equal(result.fellBack, 'its dry run failed: "There were failed tests in the initial test run"');
   assert.deepEqual(result.refusals, ['Stryker exited 2']);
+  assert.deepEqual(result.judgement, { blocking: [], unknown: [], byStatus: {}, counted: 0, caught: 0 }, 'a refused lane judges nothing');
 
   const busy = fakeDeps([], [{ code: 1, seen: [DRY_RUN_TIMEOUT] }]);
   busy.setPlan(toolingPlan);
@@ -310,8 +369,8 @@ test('a file no related suite reached is rerun alone in own-suite mode; its time
     [
       ['scripts/a.ts,scripts/b.ts', { RELATED: '1' }],
       ['scripts/b.ts', own],
-      ['scripts/a.ts:3:4-3:8', { RELATED: '1' }],
-      ['scripts/b.ts:4:4-4:8', own],
+      ['scripts/a.ts:3:4-3:8', { RELATED: '1', AGNIPARIKSHA_RETRY_SPAN: '3:4-3:8' }],
+      ['scripts/b.ts:4:4-4:8', { ...own, AGNIPARIKSHA_RETRY_SPAN: '4:4-4:8' }],
     ],
   );
   assert.deepEqual(result.judgement.byStatus, { Killed: 4, Survived: 1 });
@@ -444,4 +503,104 @@ test("a timeout retry whose dry run fails on a test says the run was flaky, name
   const otherRetry = fakeDeps([report({ 'src/a.ts': [strykerMutant('Timeout')] })], [{ code: 0, seen: [] }, { code: 1, seen: ['No tests were executed'] }], null);
   otherRetry.setPlan(webPlan);
   assert.deepEqual((await judgeLane(webPlan, otherRetry.deps)).refusals, ['retry of apps/web/src/a.ts:3 (StringLiteral): Stryker exited 1 (No tests were executed)']);
+});
+
+test('the configs are written one statement a line', () => {
+  assert.equal(
+    wrapperConfig('/l/stryker.config.mjs', '/r/out.json'),
+    'import base from "file:///l/stryker.config.mjs";\nexport default { ...base, jsonReporter: { ...base.jsonReporter, fileName: "/r/out.json" } };\n',
+  );
+  assert.equal(
+    retryConfig('/l/stryker.config.mjs', '/r/out.json', '/p/retry-ignorer.js', ['BlockStatement']),
+    [
+      'import base from "file:///l/stryker.config.mjs";',
+      'export default {',
+      '  ...base,',
+      '  jsonReporter: { ...base.jsonReporter, fileName: "/r/out.json" },',
+      '  appendPlugins: [...(base.appendPlugins ?? []), "/p/retry-ignorer.js"],',
+      '  ignorers: [...(base.ignorers ?? []), "agnipariksha-retry"],',
+      '  mutator: { ...base.mutator, excludedMutations: [...(base.mutator?.excludedMutations ?? []), ...["BlockStatement"]] },',
+      '};',
+      '',
+    ].join('\n'),
+  );
+});
+
+test("a lane's file names collapse each run of other characters in its name to one hyphen", async () => {
+  const spaced: Plan = { ...webPlan, lane: { ...web, name: 'apps / web' } };
+  const { deps, runs, setPlan } = fakeDeps([report({ 'src/a.ts': [] })], [], null);
+  setPlan(spaced);
+  await judgeLane(spaced, deps);
+  assert.equal(runs[0]?.args[1], '/repo/reports/agnipariksha/apps-web.stryker.config.mjs');
+});
+
+const twoTimeouts = () => report({ 'src/a.ts': [strykerMutant('Timeout'), strykerMutant('Timeout', 7)] });
+const where = 'retry of apps/web/src/a.ts:3 (StringLiteral)';
+
+test('a retry that fails refuses that mutant, and only a busy dry run stops the pass', async () => {
+  const goesOn: [string, string | undefined, { code: number; seen: string[]; refusal?: string; failedTests?: string[] }][] = [
+    ['its temp directory vanished', report({ 'src/a.ts': [strykerMutant('Killed')] }), { code: 0, seen: [], refusal: 'its temp directory vanished' }],
+    ['Stryker exited 1', undefined, { code: 1, seen: [] }],
+    // Only the initial test run's failure names tests.
+    ['Stryker exited 1 (No tests were executed)', undefined, { code: 1, seen: ['No tests were executed'], failedTests: ['x'] }],
+    // The lane's own report is removed first, so a retry that writes none is not read as the lane's.
+    ['Stryker wrote no report at /repo/reports/agnipariksha/apps-web.json', undefined, { code: 0, seen: [] }],
+    ["Stryker's report /repo/reports/agnipariksha/apps-web.json is not JSON", '{', { code: 0, seen: [] }],
+    ['the report has no `files`', '[]', { code: 0, seen: [] }],
+    [flakyRetry(['t']), undefined, { code: 1, seen: [FAILED_INITIAL_RUN], failedTests: ['t'] }],
+  ];
+  for (const [refusal, text, code] of goesOn) {
+    const { deps, runs, setPlan } = fakeDeps([twoTimeouts(), text, report({ 'src/a.ts': [strykerMutant('Killed', 7)] })], [{ code: 0, seen: [] }, code], null);
+    setPlan(webPlan);
+    const result = await judgeLane(webPlan, deps);
+    assert.deepEqual(result.refusals, [`${where}: ${refusal}`], refusal);
+    assert.equal(runs.length, 3, refusal);
+    assert.equal(result.retried, 1, refusal);
+  }
+
+  const busy = fakeDeps([twoTimeouts()], [{ code: 0, seen: [] }, { code: 1, seen: [DRY_RUN_TIMEOUT] }], null);
+  busy.setPlan(webPlan);
+  const stopped = await judgeLane(webPlan, busy.deps);
+  assert.equal(busy.runs.length, 2);
+  assert.deepEqual(stopped.refusals, [`${where}: Stryker's initial test run timed out: the machine is busy; push again when it is quieter`]);
+
+  const noEnd = { ...strykerMutant('Timeout'), location: { start: { line: 3, column: 5 } } };
+  const located = fakeDeps([report({ 'src/a.ts': [noEnd, strykerMutant('Timeout', 7)] }), report({ 'src/a.ts': [strykerMutant('Killed', 7)] })], [], null);
+  located.setPlan(webPlan);
+  const unlocated = await judgeLane(webPlan, located.deps);
+  assert.equal(located.runs.length, 2);
+  assert.equal(unlocated.retried, 1);
+  assert.deepEqual(unlocated.refusals, [`${where}: its report gives no full location to retry it by`]);
+});
+
+test('a lane that fell back already never reruns a NoCoverage file', async () => {
+  const { deps, runs, setPlan } = fakeDeps(
+    [undefined, report({ 'scripts/a.ts': [strykerMutant('Killed')], 'scripts/b.ts': [strykerMutant('NoCoverage')] })],
+    [{ code: 1, seen: ['No tests were executed'] }],
+  );
+  setPlan(twoFiles);
+  const result = await judgeLane(twoFiles, deps);
+  assert.equal(runs.length, 2);
+  assert.equal(result.fellBack, 'its dry run failed: "No tests were executed"');
+  assert.deepEqual(result.judgement.blocking.map((m) => `${m.file}:${m.status}`), ['scripts/b.ts:NoCoverage']);
+});
+
+test('the NoCoverage rerun names every file it reruns', async () => {
+  const { deps, runs, setPlan } = fakeDeps([
+    report({ 'scripts/a.ts': [strykerMutant('NoCoverage')], 'scripts/b.ts': [strykerMutant('NoCoverage')] }),
+    report({ 'scripts/a.ts': [strykerMutant('Killed')], 'scripts/b.ts': [strykerMutant('Killed')] }),
+  ]);
+  setPlan(twoFiles);
+  const result = await judgeLane(twoFiles, deps);
+  assert.equal(result.fellBack, 'every mutant of scripts/a.ts, scripts/b.ts was NoCoverage under the related filter');
+  assert.equal(runs[1]?.args.at(-1), 'scripts/a.ts,scripts/b.ts');
+});
+
+test('a target with no mutants in the report is named; one with mutants is not', async () => {
+  const plan: Plan = { ...webPlan, targets: ['apps/web/src/a.ts', 'apps/web/src/b.ts'] };
+  const { deps, setPlan } = fakeDeps([report({ 'src/a.ts': [strykerMutant('Killed')] })], [], null);
+  setPlan(plan);
+  const result = await judgeLane(plan, deps);
+  assert.deepEqual(result.noMutants, ['apps/web/src/b.ts']);
+  assert.equal('flaky' in result, false, 'no flake, no key');
 });

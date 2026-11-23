@@ -9,11 +9,16 @@ export const RETRY_BUDGET_MS = 15 * 60_000;
 /** One retry: the run's mutants, or why it could not run (`busy`: its dry run timed out). */
 export type RetryRun = { mutants: Mutant[] } | { refusal: string; busy: boolean };
 
-/** The `--mutate` range selecting exactly this mutant: lines 1-based, columns 0-based. */
-export function mutantRange(m: Mutant, file: string): string | null {
+/**
+ * The mutant's span, `line:column-endLine:endColumn`, lines 1-based and
+ * columns 0-based: a `--mutate` range after `file:`, and the value of the
+ * retry ignorer's `RETRY_SPAN_VAR`. As a range it selects every mutant nested
+ * in this one too; the ignorer drops those.
+ */
+export function mutantSpan(m: Mutant): string | null {
   const parts = [m.line, m.column, m.endLine, m.endColumn];
   if (!parts.every(Number.isInteger)) return null;
-  return `${file}:${m.line}:${m.column - 1}-${m.endLine}:${m.endColumn - 1}`;
+  return `${m.line}:${m.column - 1}-${m.endLine}:${m.endColumn - 1}`;
 }
 
 export const sameMutant = (a: Mutant, b: Mutant): boolean =>
@@ -29,7 +34,8 @@ export interface RetryPass {
  * Give every Timeout one retry, in order. The retry's status replaces the
  * Timeout; a second Timeout stays Timeout, which the verdict counts as caught.
  * A busy machine (a retry's dry run timed out, or the budget ran out) stops
- * the pass and refuses; so does a retry that cannot run or lacks the mutant.
+ * the pass and refuses; so does a retry that cannot run, lacks the mutant or
+ * ignored it.
  */
 export async function retryTimeouts(
   mutants: readonly Mutant[],
@@ -62,6 +68,11 @@ export async function retryTimeouts(
     const again = run.mutants.find((candidate) => sameMutant(candidate, m));
     if (again === undefined) {
       refusals.push(`retry of ${where}: its report does not hold the mutant`);
+      continue;
+    }
+    // The verdict counts no Ignored mutant, so a retry that ignored its own would pass a hang.
+    if (again.status === 'Ignored') {
+      refusals.push(`retry of ${where}: Stryker ignored the mutant it was retrying`);
       continue;
     }
     retried += 1;

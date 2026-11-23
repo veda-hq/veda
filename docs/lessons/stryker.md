@@ -81,6 +81,18 @@ without suppressing them, and the traps of a gate scoped to a diff.
   (`toEqual([CONST])`) can never kill its own mutant: test a persisted key or string constant
   through the literal value that stored state holds. Solo-run one mutant with
   `stryker run --mutate <file>:<line>-<line> --concurrency 1 --logLevel debug`.
+- **A `--mutate` range is not one mutant.** Stryker mutates every node inside the range, so
+  the range of an outer mutant (a BlockStatement, a function) takes in every mutant nested in
+  it. A retry of one such `cli.ts` Timeout ran 54 mutants in 156 s at `--concurrency 1`. To run
+  one mutant, add an ignorer that drops each node strictly inside its span (Stryker drops the
+  node's subtree with it) and exclude the file's other mutators. The node's other replacements
+  from its own mutator still run: no Stryker option selects finer. agnipariksha's timeout retry
+  does this (`src/retry-ignorer.ts`).
+  <!-- held by: agnipariksha's timeout retry (retry-ignorer.ts, its retry config) -->
+- **Ignorers and Babel locations.** An ignorer's `shouldIgnore(path)` sees Babel locations:
+  lines 1-based, columns 0-based. Stryker's JSON report counts both from 1, and `--mutate`
+  takes report lines with 0-based columns. An ignorer that ignores an ancestor of the mutant
+  you want ignores that mutant too.
 - **Static mutant cost depends on test order.** Under the Vitest runner a static mutant runs all
   related files with bail, and Vitest's default sequencer orders files last-failed first, then
   longest, from each runner's own cache, so the cost depends on where the killing file sits. A

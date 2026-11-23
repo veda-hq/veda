@@ -177,7 +177,6 @@ function fake(reports: Record<string, string>, over: Partial<CliDeps> = {}): Fak
   const files = new Map<string, string>([['/repo/scripts.mjs', 'config'], ['/repo/pnpm-lock.yaml', 'lock'], ['/repo/node_modules/@stryker-mutator/core/package.json', '{}']]);
   const exits: (() => void)[] = [];
   const outputs: Record<string, string> = {
-    'rev-parse': '.git\n',
     'merge-base': 'base1\n',
     diff: 'scripts/a.ts\0scripts/b.ts\0scripts/c.ts\0docs/x.md\0',
     'ls-files': 'tools/new.ts\0',
@@ -188,6 +187,12 @@ function fake(reports: Record<string, string>, over: Partial<CliDeps> = {}): Fak
     git: (args) => {
       gitCalls.push(args);
       if (args[0] === 'diff' && args[1] === '-U0') return args.at(-1) === 'scripts/b.ts' ? '@@ -1 +1 @@\n+// note\n' : '@@ -1 +1 @@\n+x();\n';
+      // Strict: a rev-parse the gate does not make throws, so a mutated argument refuses the run.
+      if (args[0] === 'rev-parse') {
+        if (args.join(' ') === 'rev-parse --git-common-dir') return '.git\n';
+        if (args[1] === '--git-path' && args.length === 3) return `.git/${args[2]}\n`;
+        throw new Error(`fatal: unexpected git ${args.join(' ')}`);
+      }
       return outputs[args[0] as string] ?? '';
     },
     exists: (path) => path.endsWith('.test.ts') && !path.startsWith('scripts/c.'),

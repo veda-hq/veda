@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   chmodSync,
   existsSync,
+  fstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -12,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { after, describe, it } from "node:test";
+import { after, describe, it as test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { DEFAULTS, type Config } from "./config.ts";
 import {
@@ -25,10 +27,27 @@ import {
 const STAGES = resolve(import.meta.dirname, "..", "shell", "stages.sh");
 
 /**
+ * Every test fails at 5 s; each takes under 1 s. A mutant that keeps a run
+ * from settling would otherwise hang its test until Stryker's own limit, and
+ * each such Timeout costs the gate a retry; 28 of them outgrew its 15-minute
+ * retry budget (#459). The limit is 1.5 × this suite's dry run (about 12 s)
+ * plus 5 s, and at 15 s a hung test, with start-up, still crossed it when 17
+ * runners shared the machine. Failing well inside it, the test kills the mutant.
+ */
+const it = (name: string, fn: (t: TestContext) => void | Promise<void>) =>
+  test(name, { timeout: 5_000 }, fn);
+
+/**
  * Git hermetic for the whole process: the fixtures' git and the hooks the
  * supervisor runs spawn git with this process's environment. A global trace2
  * event target (a daemon's socket) could otherwise write into a fixture's
  * .git while after() removes it, and fail it with ENOTEMPTY.
+ *
+ * dvara's own variables go too. Run under a real hook, as veda's pre-push
+ * runs its mutation gate, this process has the outer run's DVARA_STAGE_FILE
+ * and DVARA_RECORD_FILE. A mutant that drops them from the hook's env would
+ * have a test hook's `dvara_stage lint` write into the outer run's stage
+ * file, and the outer pre-push would refuse its own stage list (#459).
  */
 const HERMETIC = {
   GIT_CONFIG_GLOBAL: "/dev/null",
@@ -38,8 +57,8 @@ const HERMETIC = {
   GIT_TRACE2_EVENT: "0",
   GIT_TRACE2_PERF: "0",
 };
-const inherited = Object.entries(process.env).filter(([name]) =>
-  name.startsWith("GIT_"),
+const inherited = Object.entries(process.env).filter(
+  ([name]) => name.startsWith("GIT_") || name.startsWith("DVARA_"),
 );
 for (const [name] of inherited) delete process.env[name];
 Object.assign(process.env, HERMETIC);
@@ -255,6 +274,124 @@ describe("supervise", () => {
     await supervise([hook], opts);
     const [row] = rows(root);
     assert.ok(Number(row?.resourceSamples) >= 1);
+    // The real `ps` table, read as pid, ppid and rss, finds the hook's memory.
+    assert.ok(Number(row?.sampledPeakTreeRssKiB) > 0);
+  });
+
+  it("stops sampling once the run has settled", async () => {
+    const { root, hook } = repo("sleep 0.1");
+    let reads = 0;
+    const { opts } = options(root, {
+      processTable: () => {
+        reads++;
+        return "";
+      },
+    });
+    assert.equal(await supervise([hook], opts), 0);
+    const settled = reads;
+    await delay(200);
+    assert.equal(reads, settled);
+  });
+
+  it("records the peaks of the hook's tree, not its last sample", async () => {
+    const pidFile = join(scratch("dvara-pid-"), "pid");
+    const { root, hook } = repo(`echo $$ > '${pidFile}'\nsleep 0.4`);
+    // The hook's own pid, then a child of it, in the first table read after
+    // the hook wrote its pid; later tables show the hook alone and smaller.
+    let seen = 0;
+    const { opts } = options(root, {
+      processTable: () => {
+        if (!existsSync(pidFile)) return "";
+        const pid = Number(readFileSync(pidFile, "utf8").trim());
+        if (!pid) return "";
+        seen++;
+        return seen === 1
+          ? `${pid} 1 300\n${pid + 1} ${pid} 200\n`
+          : `${pid} 1 100\n`;
+      },
+    });
+    assert.equal(await supervise([hook], opts), 0);
+    assert.ok(seen >= 2, `sampled ${seen} time(s) after the pid was written`);
+    const [row] = rows(root);
+    assert.equal(row?.sampledPeakTreeRssKiB, 500);
+    assert.equal(row?.peakProcesses, 2);
+  });
+
+  it("records a row's timings to the stage and leaves no stage file", async () => {
+    // Stage marks have one-second resolution; the runtime selection's second
+    // puts every mark after it a second in, so the first stage has a length.
+    const { root, hook } = repo("dvara_stage lint\ndvara_stage test");
+    const { opts } = options(root, {
+      env: { ...process.env, DVARA_VERBOSE: "", DVARA_BOOTSTRAP_SECONDS: "1" },
+    });
+    assert.equal(await supervise([hook], opts), 0);
+    const [row] = rows(root);
+    const total = Number(row?.durationMs);
+    assert.ok(total >= 1000 && total < 60_000, `durationMs ${total}`);
+    const stages = row?.stages ?? [];
+    assert.deepEqual(
+      stages.map((s) => s.name),
+      ["runtime-selection", "startup", "lint", "test"],
+    );
+    for (const [index, stage] of stages.entries()) {
+      const end = Number(stages[index + 1]?.startMs ?? total);
+      assert.equal(stage.durationMs, end - Number(stage.startMs), JSON.stringify(stages));
+    }
+    assert.ok(Number(stages[0]?.durationMs) >= 1000, JSON.stringify(stages));
+    assert.equal(row?.fingerprintPurpose, "diagnostic-head-and-tracked-diff-only");
+    assert.equal(row?.tree, git(root, "rev-parse", "HEAD^{tree}").trim());
+  });
+
+  it("gives no stage the tree as input when the tree is not a commit", async () => {
+    const { root, hook } = repo("dvara_stage lint");
+    writeFileSync(join(root, "new.txt"), "x");
+    const { opts } = options(root);
+    assert.equal(await supervise([hook], opts), 0);
+    const [row] = rows(root);
+    assert.equal(row?.clean, false);
+    assert.equal(typeof row?.tree, "string");
+    assert.deepEqual(
+      row?.stages.map((s) => s.input),
+      [null, null],
+    );
+  });
+
+  it("makes a history folder whose parents are missing", async () => {
+    const { root, hook } = repo("true");
+    const { opts, captured } = options(
+      root,
+      {},
+      { historyDir: "deep/er/history" },
+    );
+    assert.equal(await supervise([hook], opts), 0);
+    assert.equal(rows(root, "deep/er/history")[0]?.status, "success");
+    assert.equal(captured.err, "");
+  });
+
+  it("hands a quiet hook and any other this process's own stdin", async () => {
+    const own = fstatSync(0);
+    const probe = (out: string) =>
+      `node -e 'const s = require("fs").fstatSync(0); process.stdout.write(s.dev + ":" + s.ino)' > '${out}'`;
+    for (const quietHooks of [["pre-commit"], []]) {
+      const out = join(scratch("dvara-stdin-"), "stdin");
+      const { root, hook } = repo(probe(out), "pre-commit");
+      const { opts } = options(root, {}, { quietHooks });
+      assert.equal(await supervise([hook], opts), 0);
+      assert.equal(
+        readFileSync(out, "utf8"),
+        `${own.dev}:${own.ino}`,
+        `quietHooks ${JSON.stringify(quietHooks)}`,
+      );
+    }
+  });
+
+  it("reports a hook killed by a signal it can map as cancelled", async () => {
+    const { root, hook } = repo("kill -TERM $$");
+    const { opts } = options(root);
+    assert.equal(await supervise([hook], opts), 143);
+    const [row] = rows(root);
+    assert.equal(row?.signal, "SIGTERM");
+    assert.equal(row?.status, "cancelled");
   });
 
   it("writes to the process and exits it by default", async (t) => {
@@ -310,6 +447,7 @@ describe("supervise", () => {
     const [row] = rows(root);
     assert.equal(row?.resourceSamples, 0);
     assert.equal(row?.sampledPeakTreeRssKiB, null);
+    assert.equal(row?.peakProcesses, null);
   });
 
   it("rejects the run when recording it throws", async () => {
@@ -354,8 +492,10 @@ describe("supervise", () => {
     const root = scratch("dvara-bare-");
     const hook = join(root, "pre-commit");
     writeFileSync(hook, "echo hi");
-    const { opts } = options(root, {}, { quietHooks: [] });
+    const { opts, captured } = options(root, {}, { quietHooks: [] });
     assert.equal(await supervise([hook], opts), 0);
+    // No stage file was written, and removing none is no failure.
+    assert.equal(captured.err, "");
     const [row] = rows(root);
     assert.equal(row?.branch, null);
     assert.equal(row?.tree, null);
@@ -397,6 +537,80 @@ describe("what a run is judged against", () => {
     assert.equal(judged.head, null);
     assert.equal(judged.clean, null);
     assert.equal(judged.base, null);
+  });
+
+  const sha256 = (...parts: string[]) => {
+    const hash = createHash("sha256");
+    for (const part of parts) hash.update(part);
+    return hash.digest("hex");
+  };
+
+  it("fingerprints the commit with its tracked diff, and calls a tracked change unclean", () => {
+    const { root } = repo("true");
+    writeFileSync(join(root, ".gitignore"), ".dvara/\nhooks/\nmore/\n");
+    const judged = judgedAgainst(root, process.env, []);
+    const revision = git(root, "rev-parse", "HEAD");
+    const diff = git(root, "diff", "--binary", "HEAD");
+    assert.notEqual(diff, "");
+    assert.equal(judged.fingerprint, sha256(revision, diff));
+    assert.equal(judged.tree, git(root, "rev-parse", "HEAD^{tree}").trim());
+    assert.equal(judged.clean, false);
+    assert.equal(judged.base, null);
+  });
+
+  it("calls a tree that is exactly its commit clean", () => {
+    const { root } = repo("true");
+    const judged = judgedAgainst(root, process.env, []);
+    assert.equal(judged.clean, true);
+    assert.equal(judged.fingerprint, sha256(git(root, "rev-parse", "HEAD"), ""));
+  });
+
+  it("knows no fingerprint or cleanliness when the diff is too large to read", () => {
+    const { root } = repo("true");
+    writeFileSync(join(root, "big.txt"), "a\n".repeat(600_000));
+    git(root, "add", "big.txt");
+    git(root, "commit", "-q", "-m", "big");
+    writeFileSync(join(root, "big.txt"), "b\n".repeat(600_000));
+    const judged = judgedAgainst(root, process.env, []);
+    assert.equal(judged.head, git(root, "rev-parse", "HEAD").trim());
+    assert.equal(judged.fingerprint, null);
+    assert.equal(judged.clean, null);
+  });
+
+  it("knows no cleanliness when the untracked list is too large to read", () => {
+    const { root } = repo("true");
+    const many = join(root, "u".repeat(200));
+    mkdirSync(many);
+    for (let i = 0; i < 6000; i++) writeFileSync(join(many, String(i)), "");
+    const judged = judgedAgainst(root, process.env, []);
+    assert.equal(typeof judged.fingerprint, "string");
+    assert.equal(judged.clean, null);
+  });
+
+  it("keeps git's complaints off this process's stderr", (t) => {
+    const outside = scratch("dvara-outside-");
+    const err = t.mock.method(process.stderr, "write", () => true);
+    const judged = judgedAgainst(outside, process.env, ["origin/main"]);
+    t.mock.restoreAll();
+    assert.equal(err.mock.calls.length, 0);
+    assert.equal(judged.head, null);
+    assert.equal(judged.tree, null);
+  });
+
+  it("calls a merge-base that fails for a missing commit unknown, not unrelated", () => {
+    const { root } = repo("true");
+    const first = git(root, "rev-parse", "HEAD").trim();
+    git(root, "checkout", "-q", "-b", "side");
+    git(root, "commit", "-q", "--allow-empty", "-m", "side");
+    git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
+    git(root, "checkout", "-q", "main");
+    git(root, "commit", "-q", "--allow-empty", "-m", "main");
+    // Both tips exist, but the commit they share does not: merge-base fails
+    // with git's fatal 128, which is no answer, where 1 means no common ancestor.
+    rmSync(join(root, ".git", "objects", first.slice(0, 2), first.slice(2)));
+    const judged = judgedAgainst(root, process.env, ["origin/main"]);
+    assert.equal(typeof judged.base?.commit, "string");
+    assert.equal(judged.base?.mergeBase, null);
   });
 
   it("calls a merge-base git cannot compute unknown", () => {
@@ -579,10 +793,12 @@ describe("quiet output", () => {
       captured.out,
       /⚠️ {2}partial staging\n {3}kept\n✅ pre-commit passed in [\d.]+s \(full output: \.dvara\/pre-commit\.log\)/,
     );
+    const seconds = Number(/passed in ([\d.]+)s/.exec(captured.out)?.[1]);
+    assert.ok(seconds < 60, `passed in ${seconds}s`);
     assert.doesNotMatch(captured.out, /progress/);
-    assert.match(
+    assert.equal(
       readFileSync(join(root, ".dvara", "pre-commit.log"), "utf8"),
-      /progress/,
+      "progress\n⚠️  partial staging\n   kept\n",
     );
   });
 
@@ -607,13 +823,16 @@ describe("quiet output", () => {
     // The leftover job holds the hook's output open until the test releases
     // it, so no clock decides the outcome. Its 30 s fallback turns a
     // supervisor that waits for the job into a failure, not a hang.
+    // Once released, the job writes to the output it held: `wrote` marks a
+    // write that went through, which it must not once the pipes are closed.
     const marks = scratch("dvara-leftover-");
     const release = join(marks, "release");
     const late = join(marks, "late");
+    const wrote = join(marks, "wrote");
     const { root, hook } = repo(
       [
         "echo before",
-        `(for _ in $(seq 600); do [ -e '${release}' ] && break; sleep 0.05; done; : > '${late}'; echo late) &`,
+        `(trap '' PIPE; for _ in $(seq 600); do [ -e '${release}' ] && break; sleep 0.05; done; if echo late 2>/dev/null; then : > '${wrote}'; fi; : > '${late}') &`,
         "exit 0",
       ].join("\n"),
       "pre-commit",
@@ -626,12 +845,26 @@ describe("quiet output", () => {
     assert.equal(await supervise([hook], opts), 0);
     // `supervise` returned while the job still held the output open.
     assert.equal(existsSync(late), false);
-    assert.match(
+    assert.equal(
       readFileSync(join(root, ".dvara", "pre-commit.log"), "utf8"),
-      /before\n\[output truncated/,
+      "before\n[output truncated: a process the hook started still held its output open 0.1 s after it exited]\n",
     );
     writeFileSync(release, "");
     while (!existsSync(late)) await delay(20);
+    assert.equal(existsSync(wrote), false);
+  });
+
+  it("waits for output a short-lived leftover still writes, and keeps it", async () => {
+    const { root, hook } = repo(
+      "echo before\n(sleep 0.3; echo after) &\nexit 0",
+      "pre-commit",
+    );
+    const { opts } = options(root, { drainLimitMs: 5000 });
+    assert.equal(await supervise([hook], opts), 0);
+    assert.equal(
+      readFileSync(join(root, ".dvara", "pre-commit.log"), "utf8"),
+      "before\nafter\n",
+    );
   });
 
   it("prints the verdict when the log cannot be written", async () => {
@@ -645,12 +878,18 @@ describe("quiet output", () => {
 
 describe("signals", () => {
   it("forwards a signal to the hook group and records the run cancelled", async () => {
-    const { root, hook } = repo("dvara_stage wait\nsleep 5");
+    // The hook runs in a group of its own, so the group signal reaches it;
+    // the trap marks that it did.
+    const got = join(scratch("dvara-group-"), "got");
+    const { root, hook } = repo(
+      `dvara_stage wait\ntrap ": > '${got}'; exit 0" TERM\nsleep 5 & wait`,
+    );
     const { opts, signals } = options(root);
     const run = supervise([hook], opts);
     await new Promise((done) => setTimeout(done, 300));
     signals.emit("SIGTERM");
     assert.equal(await run, 143);
+    assert.equal(existsSync(got), true);
     const [row] = rows(root);
     assert.equal(row?.status, "cancelled");
     assert.equal(row?.signal, "SIGTERM");
@@ -687,6 +926,7 @@ describe("signals", () => {
     assert.equal(await supervise([hook], opts), 130);
     assert.equal(exited, 130);
     assert.equal(existsSync(join(root, ".dvara", "history.jsonl")), false);
+    assert.equal(signals.count(), 0);
   });
 
   it("exits 1 for a hook killed by a signal it cannot map", async () => {
@@ -696,7 +936,10 @@ describe("signals", () => {
   });
 
   it("forwards to the hook itself when its group cannot be signalled", async () => {
-    const { root, hook } = repo("sleep 5");
+    // The trap marks that the hook itself got the signal; without it, the
+    // hook would sleep its 5 s out and exit 0.
+    const got = join(scratch("dvara-term-"), "got");
+    const { root, hook } = repo(`trap ": > '${got}'; exit 0" TERM\nsleep 5 & wait`);
     const { opts, signals, captured } = options(root);
     const run = supervise([hook], opts);
     await new Promise((done) => setTimeout(done, 300));
@@ -712,6 +955,7 @@ describe("signals", () => {
     }
     assert.equal(await run, 143);
     assert.match(captured.err, /forwarding failed: EPERM/);
+    assert.equal(existsSync(got), true);
   });
 
   it("says nothing when the hook group is already gone", async () => {
@@ -759,21 +1003,117 @@ describe("the watchdog", () => {
   it("attaches to the hook and records its summary", async () => {
     const { root, hook } = repo("true");
     const calls: string[] = [];
+    let hangsDir: string | undefined;
+    const recording = module({}, calls);
     const { opts } = options(
       root,
-      { loadWatchdog: async () => module({}, calls) },
+      {
+        loadWatchdog: async () => ({
+          ...recording,
+          createWatchdog: (options) => {
+            hangsDir = options.hangsDir;
+            return recording.createWatchdog(options);
+          },
+        }),
+      },
       { watchdog: "w.mjs" },
     );
     assert.equal(await supervise([hook], opts), 0);
     assert.deepEqual(calls, ["create number", "stop"]);
+    assert.equal(hangsDir, join(root, ".dvara", "hangs"));
     assert.deepEqual(rows(root)[0]?.watchdog, { mode: "enforce" });
+  });
+
+  it("loads no watchdog when none is configured, and records none", async () => {
+    const { root, hook } = repo("true");
+    const loaded: string[] = [];
+    const { opts } = options(
+      root,
+      {
+        loadWatchdog: async (path) => {
+          loaded.push(path);
+          return module();
+        },
+      },
+      { watchdog: "" },
+    );
+    assert.equal(await supervise([hook], opts), 0);
+    assert.deepEqual(loaded, []);
+    assert.deepEqual(rows(root)[0]?.watchdog, { mode: "unavailable" });
+  });
+
+  it("starts no watchdog for a hook that could not start", async () => {
+    const { root, hook } = repo("true");
+    const calls: string[] = [];
+    const imposing = module(
+      { exitDisposition: () => ({ code: 124, status: "deadlock" }) },
+      calls,
+    );
+    const { opts } = options(
+      root,
+      {
+        loadWatchdog: async () => imposing,
+        env: { PATH: "/nonexistent" },
+      },
+      { watchdog: "w.mjs" },
+    );
+    assert.equal(await supervise([hook], opts), 127);
+    assert.deepEqual(calls, []);
+    assert.deepEqual(rows(root)[0]?.watchdog, { mode: "unavailable" });
+  });
+
+  it("keeps the signal of a hook killed under an enforced stop out of the row", async () => {
+    const { root, hook } = repo("dvara_stage stuck\nkill -KILL $$");
+    const enforced = module({
+      createWatchdog: () => ({
+        disarm: () => undefined,
+        stop: () => undefined,
+        summary: () => ({ mode: "enforce", verdict: "deadlock" }),
+        enforced: () => true,
+      }),
+      exitDisposition: () => ({ code: 124, status: "deadlock" }),
+    });
+    const { opts } = options(
+      root,
+      { loadWatchdog: async () => enforced },
+      { watchdog: "w.mjs" },
+    );
+    assert.equal(await supervise([hook], opts), 124);
+    const [row] = rows(root);
+    assert.equal(row?.signal, null);
+    assert.equal(row?.status, "deadlock");
   });
 
   it("runs the hook without a watchdog that cannot start", async () => {
     const { root, hook } = repo("true");
+    // Its exitDisposition would stop the run, but a watchdog that never
+    // started decides nothing.
     const broken = module({
       createWatchdog: () => {
         throw new Error("no");
+      },
+      exitDisposition: () => ({ code: 124, status: "deadlock" }),
+    });
+    const { opts } = options(
+      root,
+      { loadWatchdog: async () => broken },
+      { watchdog: "w.mjs" },
+    );
+    assert.equal(await supervise([hook], opts), 0);
+    const [row] = rows(root);
+    assert.equal(row?.status, "success");
+    assert.deepEqual(row?.watchdog, {
+      mode: "unavailable",
+      error: "no",
+    });
+  });
+
+  it("records a watchdog start that throws something other than an Error", async () => {
+    const { root, hook } = repo("true");
+    const broken = module({
+      createWatchdog: () => {
+        // A module may throw anything, not only an Error.
+        throw "nope";
       },
     });
     const { opts } = options(
@@ -782,7 +1122,10 @@ describe("the watchdog", () => {
       { watchdog: "w.mjs" },
     );
     assert.equal(await supervise([hook], opts), 0);
-    assert.deepEqual(rows(root)[0]?.watchdog, { mode: "unavailable" });
+    assert.deepEqual(rows(root)[0]?.watchdog, {
+      mode: "unavailable",
+      error: "nope",
+    });
   });
 
   it("lets an enforced verdict decide the outcome", async () => {

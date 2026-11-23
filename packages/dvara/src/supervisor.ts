@@ -145,12 +145,21 @@ export const judgedAgainst = (
   // A detached HEAD abbreviates to the literal "HEAD", which is no branch.
   const branchName = git(["rev-parse", "--abbrev-ref", "HEAD"])?.trim();
   const branch = !branchName || branchName === "HEAD" ? null : branchName;
-  const diff = revision === null ? null : git(["diff", "--binary", "HEAD"]);
-  // Diagnostic identity only: it never authorizes reusing a result.
-  const fingerprint =
-    revision === null || diff === null
-      ? null
-      : createHash("sha256").update(revision).update(diff).digest("hex");
+  // The diff is taken against the captured commit, not HEAD, so a commit
+  // between the two calls cannot pair one commit with another's diff.
+  // Diagnostic identity only: the fingerprint never authorizes reusing a result.
+  const tracked = (commit: string) => {
+    const diff = git(["diff", "--binary", commit.trim()]);
+    return {
+      diff,
+      fingerprint:
+        diff === null
+          ? null
+          : createHash("sha256").update(commit).update(diff).digest("hex"),
+    };
+  };
+  const { diff, fingerprint } =
+    revision === null ? { diff: null, fingerprint: null } : tracked(revision);
   // The merge-base is taken with the captured commit, not the ref, so a peer's
   // fetch between the two calls cannot pair two versions of the base. Exit 1
   // is "no common ancestor", a real state; any other failure is unknown.
@@ -308,24 +317,35 @@ export const supervise = async (
     },
   });
   child = spawned;
-  if (quiet)
-    for (const stream of [spawned.stdout, spawned.stderr])
-      stream?.on("data", (chunk: Buffer) => held.push(chunk));
+  // Only a quiet hook has pipes: any other hook's output goes straight to the terminal.
+  const pipes = [spawned.stdout, spawned.stderr].filter((s) => s !== null);
+  for (const stream of pipes)
+    stream.on("data", (chunk: Buffer) => held.push(chunk));
+  // Why a watchdog module failed to start, for the row: a silent failure would
+  // read the same as a run with no watchdog configured.
+  let watchdogError: string | undefined;
+  // Only a watchdog that started may decide the outcome. One that failed to
+  // start, or had no hook to watch, leaves the hook's verdict alone, as no
+  // watchdog would.
+  let disposition: WatchdogModule["exitDisposition"] | undefined;
   if (watchdogModule && spawned.pid !== undefined) {
+    const module = watchdogModule;
     try {
-      watchdog = watchdogModule.createWatchdog({
+      watchdog = module.createWatchdog({
         rootPid: spawned.pid,
         stageFile: events,
         hangsDir: resolve(dir, "hangs"),
         runId: id,
-        config: watchdogModule.resolveWatchdogConfig(
+        config: module.resolveWatchdogConfig(
           env,
           platform,
           perfLevelNames(platform),
         ),
       });
-    } catch {
-      watchdog = undefined;
+      disposition = (summary) => module.exitDisposition(summary);
+    } catch (error) {
+      // A module may throw anything, not only an Error.
+      watchdogError = error instanceof Error ? error.message : String(error);
     }
   }
   let peakTreeRssKiB = 0;
@@ -334,7 +354,9 @@ export const supervise = async (
   const sample = () => {
     try {
       const table = processTable();
-      const usage = treeUsage(table, spawned.pid ?? -1);
+      // A hook that could not start has no pid, and its run settles, clearing
+      // this timer, before the first sample can run.
+      const usage = treeUsage(table, spawned.pid as number);
       peakTreeRssKiB = Math.max(peakTreeRssKiB, usage.rssKiB);
       peakProcesses = Math.max(peakProcesses, usage.processes);
       resourceSamples++;
@@ -370,10 +392,9 @@ export const supervise = async (
    * pipes are then closed.
    */
   const drained = async (): Promise<void> => {
-    if (!quiet) return;
-    const streams = [spawned.stdout, spawned.stderr].filter((s) => s !== null);
+    // With no pipes, `closed` settles at once and wins the race.
     const closed = Promise.all(
-      streams.map((stream) =>
+      pipes.map((stream) =>
         stream.closed
           ? null
           : new Promise((done) => stream.once("close", done)),
@@ -389,7 +410,7 @@ export const supervise = async (
           `[output truncated: a process the hook started still held its output open ${drainLimitMs / 1000} s after it exited]\n`,
         ),
       );
-    for (const stream of streams) stream.destroy();
+    for (const stream of pipes) stream.destroy();
   };
 
   const finish = (exitCode: number, error?: string): number => {
@@ -398,10 +419,12 @@ export const supervise = async (
     watchdog?.stop();
     const watchdogSummary: WatchdogSummary = watchdog?.summary() ?? {
       mode: "unavailable",
+      // Left out of the row when undefined, as JSON leaves it.
+      error: watchdogError,
     };
     // An enforced stop decides the outcome: the hook exited because the
     // watchdog stopped it, so its own status is not the story.
-    const imposed = watchdogModule?.exitDisposition(watchdogSummary) ?? null;
+    const imposed = disposition?.(watchdogSummary) ?? null;
     if (imposed) code = imposed.code;
     const ended = Date.now();
     const marks = parseStages(readOrNull(events), bootstrapMs);

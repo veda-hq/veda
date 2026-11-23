@@ -6,7 +6,7 @@ lane by lane, and blocks the push on a mutant no test kills. Part of
 [Veda](https://github.com/veda-hq/veda).
 
 ```sh
-npx @veda-hq/agnipariksha@0.8.5 [--base <ref>] [--files a,b] [--lane <name>]... [--tracked-only] [--pushed-refs] [--no-reuse]
+npx @veda-hq/agnipariksha@0.8.6 [--base <ref>] [--files a,b] [--lane <name>]... [--tracked-only] [--pushed-refs] [--no-reuse]
 ```
 
 Exit 0 when every judged mutant is caught, 1 on a blocking mutant, and 2 when
@@ -119,7 +119,12 @@ runs the repository's own `node_modules/.bin/stryker`.
   reruns in it any file whose every mutant was `NoCoverage`.
 - **One run per machine.** A lock in the git common directory, which every
   worktree shares, holds a second run until the first ends, and refuses after
-  30 minutes. A lock whose process is gone is taken over.
+  30 minutes. A lock whose process is gone is taken over. Only a run that
+  gives Stryker a file takes it: the gate plans every lane first, so a run
+  where every lane has nothing to judge, or is over its cut-off and left to
+  CI, prints its lines and exits 0 without waiting. A run that takes the lock
+  plans again under it, since the tree can change while it waits, and judges
+  that plan.
 
 ## `agnipariksha.json`
 

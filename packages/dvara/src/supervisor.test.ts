@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { after, describe, it } from "node:test";
+import { after, describe, it as test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { DEFAULTS, type Config } from "./config.ts";
 import {
@@ -25,6 +25,15 @@ import {
 } from "./supervisor.ts";
 
 const STAGES = resolve(import.meta.dirname, "..", "shell", "stages.sh");
+
+/**
+ * Every test fails at 15 s. A mutant that keeps a run from settling would
+ * otherwise hang its test until Stryker's own timeout, and each such Timeout
+ * costs the gate a retry of up to 180 s; a dozen of them outgrew its
+ * 15-minute retry budget (#459). Failing first, the test kills the mutant.
+ */
+const it = (name: string, fn: (t: TestContext) => void | Promise<void>) =>
+  test(name, { timeout: 15_000 }, fn);
 
 /**
  * Git hermetic for the whole process: the fixtures' git and the hooks the
@@ -259,6 +268,21 @@ describe("supervise", () => {
     assert.ok(Number(row?.resourceSamples) >= 1);
     // The real `ps` table, read as pid, ppid and rss, finds the hook's memory.
     assert.ok(Number(row?.sampledPeakTreeRssKiB) > 0);
+  });
+
+  it("stops sampling once the run has settled", async () => {
+    const { root, hook } = repo("sleep 0.1");
+    let reads = 0;
+    const { opts } = options(root, {
+      processTable: () => {
+        reads++;
+        return "";
+      },
+    });
+    assert.equal(await supervise([hook], opts), 0);
+    const settled = reads;
+    await delay(200);
+    assert.equal(reads, settled);
   });
 
   it("records the peaks of the hook's tree, not its last sample", async () => {

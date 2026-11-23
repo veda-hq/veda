@@ -99,6 +99,18 @@ without suppressing them, and the traps of a gate scoped to a diff.
   custom Vitest sequencer that puts the mutated file's owning suite first keeps verdicts
   identical and cut one mutant phase from 143 s to 14 s. For a slow or Timeout static mutant,
   first find which file kills it and its position (`testsCompleted` in `mutation.json`).
+- **Stryker's default margin floods spawn-heavy suites at full concurrency.** A mutant's limit
+  is `timeoutFactor` × the dry run's net time + `timeoutMS` (1.5 and 5 s by default). The dry
+  run times the suite alone; the mutants then run at 17 runners at once. A suite that spawns
+  processes slows 2 to 6.5× under that, so its killed mutants overrun a limit set from the
+  quiet run and come back as Timeouts. pariksha's `doc-references-gate.ts` gave 526 Timeouts
+  where 6 were hangs, each costing a serial retry. A fixed floor fixes it, and a larger factor
+  does not: the dry run's net time swung from 8 to 48 s on one file, and a factor also stretches
+  every retry. Fewer runners make each mutant faster but the run slower overall. veda's lanes
+  set `timeoutMS: 90_000` in `stryker/lane.mjs` (veda#461). A hang that hits Stryker's loop
+  counter ("Hit limit reached") ends before any limit, so the floor costs only wall-clock
+  hangs. To tell a flood from hangs, rerun with `--timeoutMS 120000 --timeoutFactor 0`: real
+  hangs stay Timeouts, and the slowest Killed mutant shows how much room the limit needs.
 - **Incremental mode and test edits.** Incremental mode reuses results for unchanged or
   source-edited files, but when a file's covering test file changes it re-runs every mutant
   those tests cover, so near-zero reuse on test-editing pushes is expected, not a bug. The dry

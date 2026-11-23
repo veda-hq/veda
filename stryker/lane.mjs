@@ -30,6 +30,18 @@ export function lane(cwd, env = process.env) {
       forceBail: true,
     },
     coverageAnalysis: 'perTest',
+    // A mutant's limit is timeoutFactor × the dry run's net time + timeoutMS.
+    // Stryker's 5 s default flooded pariksha with Timeouts that were not
+    // hangs (veda#461): the dry run times one suite alone, but at 17 runners
+    // 17 spawn-heavy suites share the Mac, and a doc-references-gate.ts
+    // mutant took 29–76 s to be killed against a 17 s limit. 526 mutants
+    // timed out at the default, 6 at 90 s, the same 6 genuine hangs every
+    // run; codec-registry.ts went from 536 to 0. A hang that hits Stryker's
+    // loop counter ends before the limit, so the floor costs only wall-clock
+    // hangs. timeoutFactor stays at 1.5: it multiplies a dry run that swung
+    // from 8 to 48 s on one file. agnipariksha's timeout retries pass their
+    // own --timeoutMS, so this sets only the main run.
+    timeoutMS: 90_000,
     checkers: [],
     // Stryker rewrites a lane's tsconfig.json for the sandbox. To do it, it
     // imports `typescript` with no dependency of its own declared, so the

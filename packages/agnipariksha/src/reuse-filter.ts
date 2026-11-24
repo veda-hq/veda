@@ -10,8 +10,10 @@ interface StoredMutant {
 }
 
 export function reusable(mutant: StoredMutant): boolean {
-  if (typeof mutant.status !== 'string' || !REUSED_STATUSES.includes(mutant.status)) return false;
-  return mutant.static !== true || !STATIC_RERUN_STATUSES.includes(mutant.status);
+  // A status that is not text is in neither list.
+  const status = mutant.status as string;
+  if (!REUSED_STATUSES.includes(status)) return false;
+  return mutant.static !== true || !STATIC_RERUN_STATUSES.includes(status);
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -19,20 +21,19 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 /** The reuse file with only reusable results, or null if Stryker could not have written it. */
 export function forReuse(text: string): string | null {
-  let raw: unknown;
   try {
-    raw = JSON.parse(text);
+    const raw: unknown = JSON.parse(text);
+    if (!isRecord(raw) || !isRecord(raw.files)) return null;
+    const files: Record<string, unknown> = {};
+    for (const [path, entry] of Object.entries(raw.files)) {
+      if (!isRecord(entry) || !Array.isArray(entry.mutants)) return null;
+      files[path] = { ...entry, mutants: (entry.mutants as StoredMutant[]).filter(reusable) };
+    }
+    return JSON.stringify({ ...raw, files });
   } catch {
     // fail-open: a reuse file that is not JSON is dropped, and the lane runs in full.
     return null;
   }
-  if (!isRecord(raw) || !isRecord(raw.files)) return null;
-  const files: Record<string, unknown> = {};
-  for (const [path, entry] of Object.entries(raw.files)) {
-    if (!isRecord(entry) || !Array.isArray(entry.mutants)) return null;
-    files[path] = { ...entry, mutants: (entry.mutants as StoredMutant[]).filter(reusable) };
-  }
-  return JSON.stringify({ ...raw, files });
 }
 
 /** A target may carry a mutation range; the report keys files without it. */

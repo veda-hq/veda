@@ -106,7 +106,7 @@ export const fileOf = (id: string): string => {
   return hash === -1 ? id : id.slice(0, hash);
 };
 
-const isFormat = (f: unknown): f is Format => typeof f === 'string' && (FORMATS as readonly string[]).includes(f);
+const isFormat = (f: unknown): f is Format => (FORMATS as readonly unknown[]).includes(f);
 
 /** The config a JSON text names; throws naming the first bad key. */
 export const parseConfig = (source: string): Config => {
@@ -143,7 +143,8 @@ export const parseConfig = (source: string): Config => {
       source: path(e, 'source', where),
       formats,
       suite: path(e, 'suite', where),
-      outOfModel: note(e, 'outOfModel', where, min, true) ?? '',
+      // Required, so note gives a string or throws.
+      outOfModel: note(e, 'outOfModel', where, min, true) as string,
       lfOnly: note(e, 'lfOnly', where, min, false),
       motivatedBy: optionalText(e, 'motivatedBy', where),
     };
@@ -253,7 +254,7 @@ export const scanSource = (ts: Ts, file: string, source: string): Scan => {
   const functions = new Set<string>();
   /** `export { local as name }` entries, as [local, name]. */
   const listed: Array<readonly [string, string]> = [];
-  const isExported = (node: TS.Node): boolean => ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+  const isExported = (node: TS.FunctionDeclaration | TS.VariableStatement): boolean => ts.getModifiers(node)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) === true;
   const visit = (node: TS.Node): void => {
     if (ts.isRegularExpressionLiteral(node)) {
       const body = node.text.slice(1, node.text.lastIndexOf('/'));

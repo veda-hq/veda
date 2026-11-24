@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { covered, discover, expectedBaseline, fileOf, FORMATS, findings, formatFindings, checkWiring, pairsIn, parseBaseline, parseConfig, type Config, type Discovery } from './codec-registry.ts';
+import { covered, discover, expectedBaseline, fileOf, FORMATS, findings, formatFindings, checkWiring, pairsIn, parseBaseline, parseConfig, scanSource, type Config, type Discovery } from './codec-registry.ts';
 import { gitAt, trackedUnder } from './git.ts';
 import { audit } from './registry-ratchet.ts';
 import { loadTypescript, type Ts } from './typescript.ts';
@@ -212,6 +212,52 @@ describe('discovery: what counts', () => {
   });
 });
 
+describe('discovery: what one module shows', () => {
+  it('reads a source file by its last extension, and none a test, declaration or fixture tree holds', () => {
+    const yaml = "export const D = '---';\n";
+    assert.deepEqual(
+      scanFiles(
+        {
+          'scripts/a.mts': yaml,
+          'scripts/b.d.tsx': yaml,
+          'scripts/c.ts.orig': yaml,
+          'scripts/d.test.ts': yaml,
+          'scripts/e.spec.js': yaml,
+          'scripts/__tests__/f.ts': yaml,
+          'scripts/__mocks__/g.ts': yaml,
+          'scripts/__fixtures__/h.ts': yaml,
+          'scripts/fixture/i.ts': yaml,
+          'scripts/fixtures/j.ts': yaml,
+          'fixtures/k.ts': yaml,
+          'fixture/l.ts': yaml,
+        },
+        ['scripts', 'fixtures', 'fixture'],
+      ).handParsers,
+      ['scripts/a.mts#yaml', 'scripts/b.d.tsx#yaml'],
+    );
+  });
+
+  it('reports each format its regexes and strings show, and nothing for other text', () => {
+    assert.deepEqual([...scanSource(ts, 'x.ts', 'const r = /^---$/;\n').formats], ['yaml']);
+    assert.deepEqual([...scanSource(ts, 'x.ts', "const s = 'hello';\n").formats], []);
+    assert.deepEqual([...scanSource(ts, 'x.ts', 'const r = /[</d]/;\n').formats], ['html']);
+    assert.deepEqual([...scanSource(ts, 'x.ts', 'const r = /[</]/;\n').formats], []);
+  });
+
+  it('reads shell from a tokenizer of quotes and backslashes in a module about tokenizing', () => {
+    const quotes = `const q = ["'", '"', '\\\\'];\n`;
+    assert.deepEqual([...scanSource(ts, 'x.ts', `// tokenize words\n${quotes}`).formats], ['shell']);
+    assert.deepEqual([...scanSource(ts, 'x.ts', `// tokenise words\n${quotes}`).formats], ['shell']);
+    assert.deepEqual([...scanSource(ts, 'x.ts', `// shell words\nconst q = ["a", 'b', 'c'];\n`).formats], []);
+  });
+
+  it('lists the exported functions, an async one and a listed one included, and no other name', () => {
+    const scanned = scanSource(ts, 'x.ts', 'function S() {}\nexport async function writeRow() {}\nfunction readRow() {}\nconst other = 1;\nexport { readRow, other };\n');
+    assert.deepEqual(scanned.exported, ['writeRow', 'readRow']);
+    assert.deepEqual(scanSource(ts, 'x.ts', 'function S() {}\nfunction t() {}\n').exported, []);
+  });
+});
+
 describe('guard removal flips it', () => {
   const found: Discovery = { handParsers: ['m.ts#yaml'], pairs: ['m.ts#writeA->readA'] };
 
@@ -351,6 +397,64 @@ describe('the config', () => {
       assert.throws(() => parseConfig(JSON.stringify(config(over))), message);
     });
   }
+
+  it('names each refusal in full, with nothing before it', () => {
+    const md = { source: 'scripts/md.ts', formats: ['markdown'], suite: 'scripts/md.differential.properties.test.ts', outOfModel: 'lists' };
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ oracles: 'x' }, '"oracles" must be an object'],
+      [{ oracles: { json: 'x' } }, 'oracles: "json" is not a format discovery reads (markdown, html, yaml, csv, shell, ts)'],
+      [{ oracles: { markdown: '' } }, 'oracles.markdown must be a module name'],
+      [{ oracles: { markdown: 1 } }, 'oracles.markdown must be a module name'],
+      [{ surfaces: 'x' }, '"surfaces" must be a list'],
+      [{ surfaces: [] }, '"surfaces" is empty; name the globs a property suite must sit on, or null to check no surface'],
+      [{ surfaces: [''] }, 'surfaces[0] must be a non-empty glob'],
+      [{ surfaces: ['a', 2] }, 'surfaces[1] must be a non-empty glob'],
+      [{ markers: 'x' }, '"markers" must be an object'],
+      [{ markers: { lineEndings: 'b', golden: 'c' } }, 'markers: "seed" must be a non-empty string'],
+      [{ markers: { seed: 'a', golden: 'c' } }, 'markers: "lineEndings" must be a non-empty string'],
+      [{ markers: { seed: 'a', lineEndings: 'b' } }, 'markers: "golden" must be a non-empty string'],
+      [{ handParsers: 'x' }, '"handParsers" must be a list'],
+      [{ handParsers: [1] }, 'handParsers[0] must be an object'],
+      [{ handParsers: [{ ...md, formats: ['markdown', 'json'] }] }, 'handParsers[0]: "formats" must be a non-empty list of markdown, html, yaml, csv, shell, ts'],
+      [{ pairs: 'x' }, '"pairs" must be a list'],
+      [{ pairs: [1] }, 'pairs[0] must be an object'],
+      [{ exempt: 'x' }, '"exempt" must be a list'],
+      [{ exempt: [1] }, 'exempt[0] must be an object'],
+      [{ exempt: [{ id: 'scripts/row.ts#writeRow->readRow', reason: 'r' }] }, '"scripts/row.ts#writeRow->readRow" is registered or exempt more than once'],
+      [{ baseline: 1 }, '"baseline" must be a non-empty string'],
+      [{ roots: [] }, '"roots" is empty, so nothing would be read'],
+      [{ collected: [] }, '"collected" is empty, so nothing would match'],
+      [{ library: ' ' }, '"library" must be a non-empty string'],
+      [{ bogus: 1 }, 'unknown key "bogus"'],
+    ];
+    for (const [over, message] of cases) {
+      assert.throws(() => parseConfig(JSON.stringify(config(over))), { message }, message);
+    }
+  });
+
+  it('refuses a pair id with anything before its path or after its suffix', () => {
+    const cases: Array<[string, string]> = [
+      ['a.ts#digest.bak', 'pairs[0]: "a.ts#digest.bak" is not path#producer->consumer or path#digest'],
+      ['a.ts#x#digest', 'pairs[0]: "a.ts#x#digest" is not path#producer->consumer or path#digest'],
+      ['#digest', 'pairs[0]: "#digest" is not path#producer->consumer or path#digest'],
+    ];
+    for (const [id, message] of cases) {
+      assert.throws(() => parseConfig(JSON.stringify(config({ pairs: [{ id, kind: 'golden', suite: 's.ts' }] }))), { message }, id);
+    }
+  });
+
+  it('keeps every field a hand parser and a pair name, motivations included', () => {
+    const c = parseConfig(
+      JSON.stringify(
+        config({
+          handParsers: [{ source: 'scripts/md.ts', formats: ['markdown'], suite: 'scripts/md.test.ts', outOfModel: 'lists', lfOnly: 'bash reads LF', motivatedBy: 'M1' }],
+          pairs: [{ id: 'scripts/row.ts#writeRow->readRow', kind: 'round-trip', suite: 'scripts/row.test.ts', motivatedBy: 'M2' }],
+        }),
+      ),
+    );
+    assert.deepEqual(c.handParsers, [{ source: 'scripts/md.ts', formats: ['markdown'], suite: 'scripts/md.test.ts', outOfModel: 'lists', lfOnly: 'bash reads LF', motivatedBy: 'M1' }]);
+    assert.deepEqual(c.pairs, [{ id: 'scripts/row.ts#writeRow->readRow', kind: 'round-trip', suite: 'scripts/row.test.ts', motivatedBy: 'M2' }]);
+  });
 
   it('refuses text that is not a JSON object', () => {
     assert.throws(() => parseConfig('nope'), /not JSON/);

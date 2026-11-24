@@ -279,8 +279,12 @@ const survey = (
   log: (line: string) => void,
 ): void => {
   const byRule = new Map<string, number>();
+  const byCheck = new Map<string, number>();
   const byFile = countFindings(findings);
-  for (const f of findings) byRule.set(f.rule, (byRule.get(f.rule) ?? 0) + 1);
+  for (const f of findings) {
+    byRule.set(f.rule, (byRule.get(f.rule) ?? 0) + 1);
+    byCheck.set(f.check, (byCheck.get(f.check) ?? 0) + 1);
+  }
   log(
     `files checked: ${files}; files with findings: ${byFile.size}; findings: ${findings.length}`,
   );
@@ -292,10 +296,9 @@ const survey = (
       `rule ${rule}: ${byRule.get(rule) ?? 0} findings in ${filesWith} files`,
     );
   }
-  for (const check of [...new Set(findings.map((f) => f.check))].sort())
-    log(
-      `check ${check}: ${findings.filter((f) => f.check === check).length}`,
-    );
+  // The default sort orders strings by code unit, as `<` does.
+  for (const check of [...byCheck.keys()].sort())
+    log(`check ${check}: ${byCheck.get(check)}`);
 };
 
 /**

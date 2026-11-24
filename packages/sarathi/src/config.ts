@@ -73,7 +73,8 @@ function rejectUnknownKeys(value: Record<string, unknown>, known: ReadonlySet<st
 
 /** Claude Code's matcher rules: absent, empty or `*` match all; plain names and `A|B` match exactly; anything else is a regular expression. */
 export function compileMatcher(matcher: string | undefined, where = 'matcher'): (target: string) => boolean {
-  if (matcher === undefined || matcher === '' || matcher === '*') return () => true;
+  // An empty matcher is the empty regular expression below, which matches every target.
+  if (matcher === undefined || matcher === '*') return () => true;
   if (PLAIN.test(matcher)) {
     const names = new Set(matcher.split('|'));
     return target => names.has(target);
@@ -101,13 +102,15 @@ function parseEntry(raw: unknown, where: string): Entry {
   if ((command === undefined) === (guard === undefined)) {
     throw new ConfigError(`${where}: give exactly one of "command" and "guard"`);
   }
-  if (timeout !== undefined && (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout <= 0)) {
+  // Number.isFinite is false for anything but a finite number, a string of digits included.
+  if (timeout !== undefined && (!Number.isFinite(timeout) || (timeout as number) <= 0)) {
     throw new ConfigError(`${where}: "timeout" must be a positive number of seconds`);
   }
   if (failClosed !== undefined && typeof failClosed !== 'boolean') {
     throw new ConfigError(`${where}: "failClosed" must be true or false`);
   }
-  if (typeof matcher === 'string') compileMatcher(matcher, where);
+  // Refuses a matcher that does not compile; an absent one matches every target.
+  compileMatcher(matcher as string | undefined, where);
   return {
     ...(typeof matcher === 'string' ? { matcher } : {}),
     ...(typeof command === 'string' ? { command } : {}),
@@ -168,9 +171,10 @@ export function parseConfig(text: string, path: string, root: string): Config {
 export function loadConfig(path: string, root: string): Config {
   let text: string;
   try {
-    text = readFileSync(path, 'utf8');
+    text = String(readFileSync(path));
   } catch (error) {
-    throw new ConfigError(`cannot read ${path} (${(error as NodeJS.ErrnoException).code ?? 'error'})`);
+    // A failed read always carries its errno code.
+    throw new ConfigError(`cannot read ${path} (${String((error as NodeJS.ErrnoException).code)})`);
   }
   return parseConfig(text, path, root);
 }
@@ -189,7 +193,8 @@ export function settingsMatcher(config: Config, event: string): string | undefin
   const names = new Set<string>();
   for (const entry of config.hooks[event] ?? []) {
     const matcher = entry.matcher;
-    if (matcher === undefined || matcher === '' || matcher === '*' || !PLAIN.test(matcher)) return undefined;
+    // '' and '*', matching all, are not plain names either.
+    if (matcher === undefined || !PLAIN.test(matcher)) return undefined;
     for (const name of matcher.split('|')) names.add(name);
   }
   return [...names].sort().join('|');
@@ -203,10 +208,7 @@ export function isOn(value: string | undefined): boolean {
 /** The forbidden variables `env` sets, each with why. */
 export function forbiddenSet(config: Config, env: Readonly<Record<string, string | undefined>>): Array<readonly [string, string]> {
   // Only the environment's own string values: `toString` is a legal name an unset variable must not inherit.
-  return Object.entries(config.forbidEnv).filter(([name]) => {
-    const value = Object.hasOwn(env, name) ? env[name] : undefined;
-    return typeof value === 'string' && isOn(value);
-  });
+  return Object.entries(config.forbidEnv).filter(([name]) => isOn(Object.hasOwn(env, name) ? env[name] : undefined));
 }
 
 /** The longest timeout among an event's entries, in seconds. */

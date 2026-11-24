@@ -268,6 +268,8 @@ describe('discovery: what one module shows', () => {
     const scanned = scanSource(ts, 'x.ts', 'function S() {}\nexport async function writeRow() {}\nfunction readRow() {}\nconst other = 1;\nexport { readRow, other };\n');
     assert.deepEqual(scanned.exported, ['writeRow', 'readRow']);
     assert.deepEqual(scanSource(ts, 'x.ts', 'function S() {}\nfunction t() {}\n').exported, []);
+    // A modifier that is not `export` exports nothing.
+    assert.deepEqual(scanSource(ts, 'x.ts', 'async function writeRow() {}\ndeclare const readRow = () => 1;\n').exported, []);
   });
 
   it('pairs a producer and a consumer only by whole names, and nothing that is neither', () => {

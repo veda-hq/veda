@@ -910,6 +910,25 @@ describe('run bp-rules: flags and output', () => {
     assert.equal(stale.code, 1);
     assert.deepEqual(stale.err, ['', '❌ BP.md Summary is stale (1 mismatch(es)). Recompute it: mkdir -p .tmp && pariksha bp-rules --regenerate-index > .tmp/BP.md && mv .tmp/BP.md docs/BP.md']);
   });
+
+  it('dates --due by the clock when no --today is given', () => {
+    const root = tree(
+      {
+        'bp.json': '{"rules": "docs/bp", "index": "docs/BP.md", "idPrefix": "BP"}',
+        'docs/bp/security/BP-SEC-001.md': ['---', 'id: BP-SEC-001', 'title: Pin every action', 'category: security', 'severity: high', 'enforcement: guidance', 'verify_by: 2000-01-01', '---', '', 'Pin each action.', ''].join('\n'),
+        'docs/BP.md': '# Rules\n',
+      },
+      false,
+    );
+    const before = new Date().toISOString().slice(0, 10);
+    const r = cli(['bp-rules', '--due', '--config', 'bp.json', '--root', root]);
+    const after = new Date().toISOString().slice(0, 10);
+    assert.equal(r.code, 0);
+    assert.deepEqual(r.err, []);
+    const report = JSON.parse(r.out.join('\n')) as { today: string; staleCount: number };
+    assert.ok(report.today === before || report.today === after, `${report.today} is neither ${before} nor ${after}`);
+    assert.equal(report.staleCount, 1);
+  });
 });
 
 describe('run own-provenance: flags and exit codes', () => {

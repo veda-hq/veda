@@ -1,0 +1,28 @@
+# kavach's cosmic-ray mutants that no test can kill, for the Python mutation
+# gate (veda#558, .github/workflows/kavach-python-mutation.yml). Alok owns this
+# file (.github/CODEOWNERS): adding a row waits for his review.
+#
+# One row per mutant, tab-separated:
+# - file: a module of packages/kavach/python/kavach.
+# - line: the line's text, stripped; the row holds on every line that reads so.
+# - operator: cosmic-ray's operator name without core/.
+# - nth: which of that operator's mutants on the line, counted from the left.
+# - outcome: what the mutant gets, survived, timeout or capped.
+# - reason: why no test can tell it from the code.
+#
+# The gate runs a row's mutant whenever its line changes or the row is added
+# or changed, and fails when it no longer gets this outcome, so a row cannot
+# go stale. The first 12 rows are #351's equivalents.
+file	line	operator	nth	outcome	reason
+tool_guard.py	if mode == "refuse":	ReplaceComparisonOperator_Eq_LtE	1	survived	The only modes are "warn" and "refuse", and "warn" <= "refuse" is false.
+command_guard.py	if mode == "refuse":	ReplaceComparisonOperator_Eq_LtE	1	survived	The only modes are "warn" and "refuse", and "warn" <= "refuse" is false.
+tool_guard.py	if __name__ == "__main__":	ReplaceComparisonOperator_Eq_LtE	1	survived	Imported, the name is tool_guard or kavach.tool_guard, both after "__main__".
+command_guard.py	if __name__ == "__main__":	ReplaceComparisonOperator_Eq_LtE	1	survived	Imported, the name is command_guard or kavach.command_guard, both after "__main__".
+command_guard.py	if verdict("the git-command check", lambda: __import__("bash_guard"), "bash_guard.py", "bash_guard") == 2:	ReplaceComparisonOperator_Eq_GtE	1	survived	verdict returns only 0 or 2.
+command_guard.py	if verdict("the lesson rules", lambda: lesson_rules(loaded, contexts), "rules.py", "rules") == 2:	ReplaceComparisonOperator_Eq_GtE	1	survived	verdict returns only 0 or 2.
+command_guard.py	if code == 2:	ReplaceComparisonOperator_Eq_GtE	1	survived	code is verdict's, which is only 0 or 2.
+command_guard.py	getattr(error, "name", None) == module or getattr(error, "filename", None) == module	ReplaceComparisonOperator_Eq_Is	1	survived	Equal only because CPython interns both names.
+command_guard.py	getattr(error, "name", None) == module or getattr(error, "filename", None) == module	ReplaceComparisonOperator_Eq_Is	2	survived	Equal only because CPython interns both names.
+command_guard.py	if type(end.code) is int and end.code in (0, 2):	ReplaceComparisonOperator_Is_Eq	1	survived	type(x) == int and type(x) is int agree for every x.
+refusal_log.py	if type(end.code) is int and end.code == 2:	ReplaceComparisonOperator_Is_Eq	1	survived	type(x) == int and type(x) is int agree for every x.
+refusal_log.py	if type(result) is int and result == 2:	ReplaceComparisonOperator_Is_Eq	1	survived	type(x) == int and type(x) is int agree for every x.

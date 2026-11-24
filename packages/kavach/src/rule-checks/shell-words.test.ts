@@ -836,4 +836,38 @@ describe('steps', () => {
     const found = steps('if true; then rg -r secret /etc; fi', '/w', '/h').map((step) => step.args);
     assert.ok(found.some((args) => JSON.stringify(args) === JSON.stringify(['rg', '-r', 'secret', '/etc'])));
   });
+
+  it('takes only whole cd options as options', () => {
+    const dirs = (cd: string): (string | null)[] => steps(`${cd}; rg y`, '/w', '/h').map((step) => step.dir);
+    assert.deepEqual(dirs('cd x-L'), ['/w/x-L']);
+    assert.deepEqual(dirs('cd -Lfoo'), ['/w/-Lfoo']);
+    assert.deepEqual(dirs('cd -LP x'), ['/w/x']);
+    assert.deepEqual(dirs('cd a--'), ['/w/a--']);
+    assert.deepEqual(dirs('cd --x'), ['/w/--x']);
+  });
+});
+
+describe('simpleCommands at the edges of its reading', () => {
+  it('decodes an escaped blank in $\'…\'', () => {
+    assert.deepEqual(simpleCommands("echo $'a\\ b'"), { commands: [['echo', 'a b']], unread: '' });
+  });
+
+  it('reads a digit word before a heredoc as a word, and a digit-led word before a redirection too', () => {
+    assert.deepEqual(simpleCommands('cat 2<<EOF>out\nbody\nEOF').commands, [['cat', '2']]);
+    assert.deepEqual(simpleCommands('a 2x>y b').commands, [['a', '2x', 'b']]);
+  });
+
+  it('ends a heredoc at the end of the text only when it is the one body open', () => {
+    assert.deepEqual(simpleCommands('cat <<A <<B\nA'), { commands: [['cat']], unread: 'A' });
+    assert.deepEqual(simpleCommands('cat <<A\nA'), { commands: [['cat']], unread: '' });
+  });
+
+  it('reads no arithmetic through a newline or a backquote inside it', () => {
+    assert.deepEqual(simpleCommands('echo $((a\n))'), { commands: [['a'], ['echo', '$']], unread: '' });
+    assert.deepEqual(simpleCommands('echo $((a`))'), { commands: [], unread: 'echo $((a`))' });
+  });
+
+  it('keeps a ~ inside a word as written', () => {
+    assert.equal(resolvePath('a~b', '/w', '/h/u'), '/w/a~b');
+  });
 });

@@ -701,7 +701,7 @@ describe('isTrueMatcher', () => {
 describe('constInit', () => {
   it('follows only a single const binding to an identifier', () => {
     const inits = probe(
-      `const a = 1 as number; let b = 2; var c = 3; var c = 4; const { d } = o;
+      `const a = 1 as number; let b = 2; const c = 3; const c = 4; const { d } = o;
       declare const e: number; import f from 'f';
       function g(p: number) { use(p); }
       use(a); use(b); use(c); use(d); use(e); use(f); use(z);

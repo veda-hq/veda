@@ -264,12 +264,8 @@ const isTrueMatcher = found =>
 function inFinally(node) {
   let current = node;
   while (current.parent && !isFunction(current.parent)) {
-    if (
-      current.parent.type === 'TryStatement' &&
-      current.parent.finalizer === current
-    ) {
-      return true;
-    }
+    // Only a TryStatement has a `finalizer`.
+    if (current.parent.finalizer === current) return true;
     current = current.parent;
   }
   return false;

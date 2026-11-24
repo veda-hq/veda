@@ -7,7 +7,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -15,20 +15,25 @@ import { fileURLToPath } from 'node:url';
 
 import {
   addOpened,
+  appendRows,
   autofixCommand,
   callFor,
+  factsOf,
   fold,
   fromUrl,
   GET_STATUS,
   hasSetMonitor,
+  keepRaw,
   listDir,
   listFile,
   news,
   prUrls,
   readRows,
   respond,
+  runsInBackground,
   runsPrCreate,
   SET_MONITOR,
+  start,
   textOf,
   warning,
   BACKGROUND_NOTE,
@@ -652,5 +657,458 @@ describe('the script', () => {
     assert.equal(warn.status, 0);
     assert.match(context(warn.stdout), /veda-hq\/veda#90/);
     assert.equal(readFileSync(file, 'utf8').includes('"warned"'), true);
+  });
+});
+
+describe('the list file, closer', () => {
+  it('passes over an empty SARATHI_AUTOFIX_DIR or XDG_STATE_HOME', () => {
+    assert.equal(listDir({ SARATHI_AUTOFIX_DIR: '', XDG_STATE_HOME: '/state' }), '/state/sarathi/autofix');
+    assert.equal(listDir({ XDG_STATE_HOME: '' }), join(homedir(), '.local', 'state', 'sarathi', 'autofix'));
+  });
+
+  it('skips a row whose event is not a string', () => {
+    const { dir } = setup();
+    const path = `${dir}-rows.jsonl`;
+    writeFileSync(path, '{"pr":"a/b#2","event":3}\n{"pr":"a/b#3"}\n   \n{"pr":"a/b#4","url":"u","event":"on"}\n');
+    assert.deepEqual(readRows(path), [{ pr: 'a/b#4', url: 'u', event: 'on' }]);
+  });
+
+  it('keeps the URL a PR first had, and gives a row with none an empty one', () => {
+    const rows = [
+      { at: 't', pr: 'a/b#1', url: 'https://ghe.example.com/a/b/pull/1', event: 'opened', source: 'x' },
+      { at: 't', pr: 'a/b#1', url: 'https://github.com/a/b/pull/1', event: 'on', source: 'x' },
+      { at: 't', pr: 'c/d#2', event: 'opened', source: 'x' },
+    ] as unknown as Row[];
+    assert.deepEqual(fold(rows), [
+      { pr: 'a/b#1', url: 'https://ghe.example.com/a/b/pull/1', state: 'on' },
+      { pr: 'c/d#2', url: '', state: 'opened' },
+    ]);
+  });
+
+  it('keeps a reason only on a refused row that gives one as a string', () => {
+    const rows = [
+      { at: 't', pr: 'a/b#1', url: 'u1', event: 'refused', source: 'x' },
+      { at: 't', pr: 'a/b#2', url: 'u2', event: 'on', source: 'x', reason: 'not for on' },
+      { at: 't', pr: 'a/b#3', url: 'u3', event: 'refused', source: 'x', reason: 7 },
+      { at: 't', pr: 'a/b#4', url: 'u4', event: 'refused', source: 'x', reason: 'no' },
+    ] as unknown as Row[];
+    assert.deepEqual(fold(rows), [
+      { pr: 'a/b#1', url: 'u1', state: 'refused' },
+      { pr: 'a/b#2', url: 'u2', state: 'on' },
+      { pr: 'a/b#3', url: 'u3', state: 'refused' },
+      { pr: 'a/b#4', url: 'u4', state: 'refused', reason: 'no' },
+    ]);
+  });
+
+  it('folds spellings by lower case only: ß and SS stay two PRs', () => {
+    const rows: Row[] = [
+      { at: 't', pr: 'o/ß#1', url: 'u1', event: 'opened', source: 'x' },
+      { at: 't', pr: 'o/SS#1', url: 'u2', event: 'opened', source: 'x' },
+    ];
+    assert.deepEqual(fold(rows), [
+      { pr: 'o/ß#1', url: 'u1', state: 'opened' },
+      { pr: 'o/SS#1', url: 'u2', state: 'opened' },
+    ]);
+  });
+
+  it('writes nothing, not even the folder, for no rows', () => {
+    const { dir, file } = setup();
+    appendRows(file, []);
+    assert.equal(existsSync(dir), false);
+  });
+});
+
+describe('reading tool answers, closer', () => {
+  it('keeps the first spelling of a PR a text names twice', () => {
+    assert.deepEqual(prUrls('https://github.com/Veda-HQ/veda/pull/90 then https://github.com/veda-hq/veda/pull/90'), [
+      { pr: 'Veda-HQ/veda#90', url: 'https://github.com/Veda-HQ/veda/pull/90' },
+    ]);
+  });
+
+  it('takes only string output fields, the output field included', () => {
+    assert.equal(textOf({ stderr: 7, output: 'o' }), '\n\no');
+  });
+
+  it('takes only a string command as gh pr create', () => {
+    assert.equal(runsPrCreate(['gh pr create']), false);
+    assert.equal(runsPrCreate(undefined), false);
+    assert.equal(runsInBackground({}), false);
+    assert.equal(runsInBackground({ tool_input: { run_in_background: true, command: ['gh pr create'] } }), false);
+    assert.equal(runsInBackground({ tool_input: { run_in_background: true, command: 'gh pr create' } }), true);
+  });
+});
+
+describe('what one tool event says', () => {
+  it('reads a refusal with no space after the colon, its reason trimmed', () => {
+    assert.deepEqual(
+      factsOf({
+        hook_event_name: 'PostToolUseFailure',
+        tool_name: 'mcp__ccd_pr__set_monitor',
+        error: "Auto-fix can't be enabled for a/b#1:no space here  ",
+      }),
+      [{ pr: 'a/b#1', url: 'https://github.com/a/b/pull/1', event: 'refused', source: 'mcp__ccd_pr__set_monitor', reason: 'no space here' }],
+    );
+  });
+
+  it('reads "not bound to this session" with nothing after it, and with words after it', () => {
+    const failure = (error: string) => factsOf({ hook_event_name: 'PostToolUseFailure', tool_name: 'mcp__ccd_pr__set_monitor', error });
+    assert.deepEqual(failure('a/b#2 is not bound to this session'), [
+      { pr: 'a/b#2', url: 'https://github.com/a/b/pull/2', event: 'refused', source: 'mcp__ccd_pr__set_monitor', reason: 'is not bound to this session' },
+    ]);
+    assert.deepEqual(failure('a/b#3 is not bound to this session; ask the user.\nmore'), [
+      {
+        pr: 'a/b#3',
+        url: 'https://github.com/a/b/pull/3',
+        event: 'refused',
+        source: 'mcp__ccd_pr__set_monitor',
+        reason: 'is not bound to this session; ask the user.',
+      },
+    ]);
+  });
+
+  it('gives an on reply no reason, at the URL the call named on another host, in any case', () => {
+    const on = (input: unknown) =>
+      factsOf({ hook_event_name: 'PostToolUse', tool_name: 'mcp__ccd_pr__set_monitor', tool_input: input, tool_response: 'Auto-fix is on for veda-hq/veda#90.' });
+    assert.deepEqual(on({ url: 'https://ghe.example.com/Veda-HQ/veda/pull/90' }), [
+      { pr: 'veda-hq/veda#90', url: 'https://ghe.example.com/Veda-HQ/veda/pull/90', event: 'on', source: 'mcp__ccd_pr__set_monitor' },
+    ]);
+    assert.deepEqual(on(undefined), [{ pr: 'veda-hq/veda#90', url: 'https://github.com/veda-hq/veda/pull/90', event: 'on', source: 'mcp__ccd_pr__set_monitor' }]);
+    assert.deepEqual(on({ url: 'https://ghe.example.com/veda-hq/veda/pull/91' }), [
+      { pr: 'veda-hq/veda#90', url: 'https://github.com/veda-hq/veda/pull/90', event: 'on', source: 'mcp__ccd_pr__set_monitor' },
+    ]);
+    assert.deepEqual(on({ url: 'https://ghe.example.com/veda-hq/veda/pull/90' })[0]?.url, 'https://ghe.example.com/veda-hq/veda/pull/90');
+  });
+
+  it('says nothing for a set_monitor answer that names no PR, nor outside PostToolUse and PostToolUseFailure', () => {
+    assert.deepEqual(factsOf({ hook_event_name: 'PostToolUse', tool_name: 'mcp__ccd_pr__set_monitor', tool_response: 'Something else.' }), []);
+    for (const name of ['PreToolUse', 'Stop']) {
+      assert.deepEqual(factsOf({ hook_event_name: name, tool_name: 'mcp__ccd_pr__set_monitor', tool_response: 'Auto-fix is on for a/b#1' }), [], name);
+    }
+  });
+
+  it('records a foreground gh pr create from PostToolUse only, and nothing for other commands or none', () => {
+    const run = (name: string, command?: string) =>
+      factsOf({
+        hook_event_name: name,
+        tool_name: 'Bash',
+        ...(command === undefined ? {} : { tool_input: { command } }),
+        tool_response: { stdout: 'https://github.com/a/b/pull/1\n' },
+      });
+    assert.deepEqual(run('PostToolUse', 'gh pr create --fill'), [
+      { pr: 'a/b#1', url: 'https://github.com/a/b/pull/1', event: 'opened', source: 'gh pr create' },
+    ]);
+    assert.deepEqual(run('PostToolUse', 'gh pr view 1'), []);
+    assert.deepEqual(run('PostToolUse'), []);
+    assert.deepEqual(run('PostToolUseFailure', 'gh pr create --fill'), []);
+  });
+
+  it('reads a status only from get_status, for this session or one unnamed', () => {
+    const body = JSON.stringify({ pr: { url: 'https://github.com/a/b/pull/1', state: 'OPEN' }, monitor: { auto_fix: true } });
+    const read = (tool: string, input: unknown) => factsOf({ hook_event_name: 'PostToolUse', tool_name: tool, tool_input: input, tool_response: body });
+    const on = [{ pr: 'a/b#1', url: 'https://github.com/a/b/pull/1', event: 'on', source: 'mcp__ccd_pr__get_status' }];
+    assert.deepEqual(read('mcp__ccd_pr__get_status', {}), on);
+    assert.deepEqual(read('mcp__ccd_pr__get_status', { session_id: 'self' }), on);
+    assert.deepEqual(read('mcp__ccd_pr__get_status', { session_id: 'local_other' }), []);
+    assert.deepEqual(read('Read', {}), []);
+  });
+
+  it('reads a status’s primary PR only when it is an object with a PR URL, a state and a boolean auto_fix', () => {
+    const read = (body: unknown) =>
+      factsOf({ hook_event_name: 'PostToolUse', tool_name: 'mcp__ccd_pr__get_status', tool_response: typeof body === 'string' ? body : JSON.stringify(body) });
+    const url = 'https://github.com/a/b/pull/1';
+    for (const body of [
+      'null',
+      '[1]',
+      {},
+      { pr: { url: [url] }, monitor: { auto_fix: true } },
+      { pr: { url: 'https://example.com/nope', state: 'merged' } },
+      { pr: { url, state: 'open' } },
+      { pr: { url, state: 'open' }, monitor: { auto_fix: 'yes' } },
+    ]) {
+      assert.deepEqual(read(body), [], JSON.stringify(body));
+    }
+    assert.deepEqual(read({ pr: { url }, monitor: { auto_fix: true } }), [{ pr: 'a/b#1', url, event: 'on', source: 'mcp__ccd_pr__get_status' }]);
+    assert.deepEqual(read({ pr: { url, state: 'open' }, monitor: { auto_fix: false } }), [
+      { pr: 'a/b#1', url, event: 'off', source: 'mcp__ccd_pr__get_status' },
+    ]);
+    assert.deepEqual(read({ pr: { url, state: 'Merged' }, monitor: { auto_fix: true } }), [
+      { pr: 'a/b#1', url, event: 'closed', source: 'mcp__ccd_pr__get_status' },
+    ]);
+  });
+
+  it('closes only other bound PRs with a string repo, a number and an ended state', () => {
+    const facts = factsOf({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__ccd_pr__get_status',
+      tool_response: JSON.stringify({
+        otherBoundPrs: [
+          null,
+          { number: 5, state: 'merged' },
+          { repo: 'a/b', number: '5', state: 'merged' },
+          { repo: 'a/b', number: 7 },
+          { repo: 'a/b', number: 8, state: 'open' },
+          { repo: 'a/b', number: 6, state: 'Closed' },
+        ],
+      }),
+    });
+    assert.deepEqual(facts, [{ pr: 'a/b#6', url: 'https://github.com/a/b/pull/6', event: 'closed', source: 'mcp__ccd_pr__get_status' }]);
+  });
+});
+
+describe('what changes the list, closer', () => {
+  it('takes no opened for a PR on the list, and a refusal again only with a new reason', () => {
+    const fact = (event: 'opened' | 'on' | 'refused', reason?: string) => ({
+      pr: 'a/b#1',
+      url: 'u',
+      event,
+      source: 's',
+      ...(reason === undefined ? {} : { reason }),
+    });
+    assert.deepEqual(news([fact('opened')], [{ pr: 'A/B#1', url: 'u', state: 'on' }]), []);
+    assert.deepEqual(news([fact('on')], []), [fact('on')]);
+    assert.deepEqual(news([fact('refused', 'one')], [{ pr: 'a/b#1', url: 'u', state: 'refused', reason: 'one' }]), []);
+    assert.deepEqual(news([fact('refused', 'two')], [{ pr: 'a/b#1', url: 'u', state: 'refused', reason: 'one' }]), [fact('refused', 'two')]);
+    assert.deepEqual(news([fact('refused', 'r1'), fact('refused', 'r1'), fact('refused')], []), [fact('refused', 'r1'), fact('refused')]);
+  });
+});
+
+describe('seeing the set_monitor tool, closer', () => {
+  it('sees nothing through a file descriptor, a missing file, or an escaped name', () => {
+    const { transcript } = setup();
+    const fd = openSync(transcript, 'r');
+    try {
+      assert.equal(hasSetMonitor(fd), false);
+    } finally {
+      closeSync(fd);
+    }
+    assert.equal(hasSetMonitor(`${transcript}.missing`), false);
+    const escaped = `${transcript}.escaped`;
+    writeFileSync(escaped, '{"attachment":{"addedNames":["mcp\\u005f\\u005fccd_pr__set_monitor"]}}\n');
+    assert.equal(hasSetMonitor(escaped), false);
+  });
+
+  it('counts only an entry, an added name or a tool_use call that is the tool', () => {
+    const { transcript } = setup();
+    const seen = (line: unknown): boolean => {
+      writeFileSync(transcript, `${JSON.stringify(line)}\n`);
+      return hasSetMonitor(transcript);
+    };
+    const name = 'mcp__ccd_pr__set_monitor';
+    assert.equal(seen({ attachment: { entries: [{ name: 'other' }], note: name } }), false);
+    assert.equal(seen({ attachment: { entries: name } }), false);
+    assert.equal(seen({ attachment: { addedNames: name } }), false);
+    assert.equal(seen({ attachment: { entries: [null, { name }] } }), true);
+    assert.equal(seen({ message: { content: [{ type: 'text', name }] } }), false);
+    assert.equal(seen({ message: { content: [{ type: 'tool_use', name: 'other', input: { tool: name } }] } }), false);
+    assert.equal(seen({ message: { content: [null, { type: 'text', text: name }] } }), false);
+    assert.equal(seen({ message: { content: [{ type: 'text', text: name }, { type: 'tool_use', name }] } }), true);
+  });
+});
+
+describe('the warning’s words', () => {
+  it('words one PR at wrap_up, the default', () => {
+    assert.equal(
+      warning([{ pr: 'a/b#1', url: 'https://github.com/a/b/pull/1', state: 'opened' }]),
+      [
+        'sarathi: Auto-fix is not on for a pull request this session opened, so nothing wakes this session for its CI failures, merge conflicts or review comments. Make this call for each before you end the turn:',
+        '- a/b#1: mcp__ccd_pr__set_monitor {"url":"https://github.com/a/b/pull/1","auto_fix":true,"address_comments":true}',
+        'If the app refuses one, tell the user its reason; they can switch it on themselves from the PR bar. One that has merged or closed leaves this list at the next mcp__ccd_pr__get_status that shows it so. (Warn-only: nothing is blocked.)',
+      ].join('\n'),
+    );
+  });
+
+  it('words two PRs just opened, one of them switched off', () => {
+    assert.equal(
+      warning(
+        [
+          { pr: 'a/b#1', url: 'https://github.com/a/b/pull/1', state: 'opened' },
+          { pr: 'a/b#2', url: 'https://github.com/a/b/pull/2', state: 'off' },
+        ],
+        'opened',
+      ),
+      [
+        'sarathi: you just opened 2 pull requests, and Auto-fix is not on for them, so nothing will wake this session for its CI failures, merge conflicts or review comments. Make this call now for each:',
+        '- a/b#1: mcp__ccd_pr__set_monitor {"url":"https://github.com/a/b/pull/1","auto_fix":true,"address_comments":true}',
+        '- a/b#2 (switched off): mcp__ccd_pr__set_monitor {"url":"https://github.com/a/b/pull/2","auto_fix":true,"address_comments":true}',
+        'If the app refuses one, tell the user its reason; they can switch it on themselves from the PR bar. One that has merged or closed leaves this list at the next mcp__ccd_pr__get_status that shows it so. (Warn-only: nothing is blocked.)',
+      ].join('\n'),
+    );
+  });
+
+  it('words the background note, line by line', () => {
+    assert.equal(
+      BACKGROUND_NOTE,
+      [
+        'sarathi: this `gh pr create` runs in the background, so its output, the pull request URL, never reaches this hook: the PR is not on this session’s Auto-fix list, and the app will not trust it as this session’s PR, so Auto-fix cannot be switched on for it as it stands.',
+        'For this PR: once the background run ends, take the PR URL from its output (or from `gh pr view --json url`), write `<pr-created>URL</pr-created>` with it in your reply, and do not run `gh pr create` again: the PR exists.',
+        'Then call mcp__ccd_pr__set_monitor {"url":"<the PR URL>","auto_fix":true,"address_comments":true}.',
+        'Next time, run `gh pr create` in the foreground, so its URL reaches the list and the app. (Warn-only: nothing is blocked.)',
+      ].join('\n'),
+    );
+  });
+
+  it('warns at wrap_up about a PR switched off again, and logs the wrap_up as the source', () => {
+    const { deps, session, file, transcript } = setup();
+    const url = 'https://github.com/veda-hq/veda/pull/90';
+    const reply = (text: string) =>
+      JSON.stringify({ hook_event_name: 'PostToolUse', session_id: session, tool_name: 'mcp__ccd_pr__set_monitor', tool_input: { url }, tool_response: text });
+    respond(JSON.stringify({ hook_event_name: 'PostToolUse', session_id: session, tool_name: 'Bash', tool_input: { command: 'gh pr create' }, tool_response: { stdout: url } }), deps);
+    respond(reply('Auto-fix is on for veda-hq/veda#90.'), deps);
+    respond(reply('Auto-fix is off for veda-hq/veda#90.'), deps);
+    const answer = respond(
+      JSON.stringify({ hook_event_name: 'PostToolUse', session_id: session, transcript_path: transcript, tool_name: 'mcp__ccd_turn__wrap_up' }),
+      deps,
+    );
+    assert.equal(
+      context(answer),
+      [
+        'sarathi: Auto-fix is not on for a pull request this session opened, so nothing wakes this session for its CI failures, merge conflicts or review comments. Make this call for each before you end the turn:',
+        '- veda-hq/veda#90 (switched off): mcp__ccd_pr__set_monitor {"url":"https://github.com/veda-hq/veda/pull/90","auto_fix":true,"address_comments":true}',
+        'If the app refuses one, tell the user its reason; they can switch it on themselves from the PR bar. One that has merged or closed leaves this list at the next mcp__ccd_pr__get_status that shows it so. (Warn-only: nothing is blocked.)',
+      ].join('\n'),
+    );
+    assert.deepEqual(
+      readRows(file).map(row => [row.pr, row.event, row.source]),
+      [
+        ['veda-hq/veda#90', 'opened', 'gh pr create'],
+        ['veda-hq/veda#90', 'on', 'mcp__ccd_pr__set_monitor'],
+        ['veda-hq/veda#90', 'off', 'mcp__ccd_pr__set_monitor'],
+        ['veda-hq/veda#90', 'warned', 'mcp__ccd_turn__wrap_up'],
+      ],
+    );
+  });
+});
+
+describe('respond, closer', () => {
+  it('warns only on PostToolUse: a failed wrap_up, a failed background create, an off reply and a non-Bash tool say nothing', () => {
+    const { deps, session, file, transcript } = setup();
+    const url = 'https://github.com/veda-hq/veda/pull/90';
+    const event = (fields: Record<string, unknown>) => JSON.stringify({ session_id: session, transcript_path: transcript, ...fields });
+    const background = { command: 'gh pr create --fill', run_in_background: true };
+    respond(JSON.stringify({ hook_event_name: 'PostToolUse', session_id: session, tool_name: 'Bash', tool_input: { command: 'gh pr create' }, tool_response: { stdout: url } }), deps);
+    assert.equal(respond(event({ hook_event_name: 'PostToolUseFailure', tool_name: 'mcp__ccd_turn__wrap_up' }), deps), '');
+    assert.equal(respond(event({ hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: background, error: 'Exit code 1' }), deps), '');
+    assert.equal(respond(event({ hook_event_name: 'PostToolUse', tool_name: 'Task', tool_input: background }), deps), '');
+    respond(event({ hook_event_name: 'PostToolUse', tool_name: 'mcp__ccd_pr__set_monitor', tool_input: { url }, tool_response: 'Auto-fix is on for veda-hq/veda#90.' }), deps);
+    assert.equal(
+      respond(event({ hook_event_name: 'PostToolUse', tool_name: 'mcp__ccd_pr__set_monitor', tool_input: { url }, tool_response: 'Auto-fix is off for veda-hq/veda#90.' }), deps),
+      '',
+    );
+    assert.deepEqual(warned(file), []);
+  });
+
+  it('gives no background note for a session id that names no list', () => {
+    const { deps, transcript } = setup();
+    const event = { hook_event_name: 'PostToolUse', session_id: '../x', transcript_path: transcript, tool_name: 'Bash', tool_input: { command: 'gh pr create', run_in_background: true } };
+    assert.equal(respond(JSON.stringify(event), deps), '');
+    assert.notEqual(respond(JSON.stringify({ ...event, session_id: 'ok' }), deps), '');
+  });
+
+  it('keeps no copy of an app event outside PostToolUse and PostToolUseFailure', () => {
+    const { deps, session, dir } = setup();
+    respond(JSON.stringify({ hook_event_name: 'PreToolUse', session_id: session, tool_name: 'mcp__ccd_pr__set_monitor', tool_input: {} }), deps);
+    assert.equal(existsSync(dir), false);
+  });
+
+  it('takes no time for an event that says nothing about the list', () => {
+    const { deps, session } = setup();
+    let calls = 0;
+    const counted: Deps = { ...deps, now: () => ((calls += 1), deps.now()) };
+    respond(JSON.stringify({ hook_event_name: 'PostToolUse', session_id: session, tool_name: 'Read', tool_response: 'x' }), counted);
+    respond(JSON.stringify({ hook_event_name: 'PostToolUse', session_id: session, tool_name: 'Bash', tool_input: { command: 'ls' } }), counted);
+    assert.equal(calls, 0);
+  });
+});
+
+describe('keeping the app’s events, closer', () => {
+  it('copies only an event with a ccd_pr tool name, whole up to 16,384 characters, cut after', () => {
+    const { deps, dir, session } = setup();
+    const file = join(`${dir}.jsonl`, `${session}.jsonl`);
+    keepRaw({}, file, deps);
+    keepRaw({ tool_name: 5 }, file, deps);
+    keepRaw({ tool_name: 'Bash' }, file, deps);
+    assert.equal(existsSync(`${dir}.jsonl`), false);
+    const base = { tool_name: 'mcp__ccd_pr__get_status', tool_response: '' };
+    const exact = { ...base, tool_response: 'x'.repeat(16_384 - JSON.stringify(base).length) };
+    assert.equal(JSON.stringify(exact).length, 16_384);
+    const long = { ...exact, tool_response: `${exact.tool_response}y` };
+    keepRaw(exact, file, deps);
+    keepRaw(long, file, deps);
+    const kept = readFileSync(join(`${dir}.jsonl`, `${session}.raw.jsonl`), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line) as unknown);
+    assert.deepEqual(kept, [
+      { at: '2026-11-15T10:00:00.000Z', event: exact },
+      { at: '2026-11-15T10:00:00.000Z', event: `${JSON.stringify(long).slice(0, 16_384)}…` },
+    ]);
+  });
+});
+
+describe('sarathi autofix, closer', () => {
+  function cli(args: string[], env: Record<string, string | undefined>): { code: number; out: string; err: string } {
+    let out = '';
+    let err = '';
+    const code = autofixCommand(args, { env, now: () => new Date('2026-11-15T10:00:00Z'), out: text => (out += text), err: text => (err += text) });
+    return { code, out, err };
+  }
+  it('refuses with the usage: an unknown option, an empty flag value, a wrong count of arguments, an unknown verb', () => {
+    const usage = 'usage: sarathi autofix add <pr-url> [--session <id>] [--source <name>]\n       sarathi autofix list [--session <id>]\n';
+    const { deps, file } = setup();
+    const env = { ...deps.env, CLAUDE_CODE_SESSION_ID: 's' };
+    const url = 'https://github.com/veda-hq/veda/pull/90';
+    assert.deepEqual(cli(['add', url, '--force'], env), { code: 1, out: '', err: `sarathi autofix: unknown option --force\n${usage}` });
+    assert.deepEqual(cli(['add', url, '--session', ''], env), { code: 1, out: '', err: `sarathi autofix: --session needs a value\n${usage}` });
+    assert.deepEqual(cli(['add', url, '--source', ''], env), { code: 1, out: '', err: `sarathi autofix: --source needs a value\n${usage}` });
+    for (const args of [['add'], ['add', url, 'https://github.com/a/b/pull/1'], ['list', 'extra'], ['remove', url]]) {
+      assert.deepEqual(cli(args, env), { code: 1, out: '', err: usage }, args.join(' '));
+    }
+    assert.deepEqual(readRows(file.replace(/[^/]+$/, 's.jsonl')), []);
+  });
+
+  it('says where it put the PR, and what it could not use', () => {
+    const { deps, dir } = setup();
+    const url = 'https://github.com/veda-hq/veda/pull/90';
+    assert.deepEqual(cli(['add', '--session', 'other', url], deps.env), {
+      code: 0,
+      out: `sarathi autofix: veda-hq/veda#90 is on session other's list (${join(dir, 'other.jsonl')})\n`,
+      err: '',
+    });
+    assert.deepEqual(cli(['add', 'nope', '--session', 'other'], deps.env), {
+      code: 1,
+      out: '',
+      err: 'sarathi autofix: nope is not a pull request URL (https://<host>/<owner>/<repo>/pull/<N>)\n',
+    });
+    assert.deepEqual(cli(['add', url], deps.env), {
+      code: 1,
+      out: '',
+      err: 'sarathi autofix: no usable session id (pass --session, or run inside a Claude Code session)\n',
+    });
+  });
+});
+
+describe('the script, in process', () => {
+  it('answers only as the script node was given, reading the stream it is handed', { timeout: 15_000 }, async () => {
+    const { deps, session, file, transcript } = setup();
+    const hook = fileURLToPath(new URL('./autofix.ts', import.meta.url));
+    const hookUrl = new URL('./autofix.ts', import.meta.url).href;
+    const seen: string[] = [];
+    await start(undefined, hookUrl, ['{}'], text => seen.push(`undefined: ${text}`), deps);
+    await start('', hookUrl, ['{}'], text => seen.push(`empty: ${text}`), deps);
+    await start(fileURLToPath(import.meta.url), hookUrl, ['{}'], text => seen.push(`other: ${text}`), deps);
+    assert.deepEqual(seen, []);
+    const event = JSON.stringify({
+      hook_event_name: 'PostToolUse',
+      session_id: session,
+      transcript_path: transcript,
+      tool_name: 'Bash',
+      tool_input: { command: 'gh pr create' },
+      tool_response: { stdout: 'https://github.com/veda-hq/veda/pull/90\n' },
+    });
+    const answered: string[] = [];
+    await start(hook, hookUrl, [event.slice(0, 20), Buffer.from(event.slice(20))], text => answered.push(text), deps);
+    assert.equal(answered.length, 1);
+    assert.match(context(answered[0] ?? ''), /^sarathi: you just opened a pull request, and Auto-fix is not on for it/);
+    assert.deepEqual(states(file), [['veda-hq/veda#90', 'opened']]);
   });
 });

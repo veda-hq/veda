@@ -761,6 +761,9 @@ def baseline(copies: Copies, work: Path, names: list[str], timeout: float) -> tu
 class Verdict:
     refusals: list[str] = field(default_factory=list)
     uncovered: list[str] = field(default_factory=list)
+    # Each covered, executable changed line: where, its text, the tests
+    # recorded on it and the test modules whose import runs it.
+    lines: list[tuple[str, str, int, int]] = field(default_factory=list)
     mutants: list[Mutant] = field(default_factory=list)
     faults: list[str] = field(default_factory=list)
     timings: dict = field(default_factory=dict)
@@ -869,8 +872,14 @@ def run(base: str, work: Path, workers: int, pattern: str = "test_*.py") -> Verd
         source = read_module(module + ".py").splitlines()
         cover = recorded["modules"].get(module, {})
         for number in lines:
-            if statements.executable(number) and str(statements.first(number)) not in cover:
-                verdict.uncovered.append(f"{module}.py:{number} `{source[number - 1].strip()}`")
+            if not statements.executable(number):
+                continue
+            entry = cover.get(str(statements.first(number)))
+            text = source[number - 1].strip()
+            if entry is None:
+                verdict.uncovered.append(f"{module}.py:{number} `{text}`")
+            else:
+                verdict.lines.append((f"{module}.py:{number}", text, len(entry["tests"]), len(entry["imports"])))
 
     for mutant in chosen.values():
         mutant.tests = select(mutant.lines(), statements_of[mutant.module], recorded["modules"].get(mutant.module, {}), seconds)
@@ -930,6 +939,10 @@ def report(verdict: Verdict) -> str:
                          ("Refused", verdict.refusals)):
         if items:
             md += ["", f"### {title}", ""] + [f"- {item}" for item in items]
+    if verdict.lines:
+        md += ["", "### Changed lines the tests run", "", "| Line | Text | Tests on it | Test modules whose import runs it |",
+               "|---|---|---|---|"]
+        md += [f"| `{where}` | `{text[:80]}` | {tests} | {imports} |" for where, text, tests, imports in verdict.lines]
     if verdict.mutants:
         md += ["", "<details><summary>Every mutant</summary>", "", "| Mutant | Line | Expected | Outcome | Tests | Time |",
                "|---|---|---|---|---|---|"]

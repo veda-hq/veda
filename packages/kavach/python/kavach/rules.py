@@ -627,7 +627,7 @@ def commit_body_ref_line_length(call: Call) -> str | None:
         for line in lines:
             if line.startswith("#"):
                 continue  # a comment, which git strips
-            if len(line) > 100 and REFERENCE.search(line):
+            if len(line) > 100 and REFERENCE.search(line):  # commitlint's footer-max-line-length
                 return (
                     f"this commit message has a body line of {len(line)} characters holding "
                     f"`{REFERENCE.search(line).group(0)}`; commitlint reads such a line as a footer and fails "

@@ -61,6 +61,8 @@ const count = (field: string | undefined): number =>
  * under the new one.
  */
 export const sizeOf = (numstat: string, ignore: readonly string[]): Size => {
+  // One iterator, read both by the loop and inside it: a rename's two paths
+  // are taken from it below, so the loop resumes at the entry after them.
   const fields = numstat.split("\0").values();
   const files: { path: string; lines: number }[] = [];
   for (const entry of fields) {
@@ -68,7 +70,7 @@ export const sizeOf = (numstat: string, ignore: readonly string[]): Size => {
     const [added, deleted, inline] = entry.split("\t");
     let path = inline;
     if (!path) {
-      // A rename: the old path and the new one follow.
+      // A rename: the old path and the new one follow; skip the old, take the new.
       fields.next();
       path = fields.next().value ?? "";
     }

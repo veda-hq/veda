@@ -227,6 +227,17 @@ describe("trees", () => {
     assert.deepEqual(listedIn(at, "no-such-rev", []), new Set());
   });
 
+  it("reads a listing of more than 512 bytes whole", () => {
+    const { r, at } = committed();
+    const names = Array.from({ length: 40 }, (_, i) => `listed-file-number-${String(i).padStart(2, "0")}.md`);
+    for (const name of names) r.write(name, "x\n");
+    r.git("add", "-A");
+    assert.deepEqual(
+      listTree(at, ":").filter((path) => path.startsWith("listed-file-number-")),
+      names,
+    );
+  });
+
   it("reads a blob above 64 MiB asked on its own, as the batch would", () => {
     const { r, at } = committed();
     const big = `${"x".repeat(65 * 1024 * 1024)}\n`;

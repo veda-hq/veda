@@ -971,3 +971,673 @@ describe('guard removal flips each corrected case', () => {
   });
 });
 
+// Each case below pins one decision the rules make, as a plain test, so the
+// mutation gate sees it fail when that decision changes.
+
+describe('rule meta', () => {
+  it('no-swallowed-catch states its type, docs, schema and message', () => {
+    assert.deepEqual(errorHandlingRules['no-swallowed-catch'].meta, {
+      type: 'problem',
+      docs: {
+        description:
+          'A catch that neither rethrows nor rejects must say why it may fail open',
+      },
+      schema: [],
+      messages: {
+        swallowed:
+          'This catch swallows the error: nothing rethrows, rejects or exits non-zero. Rethrow it, or, if carrying on is correct, put `// fail-open: <reason>` at the top of the handler (ERR-01).',
+      },
+    });
+  });
+
+  it('safe-log states its type, docs, schema, defaults and messages', () => {
+    assert.deepEqual(errorHandlingRules['safe-log'].meta, {
+      type: 'problem',
+      docs: {
+        description:
+          'Injected loggers, and console calls on a catch path, go through safeLog/safeInvoke',
+      },
+      schema: [
+        {
+          type: 'object',
+          properties: {
+            helperModule: {
+              type: 'string',
+              minLength: 1,
+              description:
+                'The module the message tells the reader to import the helper from.',
+            },
+            helperSourcePattern: {
+              type: 'string',
+              minLength: 1,
+              description:
+                'A regular expression over import specifiers: an import of safeLog/safeInvoke from a matching module is the real wrapper.',
+            },
+          },
+          additionalProperties: false,
+        },
+      ],
+      defaultOptions: [
+        {
+          helperModule: 'your error-handling module',
+          helperSourcePattern: '^\\.{1,2}/(?:.*/)?error-handling$',
+        },
+      ],
+      messages: {
+        injected:
+          'A caller-supplied sink (`{{name}}`) can throw or reject, and that escapes the code meant to contain it. Call it through `safeLog(sink, ...args)` or `safeInvoke(() => ...)` from {{module}} (ERR-02, OBS-03).',
+        catchConsole:
+          '`console.{{name}}` on a catch path can throw and replace the error being handled. Use `safeInvoke(() => console.{{name}}(...))` from {{module}} (ERR-02).',
+      },
+    });
+  });
+
+  it('no-raw-error-string shares the helperModule option schema', () => {
+    assert.deepEqual(errorHandlingRules['no-raw-error-string'].meta.schema, [
+      {
+        type: 'object',
+        properties: {
+          helperModule: {
+            type: 'string',
+            minLength: 1,
+            description:
+              'The module the message tells the reader to import the helper from.',
+          },
+        },
+        additionalProperties: false,
+      },
+    ]);
+  });
+});
+
+describe('no-swallowed-catch decisions', () => {
+  const ids = (code: string) => messageIds('no-swallowed-catch', code);
+
+  it('takes an annotation with no space before fail-open', () => {
+    assert.deepEqual(ids('try { a(); } catch {//fail-open: cold start\n}'), []);
+  });
+
+  it('takes an annotation with no space after the colon', () => {
+    assert.deepEqual(ids('try { a(); } catch { // fail-open:cold\n}'), []);
+  });
+
+  it('refuses fail-open that is not at the start of the comment', () => {
+    assert.deepEqual(
+      ids('try { a(); } catch { // note fail-open: too late\n}'),
+      ['swallowed'],
+    );
+  });
+
+  it('refuses fail-open followed by blanks only', () => {
+    assert.deepEqual(ids('try { a(); } catch { /* fail-open:   */ }'), [
+      'swallowed',
+    ]);
+  });
+
+  it('inspects a function-expression .catch handler', () => {
+    assert.deepEqual(ids('p.catch(function () { return null; });'), [
+      'swallowed',
+    ]);
+  });
+
+  it('does not enter a function declared inside the handler', () => {
+    assert.deepEqual(
+      ids('try { a(); } catch (e) { function rethrow() { throw e; } }'),
+      ['swallowed'],
+    );
+  });
+
+  it('a private #catch method is not a promise catch', () => {
+    assert.deepEqual(
+      ids('class A { #catch() {} run() { this.#catch(() => null); } }'),
+      [],
+    );
+  });
+
+  it('.then is not a catch', () => {
+    assert.deepEqual(ids('p.then(() => null);'), []);
+  });
+
+  it('a Promise called without new has no executor', () => {
+    assert.deepEqual(
+      ids('Promise((resolve, reject) => { try { a(); } catch (e) { reject(e); } });'),
+      ['swallowed'],
+    );
+  });
+
+  it('another constructor has no promise executor', () => {
+    assert.deepEqual(
+      ids('new Deferred((resolve, reject) => { try { a(); } catch (e) { reject(e); } });'),
+      ['swallowed'],
+    );
+  });
+
+  it('only the first argument of new Promise is the executor', () => {
+    assert.deepEqual(
+      ids('new Promise(run, (resolve, reject) => { try { a(); } catch (e) { reject(e); } });'),
+      ['swallowed'],
+    );
+  });
+
+  it('a declared global reject is not an executor parameter', () => {
+    assert.deepEqual(
+      ids('/* global reject */ try { a(); } catch (e) { reject(e); }'),
+      ['swallowed'],
+    );
+  });
+
+  it('the second parameter of a plain function is not reject', () => {
+    assert.deepEqual(
+      ids('function f(resolve, reject) { try { a(); } catch (e) { reject(e); } }'),
+      ['swallowed'],
+    );
+  });
+
+  it("an executor's first parameter is resolve, whatever its name", () => {
+    assert.deepEqual(
+      ids('new Promise(reject => { try { a(); } catch (e) { reject(e); } });'),
+      ['swallowed'],
+    );
+  });
+
+  it('a declared fail() function inside the executor propagates', () => {
+    assert.deepEqual(
+      ids('new Promise((resolve, reject) => { function fail(e) { reject(e); } try { a(); } catch (e) { fail(e); } });'),
+      [],
+    );
+  });
+
+  it('a settle-once arrow wrapper inside the executor propagates', () => {
+    assert.deepEqual(
+      ids("new Promise((resolve, reject) => { let done = false; const fail = e => { if (!done) { done = true; reject(e); } }; socket.on('data', chunk => { try { resolve(JSON.parse(chunk)); } catch { fail(new Error('bad')); } }); });"),
+      [],
+    );
+  });
+
+  it('a wrapper that only logs inside the executor does not propagate', () => {
+    assert.deepEqual(
+      ids('new Promise((resolve, reject) => { function fail(e) { log.warn(e); } try { a(); } catch (e) { fail(e); } });'),
+      ['swallowed'],
+    );
+  });
+
+  it('an alias of reject is not a function wrapper', () => {
+    assert.deepEqual(
+      ids('new Promise((resolve, reject) => { const fail = reject; try { a(); } catch (e) { fail(e); } });'),
+      ['swallowed'],
+    );
+  });
+
+  it('the executor itself is not a wrapper declared inside it', () => {
+    assert.deepEqual(
+      ids('function outer() { new Promise(function settle(resolve, reject) { try { a(); } catch (e) { settle(e); } reject(1); }); }'),
+      ['swallowed'],
+    );
+  });
+
+  it('a throw is caught only by a try within the handler', () => {
+    assert.deepEqual(
+      ids('try { try { a(); } catch (e) { throw e; } } catch (e2) { /* fail-open: outer */ }'),
+      [],
+    );
+  });
+
+  it('a try with only finally takes no throw back', () => {
+    assert.deepEqual(
+      ids('try { a(); } catch (e) { try { throw e; } finally { done(); } }'),
+      [],
+    );
+  });
+
+  it('a throw from a nested catch clause is not taken back', () => {
+    assert.deepEqual(
+      ids('try { a(); } catch (e) { try { b(); } catch (e2) { throw e2; } }'),
+      [],
+    );
+  });
+
+  it('a returned Promise.reject alone propagates', () => {
+    assert.deepEqual(ids('p.catch(e => { return Promise.reject(e); });'), []);
+  });
+
+  it('an awaited Promise.reject alone propagates', () => {
+    assert.deepEqual(ids('p.catch(async e => { await Promise.reject(e); });'), []);
+  });
+
+  it("Promise.reject as the arrow's value propagates", () => {
+    assert.deepEqual(ids('p.catch(e => Promise.reject(e));'), []);
+  });
+
+  it('exit on another object is not process.exit', () => {
+    assert.deepEqual(ids('try { a(); } catch { worker.exit(1); }'), [
+      'swallowed',
+    ]);
+  });
+
+  it('a private #exit on process is not process.exit', () => {
+    assert.deepEqual(
+      ids('class P { #exit() {} run() { try { a(); } catch { process.#exit(1); } } }'),
+      ['swallowed'],
+    );
+  });
+
+  it('another process method is not process.exit', () => {
+    assert.deepEqual(ids('try { a(); } catch { process.kill(1); }'), [
+      'swallowed',
+    ]);
+  });
+
+  it('a non-zero process.exit propagates', () => {
+    assert.deepEqual(ids('try { a(); } catch (e) { process.exit(1); }'), []);
+  });
+
+  it('an assignment to anything but process.exitCode does not propagate', () => {
+    assert.deepEqual(ids('try { a(); } catch { failed = true; }'), [
+      'swallowed',
+    ]);
+  });
+
+  it('reading process.exitCode does not propagate', () => {
+    assert.deepEqual(
+      ids('try { a(); } catch { log(process.exitCode + 1); }'),
+      ['swallowed'],
+    );
+  });
+
+  it('a non-zero process.exitCode propagates', () => {
+    assert.deepEqual(ids('try { a(); } catch { process.exitCode = 2; }'), []);
+  });
+
+  it('takes an annotation between the dot and catch', () => {
+    assert.deepEqual(ids('p./* fail-open: anchor */catch(() => null);'), []);
+  });
+
+  it('takes an annotation that touches the first statement', () => {
+    assert.deepEqual(
+      ids('try { a(); } catch {/* fail-open: tight */cleanup();}'),
+      [],
+    );
+  });
+
+  it("takes an annotation before an arrow's expression body", () => {
+    assert.deepEqual(ids('p.catch(() => /* fail-open: optional */ null);'), []);
+  });
+});
+
+describe('safe-log decisions', () => {
+  const ids = (code: string) => messageIds('safe-log', code);
+
+  it('console in a function bound to a variable is off the catch path', () => {
+    assert.deepEqual(ids("const report = () => console.error('x');"), []);
+  });
+
+  it('a name that only ends in log is not a sink', () => {
+    assert.deepEqual(ids("function f(deps) { deps.catalog('x'); }"), []);
+  });
+
+  it('a name that only starts with log is not a sink', () => {
+    assert.deepEqual(ids("function f(deps) { deps.logger('x'); }"), []);
+  });
+
+  it('a name that only ends in write is not a generic sink', () => {
+    assert.deepEqual(ids("function f(deps) { deps.rewrite('x'); }"), []);
+  });
+
+  it('a name that only starts with write is not a generic sink', () => {
+    assert.deepEqual(ids("function f(deps) { deps.writeFile('x'); }"), []);
+  });
+
+  it('an optional name with on inside it is not a callback', () => {
+    assert.deepEqual(ids('function f(deps) { deps.buttonClick?.(); }'), []);
+  });
+
+  it('an optional on-name with other characters is not a callback', () => {
+    assert.deepEqual(ids('function f(deps) { deps.onDone_now?.(); }'), []);
+  });
+
+  it('a container name must match whole: mydeps', () => {
+    assert.deepEqual(ids("function f(mydeps) { mydeps.write('x'); }"), []);
+  });
+
+  it('a container name must match whole: depsList', () => {
+    assert.deepEqual(ids("function f(depsList) { depsList.write('x'); }"), []);
+  });
+
+  it('a single sink is a container', () => {
+    assert.deepEqual(ids("function f(sink) { sink.write('x'); }"), [
+      'injected',
+    ]);
+  });
+
+  it('a sink anded with another value is not the sink', () => {
+    assert.deepEqual(
+      ids("function f(state) { const runLog = state.runLog && state.enabled; runLog('x'); }"),
+      [],
+    );
+  });
+
+  it('a sink with an || fallback is still the sink', () => {
+    assert.deepEqual(
+      ids("function f(state) { const runLog = state.runLog || (() => {}); runLog('x'); }"),
+      ['injected'],
+    );
+  });
+
+  it('a sink with a ?? fallback is still the sink', () => {
+    assert.deepEqual(
+      ids("function f(state) { const runLog = state.runLog ?? (() => {}); runLog('x'); }"),
+      ['injected'],
+    );
+  });
+
+  it('a non-null asserted sink is still the sink', () => {
+    assert.deepEqual(
+      ids("function f(state) { const runLog = state.runLog!; runLog('x'); }"),
+      ['injected'],
+    );
+  });
+
+  it('a cast sink is still the sink', () => {
+    assert.deepEqual(
+      ids("function f(state) { const runLog = state.runLog as (s: string) => void; runLog('x'); }"),
+      ['injected'],
+    );
+  });
+
+  it('an optionally read sink is still the sink', () => {
+    assert.deepEqual(
+      ids("function f(state) { const runLog = state?.runLog; runLog('x'); }"),
+      ['injected'],
+    );
+  });
+
+  it('a declared global sink name is not injected', () => {
+    assert.deepEqual(ids("/* global runLog */ runLog('x');"), []);
+  });
+
+  it('a parameter redeclared by var is still a parameter', () => {
+    assert.deepEqual(ids("function f(log) { var log; log('x'); }"), [
+      'injected',
+    ]);
+  });
+
+  it('a container on this is injected', () => {
+    assert.deepEqual(ids("class S { run() { this.deps.log('x'); } }"), [
+      'injected',
+    ]);
+  });
+
+  it('a sink copied from a container on this is injected', () => {
+    assert.deepEqual(
+      ids("function f() { const runLog = this.runLog; runLog('x'); }"),
+      ['injected'],
+    );
+  });
+
+  it('this.log outside any class is injected', () => {
+    assert.deepEqual(ids("function f() { this.log('x'); }"), ['injected']);
+  });
+
+  it('a class field that is not a function is not its own logger', () => {
+    assert.deepEqual(ids("class S { log = 1; run() { this.log('x'); } }"), [
+      'injected',
+    ]);
+  });
+
+  it('a function-valued class field is its own logger', () => {
+    assert.deepEqual(
+      ids("class S { log = (line: string) => {}; run() { this.log('x'); } }"),
+      [],
+    );
+  });
+
+  it('an accessor field is not a method or a function field', () => {
+    assert.deepEqual(
+      ids("class S { accessor log = (line: string) => {}; run() { this.log('x'); } }"),
+      ['injected'],
+    );
+  });
+
+  it('a private #log method is not this.log', () => {
+    assert.deepEqual(ids("class S { #log() {} run() { this.log('x'); } }"), [
+      'injected',
+    ]);
+  });
+
+  it('a computed method name is not this.log', () => {
+    assert.deepEqual(
+      ids("class S { ['log']() {} run() { this.log('x'); } }"),
+      ['injected'],
+    );
+  });
+
+  it('a sink copied from a call result is not injected', () => {
+    assert.deepEqual(
+      ids("function f() { const runLog = make(); runLog('x'); }"),
+      [],
+    );
+  });
+
+  it('a called call result is not a sink', () => {
+    assert.deepEqual(ids("function f() { getLogger()('x'); }"), []);
+  });
+
+  it('a computed member named by a variable is not a sink', () => {
+    assert.deepEqual(ids("function f(deps, log) { deps[log]('x'); }"), []);
+  });
+
+  it('an ordinary method on a container is not a sink', () => {
+    assert.deepEqual(ids("function f(deps) { deps.save('x'); }"), []);
+  });
+
+  it('a computed container is not a container', () => {
+    assert.deepEqual(ids("function f(ctx, deps) { ctx[deps].log('x'); }"), []);
+  });
+
+  it('a private #deps field is not a container', () => {
+    assert.deepEqual(
+      ids("class S { #deps = {}; run() { this.#deps.log('x'); } }"),
+      [],
+    );
+  });
+
+  it('a loop body is not a catch body', () => {
+    assert.deepEqual(ids("while (ready) console.error('x');"), []);
+  });
+
+  it('a catch parameter default is not the catch body', () => {
+    assert.deepEqual(
+      ids("try { a(); } catch ({ message = console.error('x') }) { throw message; }"),
+      [],
+    );
+  });
+
+  it('a negated sink call is read, not discarded', () => {
+    assert.deepEqual(ids("function f(deps) { !deps.log('x'); }"), []);
+  });
+
+  it('an awaited optional sink call in a try is contained', () => {
+    assert.deepEqual(
+      ids("async function f(deps) { try { await deps.log?.('x'); } catch { /* */ } }"),
+      [],
+    );
+  });
+
+  it('a returned optional sink call in safeInvoke is contained', () => {
+    assert.deepEqual(
+      ids("import { safeInvoke } from '@acme/shared'; function f(deps) { safeInvoke(() => { return deps.log?.('x'); }); }"),
+      [],
+    );
+  });
+
+  it('an awaited sink call in an async safeInvoke is contained', () => {
+    assert.deepEqual(
+      ids("import { safeInvoke } from '@acme/shared'; function f(deps) { safeInvoke(async () => { await deps.log('x'); }); }"),
+      [],
+    );
+  });
+
+  it("a sink as safeInvoke's arrow value is contained", () => {
+    assert.deepEqual(
+      ids("import { safeInvoke } from '@acme/shared'; function f(deps) { safeInvoke(() => deps.log('x')); }"),
+      [],
+    );
+  });
+
+  it('a declared global safeInvoke is not the wrapper', () => {
+    assert.deepEqual(
+      ids("/* global safeInvoke */ function f(deps) { safeInvoke(() => deps.log('x')); }"),
+      ['injected'],
+    );
+  });
+
+  it('a default import is not the wrapper', () => {
+    assert.deepEqual(
+      ids("import safeInvoke from '@acme/shared'; function f(deps) { safeInvoke(() => deps.log('x')); }"),
+      ['injected'],
+    );
+  });
+
+  it('an import from an unrelated module is not the wrapper', () => {
+    assert.deepEqual(
+      ids("import { safeInvoke } from './run-now'; function f(deps) { safeInvoke(() => deps.log('x')); }"),
+      ['injected'],
+    );
+  });
+
+  it('a string-named import of the wrapper is the wrapper', () => {
+    assert.deepEqual(
+      ids("import { 'safeInvoke' as contain } from '@acme/shared'; function f(deps) { contain(() => deps.log('x')); }"),
+      [],
+    );
+  });
+
+  it('a try in the catch handler of a nested try does not contain console', () => {
+    assert.deepEqual(
+      ids('try { a(); } catch (e) { try { b(); } catch { console.error(e); } }'),
+      ['catchConsole'],
+    );
+  });
+
+  it('an optional on-callback counts in a file that only contains .tsx', () => {
+    const code = 'function f(deps) { deps.onClose?.(); }';
+    const config = { 'shuddhi/safe-log': ['error', HELPERS] };
+    assert.deepEqual(
+      lint(code, config, 'c.tsx.ts').map(message => message.messageId),
+      ['injected'],
+    );
+    assert.deepEqual(
+      lint(code, config, 'c.tsx').map(message => message.messageId),
+      [],
+    );
+  });
+
+  it('a parenthesized optional member called is the sink', () => {
+    assert.deepEqual(ids("function f(deps) { (deps?.log)('x'); }"), [
+      'injected',
+    ]);
+  });
+
+  it('a private #error on console is not console.error', () => {
+    assert.deepEqual(
+      ids("class A { #error() {} run() { try { a(); } catch { console.#error('x'); } } }"),
+      [],
+    );
+  });
+
+  it('process.once, addListener and prependListener handlers are catch paths', () => {
+    assert.deepEqual(
+      ids("process.once('uncaughtException', e => { console.error(e); });"),
+      ['catchConsole'],
+    );
+    assert.deepEqual(
+      ids("process.addListener('uncaughtException', e => { console.error(e); });"),
+      ['catchConsole'],
+    );
+    assert.deepEqual(
+      ids("process.prependListener('unhandledRejection', e => { console.error(e); });"),
+      ['catchConsole'],
+    );
+  });
+
+  it('another emitter is not process', () => {
+    assert.deepEqual(
+      ids("emitter.on('uncaughtException', e => { console.error(e); });"),
+      [],
+    );
+  });
+
+  it('a private #on on process is not process.on', () => {
+    assert.deepEqual(
+      ids("class A { #on() {} run() { process.#on('uncaughtException', e => { console.error(e); }); } }"),
+      [],
+    );
+  });
+});
+
+describe('no-raw-error-string decisions', () => {
+  const ids = (code: string) => messageIds('no-raw-error-string', code);
+
+  it('a process.on call with no arguments is no handler', () => {
+    assert.deepEqual(ids('process.on();'), []);
+  });
+
+  it('a non-null asserted caught value in a template', () => {
+    assert.deepEqual(ids('try { a(); } catch (e) { log(`${e!}`); }'), ['raw']);
+  });
+
+  it('a type-asserted caught value in a template', () => {
+    assert.deepEqual(ids('try { a(); } catch (e) { log(`${<Error>e}`); }'), [
+      'raw',
+    ]);
+  });
+
+  it('a cast caught value in a template', () => {
+    assert.deepEqual(ids('try { a(); } catch (e) { log(`${e as Error}`); }'), [
+      'raw',
+    ]);
+  });
+
+  it('an optionally read message in a template', () => {
+    assert.deepEqual(
+      ids('try { a(); } catch (e: any) { log(`${e?.message}`); }'),
+      ['raw'],
+    );
+  });
+
+  it('a caught value with a ?? fallback in a template', () => {
+    assert.deepEqual(
+      ids("try { a(); } catch (e) { log(`${e ?? 'none'}`); }"),
+      ['raw'],
+    );
+  });
+
+  it('a caught value as a conditional test is not text', () => {
+    assert.deepEqual(
+      ids("try { a(); } catch (e) { log(`${e ? 'failed' : 'ok'}`); }"),
+      [],
+    );
+  });
+
+  it('a caught value as a conditional branch is text', () => {
+    assert.deepEqual(
+      ids("try { a(); } catch (e) { log(`${ok ? 'fine' : e}`); }"),
+      ['raw'],
+    );
+  });
+
+  it('a caught value plus a number is not text', () => {
+    assert.deepEqual(ids('try { a(); } catch (e) { log(e + 1); }'), []);
+  });
+
+  it('a caught value plus a template is text', () => {
+    assert.deepEqual(ids('try { a(); } catch (e) { log(e + `!`); }'), ['raw']);
+  });
+
+  it('a string plus a caught value is text', () => {
+    assert.deepEqual(ids("try { a(); } catch (e) { log('x: ' + e); }"), [
+      'raw',
+    ]);
+  });
+});
+

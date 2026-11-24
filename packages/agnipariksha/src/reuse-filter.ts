@@ -21,19 +21,19 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 /** The reuse file with only reusable results, or null if Stryker could not have written it. */
 export function forReuse(text: string): string | null {
+  let raw: unknown;
   try {
-    const raw: unknown = JSON.parse(text);
-    if (!isRecord(raw) || !isRecord(raw.files)) return null;
-    const files: Record<string, unknown> = {};
-    for (const [path, entry] of Object.entries(raw.files)) {
-      if (!isRecord(entry) || !Array.isArray(entry.mutants)) return null;
-      files[path] = { ...entry, mutants: (entry.mutants as StoredMutant[]).filter(reusable) };
-    }
-    return JSON.stringify({ ...raw, files });
+    raw = JSON.parse(text);
   } catch {
-    // fail-open: a reuse file that is not JSON is dropped, and the lane runs in full.
-    return null;
+    // fail-open: a reuse file that is not JSON is dropped, and the lane runs in full: `raw` stays undefined, which the check below refuses.
   }
+  if (!isRecord(raw) || !isRecord(raw.files)) return null;
+  const files: Record<string, unknown> = {};
+  for (const [path, entry] of Object.entries(raw.files)) {
+    if (!isRecord(entry) || !Array.isArray(entry.mutants)) return null;
+    files[path] = { ...entry, mutants: (entry.mutants as StoredMutant[]).filter(reusable) };
+  }
+  return JSON.stringify({ ...raw, files });
 }
 
 /** A target may carry a mutation range; the report keys files without it. */

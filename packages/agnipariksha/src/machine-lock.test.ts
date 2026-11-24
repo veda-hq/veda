@@ -8,8 +8,11 @@ function fakeLock(alive: (pid: number) => boolean, initial?: string, onSleep?: (
   if (initial !== undefined) files.set('/lock', initial);
   const logs: string[] = [];
   let clock = 0;
+  let creates = 0;
   const deps: LockDeps = {
     create: (path, text) => {
+      // A mutant that spins without polling fails here instead of hanging the run.
+      if ((creates += 1) > 1000) throw new Error('tried to create the lock over 1000 times');
       if (files.has(path)) return false;
       files.set(path, text);
       return true;
@@ -21,7 +24,8 @@ function fakeLock(alive: (pid: number) => boolean, initial?: string, onSleep?: (
     alive,
     now: () => clock,
     sleep: async (ms) => {
-      clock += ms;
+      // A mutant that never stops polling fails here at once instead of hanging the run.
+      if ((clock += ms) > 24 * 60 * 60_000) throw new Error('polled for over a day');
       onSleep?.(files);
     },
     log: (line) => logs.push(line),

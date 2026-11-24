@@ -62,9 +62,17 @@ test('a workspace key tells test files, configs and helpers from look-alikes', (
     'w/src/tsconfig.json',
     'libs/b/src/x.ts',
     'web/test/x.ts',
+    'w/src/fixture/a.ts',
+    'w/src/fixtures/a.ts',
+    'w/src/__mocks__/a.ts',
+    'w/contest/a.ts',
+    'w/src/latest/a.ts',
   ];
   assert.deepEqual(keyInputPaths('w', 'stryker.config.mjs', paths, policy), [
     'libs/b/src/x.ts',
+    'w/src/__mocks__/a.ts',
+    'w/src/fixture/a.ts',
+    'w/src/fixtures/a.ts',
     'w/stryker.config.mjs',
     'w/test/x.test.ts.bak',
     'w/vite.config.mts',

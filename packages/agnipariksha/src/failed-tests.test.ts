@@ -58,13 +58,13 @@ test('a record ends only at a line that starts with a log prefix, any pid long',
   const reader = failedTestReader();
   for (const line of [
     'One or more tests failed in the initial test run:',
-    '\tat 09:00:00 (1) ERROR, a name that mentions a log line',
+    '\tat 09:00:00 (1) ERROR a name that mentions a log line',
     '09:00:00 (12345) INFO Stryker the record ends',
     '\tnot a name',
   ]) {
     reader.read(line);
   }
-  assert.deepEqual(reader.names(), ['at 09:00:00 (1) ERROR, a name that mentions a log line']);
+  assert.deepEqual(reader.names(), ['at 09:00:00 (1) ERROR a name that mentions a log line']);
 });
 
 test('only a trailing carriage return is dropped, and a name is one line', () => {

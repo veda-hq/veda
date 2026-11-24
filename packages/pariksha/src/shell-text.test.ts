@@ -53,6 +53,10 @@ describe('stripComment', () => {
     assert.equal(stripComment("echo 'a # b' # c"), "echo 'a # b'");
     assert.equal(stripComment('echo "a \\" # b" # c'), 'echo "a \\" # b"');
   });
+
+  it('opens a quoted $( at its $, so the string is open again after its )', () => {
+    assert.equal(stripComment('X="$(f) # c"'), 'X="$(f) # c"');
+  });
 });
 
 describe('maskQuoted', () => {
@@ -75,6 +79,21 @@ describe('maskQuoted', () => {
     assert.equal(maskQuoted('echo \\. nvm.sh'), 'echo \\. nvm.sh');
     assert.equal(maskQuoted('echo \\'), 'echo \\');
     assert.equal(maskQuoted('a\\\\'), 'a\\\\');
+    // Each escape is judged by the character right after it, not a later one.
+    assert.equal(maskQuoted('echo \\. x\\;'), 'echo \\. x  ');
+  });
+
+  it('closes a substitution after the subshell inside it, and masks what follows', () => {
+    assert.equal(maskQuoted('"$(a (b) c) d"'), '"$(a (b) c)  "');
+  });
+
+  it("reads each case arm's ) as a pattern's end, whatever the spacing and the words", () => {
+    assert.equal(maskQuoted('"$(case $x in ab) y;;b) z;; esac) w"'), '"$(case $x in ab) y;;b) z;; esac)  "');
+    assert.equal(maskQuoted('"$(case $x in a | b) y;; esac) w"'), '"$(case $x in a | b) y;; esac)  "');
+    assert.equal(maskQuoted('"$(case $x in a|bc) y;; esac) w"'), '"$(case $x in a|bc) y;; esac)  "');
+    assert.equal(maskQuoted('"$(case $x in a ) y;; esac) w"'), '"$(case $x in a ) y;; esac)  "');
+    // A subshell in an arm closes its own (, not a pattern.
+    assert.equal(maskQuoted('"$(case $x in a) (b) ;; esac) z"'), '"$(case $x in a) (b) ;; esac)  "');
   });
 
   it('keeps a $(...) inside double quotes as code, masking its strings', () => {
@@ -136,6 +155,12 @@ describe('messageView', () => {
     assert.equal(messageView('echo hi 2>/dev/null'), 'echo    2>/dev/null');
     assert.equal(messageView('echo a &> log more'), 'echo   &> log     ');
     assert.equal(messageView('echo a > f;node x'), 'echo   > f;node x');
+  });
+
+  it('keeps a duplicated fd and a quoted target with a blank in it, and blanks the words after', () => {
+    assert.equal(messageView('echo hi 2>&1 more'), 'echo    2>&1     ');
+    assert.equal(messageView('echo x > "a b" c'), 'echo   > "a b"  ');
+    assert.equal(messageView("echo x > 'a b' c"), "echo   > 'a b'  ");
   });
 
   it('ends a message at & and keeps what follows', () => {
@@ -377,6 +402,38 @@ describe('codeLines', () => {
       assert.deepEqual(codeLines('X="$(cat <<EOF; echo \'a \\\nb\'\nnode\nEOF\n)"\nnpm'), [
         { line: 1, code: 'X="$(cat <<EOF; echo \'a \\\nb\'\n)"' },
         { line: 6, code: 'npm' },
+      ]);
+    });
+
+    it('opens none when an operator follows <<, so the lines after are still judged', () => {
+      assert.deepEqual(codeLines('cat << >out\nnode'), [
+        { line: 1, code: 'cat << >out' },
+        { line: 2, code: 'node' },
+      ]);
+    });
+
+    it('ends a double-quoted delimiter with a blank in it on that text', () => {
+      assert.deepEqual(codeLines('cat <<"E O"\nnode\nE O\nnpm'), [
+        { line: 1, code: 'cat <<"E O"' },
+        { line: 4, code: 'npm' },
+      ]);
+    });
+
+    it('strips leading tabs only for <<-', () => {
+      assert.deepEqual(codeLines('cat <<EOF\n\tEOF\nEOF\nnode'), [
+        { line: 1, code: 'cat <<EOF' },
+        { line: 4, code: 'node' },
+      ]);
+    });
+
+    it('keeps a body substitution whole past the quotes and escapes inside it', () => {
+      assert.deepEqual(codeLines('cat <<EOF\n$(echo "a\\"b" \')\' \\) x)\nEOF'), [
+        { line: 1, code: 'cat <<EOF' },
+        { line: 2, code: '$(echo "a\\"b" \')\' \\) x)' },
+      ]);
+      assert.deepEqual(codeLines('cat <<EOF\n`echo "a b" \'c\' \\` x`\nEOF'), [
+        { line: 1, code: 'cat <<EOF' },
+        { line: 2, code: '`echo "a b" \'c\' \\` x`' },
       ]);
     });
 

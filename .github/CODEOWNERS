@@ -1,0 +1,25 @@
+# Who owns these files, for the record. Nothing here holds a merge: main's
+# ruleset does not require review from code owners, so GitHub only requests
+# the owner's review, and nothing waits for it (#572). niyam's shared Guard
+# holds each path instead, through .github/niyam.json's "guard" and the
+# .github/ floor: a change passes only when its approved slice names the
+# file under **Guards:**.
+/.github/CODEOWNERS                 @AlokBansal8
+
+# The release rules (README.md, "Releasing").
+/.github/workflows/release.yml      @AlokBansal8
+/.github/workflows/version-rule.yml @AlokBansal8
+/scripts/version-rule.mjs           @AlokBansal8
+/README.md                          @AlokBansal8
+
+# What the mutation gate judges: its lanes, their Stryker configs, and the
+# script that plans the lanes with work.
+/agnipariksha.json                  @AlokBansal8
+/stryker/                           @AlokBansal8
+/packages/*/stryker.config.mjs      @AlokBansal8
+/scripts/mutation-lanes.mjs         @AlokBansal8
+
+# What veda's lint enforces and what it forgives: the rules, and the findings
+# suppressed when they were turned on.
+/eslint.config.js                   @AlokBansal8
+/eslint-suppressions.json           @AlokBansal8

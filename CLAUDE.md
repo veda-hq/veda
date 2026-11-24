@@ -152,9 +152,12 @@ If the allowance runs out, the check reports neutral and the pull request
 goes unreviewed: tell Alok rather than assume that is fine.
 `docs/lessons/review-bots.md` has the rest.
 
-No pull request waits for Alok's review: the ruleset requires none, and
-veda has no CODEOWNERS. His approval of the slice, state or work item is
-the review, and niyam's shared Guard holds a pull request to it. Guard
+No pull request waits for Alok's review: the ruleset requires none.
+`.github/CODEOWNERS` names him as the owner of the release, mutation and
+lint rules, for the record only: GitHub requests his review on a pull
+request that touches them, and nothing waits for it. His approval of the
+slice, state or work item is the review, and niyam's shared Guard holds a
+pull request to it. Guard
 runs on `pull_request_target`, from main's copy and with main's
 `.github/niyam.json`, so the pull request's own copy cannot weaken it. It
 passes a change to a guard file only when the approved slice names that

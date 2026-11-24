@@ -227,6 +227,43 @@ describe("dvara", () => {
     assert.deepEqual([out, err], [[], []]);
   });
 
+  it("refuses review-size's bad arguments with the reason and the usage", async () => {
+    const { io, out, err } = capture();
+    assert.equal(await run(["review-size"], { io, cwd: "/", env: {} }), 2);
+    assert.deepEqual(out, []);
+    assert.deepEqual(err, [
+      "dvara review-size: give --cap",
+      "usage: dvara review-size --cap N [--ignore GLOB]… [--base REF]",
+    ]);
+  });
+
+  it("says review-size was not checked when no base ref resolves in the repository", async () => {
+    const r = repo("dvara-cli-size-");
+    r.write("a.md", "a\n");
+    r.commit("one");
+    const { io, out, err } = capture();
+    assert.equal(await run(["review-size", "--cap", "10"], { io, cwd: r.root, env: r.env }), 0);
+    assert.deepEqual(out, []);
+    assert.deepEqual(err, ["⚠ review-size: no base ref resolves, so the branch's size was not checked."]);
+  });
+
+  it("warns when the branch is over its cap, against the base it is given", async () => {
+    const r = repo("dvara-cli-size-");
+    r.write("a.md", "a\n");
+    r.commit("one");
+    const base = r.git("rev-parse", "HEAD").trim();
+    r.write("big.md", "1\n2\n3\n");
+    r.commit("two");
+    const { io, out, err } = capture();
+    assert.equal(await run(["review-size", "--cap", "2", "--base", base], { io, cwd: r.root, env: r.env }), 0);
+    assert.deepEqual(out, []);
+    assert.deepEqual(err, [
+      `⚠ review-size: this branch changes 3 lines against ${base} outside the reviewer's ignore globs, over its cap of 2: the reviewer will skip the pull request, and a merge rule that needs its pass can never be met.`,
+      "  Split it before the pull request opens, by workspace: rebuild each branch from this tree by path, and check `git diff --stat <this branch> HEAD -- <workspace>` is empty for each. Largest files:",
+      "    3 big.md",
+    ]);
+  });
+
   it("says review-size was not checked, with the first line of why", async () => {
     const root = scratch("dvara-cli-");
     writeFileSync(join(root, ".dvara.json"), JSON.stringify({ "first\nsecond": 1 }));

@@ -326,6 +326,33 @@ class Cap(unittest.TestCase):
             self.assertEqual(gate.classify(False, done.returncode, done.stderr, 0, big), "capped")
 
 
+class RunTests(unittest.TestCase):
+    """One real, capped run of named tests in a copy, as each mutant gets."""
+
+    def copy_with(self, folder: Path, body: str) -> Path:
+        copy = folder / "kavach"
+        (copy / "python" / "tests").mkdir(parents=True)
+        (copy / "python" / "tests" / "__init__.py").write_text("")
+        (copy / "python" / "tests" / "test_x.py").write_text(
+            "import time, unittest\n\nclass X(unittest.TestCase):\n    def test_x(self):\n" + body
+        )
+        return copy
+
+    def test_a_run_past_its_limit_is_a_timeout_not_a_kill(self):
+        with tempfile.TemporaryDirectory() as folder:
+            copy = self.copy_with(Path(folder), "        time.sleep(60)\n")
+            outcome, seconds, _ = gate.run_tests(copy, ["tests.test_x.X.test_x"], 2, Path(folder) / "tmp")
+        self.assertEqual(outcome, "timeout")
+        self.assertLess(seconds, 30)
+
+    def test_a_failing_test_is_a_kill_and_a_passing_one_survives(self):
+        for body, expected in (("        self.fail('caught')\n", "killed"), ("        pass\n", "survived")):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as folder:
+                copy = self.copy_with(Path(folder), body)
+                outcome, _, _ = gate.run_tests(copy, ["tests.test_x.X.test_x"], 60, Path(folder) / "tmp")
+                self.assertEqual(outcome, expected)
+
+
 class Hook(unittest.TestCase):
     def setUp(self):
         saved = dict(os.environ)

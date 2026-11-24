@@ -186,8 +186,8 @@ function maskDouble(code: string, start: number, out: string[] | null, closes = 
       resume = skipSubstitution(code, at + 2, inner);
     } else if (char === '`') {
       resume = skipBacktick(code, at, inner);
-    } else {
-      out?.fill(' ', at, at + 1);
+    } else if (out !== null) {
+      out[at] = ' ';
     }
   }
   return code.length;
@@ -240,9 +240,11 @@ export const messageView = (code: string): string => {
         tick = true;
       } else if (/^(?:[<>]|&>)/.test(masked.slice(at))) {
         // A redirection and its target word are code. `rest` starts with the
-        // operator, so the first match is at its start.
+        // operator, so the first match is at its start. With no target after
+        // it, the operator's own `<` or `>` reads as the word: the match
+        // stops at the operator, and the blanks after it are blanked anyway.
         const rest = code.slice(at);
-        const after = rest.replace(/[<>&]*\s*(?:"[^"]*"|'[^']*'|[^\s;&|)]+)?/, '');
+        const after = rest.replace(/[<>&]*\s*(?:"[^"]*"|'[^']*'|[^\s;&|)]+)/, '');
         resume = at + rest.length - after.length;
       } else if (/[;&|)\n]/.test(char)) {
         break;

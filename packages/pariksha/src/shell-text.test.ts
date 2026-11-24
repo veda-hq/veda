@@ -57,6 +57,10 @@ describe('stripComment', () => {
   it('opens a quoted $( at its $, so the string is open again after its )', () => {
     assert.equal(stripComment('X="$(f) # c"'), 'X="$(f) # c"');
   });
+
+  it('tracks parens nested two deep inside a quoted $(', () => {
+    assert.equal(stripComment('X="$(a (b (c) d) # x'), 'X="$(a (b (c) d)');
+  });
 });
 
 describe('maskQuoted', () => {
@@ -161,6 +165,10 @@ describe('messageView', () => {
     assert.equal(messageView('echo hi 2>&1 more'), 'echo    2>&1     ');
     assert.equal(messageView('echo x > "a b" c'), 'echo   > "a b"  ');
     assert.equal(messageView("echo x > 'a b' c"), "echo   > 'a b'  ");
+  });
+
+  it('takes no later word as the target of a redirection with none of its own', () => {
+    assert.equal(messageView('echo a >| f'), 'echo   >| f');
   });
 
   it('ends a message at & and keeps what follows', () => {

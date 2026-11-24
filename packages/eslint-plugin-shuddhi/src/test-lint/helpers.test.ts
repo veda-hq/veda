@@ -579,6 +579,13 @@ describe('ownerOf', () => {
     );
     assert.deepEqual(owners, [null, 'it', null, 'describe', null, null]);
   });
+
+  it('is null for the Program, which has no parent', () => {
+    const owners = probe(`it('t', () => 1);`, 'Program', (node, context) =>
+      ownerOf(node, context),
+    );
+    assert.deepEqual(owners, [null]);
+  });
 });
 
 describe('enclosingFunctions and enclosingTest', () => {
@@ -665,8 +672,13 @@ describe('assertion', () => {
     `expect.other(x).toBe(1);`,
     `this.expect(x).toBe(1);`,
     `expect(x)[m](1);`,
+    `new (expect(x).toBe)(1);`,
   ])('is no assertion: %s', code => {
     assert.deepEqual(assertions(code), [null]);
+  });
+
+  it('is null for no node at all', () => {
+    assert.equal(assertion(undefined, undefined as never), null);
   });
 
   it('reads a local named expect as ordinary code', () => {

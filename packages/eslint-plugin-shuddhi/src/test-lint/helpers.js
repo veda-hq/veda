@@ -57,7 +57,7 @@ const CHAIN_FACTORIES = new Set(['each', 'for', 'skipIf', 'runIf']);
  * registration and returns null.
  */
 function registration(call, context) {
-  if (call.type !== 'CallExpression') return null;
+  if (call?.type !== 'CallExpression') return null;
   const direct = call.callee;
   if (CHAIN_FACTORIES.has(propertyName(direct))) return null;
   let callee = direct;
@@ -122,10 +122,9 @@ function isTestApi(identifier, context) {
 
 /** The registration whose callback `fn` is, or null. */
 function ownerOf(fn, context) {
-  const parent = fn.parent;
-  if (!parent || parent.type !== 'CallExpression') return null;
+  // registration is null for a parent that is no call, or none (the Program).
   // The callback is one of the call's arguments, so a callee `fn` owns none.
-  const owner = registration(parent, context);
+  const owner = registration(fn.parent, context);
   return owner && owner.callback === fn ? owner : null;
 }
 
@@ -157,7 +156,7 @@ const MODIFIERS = new Set(['not', 'resolves', 'rejects']);
  * a custom harness) is ordinary code, not the runner's (isTestApi).
  */
 function assertion(call, context) {
-  if (!call || call.type !== 'CallExpression') return null;
+  if (call?.type !== 'CallExpression') return null;
   const callee = call.callee;
   // propertyName is null for anything but a member expression.
   const matcher = propertyName(callee);

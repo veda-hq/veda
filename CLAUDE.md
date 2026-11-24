@@ -156,7 +156,8 @@ passes a change to a guard file only when the approved slice names that
 file in its `**Guards:**` section; a name added after his answer counts
 for nothing. The guard files are everything under `.github/` (the
 workflows that run the required checks and the release rules among them),
-`.githooks/`, `.dvara.json` and `package.json`'s scripts, and the paths
+`.githooks/`, `.dvara.json`, `.gitleaks.toml`, `.trufflehog-exclude` and
+`package.json`'s scripts, and the paths
 `"guard"` in `.github/niyam.json` lists: the release rules' script and
 `README.md`, what the mutation gate judges (`agnipariksha.json`,
 `stryker/`, each package's `stryker.config.mjs`,

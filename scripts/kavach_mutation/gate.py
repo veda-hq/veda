@@ -289,6 +289,9 @@ def install_hook(work: Path, modules: list[str]) -> tuple[Path, Path, Path]:
     rc.write_text(
         "[run]\n"
         "parallel = true\n"
+        # sys.monitoring, coverage.py's default core on 3.14, records no
+        # dynamic context, and the recorder switches one at every test.
+        "core = ctrace\n"
         f"data_file = {data}/.coverage\n"
         "context = ${MUTATION_TEST_CONTEXT}\n"
         f"include =\n    */kavach/*.py\n{include}"
@@ -426,8 +429,8 @@ def record(work: Path, python: str, modules: list[str], pattern: str = "test_*.p
 
     import coverage
 
-    copy = work / "record"
-    shutil.rmtree(copy, ignore_errors=True)
+    copy = work / "record" / "kavach"
+    shutil.rmtree(copy.parent, ignore_errors=True)
     copy_package(copy)
     python_dir = copy / "python"
     tmp = temp_root() / "record"
@@ -710,8 +713,8 @@ class Copies:
     def __init__(self, work: Path, count: int):
         self.free: queue.Queue[tuple[int, Path]] = queue.Queue()
         for index in range(count):
-            target = work / f"w{index}"
-            shutil.rmtree(target, ignore_errors=True)
+            target = work / f"w{index}" / "kavach"
+            shutil.rmtree(target.parent, ignore_errors=True)
             copy_package(target)
             self.free.put((index, target))
 

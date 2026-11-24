@@ -401,5 +401,60 @@ class Hook(unittest.TestCase):
         self.assertFalse(pth.exists())
 
 
+class Recorder(unittest.TestCase):
+    def test_each_test_and_its_child_are_recorded_under_its_own_name(self):
+        """The recorder switches a dynamic context at every test, which
+        coverage.py's sys.monitoring core does not record (3.14's default)."""
+
+        import coverage
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "kavach").mkdir()
+            (root / "kavach" / "guardlike.py").write_text("def one():\n    return 1\n\n\ndef two():\n    return 2\n")
+            (root / "tests").mkdir()
+            (root / "tests" / "__init__.py").write_text("")
+            (root / "tests" / "test_x.py").write_text(
+                "import subprocess, sys, unittest\n"
+                "sys.path.insert(0, 'kavach')\n"
+                "import guardlike\n\n"
+                "class X(unittest.TestCase):\n"
+                "    def test_a(self):\n"
+                "        self.assertEqual(guardlike.one(), 1)\n\n"
+                "    def test_b(self):\n"
+                "        self.assertEqual(guardlike.one(), 1)\n"
+                "        code = 'import sys; sys.path.insert(0, \"kavach\"); import guardlike; guardlike.two()'\n"
+                "        subprocess.run([sys.executable, '-c', code], check=True)\n"
+            )
+            rc, sidecar, pth = gate.install_hook(root, ["guardlike"])
+            rc_text = rc.read_text()
+            out = root / "run.json"
+            try:
+                done = subprocess.run(
+                    [sys.executable, "-B", str(Path(gate.__file__)), "record-tests", str(rc), str(sidecar), str(out)],
+                    cwd=root,
+                    env={**os.environ, "MUTATION_RECORDER": "1"},
+                    capture_output=True,
+                    text=True,
+                )
+            finally:
+                gate.remove_hook(pth)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            run = json.loads(out.read_text())
+            self.assertEqual(run["order"], ["tests.test_x.X.test_a", "tests.test_x.X.test_b"])
+            cov = coverage.Coverage(data_file=str(root / "coverage" / ".coverage"), config_file=False)
+            cov.combine([str(root / "coverage")], strict=True)
+            measured = cov.get_data()
+            lines: dict[int, set[str]] = {}
+            for path in measured.measured_files():
+                if path.endswith("guardlike.py"):
+                    for number, contexts in measured.contexts_by_lineno(path).items():
+                        lines.setdefault(number, set()).update(contexts)
+        # A line two tests run is recorded under both, not only the first.
+        self.assertEqual(lines[2], {"tests.test_x.X.test_a", "tests.test_x.X.test_b"})
+        self.assertEqual(lines[6], {"tests.test_x.X.test_b"})
+        self.assertIn("core = ctrace", rc_text)
+
+
 if __name__ == "__main__":
     unittest.main()

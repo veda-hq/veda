@@ -777,6 +777,8 @@ describe('what one tool event says', () => {
       { pr: 'veda-hq/veda#90', url: 'https://github.com/veda-hq/veda/pull/90', event: 'on', source: 'mcp__ccd_pr__set_monitor' },
     ]);
     assert.deepEqual(on({ url: 'https://ghe.example.com/veda-hq/veda/pull/90' })[0]?.url, 'https://ghe.example.com/veda-hq/veda/pull/90');
+    // Only a string names a URL: a list holding one reads as GitHub's.
+    assert.deepEqual(on({ url: ['https://ghe.example.com/veda-hq/veda/pull/90'] })[0]?.url, 'https://github.com/veda-hq/veda/pull/90');
   });
 
   it('says nothing for a set_monitor answer that names no PR, nor outside PostToolUse and PostToolUseFailure', () => {

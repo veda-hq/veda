@@ -238,4 +238,4 @@ def run():
 
 
 if __name__ == "__main__":
-    sys.exit(run())  # run as the hook, never on import
+    sys.exit(run())

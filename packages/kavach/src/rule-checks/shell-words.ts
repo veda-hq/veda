@@ -229,7 +229,8 @@ export function simpleCommands(text: string): Reading {
       continue;
     }
     const arithmetic = arithmeticLength(text, i);
-    // Body mode always has a body open: entering it moves at least one there.
+    // Entering body mode moves at least one body there; a substitution that
+    // read a heredoc of its own can close back into body mode with none left.
     const body = mode === 'body' ? bodies[0] : undefined;
     if (body !== undefined) {
       if (arithmetic > 0) {
@@ -363,9 +364,10 @@ export function simpleCommands(text: string): Reading {
   // Bodies are open only in body mode or a substitution inside one, which
   // stops below either way.
   if (mode === 'body') {
-    // Body mode always has a body open.
-    const [last, ...more] = bodies as [Heredoc, ...Heredoc[]];
-    if (more.length === 0 && ends(last, line)) mode = 'plain';
+    // A substitution that read a heredoc of its own can close back into body
+    // mode with no body left: then the reader stops below.
+    const [last, ...more] = bodies;
+    if (last !== undefined && more.length === 0 && ends(last, line)) mode = 'plain';
   }
   if (mode !== 'plain' && mode !== 'comment') return stop();
   if (opened.length > 0 || frames.length > 0) return stop();

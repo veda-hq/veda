@@ -252,6 +252,10 @@ describe("trees", () => {
     const big = `${"x".repeat(65 * 1024 * 1024)}\n`;
     r.write("big\nname.txt", big);
     r.git("add", "-A");
+    // Staged, the blob is in the object store, compressed to a few KiB. The
+    // 65 MiB file goes at once: a mutation run that bails before this suite's
+    // cleanup would otherwise leave one per mutant, and fill a runner's disk.
+    rmSync(join(r.root, "big\nname.txt"));
     assert.equal(OBJECT_BUFFER, 1024 * 1024 * 1024);
     assert.equal(
       readBlobs(at, [":big\nname.txt"]).get(":big\nname.txt")?.length,

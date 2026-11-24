@@ -1274,6 +1274,13 @@ describe('regressingCursorColumns (sweep)', () => {
       ),
       ['cursor'],
     );
+    // A GREATEST in the WHERE is no part of the SET's value.
+    assert.deepEqual(
+      regressingCursorColumns(
+        upsert('cursor = EXCLUDED.cursor WHERE GREATEST(c.cursor, 1) > 0'),
+      ),
+      ['cursor'],
+    );
   });
 
   it('skips a SET part with no assignment', () => {

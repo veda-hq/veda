@@ -314,20 +314,11 @@ export function regressingCursorColumns(sql) {
   // which the column's trim drops.
   const match = /ON\s+CONFLICT[\s\S]*?DO\s+UPDATE\s+SET(\s[\s\S]*)/i.exec(sql);
   if (!match) return [];
-  let assignments = match[1];
-  /** The DO UPDATE's own WHERE clause, when it has one. */
-  let where = null;
-  const tail = /\b(WHERE|RETURNING)\b|;/i.exec(assignments);
-  if (tail) {
-    if (tail[1] && tail[1].toUpperCase() === 'WHERE') {
-      // The clause keeps its WHERE keyword: no cursor column is named
-      // WHERE, so advancesInWhere reads it the same.
-      const rest = assignments.slice(tail.index);
-      const end = /\bRETURNING\b|;/i.exec(rest);
-      where = { text: end ? rest.slice(0, end.index) : rest };
-    }
-    assignments = assignments.slice(0, tail.index);
-  }
+  // The DO UPDATE ends at RETURNING or `;`.
+  const [update] = match[1].split(/\bRETURNING\b|;/i);
+  /** Where the DO UPDATE's own WHERE clause starts, when it has one. */
+  const whereAt = /\bWHERE\b/i.exec(update);
+  const assignments = whereAt ? update.slice(0, whereAt.index) : update;
   const columns = [];
   for (const assignment of splitTopLevel(assignments)) {
     // Split at the first `=`: the column on the left, its new value right.
@@ -341,8 +332,11 @@ export function regressingCursorColumns(sql) {
     // MIN pick the smaller value, so they can move the cursor back.
     if (/\b(?:GREATEST|MAX)\s*\(/i.test(value)) continue;
     // A WHERE on the DO UPDATE only advances the cursor when it compares the
-    // column with the incoming value: `t.cursor < EXCLUDED.cursor`.
-    if (where !== null && advancesInWhere(where.text, column)) continue;
+    // column with the incoming value: `t.cursor < EXCLUDED.cursor`. The
+    // clause is read with its WHERE keyword, which names no cursor column.
+    if (whereAt && advancesInWhere(update.slice(whereAt.index), column)) {
+      continue;
+    }
     columns.push(column);
   }
   return columns;

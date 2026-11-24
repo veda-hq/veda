@@ -77,7 +77,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install --quiet "$COVERAGE" "$COSMIC_RAY"
           echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
-          python --version >> "$GITHUB_STEP_SUMMARY"
+          "$RUNNER_TEMP/venv/bin/python" --version >> "$GITHUB_STEP_SUMMARY"
       - name: The caps hold
         run: |
           set -euo pipefail

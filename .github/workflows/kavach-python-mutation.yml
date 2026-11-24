@@ -3,7 +3,7 @@ name: kavach Python mutation
 # kavach's Python mutation gate (veda#558, under #238): cosmic-ray 8.9.0
 # mutates the lines a pull request adds or changes in
 # packages/kavach/python/kavach and fails on any mutant that is not killed,
-# unless packages/kavach/python/mutation-equivalents.tsv, which Alok owns,
+# unless packages/kavach/python/mutation-equivalents.tsv, whose rows are Alok's,
 # lists it with the outcome it gets. scripts/kavach_mutation/gate.py does the
 # work; its docstring says how.
 #

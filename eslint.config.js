@@ -28,8 +28,9 @@ export default [
   // comment would take its file's mutants out of the gate (#326). The rule
   // refuses the comment. noInlineConfig refuses every way a comment could
   // turn the rule off again (`eslint-disable…`, `/* eslint rule: off */`):
-  // an exception goes here or in eslint-suppressions.json, both code-owner
-  // paths.
+  // an exception goes here or in eslint-suppressions.json, both guard files
+  // (.github/niyam.json's "guard"), which change only under an approved slice
+  // that names them.
   {
     files: MUTABLE,
     linterOptions: { noInlineConfig: true },

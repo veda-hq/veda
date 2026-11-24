@@ -1,6 +1,8 @@
 # kavach's cosmic-ray mutants that no test can kill, for the Python mutation
-# gate (veda#558, .github/workflows/kavach-python-mutation.yml). Alok owns this
-# file (.github/CODEOWNERS): adding a row waits for his review.
+# gate (veda#558, .github/workflows/kavach-python-mutation.yml). A row lets a
+# mutant on a changed line pass, so the rows are Alok's call: this file is to
+# be one of the guard files .github/niyam.json lists, which niyam's Guard
+# passes a change to only when the approved slice names it.
 #
 # One row per mutant, tab-separated:
 # - file: a module of packages/kavach/python/kavach.

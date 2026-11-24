@@ -3,7 +3,7 @@
 
 cosmic-ray 8.9.0 mutates the lines a pull request adds or changes in
 packages/kavach/python/kavach, and the gate fails on any mutant that is not
-killed, unless the code-owned list (packages/kavach/python/
+killed, unless the list of equivalents (packages/kavach/python/
 mutation-equivalents.tsv) names it with the outcome it gets.
 
 - ``plan``: cheap, on every pull request. Fails on a no-mutate pragma

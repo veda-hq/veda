@@ -10,6 +10,20 @@
     "decisions",
     "review"
   ],
+  "guard": [
+    "agnipariksha.json",
+    "stryker/",
+    "packages/*/stryker.config.mjs",
+    "scripts/mutation-lanes.mjs",
+    "scripts/version-rule.mjs",
+    "README.md",
+    "eslint.config.js",
+    "eslint-suppressions.json",
+    "scripts/guards.sh",
+    "scripts/released-pins.mjs",
+    ".veda/records-baseline.json",
+    ".veda/required-settings.json"
+  ],
   "cloudSigningKeys": {
     "AthyaBot": [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINULYjqpKxnHXIgB0hjzOG9lYoZN+hCX8wbpE9AYCHXU"

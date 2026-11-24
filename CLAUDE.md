@@ -152,28 +152,27 @@ If the allowance runs out, the check reports neutral and the pull request
 goes unreviewed: tell Alok rather than assume that is fine.
 `docs/lessons/review-bots.md` has the rest.
 
-One exception waits for a person: the ruleset requires code-owner review,
-so a pull request touching any path `.github/CODEOWNERS` names for Alok
-also waits for his approving review, then merges by itself. Those paths are
-the release rules (`.github/workflows/release.yml`,
-`.github/workflows/version-rule.yml`, `scripts/version-rule.mjs`,
-`README.md`), what the mutation gate judges (`agnipariksha.json`,
+No pull request waits for Alok's review: the ruleset requires none, and
+veda has no CODEOWNERS. His approval of the slice, state or work item is
+the review, and niyam's shared Guard holds a pull request to it. Guard
+runs on `pull_request_target`, from main's copy and with main's
+`.github/niyam.json`, so the pull request's own copy cannot weaken it. It
+passes a change to a guard file only when the approved slice names that
+file in its `**Guards:**` section; a name added after his answer counts
+for nothing. The guard files are everything under `.github/` (the
+workflows that run the required checks and the release rules among them),
+`.githooks/`, `.dvara.json`, `.gitleaks.toml`, `.trufflehog-exclude` and
+`package.json`'s scripts, and the paths
+`"guard"` in `.github/niyam.json` lists: the release rules' script and
+`README.md`, what the mutation gate judges (`agnipariksha.json`,
 `stryker/`, each package's `stryker.config.mjs`,
-`scripts/mutation-lanes.mjs`), the kavach Python mutation gate's list of
-mutants no test can kill (`packages/kavach/python/mutation-equivalents.tsv`,
-veda#558), the lint rules and their suppressions
-(`eslint.config.js`, `eslint-suppressions.json`), and `.github/CODEOWNERS`
-itself; a change to any one of them alone waits too. Until he approves, it
-is open, not done. Every other path, the other workflows included, has no
-owner: his approval of the slice, state or work item is the review. The
-files that run the required checks (`.github/workflows/ci.yml`,
-`.github/workflows/mutation.yml`, `.github/workflows/niyam.yml`,
-`.github/niyam.json`) have no owner either: niyam's shared Guard judges a
-change to them against the approved slice, as it does any other `.github/`
-change. It runs on `pull_request_target`, from main's copy, so the pull
-request's own copy cannot weaken it. The sources the gate mutates are not
-owned; veda's lint refuses a `// Stryker disable` comment in them
-(`docs/lessons/stryker.md`).
+`scripts/mutation-lanes.mjs`), the lint rules and their suppressions
+(`eslint.config.js`, `eslint-suppressions.json`), and the hook files
+agents leave alone (`scripts/guards.sh`, `scripts/released-pins.mjs`,
+`.veda/records-baseline.json`, `.veda/required-settings.json`). A slice
+that changes one names it before Alok approves it. The sources the gate
+mutates are not guard files; veda's lint refuses a `// Stryker disable`
+comment in them (`docs/lessons/stryker.md`).
 
 Leave auto-merge off only to hold a pull request on purpose (say why in it),
 or for a change that needs Alok's yes first, such as a major release

@@ -33,19 +33,6 @@ const BARE_CLASS = /^\[[^\]]+\](?:[+*]|\{\d+,?\d*\})$/;
 /** The reason marker that allows a reviewed markup regex. */
 const REGEX_PARSE_OK = /regex-parse-ok:\s*\S/;
 
-function regexPattern(node) {
-  if (node.type === 'Literal' && node.regex) return node.regex.pattern;
-  if (
-    (node.type === 'NewExpression' || node.type === 'CallExpression') &&
-    isIdentifier(node.callee, 'RegExp') &&
-    node.arguments[0]?.type === 'Literal' &&
-    typeof node.arguments[0].value === 'string'
-  ) {
-    return node.arguments[0].value;
-  }
-  return null;
-}
-
 const noRegexStructuredParse = {
   meta: {
     type: 'problem',
@@ -82,10 +69,12 @@ const noRegexStructuredParse = {
         );
     };
 
-    /** Is `node` the receiver of a `.test(…)` call? */
+    /**
+     * Is `node` the receiver of a `.test(…)` call? A regex or a reference is
+     * never a non-computed property, so under such a member it is the object.
+     */
     const isTested = node =>
       node.parent.type === 'MemberExpression' &&
-      node.parent.object === node &&
       !node.parent.computed &&
       node.parent.property.name === 'test';
 
@@ -138,12 +127,15 @@ const noRegexStructuredParse = {
 
     return {
       Literal(node) {
-        const pattern = regexPattern(node);
-        if (pattern !== null) judgePattern(node, pattern);
+        if (node.regex) judgePattern(node, node.regex.pattern);
       },
+      // `RegExp('…')` / `new RegExp('…')`: only a string Literal argument
+      // carries a string `value`.
       'NewExpression, CallExpression'(node) {
-        const pattern = regexPattern(node);
-        if (pattern !== null) judgePattern(node, pattern);
+        const [source] = node.arguments;
+        if (isIdentifier(node.callee, 'RegExp') && typeof source?.value === 'string') {
+          judgePattern(node, source.value);
+        }
       },
       TemplateLiteral(node) {
         if (node.parent.type === 'TaggedTemplateExpression') return;

@@ -109,6 +109,19 @@ ruleTester.run('schema-satisfies-contract', rule as never, {
     {
       code: `${LEASE} const leaseSchema = z.object({ id: z.string() }); export default leaseSchema.strict();`,
     },
+    // Near-miss: a function's own const of an exported schema's name.
+    {
+      code: `${LEASE}
+        const leaseSchema = z.object({ id: z.string() }) satisfies z.ZodType<Lease>;
+        export { leaseSchema };
+        function draft() { const leaseSchema = z.object({}); return leaseSchema; }`,
+    },
+    // Near-miss: names that only contain `<name>Schema`, or lack `Schema`.
+    { code: `${LEASE} export const $leaseSchema = z.object({ id: z.string() });` },
+    {
+      code: `${LEASE} export const leaseSchemaStrict = z.object({ id: z.string() });`,
+    },
+    { code: `${LEASE} export const lease = z.object({ id: z.string() });` },
   ],
   invalid: [
     // The ledger-line shape: the producer type and the parser's schema are
@@ -199,6 +212,34 @@ ruleTester.run('schema-satisfies-contract', rule as never, {
         import { z } from 'zod';
         export type Lease = z.infer<Other>;
         export const leaseSchema = z.object({ id: z.string() });`,
+      errors: [{ messageId: 'missingSatisfies' }],
+    },
+    // A derivation with no argument, of another schema, or a generic that
+    // is no derivation over the schema.
+    {
+      code: `
+        import { z } from 'zod';
+        export type Lease = z.infer;
+        export const leaseSchema = z.object({ id: z.string() });`,
+      errors: [{ messageId: 'missingSatisfies' }],
+    },
+    {
+      code: `
+        import { z } from 'zod';
+        export type Lease = z.infer<typeof otherSchema>;
+        export const leaseSchema = z.object({ id: z.string() });`,
+      errors: [{ messageId: 'missingSatisfies' }],
+    },
+    {
+      code: `
+        import { z } from 'zod';
+        export type Lease = Readonly<typeof leaseSchema>;
+        export const leaseSchema = z.object({ id: z.string() });`,
+      errors: [{ messageId: 'missingSatisfies' }],
+    },
+    // An `as` cast to the zod type asserts it; it does not check it.
+    {
+      code: `${LEASE} export const leaseSchema = z.object({ id: z.string() }) as z.ZodType<Lease>;`,
       errors: [{ messageId: 'missingSatisfies' }],
     },
     // Zod reached through optional chaining, a cast, a namespace import,

@@ -111,6 +111,15 @@ ruleTester.run('schema-parse-untrusted', rule as never, {
     { code: 'reply.json({ ok: true });' },
     // Near-miss: a YAML-module-free `parse` is not a YAML read.
     { code: 'const url = parse(text);' },
+    // Near-miss: a reader imported from another module.
+    { code: "import { load } from './loader'; const x = load(t);" },
+    // Near-miss: a `json` method given a body sends it.
+    { code: 'const sent = reply.json({ ok: true });' },
+    // Near-miss: private methods named like a YAML reader or `.json()`.
+    {
+      code: "import yaml from 'js-yaml'; class A { #load() {} f(t) { return yaml.#load(t); } }",
+    },
+    { code: 'class A { #json() {} f(res) { const b = res.#json(); } }' },
   ],
   invalid: [
     // The catalogue example: hand-rolled typeof checks, then a producer cast.
@@ -206,6 +215,26 @@ ruleTester.run('schema-parse-untrusted', rule as never, {
     },
     {
       code: 'store.save(JSON.parse(text));',
+      errors: [{ messageId: 'unvalidated' }],
+    },
+    // A private `#parse` is no schema method, even on a schema-named receiver.
+    {
+      code: 'class A { #parse(v) { return v; } f(schema, t) { return schema.#parse(JSON.parse(t)); } }',
+      errors: [{ messageId: 'unvalidated' }],
+    },
+    // No argument, or a constructed (not called) stringify: no deep clone.
+    {
+      code: 'const x = JSON.parse();',
+      errors: [{ messageId: 'unvalidated' }],
+    },
+    {
+      code: 'const v = JSON.parse(new JSON.stringify(x));',
+      errors: [{ messageId: 'unvalidated' }],
+    },
+    // A destructured name handed to a schema: the rest of the value was
+    // never checked.
+    {
+      code: 'const { a } = JSON.parse(text); Schema.parse(a);',
       errors: [{ messageId: 'unvalidated' }],
     },
     // Every YAML reader, through a namespace or a named import.

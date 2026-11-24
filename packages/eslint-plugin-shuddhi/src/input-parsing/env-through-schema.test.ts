@@ -80,6 +80,15 @@ ruleTester.run('env-through-schema', rule as never, {
       code: 'const { CI, HOME } = process.env;',
       options: [{ allowDirectRead: true }],
     },
+    // Near-miss: destructuring something that is not process.env.
+    { code: 'const { a } = config;' },
+    // Near-miss: private names are neither a config receiver nor `get`.
+    {
+      code: "class A { #config; f() { return this.#config.get<number>('TTL'); } }",
+    },
+    {
+      code: "class C { #get() {} f(config) { return config.#get<number>('TTL'); } }",
+    },
   ],
   invalid: [
     ...ENV_COERCIONS.map(coercion => ({
@@ -161,6 +170,20 @@ ruleTester.run('env-through-schema', rule as never, {
       errors: [{ messageId: 'presence' }],
     },
     { code: 'const ci = process.env.CI;', errors: [{ messageId: 'direct' }] },
+    // Not a coercion: another method, or the read as a later argument.
+    {
+      code: 'const x = foo.bar(process.env.X);',
+      errors: [{ messageId: 'direct' }],
+    },
+    {
+      code: 'const r = parseInt(s, process.env.RADIX);',
+      errors: [{ messageId: 'direct' }],
+    },
+    // Assigning the read to a name reads it.
+    {
+      code: 'let x; x = process.env.A;',
+      errors: [{ messageId: 'direct' }],
+    },
     {
       code: "const ci = process.env['CI'];",
       errors: [{ messageId: 'direct' }],
@@ -271,6 +294,13 @@ describe('env-through-schema meta', () => {
           allowEverything: true,
         }),
       /additional properties/,
+    );
+  });
+
+  it('rejects an allowDirectRead that is not a boolean', () => {
+    assert.throws(
+      () => verify('const x = 1;', { allowDirectRead: 'yes' }),
+      /should be boolean/,
     );
   });
 

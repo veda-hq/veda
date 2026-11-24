@@ -36,7 +36,7 @@ const ZOD_DERIVATIONS = new Set(['infer', 'input', 'output', 'TypeOf']);
 function isZodTypeReference(annotation, typeName) {
   if (annotation?.type !== 'TSTypeReference') return false;
   if (!ZOD_TYPE_NAMES.has(typeNameTail(annotation.typeName))) return false;
-  const [argument] = annotation.typeArguments?.params ?? [];
+  const argument = annotation.typeArguments?.params[0];
   // The bare name only: the contract is declared or imported here under that
   // name, so `other.Lease` is some other module's type.
   return (
@@ -49,11 +49,10 @@ function isZodTypeReference(annotation, typeName) {
 function derivesFrom(annotation, schemaName) {
   if (annotation?.type !== 'TSTypeReference') return false;
   if (!ZOD_DERIVATIONS.has(typeNameTail(annotation.typeName))) return false;
-  const [argument] = annotation.typeArguments?.params ?? [];
+  const argument = annotation.typeArguments?.params[0];
+  // A qualified `typeof ns.schema` has no `name`.
   return (
-    argument?.type === 'TSTypeQuery' &&
-    argument.exprName.type === 'Identifier' &&
-    argument.exprName.name === schemaName
+    argument?.type === 'TSTypeQuery' && argument.exprName.name === schemaName
   );
 }
 
@@ -95,23 +94,21 @@ const schemaSatisfiesContract = {
       TSInterfaceDeclaration(node) {
         types.set(node.id.name, null);
       },
+      // `export { leaseSchema }` and `export default leaseSchema`. Only an
+      // Identifier carries a `name`; a string-named specifier or any other
+      // declaration adds undefined, which names no schema.
       ExportSpecifier(node) {
-        if (node.local.type === 'Identifier') exported.add(node.local.name);
+        exported.add(node.local.name);
       },
-      // `export default leaseSchema`. Among declarations only an Identifier
-      // carries a `name`; any other adds undefined, which names no schema.
       ExportDefaultDeclaration(node) {
         exported.add(node.declaration.name);
       },
+      // A destructuring id has no `name` either, and so matches no schema
+      // name below.
       VariableDeclarator(node) {
-        if (node.id.type !== 'Identifier' || !node.init) return;
+        if (!node.init) return;
         const declaration = node.parent;
-        if (
-          declaration.type !== 'VariableDeclaration' ||
-          declaration.kind !== 'const'
-        ) {
-          return;
-        }
+        if (declaration.kind !== 'const') return;
         const scopeOwner = declaration.parent;
         const isExported = scopeOwner.type === 'ExportNamedDeclaration';
         if (!isExported && scopeOwner.type !== 'Program') return;
@@ -144,10 +141,9 @@ const schemaSatisfiesContract = {
           ) {
             init = init.expression;
           }
+          // A root that is no Identifier has no `name`.
           const root = chainRoot(init);
-          const isZod =
-            root.type === 'Identifier' &&
-            (zodNames.has(root.name) || root.name === 'z');
+          const isZod = zodNames.has(root.name) || root.name === 'z';
           if (!isZod) continue;
           context.report({
             node: node.id,

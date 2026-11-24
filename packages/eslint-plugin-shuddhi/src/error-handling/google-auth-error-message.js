@@ -67,34 +67,31 @@ function calleeName(call) {
   return null;
 }
 
-/** `JSON.stringify(...)`. */
+/** `JSON.stringify(...)`. A member's object carries a `name` only as an Identifier. */
 function isStringify(call) {
   const callee = call.callee;
   return (
     callee.type === 'MemberExpression' &&
-    callee.object.type === 'Identifier' &&
     callee.object.name === 'JSON' &&
     calleeName(call) === 'stringify'
   );
 }
 
-/** Does `node`'s subtree call a google-auth-library verification? */
+/**
+ * Does `node`'s subtree call a google-auth-library verification? `node` is
+ * any field value of an ESTree node: a node, an array of them, null, or a
+ * primitive (a node's own `type` is the string that tells it apart).
+ */
 function callsVerify(node) {
-  let found = false;
-  const visit = current => {
-    if (found || !current || typeof current.type !== 'string') return;
-    if (current.type === 'CallExpression' && VERIFY_METHODS.has(calleeName(current))) {
-      found = true;
-      return;
-    }
-    for (const [key, value] of Object.entries(current)) {
-      if (key === 'parent') continue;
-      if (Array.isArray(value)) value.forEach(visit);
-      else if (value && typeof value === 'object') visit(value);
-    }
-  };
-  visit(node);
-  return found;
+  if (!node || typeof node.type !== 'string') return false;
+  if (node.type === 'CallExpression' && VERIFY_METHODS.has(calleeName(node))) {
+    return true;
+  }
+  return Object.entries(node).some(
+    ([key, value]) =>
+      key !== 'parent' &&
+      (Array.isArray(value) ? value.some(callsVerify) : callsVerify(value)),
+  );
 }
 
 const googleAuthErrorMessage = {
@@ -117,8 +114,7 @@ const googleAuthErrorMessage = {
     function sinkOf(node, depth) {
       let child = node;
       let parent = node.parent;
-      for (;;) {
-        if (!parent) return null;
+      while (parent) {
         if (WRAPPERS.has(parent.type)) {
           child = parent;
           parent = parent.parent;
@@ -126,8 +122,10 @@ const googleAuthErrorMessage = {
         }
         switch (parent.type) {
           case 'MemberExpression':
-            if (parent.object !== child || parent.computed) return null;
-            if (parent.parent?.type === 'CallExpression' && parent.parent.callee === parent) {
+            // The value climbs as the object: a non-computed property is a
+            // name, and a computed one is a key.
+            if (parent.computed) return null;
+            if (parent.parent.type === 'CallExpression' && parent.parent.callee === parent) {
               // e.message.startsWith(...) reads it; e.toString() converts it.
               if (calleeName(parent.parent) !== 'toString') return null;
               child = parent.parent;
@@ -136,16 +134,8 @@ const googleAuthErrorMessage = {
             }
             if (!['message', 'stack'].includes(parent.property.name)) return null;
             break;
-          case 'TemplateLiteral':
-            if (parent.parent?.type === 'TaggedTemplateExpression') return null;
-            break;
           case 'BinaryExpression':
             if (parent.operator !== '+') return null;
-            break;
-          case 'LogicalExpression':
-          case 'ObjectExpression':
-          case 'ArrayExpression':
-          case 'SpreadElement':
             break;
           case 'ConditionalExpression':
             if (parent.test === child) return null;
@@ -165,17 +155,28 @@ const googleAuthErrorMessage = {
           }
           case 'NewExpression':
             return parent.callee === child ? null : 'a new error';
+          // A tagged template's literal climbs to its tag's call, which the
+          // default case drops.
+          case 'TemplateLiteral':
+          case 'LogicalExpression':
+          case 'ObjectExpression':
+          case 'ArrayExpression':
+          case 'SpreadElement':
+            break;
           case 'ThrowStatement':
             return 'a thrown value';
           case 'ReturnStatement':
             return 'a returned value';
           case 'VariableDeclarator': {
-            if (parent.init !== child || parent.id.type !== 'Identifier' || depth > 2) {
+            // Only an initialiser passes the value on. The declarator's own
+            // id lands nowhere: it is one of its variable's references, and
+            // a `var` redeclaring the caught name writes the caught binding.
+            if (parent.init !== child || parent.id.type !== 'Identifier') {
               return null;
             }
-            const variable = sourceCode.getDeclaredVariables(parent)[0];
-            for (const reference of variable?.references ?? []) {
-              if (reference.identifier === parent.id) continue;
+            if (depth > 2) return null;
+            const [variable] = sourceCode.getDeclaredVariables(parent);
+            for (const reference of variable.references) {
               const sink = sinkOf(reference.identifier, depth + 1);
               if (sink) return sink;
             }
@@ -187,6 +188,7 @@ const googleAuthErrorMessage = {
         child = parent;
         parent = parent.parent;
       }
+      return null;
     }
 
     return {
@@ -194,10 +196,9 @@ const googleAuthErrorMessage = {
         if (node.param?.type !== 'Identifier') return;
         const tryStatement = node.parent;
         if (!callsVerify(tryStatement.block)) return;
-        const variable = sourceCode
-          .getDeclaredVariables(node)
-          .find(candidate => candidate.defs.some(def => def.name === node.param));
-        for (const reference of variable?.references ?? []) {
+        // An Identifier parameter declares the catch clause's one variable.
+        const [variable] = sourceCode.getDeclaredVariables(node);
+        for (const reference of variable.references) {
           const identifier = reference.identifier;
           // A bare rethrow or return of the caught value adds nothing.
           if (
@@ -208,11 +209,9 @@ const googleAuthErrorMessage = {
           }
           const sink = sinkOf(identifier, 0);
           if (!sink) continue;
+          // A reported value under a member is its object (sinkOf drops a key).
           const shown =
-            identifier.parent.type === 'MemberExpression' &&
-            identifier.parent.object === identifier
-              ? identifier.parent
-              : identifier;
+            identifier.parent.type === 'MemberExpression' ? identifier.parent : identifier;
           context.report({
             node: shown,
             messageId: 'leaks',

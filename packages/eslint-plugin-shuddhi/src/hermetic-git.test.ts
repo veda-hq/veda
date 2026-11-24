@@ -139,6 +139,34 @@ describe('maskProcessGitEnv', () => {
     assert.deepEqual(env, { PATH: '/usr/bin', HOME: '/home/me', ...HOSTILE, NODE_ENV: 'test' });
   });
 
+  it('writes only GIT_* names into the environment it masks', () => {
+    const written: string[] = [];
+    const env = new Proxy(fresh(), {
+      set(target, name, value) {
+        written.push(String(name));
+        return Reflect.set(target, name, value);
+      },
+    });
+    maskProcessGitEnv(env);
+    assert.deepEqual(written.sort(), [
+      'GIT_AUTHOR_EMAIL',
+      'GIT_AUTHOR_NAME',
+      'GIT_COMMITTER_EMAIL',
+      'GIT_COMMITTER_NAME',
+      'GIT_CONFIG_COUNT',
+      'GIT_CONFIG_GLOBAL',
+      'GIT_CONFIG_KEY_0',
+      'GIT_CONFIG_KEY_1',
+      'GIT_CONFIG_NOSYSTEM',
+      'GIT_CONFIG_SYSTEM',
+      'GIT_CONFIG_VALUE_0',
+      'GIT_CONFIG_VALUE_1',
+      'GIT_TRACE2',
+      'GIT_TRACE2_EVENT',
+      'GIT_TRACE2_PERF',
+    ]);
+  });
+
   it('runs a restore once', () => {
     const env = fresh();
     const restore = maskProcessGitEnv(env);

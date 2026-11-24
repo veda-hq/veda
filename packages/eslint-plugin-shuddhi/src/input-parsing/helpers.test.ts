@@ -258,6 +258,17 @@ describe('isNullishOrEmpty', () => {
   );
 });
 
+describe('isNullishOrEmpty on a non-unary node', () => {
+  it('reads a node carrying `void` and a literal argument as no void', () => {
+    const node = {
+      type: 'AwaitExpression',
+      operator: 'void',
+      argument: { type: 'Literal', value: 0 },
+    };
+    assert.equal(isNullishOrEmpty(node), false);
+  });
+});
+
 describe('chainRoot', () => {
   it('walks calls, members and optional chains to the root', () => {
     const z = id('z');

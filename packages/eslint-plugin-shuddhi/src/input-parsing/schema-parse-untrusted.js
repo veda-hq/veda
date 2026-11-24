@@ -46,9 +46,9 @@ function isSchemaReceiver(context, types, receiver, seen = new Set()) {
   const root = chainRoot(receiver);
   if (isIdentifier(root, 'z')) return true;
   if (SCHEMA_NAME.test(context.sourceCode.getText(receiver))) return true;
-  if (root.type !== 'Identifier') return false;
   // Follow the root's local initialiser (`const lease = z.object(…)`,
-  // `const strict = leaseSchema.strict()`); `seen` stops a cycle.
+  // `const strict = leaseSchema.strict()`); `seen` stops a cycle. A root
+  // that is no Identifier (`this`, a literal) has no name to bind.
   const variable = variableOf(context, root);
   if (!variable || seen.has(variable)) return false;
   seen.add(variable);
@@ -103,13 +103,11 @@ const schemaParseUntrusted = {
         }
         return 'JSON.parse';
       }
-      if (callee.type === 'Identifier' && yamlFunctions.has(callee.name)) {
-        return 'YAML';
-      }
+      // Of the callees and objects here, only an Identifier carries a `name`.
+      if (yamlFunctions.has(callee.name)) return 'YAML';
       if (
         callee.type === 'MemberExpression' &&
         !callee.computed &&
-        callee.object.type === 'Identifier' &&
         yamlNamespaces.has(callee.object.name) &&
         callee.property.type === 'Identifier' &&
         ['load', 'parse', 'loadAll'].includes(callee.property.name)
@@ -128,20 +126,20 @@ const schemaParseUntrusted = {
       return null;
     };
 
+    /** Climb TRANSPARENT wrappers and `await`, whose one operand is the value. */
     const climbValue = node => {
       let current = node;
       while (
         current.parent &&
         (TRANSPARENT.has(current.parent.type) ||
-          (current.parent.type === 'AwaitExpression' &&
-            current.parent.argument === current))
+          current.parent.type === 'AwaitExpression')
       ) {
         current = current.parent;
       }
       return current;
     };
 
-    const isUnknownType = annotation => annotation?.type === 'TSUnknownKeyword';
+    const isUnknownType = annotation => annotation.type === 'TSUnknownKeyword';
 
     const judge = (node, source) => {
       let outer = climbValue(node);
@@ -163,7 +161,8 @@ const schemaParseUntrusted = {
       if (isSchemaCall(parent) && parent.arguments.includes(outer)) return;
 
       let variable = null;
-      if (parent.type === 'VariableDeclarator' && parent.init === outer) {
+      // An expression under a declarator is its initialiser, never its id.
+      if (parent.type === 'VariableDeclarator') {
         if (parent.id.type !== 'Identifier') {
           context.report({ node, messageId: 'unvalidated', data: { source } });
           return;
@@ -174,13 +173,11 @@ const schemaParseUntrusted = {
           return;
         }
         [variable] = context.sourceCode.getDeclaredVariables(parent);
-      } else if (
+      } else if (parent.type === 'AssignmentExpression') {
         // Any operator: `x += parse(t)` also reads `x` there, a read no
         // schema call takes, so a compound assignment is never validated.
-        parent.type === 'AssignmentExpression' &&
-        parent.right === outer &&
-        parent.left.type === 'Identifier'
-      ) {
+        // The value is the right side; a member or pattern target has no
+        // name, so no variable.
         variable = variableOf(context, parent.left);
       }
       if (variable) {
@@ -208,7 +205,7 @@ const schemaParseUntrusted = {
           ) {
             yamlNamespaces.add(specifier.local.name);
           } else if (
-            specifier.imported.type === 'Identifier' &&
+            // A string-named import (`{ 'load' as l }`) has no `name`.
             ['load', 'parse', 'loadAll'].includes(specifier.imported.name)
           ) {
             yamlFunctions.add(specifier.local.name);

@@ -84,6 +84,10 @@ typedTester.run('prisma-json-through-schema (typed)', rule as never, {
     {
       code: `${PRISMA_JSON} const value = <unknown>(row.payload as { kind: string });`,
     },
+    // Near-miss: destructuring and casting a value that is no Json type.
+    {
+      code: 'declare const o: { a: string }; const { a } = o; const s = o as { a: number };',
+    },
   ],
   invalid: [
     // A project-local type named JsonValue is held to the same rule.
@@ -94,6 +98,11 @@ typedTester.run('prisma-json-through-schema (typed)', rule as never, {
     // An unnamed union that contains a Json type.
     {
       code: `${PRISMA_JSON} declare const x: JsonObject | JsonArray; const n = x.length;`,
+      errors: [{ messageId: 'jsonRead', data: { type: 'Json' } }],
+    },
+    // A union with one Json member.
+    {
+      code: `${PRISMA_JSON} declare const x: JsonArray | Date; const n = x.length;`,
       errors: [{ messageId: 'jsonRead', data: { type: 'Json' } }],
     },
     {

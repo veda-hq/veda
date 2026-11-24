@@ -862,6 +862,10 @@ describe('simpleCommands at the edges of its reading', () => {
     assert.deepEqual(simpleCommands('cat <<A\nA'), { commands: [['cat']], unread: '' });
   });
 
+  it("stops, without crashing, where a substitution's own heredoc left a body with nothing open", () => {
+    assert.deepEqual(simpleCommands('cat <<EOF\n$(cat <<X\nx\nX\n)\nEOF'), { commands: [['cat'], ['cat']], unread: 'EOF' });
+  });
+
   it('reads no arithmetic through a newline or a backquote inside it', () => {
     assert.deepEqual(simpleCommands('echo $((a\n))'), { commands: [['a'], ['echo', '$']], unread: '' });
     assert.deepEqual(simpleCommands('echo $((a`))'), { commands: [], unread: 'echo $((a`))' });

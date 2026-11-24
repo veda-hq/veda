@@ -414,6 +414,24 @@ describe('sweepMarkers', () => {
     assert.deepEqual(readdirSync(dir), []);
   });
 
+  it('leaves a marker whose probe fails, and sweeps on', () => {
+    const dir = scratch();
+    writeFileSync(join(dir, markerName(41)), record(41));
+    writeFileSync(join(dir, markerName(43)), record(43));
+    const failing: Effects = {
+      ...effects([]),
+      probe: {
+        isAlive: (pid) => {
+          if (pid === 41) throw new Error('ps is gone');
+          return false;
+        },
+        startIdentityOf: () => null,
+      },
+    };
+    assert.doesNotThrow(() => sweepMarkers(dir, failing));
+    assert.deepEqual(readdirSync(dir), [markerName(41)]);
+  });
+
   it('sweeps nothing from a folder it cannot list', () => {
     const blind: Effects = {
       ...effects([]),

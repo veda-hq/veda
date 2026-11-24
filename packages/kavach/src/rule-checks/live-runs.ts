@@ -246,11 +246,13 @@ export function sweepMarkers(dir: string, effects: Effects): void {
     } catch {
       // fail-open: a marker another sweep took first is already gone, and `run` stays null.
     }
-    if (run === null || !isGone(run, effects.probe)) continue;
+    if (run === null) continue;
+    // Taken apart outside the catch below, which is only for the probe and the remove.
+    const { pid, startIdentity } = run;
     try {
-      effects.remove(path);
+      if (isGone({ pid, startIdentity }, effects.probe)) effects.remove(path);
     } catch {
-      // fail-open: as above, another sweep removed it first.
+      // fail-open: a probe that fails leaves the marker, and another sweep may have removed it first.
     }
   }
 }

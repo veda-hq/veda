@@ -15,6 +15,7 @@ import {
   mergeParents,
   phrasePattern,
   readOrUndefined,
+  treeSource,
   windowOf,
   type Source,
 } from './authority-citations.ts';
@@ -490,10 +491,44 @@ describe('citations', () => {
     assert.equal(hasCitation('(owner decision, deadbeef)', 'x.md', opts, resolves, []), false);
   });
 
+  it('asks git whether the id names a commit, and nothing else', () => {
+    const asked: string[] = [];
+    const git: Git = {
+      run: (args) => {
+        asked.push(args.join(' '));
+        return args.join(' ') === 'cat-file -e f1a0da2d^{commit}' ? '' : undefined;
+      },
+    };
+    assert.equal(hasCitation('(owner decision, f1a0da2d)', 'x.md', DEFAULTS, git, []), true);
+    assert.deepEqual(asked, ['cat-file -e f1a0da2d^{commit}']);
+  });
+
+  it('accepts the pragma with no space before its reason, and a URL of longer names', () => {
+    assert.equal(hasCitation('ALLOW-AUTHORITY-PHRASE:fixture text', 'x.md', DEFAULTS, none, []), true);
+    assert.equal(hasCitation('https://github.com/veda-hq/veda/pull/12', 'x.md', DEFAULTS, none, []), true);
+    assert.equal(hasCitation('https://github.com/veda-hq/veda/issues/3', 'x.md', DEFAULTS, none, []), true);
+    assert.equal(hasCitation('https://github.com/veda-hq/veda/pull/x', 'x.md', DEFAULTS, none, []), false);
+  });
+
+  it('starts with no configured authority or issue prefix, and ADRs under docs/adr', () => {
+    assert.deepEqual(DEFAULTS, { authorities: [], issuePrefixes: [], adrDir: 'docs/adr' });
+  });
+
   it('normalises an ADR directory', () => {
     assert.equal(adrDirOf('./docs//adr/'), 'docs/adr');
+    assert.equal(adrDirOf('docs//adr//'), 'docs/adr');
     assert.equal(adrDirOf('docs/adr'), 'docs/adr');
     assert.equal(adrDirOf('./'), '.');
+    assert.equal(adrDirOf('/'), '.');
+  });
+
+  it('reads a path that is gone, under a file, or a directory as undefined', () => {
+    const root = temp('pariksha-read-');
+    writeFileSync(join(root, 'file.md'), 'text');
+    assert.equal(readOrUndefined(join(root, 'file.md')), 'text');
+    assert.equal(readOrUndefined(join(root, 'missing.md')), undefined);
+    assert.equal(readOrUndefined(join(root, 'file.md', 'below.md')), undefined);
+    assert.equal(readOrUndefined(root), undefined);
   });
 
   it('lists the ADR directory, or nothing when there is none', () => {
@@ -526,6 +561,102 @@ describe('phrases and windows', () => {
   it('reads added line numbers from a -U0 diff', () => {
     assert.deepEqual([...addedLines('@@ -1,0 +2,2 @@\n+a\n+b\n@@ -9 +11 @@\n-x\n+y\n@@ -3,1 +4,0 @@\n-z')], [2, 3, 11]);
   });
+
+  it('reads a count of two digits, and only a hunk header that starts its line', () => {
+    assert.deepEqual([...addedLines('@@ -1,0 +5,10 @@')], [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    assert.deepEqual([...addedLines('+@@ -1 +7 @@')], []);
+  });
+});
+
+describe('mergeParents', () => {
+  const A = 'a'.repeat(40);
+  const B = 'b'.repeat(64);
+  /** A git that answers only the calls it is given, and records every call. */
+  const recording = (answers: Record<string, string>) => {
+    const calls: string[] = [];
+    const git: Git = {
+      run: (args) => {
+        calls.push(args.join(' '));
+        return answers[args.join(' ')];
+      },
+    };
+    return { git, calls };
+  };
+
+  it('reads each commit MERGE_HEAD lists, past blank lines, and stops at an index with no tree', () => {
+    const { git, calls } = recording({
+      'rev-parse --path-format=absolute --git-path MERGE_HEAD': '/g/MERGE_HEAD\n',
+      'rev-parse -q --verify one^{commit}': `${A}\n`,
+    });
+    const read: string[] = [];
+    const parents = mergeParents(git, {}, (path) => {
+      read.push(path);
+      return 'one\n\ntwo\n';
+    });
+    assert.deepEqual(parents, [A]);
+    assert.deepEqual(read, ['/g/MERGE_HEAD']);
+    assert.deepEqual(calls, ['rev-parse --path-format=absolute --git-path MERGE_HEAD', 'rev-parse -q --verify one^{commit}', 'rev-parse -q --verify two^{commit}', 'write-tree']);
+  });
+
+  it('counts a GITHEAD_ commit whose clean merge is the index tree, once, and no other variable', () => {
+    const { git, calls } = recording({
+      'rev-parse --path-format=absolute --git-path MERGE_HEAD': '/g/MERGE_HEAD\n',
+      'write-tree': 'tree\n',
+      'rev-parse -q --verify AUTO_MERGE^{tree}': 'tree\n',
+      [`merge-tree --write-tree HEAD ${A}`]: 'tree\n',
+    });
+    const env = {
+      PATH: '/bin',
+      [`GITHEAD_${A}`]: 'main',
+      [`GITHEAD_${B}`]: 'other',
+      // Anything before GITHEAD_, on an id not counted already: no GITHEAD_ name.
+      [`XGITHEAD_${'c'.repeat(40)}`]: 'x',
+      [`GITHEAD_${A}0`]: 'x',
+      GITHEAD_a: 'x',
+      [`GITHEAD_${'z'.repeat(64)}`]: 'x',
+    };
+    assert.deepEqual(
+      mergeParents(git, env, () => undefined),
+      [A],
+    );
+    assert.deepEqual(calls, [
+      'rev-parse --path-format=absolute --git-path MERGE_HEAD',
+      'write-tree',
+      'rev-parse -q --verify AUTO_MERGE^{tree}',
+      `merge-tree --write-tree HEAD ${A}`,
+      `merge-tree --write-tree HEAD ${B}`,
+    ]);
+  });
+
+  it('asks no clean merge of a GITHEAD_ commit MERGE_HEAD already names', () => {
+    const { git, calls } = recording({
+      'rev-parse --path-format=absolute --git-path MERGE_HEAD': '/g/MERGE_HEAD\n',
+      [`rev-parse -q --verify ${A}^{commit}`]: `${A}\n`,
+      'write-tree': 'tree\n',
+      'rev-parse -q --verify AUTO_MERGE^{tree}': 'tree\n',
+      [`merge-tree --write-tree HEAD ${A}`]: 'tree\n',
+    });
+    assert.deepEqual(
+      mergeParents(git, { [`GITHEAD_${A}`]: 'main' }, () => `${A}\n`),
+      [A],
+    );
+    assert.ok(!calls.some((call) => call.startsWith('merge-tree')), calls.join('\n'));
+  });
+});
+
+describe('treeSource', () => {
+  it('lists every tracked file git names, and reads each under the root', () => {
+    const git: Git = { run: (args) => (args.join(' ') === 'ls-files -z' ? 'a.md\0b c.md\0' : undefined) };
+    const read: string[] = [];
+    const source = treeSource(git, '/r', (path) => {
+      read.push(path);
+      return 'text';
+    });
+    assert.deepEqual(source.files, ['a.md', 'b c.md']);
+    assert.equal(source.content('a.md'), 'text');
+    assert.deepEqual(read, ['/r/a.md']);
+    assert.equal(source.judged('a.md'), undefined);
+  });
 });
 
 describe('findUncited and formatClaims', () => {
@@ -548,6 +679,80 @@ describe('findUncited and formatClaims', () => {
 
   it('judges only the lines asked for', () => {
     assert.deepEqual(findUncited(source({ 'a.md': `x\n${NEW_CLAIM}` }, new Set([1])), DEFAULTS, none, []), []);
+  });
+
+  it('asks for the judged lines only of a file naming a phrase', () => {
+    const asked: string[] = [];
+    const files: Record<string, string> = { 'claim.md': 'Prices round down, per the founder.', 'plain.md': 'nothing here' };
+    const claims = findUncited(
+      {
+        files: ['claim.md', 'plain.md'],
+        content: (f) => files[f],
+        judged: (f) => {
+          asked.push(f);
+          return undefined;
+        },
+      },
+      DEFAULTS,
+      none,
+      [],
+    );
+    assert.deepEqual(asked, ['claim.md']);
+    assert.deepEqual(claims, [{ file: 'claim.md', line: 1, phrase: 'per the founder', text: 'Prices round down, per the founder.' }]);
+  });
+
+  it('reads only a file whose name ends in a source extension', () => {
+    assert.deepEqual(findUncited(source({ 'a.md.orig': 'Prices round down, per the founder.' }), DEFAULTS, none, []), []);
+  });
+
+  it('quotes the first 120 characters of a claiming line', () => {
+    const line = `per the founder, ${'x'.repeat(200)}`;
+    assert.deepEqual(findUncited(source({ 'a.md': line }), DEFAULTS, none, []), [{ file: 'a.md', line: 1, phrase: 'per the founder', text: `per the founder, ${'x'.repeat(103)}` }]);
+  });
+
+  it('prints every line of a refusal, with an issue id only when a prefix is configured', () => {
+    const how = [
+      '',
+      'An authority claim must anchor in something only that authority can produce. Cite one of:',
+      '  a commit id                       (owner decision, f1a0da2d)',
+      '  an existing ADR                   ADR-0040, in decisions/',
+    ];
+    const rest = [
+      '  a GitHub pull request or issue    PR #269, or its full URL',
+      'A comment or a document an agent could have written is not a citation, and neither',
+      'is an answer in a chat: ask the authority to say it in a comment on the pull request',
+      "(or issue), then cite that comment's URL. If no such artifact exists, the decision",
+      'has not been made. Do not reword the claim to get past this check. Only for words',
+      'that are no authority claim at all, add',
+      '  ALLOW-AUTHORITY-PHRASE: <reason>',
+      '',
+    ];
+    const first = { file: 'a.md', line: 1, phrase: 'per the CTO', text: 'per the CTO' };
+    const claims = [
+      first,
+      { file: 'a.md', line: 4, phrase: 'owner decided', text: 'the owner decided' },
+      { file: 'b.md', line: 2, phrase: 'product rule', text: 'a product rule' },
+    ];
+    assert.deepEqual(formatClaims(claims, { authorities: [], issuePrefixes: ['XY', 'ZW'], adrDir: 'decisions' }), {
+      ok: false,
+      out: [],
+      err: [
+        'pariksha authority-citations: uncited authority claim(s) in a.md:',
+        '  1: [per the CTO] per the CTO',
+        '  4: [owner decided] the owner decided',
+        'pariksha authority-citations: uncited authority claim(s) in b.md:',
+        '  2: [product rule] a product rule',
+        ...how,
+        '  an issue id                       XY-447',
+        ...rest,
+        '3 claim(s) across 2 file(s).',
+      ],
+    });
+    assert.deepEqual(formatClaims([first], { authorities: [], issuePrefixes: [], adrDir: 'decisions' }), {
+      ok: false,
+      out: [],
+      err: ['pariksha authority-citations: uncited authority claim(s) in a.md:', '  1: [per the CTO] per the CTO', ...how, ...rest, '1 claim(s) across 1 file(s).'],
+    });
   });
 
   it('formats a pass, and a refusal grouped by file with how to cite', () => {

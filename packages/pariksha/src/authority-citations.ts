@@ -59,7 +59,8 @@ export const windowOf = (lines: readonly string[], center: number): string =>
 export const hasCitation = (window: string, claimingFile: string, opts: Options, git: Git, adrFiles: readonly string[]): boolean => {
   if (/ALLOW-AUTHORITY-PHRASE:[^\S\n]*\S/.test(window)) return true;
   if (opts.issuePrefixes.length > 0 && new RegExp(`\\b(?:${opts.issuePrefixes.map(escape).join('|')})-[0-9]+\\b`).test(window)) return true;
-  if (/https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:pull|issues)\/[0-9]+/.test(window)) return true;
+  // A digit after pull/ or issues/ is enough: the number's length decides nothing.
+  if (/https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:pull|issues)\/[0-9]/.test(window)) return true;
   if (/\bPR #[0-9]+\b/.test(window)) return true;
   for (const [, n] of window.matchAll(new RegExp(`(?:ADR-|${escape(opts.adrDir)}/)([0-9]{4})`, 'g'))) {
     if (adrFiles.some((f) => f.startsWith(`${opts.adrDir}/${n}-`) && f.endsWith('.md') && f !== claimingFile)) return true;
@@ -164,7 +165,9 @@ export const findUncited = (source: Source, opts: Options, git: Git, adrFiles: r
   for (const file of source.files) {
     if (!SOURCE_EXT.test(file) || SKIPPED_PATH.test(file)) continue;
     const text = source.content(file);
-    if (text === undefined || !phrase.test(text)) continue;
+    // A file naming no phrase has no line to judge, so its judged lines are never asked for.
+    // `search`, unlike `phrase.test`, cannot read an unread file as the text "undefined".
+    if (text === undefined || text.search(phrase) === -1) continue;
     const lines = text.split('\n');
     const judged = source.judged(file);
     lines.forEach((line, i) => {
@@ -181,8 +184,9 @@ export const findUncited = (source: Source, opts: Options, git: Git, adrFiles: r
 /**
  * An ADR directory as the claiming files' paths spell it: `./docs//adr/`
  * is `docs/adr`, so an ADR citing itself is still recognised as itself.
+ * normalize leaves at most one trailing slash.
  */
-export const adrDirOf = (dir: string): string => posix.normalize(dir).replace(/\/+$/, '') || '.';
+export const adrDirOf = (dir: string): string => posix.normalize(dir).replace(/\/$/, '') || '.';
 
 /** Files (not directories) under the ADR directory, relative to the root. */
 export const listAdrs = (root: string, adrDir: string): string[] => {
@@ -195,7 +199,8 @@ export const readOrUndefined = (path: string): string | undefined => {
   try {
     return readFileSync(path, 'utf8');
   } catch (e) {
-    if (['ENOENT', 'ENOTDIR', 'EISDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) return undefined;
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR') return undefined;
     throw e;
   }
 };
@@ -203,7 +208,7 @@ export const readOrUndefined = (path: string): string | undefined => {
 export const formatClaims = (claims: readonly Claim[], opts: Options): { ok: boolean; out: string[]; err: string[] } => {
   if (claims.length === 0) return { ok: true, out: ['pariksha authority-citations: every authority claim cites an anchor'], err: [] };
   const err: string[] = [];
-  let last = '';
+  let last: string | undefined;
   for (const c of claims) {
     if (c.file !== last) err.push(`pariksha authority-citations: uncited authority claim(s) in ${c.file}:`);
     last = c.file;

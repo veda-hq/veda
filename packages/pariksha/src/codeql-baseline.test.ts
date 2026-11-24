@@ -94,6 +94,49 @@ describe('errorAlerts', () => {
     assert.deepEqual(errorAlerts(sarif([])), []);
   });
 
+  it('reads rule defaults from the driver and each extension, past parts that hold none', () => {
+    const at = (ruleId: string) => ({ ruleId, locations: [{ physicalLocation: { artifactLocation: { uri: `${ruleId}.ts` }, region: { startLine: 1 } } }] });
+    const alerts = errorAlerts({
+      runs: [
+        { tool: { driver: { rules: [{ id: 'd/error', defaultConfiguration: { level: 'error' } }] } }, results: [at('d/error')] },
+        {
+          tool: { driver: {}, extensions: [{}, { rules: [{ id: 'e/error', defaultConfiguration: { level: 'error' } }, { id: 'e/bare' }, { defaultConfiguration: { level: 'error' } }] }] },
+          results: [at('e/error'), at('e/bare')],
+        },
+        { tool: {}, results: [at('d/error')] },
+      ],
+    });
+    assert.deepEqual(
+      alerts.map((alert) => alert.path),
+      ['d/error.ts', 'e/error.ts'],
+    );
+  });
+
+  it('looks a result with no rule id up under the empty id, never under a rule that has no id', () => {
+    const empty = { tool: { driver: { rules: [{ id: '', defaultConfiguration: { level: 'error' } }] } } };
+    assert.deepEqual(errorAlerts({ runs: [empty] }), []);
+    assert.deepEqual(errorAlerts({ runs: [{ ...empty, results: [{}] }] }), [{ fingerprint: 'unknown|unknown|line:0', ruleId: 'unknown', path: 'unknown', line: 0, message: '' }]);
+    assert.deepEqual(errorAlerts({ runs: [{ tool: { driver: { rules: [{ defaultConfiguration: { level: 'error' } }] } }, results: [{}] }] }), []);
+  });
+
+  it('reads placeholders for a location that is empty or partial', () => {
+    const alerts = errorAlerts({
+      runs: [
+        {
+          results: [
+            { ruleId: 'r', level: 'error', locations: [] },
+            { ruleId: 'r', level: 'error', locations: [{ physicalLocation: { region: { startLine: 4 } } }] },
+            { ruleId: 'r', level: 'error', locations: [{ physicalLocation: { artifactLocation: { uri: 'a.ts' } } }] },
+          ],
+        },
+      ],
+    });
+    assert.deepEqual(
+      alerts.map((alert) => alert.fingerprint),
+      ['r|unknown|line:0', 'r|unknown|line:4', 'r|a.ts|line:0'],
+    );
+  });
+
   it('reads a result with no location, fingerprint or message by its rule and placeholders', () => {
     const alerts = errorAlerts({ runs: [{ results: [{ level: 'error' }] }, {}] });
     assert.deepEqual(alerts, [{ fingerprint: 'unknown|unknown|line:0', ruleId: 'unknown', path: 'unknown', line: 0, message: '' }]);
@@ -165,6 +208,18 @@ describe('toBaseline', () => {
       ['a:2', 'a:9', 'b:1', 'c:1'],
     );
     assert.match(baseline.description, /pariksha codeql-baseline --write; never add by hand\.$/);
+  });
+
+  it('orders alerts of one fingerprint by line, whichever comes first', () => {
+    const alert = (line: number): ErrorAlert => ({ fingerprint: 'a', ruleId: 'r', path: 'p', line, message: '' });
+    assert.deepEqual(
+      toBaseline([alert(3), alert(5)]).alerts.map((a) => a.line),
+      [3, 5],
+    );
+    assert.deepEqual(
+      toBaseline([alert(5), alert(3)]).alerts.map((a) => a.line),
+      [3, 5],
+    );
   });
 });
 
@@ -240,6 +295,14 @@ describe('runCodeqlBaseline', () => {
     writeFileSync(join(root, 'blocker'), 'a file where a folder must go');
     assert.throws(() => runCodeqlBaseline({ mode: 'write', sarif: file, root, baseline: 'blocker/b.json' }, out.io.out), /^Error: no baseline was written to blocker\/b\.json: E(EXIST|NOTDIR)/);
     assert.deepEqual(out.out, []);
+  });
+
+  it('keeps the failure it names as the cause', () => {
+    const root = temp();
+    assert.throws(
+      () => runCodeqlBaseline({ mode: 'check', sarif: join(root, 'none.sarif'), root, baseline: BASELINE_PATH }, capture().io.out),
+      (e: Error) => (e.cause as NodeJS.ErrnoException).code === 'ENOENT',
+    );
   });
 
   it('fails, not throws, a check of a log with no runs', () => {

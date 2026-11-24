@@ -14,7 +14,7 @@ describe('LOCAL_PATH', () => {
   });
 
   it('leaves alone what is not one', () => {
-    for (const line of ['/home/me', '/tmp/', '/var/', 'c:\\x', 'C:/x', 'https://example.com/a', 'src/a.ts', '~x']) {
+    for (const line of ['/home/me', '/tmp/', '/var/', 'c:\\x', 'C:/x', 'C:\\/x', 'D:\\/y', 'https://example.com/a', 'src/a.ts', '~x']) {
       assert.ok(!LOCAL_PATH.test(line), line);
     }
   });
@@ -46,6 +46,21 @@ describe('inBackticks', () => {
   it('reads a span ending a /tmp path as no span', () => {
     assert.equal(inBackticks('`/tmp/a`'), false);
     assert.equal(inBackticks('`/tmp/a/b`'), true);
+  });
+
+  it('runs /tmp, /var and /home paths to the next slash, whatever their length', () => {
+    assert.equal(inBackticks('`/tmp/ab`'), false);
+    assert.equal(inBackticks('`/var/ab`'), false);
+    assert.equal(inBackticks('`/var/ab/c`'), true);
+    assert.equal(inBackticks('`/home/ab/c`'), true);
+    assert.equal(LOCAL_PATH.exec('see /home/ab/c')?.[0], '/home/ab/');
+    assert.equal(LOCAL_PATH.exec('see /var/ab/c')?.[0], '/var/ab');
+    assert.equal(LOCAL_PATH.exec('see /tmp/ab/c')?.[0], '/tmp/ab');
+  });
+
+  it('needs an odd count of backticks before the path', () => {
+    assert.equal(inBackticks('``/Users/me/x`'), false);
+    assert.equal(inBackticks('```/Users/me/x`'), true);
   });
 
   it('tests only the first path on the line', () => {

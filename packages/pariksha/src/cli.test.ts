@@ -286,6 +286,22 @@ describe('main and the console', () => {
     assert.deepEqual(info.mock.calls.at(-1)?.arguments, ['out']);
     assert.deepEqual(error.mock.calls.at(-1)?.arguments, ['err']);
   });
+
+  it('writes raw text to the stream it names', (t) => {
+    // Spies that write through: the runner reads this file's results from stdout.
+    const stdout = t.mock.method(process.stdout, 'write');
+    const stderr = t.mock.method(process.stderr, 'write');
+    consoleIo.write?.('out', '# consoleIo writes out\n');
+    consoleIo.write?.('err', 'consoleIo writes err\n');
+    assert.deepEqual(
+      stdout.mock.calls.map((call) => call.arguments[0]).filter((text) => String(text).includes('consoleIo')),
+      ['# consoleIo writes out\n'],
+    );
+    assert.deepEqual(
+      stderr.mock.calls.map((call) => call.arguments[0]).filter((text) => String(text).includes('consoleIo')),
+      ['consoleIo writes err\n'],
+    );
+  });
 });
 
 describe('run: the flags each command takes', () => {
@@ -744,6 +760,210 @@ const pythonFloorRecorder = () => {
   };
   return { calls, python };
 };
+
+describe('run license-check: flags and exit codes', () => {
+  const settings = '{"allow": ["MIT"], "packages": {}}';
+  const listed = '{"MIT": [{"name": "a", "versions": ["1.0.0"]}]}';
+
+  it('refuses to run with no allow list, asking pnpm nothing', () => {
+    const asked: string[] = [];
+    const r = cli(['license-check', '--root', NOWHERE], {
+      licenses: (root) => {
+        asked.push(root);
+        return listed;
+      },
+    });
+    assert.deepEqual(r, {
+      code: 2,
+      out: [],
+      err: ['pariksha license-check: no allow list: name a settings file with --config or set checks.license-check in .pariksha.json; nothing was checked, so this is not a pass'],
+    });
+    assert.deepEqual(asked, []);
+  });
+
+  it('asks the runner it is given for the list at --root, and judges it by --config', () => {
+    const root = tree({ 'licences.json': settings }, false);
+    const asked: string[] = [];
+    const r = cli(['license-check', '--config', 'licences.json', '--root', root], {
+      licenses: (at) => {
+        asked.push(at);
+        return listed;
+      },
+    });
+    assert.deepEqual(r, { code: 0, out: ['license-check: 1 packages, every licence allowed exactly'], err: [] });
+    assert.deepEqual(asked, [root]);
+  });
+
+  it('reads a saved --report instead of asking the runner', () => {
+    const root = tree({ 'licences.json': settings, 'report.json': '{"GPL-3.0-only": [{"name": "b", "versions": ["2.0.0"]}]}' }, false);
+    const r = cli(['license-check', '--config', 'licences.json', '--report', join(root, 'report.json'), '--root', root], {
+      licenses: () => {
+        throw new Error('pnpm must not run');
+      },
+    });
+    assert.deepEqual(r, { code: 1, out: ['license-check: 1 of 1 packages have a licence not on the allow list:', '  b@2.0.0  GPL-3.0-only'], err: [] });
+  });
+
+  it('exits 2 on settings it cannot read, and on a runner that fails', () => {
+    const root = tree({ 'licences.json': '{"allow": []}', 'good.json': settings }, false);
+    const bad = cli(['license-check', '--config', 'licences.json', '--root', root], { licenses: () => listed });
+    assert.equal(bad.code, 2);
+    assert.deepEqual(bad.err, ['pariksha license-check: "allow" must be a non-empty list of licence names, none blank or with surrounding spaces; nothing was checked, so this is not a pass']);
+    const failing = cli(['license-check', '--config', 'good.json', '--root', root], {
+      licenses: () => {
+        throw new Error('pnpm is not installed');
+      },
+    });
+    assert.deepEqual(failing, { code: 2, out: [], err: ['pariksha license-check: cannot read pnpm licenses list: pnpm is not installed; nothing was checked, so this is not a pass'] });
+  });
+});
+
+describe('run codeql-baseline: flags and exit codes', () => {
+  const log = '{"runs": [{"results": [{"ruleId": "js/x", "level": "error", "locations": [{"physicalLocation": {"artifactLocation": {"uri": "a.ts"}, "region": {"startLine": 2}}}]}]}]}';
+
+  it('asks for exactly one of --check and --write', () => {
+    assertUsage(cli(['codeql-baseline', '--root', NOWHERE]));
+    assertUsage(cli(['codeql-baseline', '--check', 'a.sarif', '--write', 'a.sarif']));
+  });
+
+  it('writes with --write and checks with --check, under --root', () => {
+    const root = tree({ 'scan.sarif': log }, false);
+    assert.deepEqual(cli(['codeql-baseline', '--write', join(root, 'scan.sarif'), '--root', root, '--baseline', 'b.json']), { code: 0, out: ['Wrote 1 alert(s) to b.json'], err: [] });
+    assert.deepEqual(cli(['codeql-baseline', '--check', join(root, 'scan.sarif'), '--root', root, '--baseline', 'b.json']), { code: 0, out: ['CodeQL: 1 error-level alert(s), 1 in the baseline'], err: [] });
+  });
+
+  it('reads the baseline entry of .pariksha.json from the config file’s folder', () => {
+    const root = tree({ 'scan.sarif': log, 'cfg/settings.json': '{"checks": {"codeql-baseline": {"baseline": "security/b.json"}}}' }, false);
+    const env = { PARIKSHA_CONFIG: join(root, 'cfg/settings.json') };
+    assert.deepEqual(cli(['codeql-baseline', '--write', join(root, 'scan.sarif'), '--root', root], {}, env), { code: 0, out: ['Wrote 1 alert(s) to cfg/security/b.json'], err: [] });
+    assert.match(readFileSync(join(root, 'cfg/security/b.json'), 'utf8'), /"fingerprint": "js\/x\|a\.ts\|line:2"/);
+  });
+
+  it('exits 2, naming what it could not read', () => {
+    const root = tree({ 'scan.sarif': log }, false);
+    const r = cli(['codeql-baseline', '--check', join(root, 'scan.sarif'), '--root', root, '--baseline', 'none.json']);
+    assert.equal(r.code, 2);
+    assert.deepEqual(r.out, []);
+    assert.deepEqual(r.err, [`pariksha codeql-baseline: cannot read the baseline none.json: ENOENT: no such file or directory, open '${join(root, 'none.json')}'; nothing was checked, so this is not a pass`]);
+  });
+});
+
+describe('run pr-title: flags and exit codes', () => {
+  it('asks the commitlint it is given at --root, with the default shape when no settings are named', async () => {
+    const asked: string[] = [];
+    const commitlint = async (root: string): Promise<string> => {
+      asked.push(root);
+      return 'no commitlint here';
+    };
+    const r = await cliAsync(['pr-title', '--root', NOWHERE], { commitlint }, { PARIKSHA_CONFIG: NO_PROJECT, PR_TITLE: 'fix: x' });
+    assert.deepEqual(r, { code: 2, out: [], err: ['pariksha pr-title: no commitlint here'] });
+    assert.deepEqual(asked, [NOWHERE]);
+  });
+
+  it('reads the settings --config names, and prints what the check reports on stdout', async () => {
+    const root = tree({ 'title.json': '{"skipHeadPrefixes": ["bot/"]}' }, false);
+    const r = await cliAsync(['pr-title', '--config', 'title.json', '--root', root], {}, { PARIKSHA_CONFIG: NO_PROJECT, PR_TITLE: 'anything', HEAD_REF: 'bot/1' });
+    assert.deepEqual(r, { code: 0, out: ['pariksha pr-title: head branch bot/1 starts with bot/, so its title is not checked'], err: [] });
+  });
+
+  it('exits 2 on settings it cannot read', async () => {
+    const root = tree({ 'title.json': '{"shape": []}' }, false);
+    const r = await cliAsync(['pr-title', '--config', 'title.json', '--root', root], {}, { PARIKSHA_CONFIG: NO_PROJECT, PR_TITLE: 'fix: x' });
+    assert.deepEqual(r, { code: 2, out: [], err: ['pariksha pr-title: "shape" must be an object of gitmoji, types and summaryMax; nothing was checked, so this is not a pass'] });
+  });
+});
+
+describe('run bp-rules: flags and output', () => {
+  const corpus = (index: string): string =>
+    tree(
+      {
+        'bp.json': '{"rules": "docs/bp", "index": "docs/BP.md", "idPrefix": "BP"}',
+        'docs/bp/security/BP-SEC-001.md': ['---', 'id: BP-SEC-001', 'title: Pin every action', 'category: security', 'severity: high', 'enforcement: guidance', 'verify_by: 2026-12-01', '---', '', 'Pin each action.', ''].join('\n'),
+        'docs/BP.md': index,
+      },
+      false,
+    );
+
+  it('refuses to run with no settings', () => {
+    assert.deepEqual(cli(['bp-rules', '--next-id', 'SEC', '--root', NOWHERE]), {
+      code: 2,
+      out: [],
+      err: ['pariksha bp-rules: no settings: name a settings file with --config or set checks.bp-rules in .pariksha.json; nothing was checked, so this is not a pass'],
+    });
+  });
+
+  it('exits 2 on settings it cannot read', () => {
+    const r = cli(['bp-rules', '--next-id', 'SEC', '--config', 'none.json', '--root', NOWHERE]);
+    assert.equal(r.code, 2);
+    assert.deepEqual(r.out, []);
+    assert.deepEqual(r.err, [`pariksha bp-rules: ENOENT: no such file or directory, open '${join(NOWHERE, 'none.json')}'; nothing was checked, so this is not a pass`]);
+  });
+
+  it('writes its text raw when the Io can, and a line at a time on the right stream when not', () => {
+    const root = corpus('# Rules\n');
+    const written: string[] = [];
+    const raw = cli(['bp-rules', '--next-id', 'SEC', '--config', 'bp.json', '--root', root], { write: (stream, text) => written.push(`${stream}:${text}`) });
+    assert.deepEqual(raw, { code: 0, out: [], err: [] });
+    assert.deepEqual(written, ['out:{\n  "prefix": "SEC",\n  "currentMax": 1,\n  "nextId": "BP-SEC-002"\n}\n', 'err:']);
+    assert.deepEqual(cli(['bp-rules', '--next-id', 'SEC', '--config', 'bp.json', '--root', root]), { code: 0, out: ['{', '  "prefix": "SEC",', '  "currentMax": 1,', '  "nextId": "BP-SEC-002"', '}'], err: [] });
+    const stale = cli(['bp-rules', '--check-index', '--config', 'bp.json', '--root', root]);
+    assert.equal(stale.code, 1);
+    assert.deepEqual(stale.err, ['', '❌ BP.md Summary is stale (1 mismatch(es)). Recompute it: mkdir -p .tmp && pariksha bp-rules --regenerate-index > .tmp/BP.md && mv .tmp/BP.md docs/BP.md']);
+  });
+
+  it('dates --due by the clock when no --today is given', () => {
+    const root = tree(
+      {
+        'bp.json': '{"rules": "docs/bp", "index": "docs/BP.md", "idPrefix": "BP"}',
+        'docs/bp/security/BP-SEC-001.md': ['---', 'id: BP-SEC-001', 'title: Pin every action', 'category: security', 'severity: high', 'enforcement: guidance', 'verify_by: 2000-01-01', '---', '', 'Pin each action.', ''].join('\n'),
+        'docs/BP.md': '# Rules\n',
+      },
+      false,
+    );
+    const before = new Date().toISOString().slice(0, 10);
+    const r = cli(['bp-rules', '--due', '--config', 'bp.json', '--root', root]);
+    const after = new Date().toISOString().slice(0, 10);
+    assert.equal(r.code, 0);
+    assert.deepEqual(r.err, []);
+    const report = JSON.parse(r.out.join('\n')) as { today: string; staleCount: number };
+    assert.ok(report.today === before || report.today === after, `${report.today} is neither ${before} nor ${after}`);
+    assert.equal(report.staleCount, 1);
+  });
+});
+
+describe('run own-provenance: flags and exit codes', () => {
+  it('refuses to run with no settings', async () => {
+    assert.deepEqual(await cliAsync(['own-provenance', '--root', NOWHERE]), {
+      code: 2,
+      out: [],
+      err: ['own-provenance: no settings: name a settings file with --config or set checks.own-provenance in .pariksha.json; nothing was checked, so this is not a pass'],
+    });
+  });
+
+  it('exits 2 on settings it cannot read', async () => {
+    const r = await cliAsync(['own-provenance', '--config', 'none.json', '--root', NOWHERE]);
+    assert.deepEqual(r, { code: 2, out: [], err: [`own-provenance: ENOENT: no such file or directory, open '${join(NOWHERE, 'none.json')}'; nothing was checked, so this is not a pass`] });
+  });
+
+  it('asks the registry it is given about each package the lockfile under --root resolves', async () => {
+    const root = tree(
+      {
+        'provenance.json': '{"scope": "@veda-hq/", "repository": "https://github.com/veda-hq/veda", "workflow": ".github/workflows/release.yml"}',
+        'pnpm-lock.yaml': ['packages:', '', "  '@veda-hq/kavach@0.6.0':", '    resolution: {integrity: sha512-x}', ''].join('\n'),
+      },
+      false,
+    );
+    const asked: string[] = [];
+    const fetchJson = async (url: string): Promise<unknown> => {
+      asked.push(url);
+      throw new Error('HTTP 404');
+    };
+    const r = await cliAsync(['own-provenance', '--config', 'provenance.json', '--root', root], { provenance: { fetchJson } });
+    assert.equal(r.code, 1);
+    assert.equal(r.err[0], 'own-provenance: @veda-hq/kavach@0.6.0: its attestations could not be read (HTTP 404)');
+    assert.deepEqual(asked, ['https://registry.npmjs.org/-/npm/v1/attestations/@veda-hq%2fkavach@0.6.0']);
+  });
+});
 
 describe('run python-floor', () => {
   it('refuses a missing --python or --floor-file with the usage, running nothing', () => {

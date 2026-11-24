@@ -31,25 +31,29 @@ export const parseDenyList = (text: string): Set<string> => {
 /** A file is text unless it holds a NUL byte. */
 export const isText = (bytes: Uint8Array): boolean => !bytes.includes(0);
 
-/** Every word of every file whose hash is denied, by file and line. */
+/** `f`, asked once per distinct word: a repeated word gets the answer `f` gave it the first time. */
+export const once = <T>(f: (word: string) => T): ((word: string) => T) => {
+  const seen = new Map<string, T>();
+  return (word) => {
+    if (!seen.has(word)) seen.set(word, f(word));
+    return seen.get(word) as T;
+  };
+};
+
+/** Every word of every file whose hash is denied, by file and line. Each distinct word is hashed once. */
 export const findDenied = (files: readonly TrackedFile[], deny: ReadonlySet<string>): Hit[] => {
   const hits: Hit[] = [];
-  const seen = new Map<string, boolean>();
-  const denied = (word: string): boolean => {
-    let d = seen.get(word);
-    if (d === undefined) {
-      d = deny.has(hash(word));
-      seen.set(word, d);
-    }
-    return d;
-  };
+  const denied = once((word) => deny.has(hash(word)));
   for (const file of files) {
     // A path names things too: a file called after a denied name is refused.
     const lines = [file.path, ...file.text.split('\n')];
     lines.forEach((text, i) => {
-      for (const word of text.toLowerCase().match(/[a-z0-9]+/g) ?? []) {
-        if (denied(word)) hits.push({ file: file.path, line: i, word });
-      }
+      text
+        .toLowerCase()
+        .match(/[a-z0-9]+/g)
+        ?.forEach((word) => {
+          if (denied(word)) hits.push({ file: file.path, line: i, word });
+        });
     });
   }
   return hits;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { findDenied, hash, isText, parseDenyList } from './boundary.ts';
+import { findDenied, hash, isText, once, parseDenyList } from './boundary.ts';
 
 // Test words only: the real deny list is the repository's own.
 const ACME = hash('acme');
@@ -20,12 +20,40 @@ describe('parseDenyList', () => {
   it('refuses a line that is not a hash', () => {
     assert.throws(() => parseDenyList('acme\n'), /not a SHA-256 hash: "acme"/);
   });
+  it('refuses a hash with anything before or after it', () => {
+    const acme = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    assert.throws(() => parseDenyList(`z${acme}\n`), { message: `not a SHA-256 hash: "z${acme}"` });
+    assert.throws(() => parseDenyList(`${acme}0\n`), { message: `not a SHA-256 hash: "${acme}0"` });
+    assert.deepEqual([...parseDenyList(`${acme}\n`)], [acme]);
+  });
 });
 
 describe('isText', () => {
   it('is false for bytes with a NUL', () => {
     assert.equal(isText(new Uint8Array([104, 105])), true);
     assert.equal(isText(new Uint8Array([104, 0, 105])), false);
+  });
+});
+
+describe('once', () => {
+  it('asks f once per distinct word, and gives every repeat its first answer', () => {
+    const asked: string[] = [];
+    const lengthOf = once((word) => {
+      asked.push(word);
+      return word.length;
+    });
+    assert.deepEqual(['ab', 'c', 'ab', 'ab', 'c', 'def'].map(lengthOf), [2, 1, 2, 2, 1, 3]);
+    assert.deepEqual(asked, ['ab', 'c', 'def']);
+  });
+
+  it('keeps an answer that is falsy', () => {
+    let calls = 0;
+    const no = once(() => {
+      calls += 1;
+      return false;
+    });
+    assert.deepEqual([no('a'), no('a')], [false, false]);
+    assert.equal(calls, 1);
   });
 });
 
@@ -51,6 +79,10 @@ describe('findDenied', () => {
     assert.deepEqual(findDenied([{ path: 'docs/acme.md', text: 'clean\n' }], deny), [
       { file: 'docs/acme.md', line: 0, word: 'acme' },
     ]);
+  });
+
+  it('reads past a line with no word', () => {
+    assert.deepEqual(findDenied([{ path: 'a.md', text: '---\n\nACME' }], deny), [{ file: 'a.md', line: 3, word: 'acme' }]);
   });
 
   it('finds nothing in clean files or with an empty list', () => {

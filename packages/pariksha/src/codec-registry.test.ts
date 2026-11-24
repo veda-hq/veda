@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { covered, discover, expectedBaseline, fileOf, FORMATS, findings, formatFindings, checkWiring, pairsIn, parseBaseline, parseConfig, type Config, type Discovery } from './codec-registry.ts';
+import { covered, discover, expectedBaseline, fileOf, FORMATS, findings, formatFindings, checkWiring, pairsIn, parseBaseline, parseConfig, scanSource, type Config, type Discovery } from './codec-registry.ts';
 import { gitAt, trackedUnder } from './git.ts';
 import { audit } from './registry-ratchet.ts';
 import { loadTypescript, type Ts } from './typescript.ts';
@@ -212,6 +212,93 @@ describe('discovery: what counts', () => {
   });
 });
 
+describe('discovery: what one module shows', () => {
+  it('reads a source file by its last extension, and none a test, declaration or fixture tree holds', () => {
+    const yaml = "export const D = '---';\n";
+    assert.deepEqual(
+      scanFiles(
+        {
+          'scripts/a.mts': yaml,
+          'scripts/b.d.tsx': yaml,
+          'scripts/c.ts.orig': yaml,
+          'scripts/d.test.ts': yaml,
+          'scripts/e.spec.js': yaml,
+          'scripts/__tests__/f.ts': yaml,
+          'scripts/__mocks__/g.ts': yaml,
+          'scripts/__fixtures__/h.ts': yaml,
+          'scripts/fixture/i.ts': yaml,
+          'scripts/fixtures/j.ts': yaml,
+          'fixtures/k.ts': yaml,
+          'fixture/l.ts': yaml,
+        },
+        ['scripts', 'fixtures', 'fixture'],
+      ).handParsers,
+      ['scripts/a.mts#yaml', 'scripts/b.d.tsx#yaml'],
+    );
+  });
+
+  it('reports each format its regexes and strings show, and nothing for other text', () => {
+    assert.deepEqual([...scanSource(ts, 'x.ts', 'const r = /^---$/;\n').formats], ['yaml']);
+    assert.deepEqual([...scanSource(ts, 'x.ts', "const s = 'hello';\n").formats], []);
+    assert.deepEqual([...scanSource(ts, 'x.ts', 'const r = /[</d]/;\n').formats], ['html']);
+    assert.deepEqual([...scanSource(ts, 'x.ts', 'const r = /[</]/;\n').formats], []);
+  });
+
+  it('reads shell from a tokenizer of quotes and backslashes in a module about tokenizing', () => {
+    const quotes = `const q = ["'", '"', '\\\\'];\n`;
+    assert.deepEqual([...scanSource(ts, 'x.ts', `// tokenize words\n${quotes}`).formats], ['shell']);
+    assert.deepEqual([...scanSource(ts, 'x.ts', `// tokenise words\n${quotes}`).formats], ['shell']);
+    assert.deepEqual([...scanSource(ts, 'x.ts', `// shell words\nconst q = ["a", 'b', 'c'];\n`).formats], []);
+  });
+
+  it('reads CSV only from a split on a comma literal in a module about CSV', () => {
+    const csv = (call: string): string[] => [...scanSource(ts, 'x.ts', `// csv rows\nexport const r = (l: string) => ${call};\n`).formats];
+    assert.deepEqual(csv("l.split(',')"), ['csv']);
+    for (const call of ['l.split()', 'l.split(`,`)', "l.split(';')", "split(',')", 'l.split(sep)']) assert.deepEqual(csv(call), [], call);
+  });
+
+  it('reads no export list that re-exports from another module, and no destructured or bare declaration', () => {
+    assert.deepEqual(scanSource(ts, 'x.ts', "function writeRow() {}\nfunction readRow() {}\nexport { writeRow, readRow } from './y';\n").exported, []);
+    assert.deepEqual(scanSource(ts, 'x.ts', 'export const { length } = () => 1;\nexport let pending;\n').exported, []);
+    const bare = scanSource(ts, 'x.ts', "import { createHash } from 'node:crypto';\nexport let SCHEMA;\nexport const k = () => createHash('sha256');\n");
+    assert.deepEqual([bare.createsHash, bare.schemaMarked], [true, false]);
+  });
+
+  it('lists the exported functions, an async one and a listed one included, and no other name', () => {
+    const scanned = scanSource(ts, 'x.ts', 'function S() {}\nexport async function writeRow() {}\nfunction readRow() {}\nconst other = 1;\nexport { readRow, other };\n');
+    assert.deepEqual(scanned.exported, ['writeRow', 'readRow']);
+    assert.deepEqual(scanSource(ts, 'x.ts', 'function S() {}\nfunction t() {}\n').exported, []);
+    // A modifier that is not `export` exports nothing.
+    assert.deepEqual(scanSource(ts, 'x.ts', 'async function writeRow() {}\ndeclare const readRow = () => 1;\n').exported, []);
+  });
+
+  it('pairs a producer and a consumer only by whole names, and nothing that is neither', () => {
+    assert.deepEqual(pairsIn('m.ts', ['rewriteRow', 'readRow']), []);
+    assert.deepEqual(pairsIn('m.ts', ['writeRow$', 'readRow']), []);
+    assert.deepEqual(pairsIn('m.ts', ['writeRow', 'unreadRow']), []);
+    assert.deepEqual(pairsIn('m.ts', ['writeRow', 'readRow$']), []);
+    assert.deepEqual(pairsIn('m.ts', ['writeLone']), []);
+    assert.deepEqual(pairsIn('m.ts', ['helper', 'other']), []);
+    assert.deepEqual(pairsIn('m.ts', ['readRow', 'helper', 'writeRow']), ['m.ts#writeRow->readRow']);
+  });
+
+  it('sorts what it discovers, whatever order the files come in', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'pariksha-codec-order-'));
+    try {
+      put(repo, {
+        'scripts/b.ts': "export const D = '---';\nexport function writeRow() {}\nexport function readRow() {}\n",
+        'scripts/a.ts': "export const D = '---';\nexport const F = '```';\nexport function writeCell() {}\nexport function readCell() {}\n",
+      });
+      assert.deepEqual(discover(ts, repo, ['scripts/b.ts', 'scripts/a.ts'], ALL), {
+        handParsers: ['scripts/a.ts#markdown', 'scripts/a.ts#yaml', 'scripts/b.ts#yaml'],
+        pairs: ['scripts/a.ts#writeCell->readCell', 'scripts/b.ts#writeRow->readRow'],
+      });
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('guard removal flips it', () => {
   const found: Discovery = { handParsers: ['m.ts#yaml'], pairs: ['m.ts#writeA->readA'] };
 
@@ -352,6 +439,64 @@ describe('the config', () => {
     });
   }
 
+  it('names each refusal in full, with nothing before it', () => {
+    const md = { source: 'scripts/md.ts', formats: ['markdown'], suite: 'scripts/md.differential.properties.test.ts', outOfModel: 'lists' };
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ oracles: 'x' }, '"oracles" must be an object'],
+      [{ oracles: { json: 'x' } }, 'oracles: "json" is not a format discovery reads (markdown, html, yaml, csv, shell, ts)'],
+      [{ oracles: { markdown: '' } }, 'oracles.markdown must be a module name'],
+      [{ oracles: { markdown: 1 } }, 'oracles.markdown must be a module name'],
+      [{ surfaces: 'x' }, '"surfaces" must be a list'],
+      [{ surfaces: [] }, '"surfaces" is empty; name the globs a property suite must sit on, or null to check no surface'],
+      [{ surfaces: [''] }, 'surfaces[0] must be a non-empty glob'],
+      [{ surfaces: ['a', 2] }, 'surfaces[1] must be a non-empty glob'],
+      [{ markers: 'x' }, '"markers" must be an object'],
+      [{ markers: { lineEndings: 'b', golden: 'c' } }, 'markers: "seed" must be a non-empty string'],
+      [{ markers: { seed: 'a', golden: 'c' } }, 'markers: "lineEndings" must be a non-empty string'],
+      [{ markers: { seed: 'a', lineEndings: 'b' } }, 'markers: "golden" must be a non-empty string'],
+      [{ handParsers: 'x' }, '"handParsers" must be a list'],
+      [{ handParsers: [1] }, 'handParsers[0] must be an object'],
+      [{ handParsers: [{ ...md, formats: ['markdown', 'json'] }] }, 'handParsers[0]: "formats" must be a non-empty list of markdown, html, yaml, csv, shell, ts'],
+      [{ pairs: 'x' }, '"pairs" must be a list'],
+      [{ pairs: [1] }, 'pairs[0] must be an object'],
+      [{ exempt: 'x' }, '"exempt" must be a list'],
+      [{ exempt: [1] }, 'exempt[0] must be an object'],
+      [{ exempt: [{ id: 'scripts/row.ts#writeRow->readRow', reason: 'r' }] }, '"scripts/row.ts#writeRow->readRow" is registered or exempt more than once'],
+      [{ baseline: 1 }, '"baseline" must be a non-empty string'],
+      [{ roots: [] }, '"roots" is empty, so nothing would be read'],
+      [{ collected: [] }, '"collected" is empty, so nothing would match'],
+      [{ library: ' ' }, '"library" must be a non-empty string'],
+      [{ bogus: 1 }, 'unknown key "bogus"'],
+    ];
+    for (const [over, message] of cases) {
+      assert.throws(() => parseConfig(JSON.stringify(config(over))), { message }, message);
+    }
+  });
+
+  it('refuses a pair id with anything before its path or after its suffix', () => {
+    const cases: Array<[string, string]> = [
+      ['a.ts#digest.bak', 'pairs[0]: "a.ts#digest.bak" is not path#producer->consumer or path#digest'],
+      ['a.ts#x#digest', 'pairs[0]: "a.ts#x#digest" is not path#producer->consumer or path#digest'],
+      ['#digest', 'pairs[0]: "#digest" is not path#producer->consumer or path#digest'],
+    ];
+    for (const [id, message] of cases) {
+      assert.throws(() => parseConfig(JSON.stringify(config({ pairs: [{ id, kind: 'golden', suite: 's.ts' }] }))), { message }, id);
+    }
+  });
+
+  it('keeps every field a hand parser and a pair name, motivations included', () => {
+    const c = parseConfig(
+      JSON.stringify(
+        config({
+          handParsers: [{ source: 'scripts/md.ts', formats: ['markdown'], suite: 'scripts/md.test.ts', outOfModel: 'lists', lfOnly: 'bash reads LF', motivatedBy: 'M1' }],
+          pairs: [{ id: 'scripts/row.ts#writeRow->readRow', kind: 'round-trip', suite: 'scripts/row.test.ts', motivatedBy: 'M2' }],
+        }),
+      ),
+    );
+    assert.deepEqual(c.handParsers, [{ source: 'scripts/md.ts', formats: ['markdown'], suite: 'scripts/md.test.ts', outOfModel: 'lists', lfOnly: 'bash reads LF', motivatedBy: 'M1' }]);
+    assert.deepEqual(c.pairs, [{ id: 'scripts/row.ts#writeRow->readRow', kind: 'round-trip', suite: 'scripts/row.test.ts', motivatedBy: 'M2' }]);
+  });
+
   it('refuses text that is not a JSON object', () => {
     assert.throws(() => parseConfig('nope'), /not JSON/);
     assert.throws(() => parseConfig('[]'), /the config must be a JSON object/);
@@ -443,6 +588,22 @@ describe('suite wiring', () => {
     assert.deepEqual(checkWiring(ts, root, parsed({ surfaces: null, pairs: [{ id: 'scripts/row.ts#writeRow->readRow', kind: 'round-trip', suite: 'scripts/row.test.ts' }] })), []);
   });
 
+  it('passes a suite on any one of several surfaces, and lists them all for one on none', () => {
+    const root = make({ 'scripts/row.test.ts': PAIR });
+    const surfaces = ['docs/**', 'scripts/**/*.{differential,roundtrip}.properties.test.ts'];
+    assert.deepEqual(checkWiring(ts, root, parsed({ surfaces })), []);
+    const off = parsed({
+      surfaces,
+      handParsers: [{ source: 'scripts/md.ts', formats: ['markdown'], suite: 'scripts/md.test.ts', outOfModel: 'x' }],
+      pairs: [{ id: 'scripts/row.ts#writeRow->readRow', kind: 'round-trip', suite: 'scripts/row.test.ts' }],
+    });
+    assert.deepEqual(checkWiring(ts, root, off), [
+      'hand parser scripts/md.ts: scripts/md.test.ts is not on a property-suite surface (docs/**, scripts/**/*.{differential,roundtrip}.properties.test.ts)',
+      'hand parser scripts/md.ts: the suite scripts/md.test.ts does not exist',
+      'pair scripts/row.ts#writeRow->readRow: scripts/row.test.ts is not on a property-suite surface (docs/**, scripts/**/*.{differential,roundtrip}.properties.test.ts)',
+    ]);
+  });
+
   it('names no repository’s check ids in its messages, only the kind', () => {
     const root = make({ 'scripts/md.differential.properties.test.ts': '' });
     for (const line of checkWiring(ts, root, parsed())) assert.match(line, /^(?:hand parser|pair) scripts\//);
@@ -462,6 +623,19 @@ describe('findings', () => {
       'scripts/old.ts#yaml: in baseline.json, but registered, exempt, gone or in the wrong list; remove it from the baseline',
       'scripts/old.ts#yaml: added to baseline.json since the merge base; the baseline only shrinks, so register a suite instead',
     ]);
+  });
+
+  it('names nothing for an exempt id discovery still finds', () => {
+    const exempt = parsed({ handParsers: [], pairs: [], exempt: [{ id: 'scripts/a.ts#yaml', reason: 'r' }, { id: 'scripts/b.ts#digest', reason: 'r' }] });
+    assert.deepEqual(findings(ts, root, exempt, { handParsers: ['scripts/a.ts#yaml'], pairs: ['scripts/b.ts#digest'] }, { handParsers: [], pairs: [] }, []), []);
+  });
+
+  it('counts both baselined lists in its summary', () => {
+    const found = { handParsers: ['a#yaml', 'b#yaml'], pairs: ['c#digest', 'd#digest', 'e#digest'] };
+    assert.deepEqual(formatFindings([], found, { handParsers: ['a#yaml', 'b#yaml'], pairs: ['c#digest', 'd#digest', 'e#digest'] }, [], false).out, [
+      'pariksha codec-registry: 2 hand parser(s) and 3 pair(s) discovered, each registered, exempt or among the 5 baselined',
+    ]);
+    assert.deepEqual(formatFindings([], found, { pairs: ['c#digest'] }, [], false).out, ['pariksha codec-registry: 2 hand parser(s) and 3 pair(s) discovered, each registered, exempt or among the 1 baselined']);
   });
 
   it('checks the catalogue examples when the config names them', () => {

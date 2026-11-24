@@ -106,7 +106,7 @@ export const fileOf = (id: string): string => {
   return hash === -1 ? id : id.slice(0, hash);
 };
 
-const isFormat = (f: unknown): f is Format => typeof f === 'string' && (FORMATS as readonly string[]).includes(f);
+const isFormat = (f: unknown): f is Format => (FORMATS as readonly unknown[]).includes(f);
 
 /** The config a JSON text names; throws naming the first bad key. */
 export const parseConfig = (source: string): Config => {
@@ -143,7 +143,8 @@ export const parseConfig = (source: string): Config => {
       source: path(e, 'source', where),
       formats,
       suite: path(e, 'suite', where),
-      outOfModel: note(e, 'outOfModel', where, min, true) ?? '',
+      // Required, so note gives a string or throws.
+      outOfModel: note(e, 'outOfModel', where, min, true) as string,
       lfOnly: note(e, 'lfOnly', where, min, false),
       motivatedBy: optionalText(e, 'motivatedBy', where),
     };
@@ -253,7 +254,7 @@ export const scanSource = (ts: Ts, file: string, source: string): Scan => {
   const functions = new Set<string>();
   /** `export { local as name }` entries, as [local, name]. */
   const listed: Array<readonly [string, string]> = [];
-  const isExported = (node: TS.Node): boolean => ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+  const isExported = (node: TS.FunctionDeclaration | TS.VariableStatement): boolean => ts.getModifiers(node)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) === true;
   const visit = (node: TS.Node): void => {
     if (ts.isRegularExpressionLiteral(node)) {
       const body = node.text.slice(1, node.text.lastIndexOf('/'));
@@ -276,10 +277,13 @@ export const scanSource = (ts: Ts, file: string, source: string): Scan => {
     } else if (ts.isFunctionDeclaration(node) && node.name) {
       functions.add(node.name.text);
       if (isExported(node)) exported.push(node.name.text);
-    } else if (ts.isExportDeclaration(node) && !node.isTypeOnly && node.moduleSpecifier === undefined && node.exportClause !== undefined && ts.isNamedExports(node.exportClause)) {
+    } else if (ts.isExportDeclaration(node) && !node.isTypeOnly && node.moduleSpecifier === undefined) {
+      // With no module specifier, an export declaration is a list of names:
+      // `export *` and `export * as ns` both need a `from`.
+      const clause = node.exportClause as TS.NamedExports;
       // `export { writeEntry, readEntry as read }`: read once every binding is known, below.
       // `export { type writeEntry }` exports no value, so it makes no pair.
-      for (const element of node.exportClause.elements) if (!element.isTypeOnly) listed.push([(element.propertyName ?? element.name).text, element.name.text]);
+      for (const element of clause.elements) if (!element.isTypeOnly) listed.push([(element.propertyName ?? element.name).text, element.name.text]);
     } else if (ts.isVariableStatement(node)) {
       for (const declaration of node.declarationList.declarations) {
         if (!ts.isIdentifier(declaration.name)) continue;
@@ -308,18 +312,13 @@ const CONSUMER = /^(?:parse|read|decode|load)([A-Z]\w*)$/;
 
 /** Same-module producer/consumer pairs among exported names. */
 export const pairsIn = (file: string, exported: readonly string[]): string[] => {
-  const consumers = new Map<string, string[]>();
-  for (const name of exported) {
-    const stem = CONSUMER.exec(name)?.[1];
-    if (stem !== undefined) consumers.set(stem, [...(consumers.get(stem) ?? []), name]);
-  }
-  const out: string[] = [];
-  for (const name of exported) {
+  const consumers = exported.map((name) => ({ name, stem: CONSUMER.exec(name)?.[1] }));
+  return exported.flatMap((name) => {
     const stem = PRODUCER.exec(name)?.[1];
-    if (stem === undefined) continue;
-    for (const consumer of consumers.get(stem) ?? []) out.push(`${file}#${name}->${consumer}`);
-  }
-  return out;
+    // A name that is no producer pairs with nothing, not with every name that is no consumer.
+    if (stem === undefined) return [];
+    return consumers.filter((consumer) => consumer.stem === stem).map((consumer) => `${file}#${name}->${consumer.name}`);
+  });
 };
 
 export type Discovery = {
@@ -336,7 +335,8 @@ export const discover = (ts: Ts, root: string, files: readonly string[], formats
   for (const file of files) {
     if (!SOURCE.test(file) || NOT_SOURCE.test(file)) continue;
     const scan = scanSource(ts, file, readFileSync(join(root, file), 'utf8'));
-    for (const format of [...scan.formats].sort()) if (formats.has(format)) handParsers.push(`${file}#${format}`);
+    // Sorted once, below.
+    for (const format of scan.formats) if (formats.has(format)) handParsers.push(`${file}#${format}`);
     pairs.push(...pairsIn(file, scan.exported));
     if (scan.createsHash && scan.schemaMarked) pairs.push(`${file}#digest`);
   }
@@ -358,8 +358,12 @@ export const expectedBaseline = (found: Discovery, cover: ReadonlySet<string>): 
 /** Findings about the registered suites: each exists where a runner collects it and holds what its kind needs. */
 export const checkWiring = (ts: Ts, root: string, config: Config): string[] => {
   const out: string[] = [];
-  const surfaces = config.surfaces ?? [];
-  const onSurface = (suite: string): boolean => config.surfaces === undefined || surfaces.some((g) => matchesGlob(suite, g));
+  /** Why `suite` sits on no property-suite surface; undefined when it sits on one, or when the check is opted out. */
+  const offSurface = (suite: string): string | undefined => {
+    const surfaces = config.surfaces;
+    if (surfaces === undefined || surfaces.some((g) => matchesGlob(suite, g))) return undefined;
+    return `${suite} is not on a property-suite surface (${surfaces.join(', ')})`;
+  };
   const common = (what: string, source: string, suite: string): { body: string; imports: string[] } | undefined => {
     if (!isFile(root, source)) out.push(`${what}: ${source} does not exist`);
     if (!isCollected(config.collected, suite)) out.push(`${what}: no runner collects ${suite}`);
@@ -374,13 +378,15 @@ export const checkWiring = (ts: Ts, root: string, config: Config): string[] => {
   };
   for (const entry of config.handParsers) {
     const what = `hand parser ${entry.source}`;
-    if (!onSurface(entry.suite)) out.push(`${what}: ${entry.suite} is not on a property-suite surface (${surfaces.join(', ')})`);
+    const off = offSurface(entry.suite);
+    if (off !== undefined) out.push(`${what}: ${off}`);
     const suite = common(what, entry.source, entry.suite);
     if (suite === undefined) continue;
     const { body, imports } = suite;
     if (!importsPackage(imports, config.library)) out.push(`${what}: ${entry.suite} does not import ${config.library}`);
     for (const format of entry.formats) {
-      const oracle = config.oracles[format] ?? '';
+      // parseConfig refuses a hand parser in a format with no oracle.
+      const oracle = config.oracles[format] as string;
       if (!namesModule(body, oracle)) out.push(`${what}: ${entry.suite} does not import ${oracle}, the ${format} reference`);
     }
     if (!body.includes(config.markers.seed)) out.push(`${what}: ${entry.suite} runs no fixed seed (${config.markers.seed})`);
@@ -389,7 +395,8 @@ export const checkWiring = (ts: Ts, root: string, config: Config): string[] => {
   for (const pair of config.pairs) {
     const what = `pair ${pair.id}`;
     const source = fileOf(pair.id);
-    if (pair.kind === 'round-trip' && !onSurface(pair.suite)) out.push(`${what}: ${pair.suite} is not on a property-suite surface (${surfaces.join(', ')})`);
+    const off = pair.kind === 'round-trip' ? offSurface(pair.suite) : undefined;
+    if (off !== undefined) out.push(`${what}: ${off}`);
     const suite = common(what, source, pair.suite);
     if (suite === undefined) continue;
     const { body, imports } = suite;

@@ -43,7 +43,7 @@ import { CONFIG_FILE, entryObject, entryText, loadProjectConfig, type Entry } fr
 import { selectedList, selectionOf, settingsInputs } from './selection.ts';
 import { DEFAULT_CONFIG as DEFAULT_ESLINT_TARGETS, parseConfig as parseEslintTargetsConfig, rangeTargets } from './eslint-targets.ts';
 import { DEFAULT_CONFIG as DEFAULT_ESLINT_BY_WORKSPACE, inheritEslint, lintByWorkspace, parseConfig as parseEslintByWorkspaceConfig, type EslintRunner } from './eslint-by-workspace.ts';
-import { parseLicenseConfig, pnpmLicenses, runLicenseCheck, type LicensesRunner } from './license-check.ts';
+import { parseLicenseConfig, pnpmLicenses, runLicenseCheck, type LicensesRunner, type Options as LicenseOptions } from './license-check.ts';
 import { BASELINE_PATH as CODEQL_BASELINE, runCodeqlBaseline } from './codeql-baseline.ts';
 import { type Commitlint, DEFAULT_PR_TITLE_CONFIG, loadCommitlint, parsePrTitleConfig, runPrTitle } from './pr-title.ts';
 import { type BpIo, bpRules as runBpRules, DISK as BP_DISK } from './bp-rules.ts';
@@ -1020,11 +1020,12 @@ const licenseCheck = (f: Map<string, string>, io: Io): number => {
     io.err(`${P} no allow list: name a settings file with --config or set checks.license-check in ${CONFIG_FILE}; nothing was checked, so this is not a pass`);
     return 2;
   }
-  const root = resolve(f.get('--root') ?? '.');
+  const root = rootOf(f);
   const config = unchecked(P, io, () => parseLicenseConfig(configText(f, root)));
   if (config === undefined) return 2;
-  const report = f.get('--report');
-  return unchecked(P, io, () => runLicenseCheck({ config, root, ...(report === undefined ? {} : { report }) }, io.licenses ?? pnpmLicenses(), io)) ?? 2;
+  // readInventory reads an undefined report as none, so --report is passed as it is.
+  const options = { config, root, report: f.get('--report') } as LicenseOptions;
+  return unchecked(P, io, () => runLicenseCheck(options, io.licenses ?? pnpmLicenses(), io)) ?? 2;
 };
 
 /** codeql-baseline: one of `--check <sarif>` or `--write <sarif>`, against the baseline `--baseline` names under `--root`. */
@@ -1036,7 +1037,7 @@ const codeqlBaseline = (f: Map<string, string>, io: Io): number => {
     io.err(USAGE);
     return 2;
   }
-  const options = { mode: check === undefined ? 'write' : 'check', sarif, root: resolve(f.get('--root') ?? '.'), baseline: f.get('--baseline') ?? CODEQL_BASELINE } as const;
+  const options = { mode: check === undefined ? 'write' : 'check', sarif, root: rootOf(f), baseline: f.get('--baseline') ?? CODEQL_BASELINE } as const;
   return unchecked('pariksha codeql-baseline:', io, () => runCodeqlBaseline(options, io.out)) ?? 2;
 };
 
@@ -1114,10 +1115,9 @@ const writeText = (io: Io, stream: 'out' | 'err', text: string): void => {
     io.write(stream, text);
     return;
   }
-  const lines = text.split('\n');
+  if (text === '') return;
   // The line ending `out` and `err` add stands in for the last one.
-  if (text.endsWith('\n')) lines.pop();
-  if (text !== '') lines.forEach(stream === 'out' ? io.out : io.err);
+  text.replace(/\n$/, '').split('\n').forEach(stream === 'out' ? io.out : io.err);
 };
 
 /**

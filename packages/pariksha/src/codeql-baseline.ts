@@ -94,22 +94,28 @@ export const errorAlerts = (sarif: unknown): ErrorAlert[] => {
   if (!hasRuns(sarif)) throw new Error(NO_RUNS);
   const runs = (sarif as { runs: unknown[] }).runs;
   return (runs as SarifRun[]).flatMap((run) => {
-    const defaults = new Map<string, string | undefined>();
-    for (const component of [run.tool?.driver, ...(run.tool?.extensions ?? [])]) {
-      for (const rule of component?.rules ?? []) {
-        if (rule.id !== undefined) defaults.set(rule.id, rule.defaultConfiguration?.level);
-      }
-    }
-    return (run.results ?? [])
-      .filter((result) => !isSuppressed(result) && (result.level ?? defaults.get(result.ruleId ?? '') ?? 'warning') === 'error')
-      .map((result) => {
+    // A rule with no id is filed under none, which no lookup below asks for.
+    const defaults = new Map<string | undefined, string | undefined>();
+    const learn = (component: { rules?: SarifRule[] } | undefined): void => {
+      component?.rules?.forEach((rule) => {
+        defaults.set(rule.id, rule.defaultConfiguration?.level);
+      });
+    };
+    learn(run.tool?.driver);
+    run.tool?.extensions?.forEach(learn);
+    // No level and no rule default is "warning", which is not "error" either.
+    return (
+      run.results
+        ?.filter((result) => !isSuppressed(result) && (result.level ?? defaults.get(result.ruleId ?? '')) === 'error')
+        .map((result) => {
         const location = result.locations?.[0]?.physicalLocation;
         const ruleId = result.ruleId ?? 'unknown';
         const path = location?.artifactLocation?.uri ?? 'unknown';
         const line = location?.region?.startLine ?? 0;
         const lineHash = result.partialFingerprints?.primaryLocationLineHash ?? `line:${line.toString()}`;
         return { fingerprint: `${ruleId}|${path}|${lineHash}`, ruleId, path, line, message: result.message?.text ?? '' };
-      });
+      }) ?? []
+    );
   });
 };
 
@@ -142,7 +148,7 @@ export const parseBaseline = (text: string): ErrorAlert[] => {
 };
 
 /** The committed baseline's alerts: `path` (BASELINE_PATH by default) read from `root`. */
-export const readBaseline = (root: string, path: string = BASELINE_PATH): ErrorAlert[] => parseBaseline(readFileSync(resolve(root, path), 'utf8'));
+export const readBaseline = (root: string, path: string = BASELINE_PATH): ErrorAlert[] => parseBaseline(readFileSync(resolve(root, path)).toString('utf8'));
 
 /** Print the verdict for a SARIF log against the baseline; returns the exit status. */
 export const checkSarif = (sarif: unknown, baseline: readonly ErrorAlert[], log: (line: string) => void): number => {

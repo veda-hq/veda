@@ -27,14 +27,14 @@ const backticks = (text: string): number => text.split('`').length - 1;
 
 /**
  * Whether the first local path on `line` sits inside an inline code span: an
- * odd number of backticks before it and at least one after it.
+ * odd number of backticks before it (so at least one) and at least one after it.
  */
 export const inBackticks = (line: string): boolean => {
   const match = LOCAL_PATH.exec(line);
   if (match === null) return false;
   const before = backticks(line.slice(0, match.index));
   const after = backticks(line.slice(match.index + match[0].length));
-  return before > 0 && after > 0 && before % 2 === 1;
+  return after > 0 && before % 2 === 1;
 };
 
 /** `file:line:text` for each refused line of one document. */

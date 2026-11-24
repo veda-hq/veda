@@ -670,10 +670,12 @@ describe("dvara slot", () => {
       const dir = scratch("dvara-cli-slot-");
       // The command swallows SIGINT and exits 0, as a test runner cleaning up might.
       const ready = join(dir, "ready");
+      // The command also ends itself after 20 s: a run that is killed before
+      // the cleanup below (a mutation run's bail or limit) leaves nothing for long.
       const childScript = [
         `process.on('SIGINT', () => process.exit(0));`,
         `require('node:fs').writeFileSync(${JSON.stringify(ready)}, '');`,
-        `setInterval(() => {}, 1000);`,
+        `setTimeout(() => process.exit(0), 20000);`,
       ].join(" ");
       const wrapper = spawn(
         process.execPath,
@@ -682,6 +684,16 @@ describe("dvara slot", () => {
         { env: slotEnv(dir), stdio: "ignore", detached: true },
       );
       const group = wrapper.pid ?? 0;
+      // Whatever failed, leave no wrapper or command running, also when this
+      // process exits before the test settles.
+      const reap = (): void => {
+        try {
+          if (group > 0) process.kill(-group, "SIGKILL");
+        } catch {
+          // fail-open: the group already exited.
+        }
+      };
+      process.once("exit", reap);
       try {
         const exited = new Promise<number | null>((resolve, reject) => {
           wrapper.on("exit", (code) => resolve(code));
@@ -692,15 +704,14 @@ describe("dvara slot", () => {
           await new Promise((resolve) => setTimeout(resolve, 50));
         assert.ok(existsSync(ready), "the command never started");
         wrapper.kill("SIGINT");
-        assert.equal(await exited, 130);
+        const stuck = new Promise<string>((resolve) =>
+          setTimeout(() => resolve("still running 10 s after SIGINT"), 10_000).unref(),
+        );
+        assert.equal(await Promise.race([exited, stuck]), 130);
         assert.equal(existsSync(lock(dir, "mobile")), false);
       } finally {
-        // Whatever failed above, leave no wrapper or command running.
-        try {
-          if (group > 0) process.kill(-group, "SIGKILL");
-        } catch {
-          // fail-open: the group already exited.
-        }
+        process.off("exit", reap);
+        reap();
       }
     },
   );

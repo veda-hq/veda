@@ -1002,6 +1002,13 @@ tester.run('compare-and-set (sweep)', rule, {
     { code: lockedByCall('acquireRowLock') },
     // An identity key needs no option, whatever comes before `Id`.
     { code: ownershipCheck('ownerId') },
+    // A numeric key names no column: its value, though it holds the read
+    // row's id, neither keys the write nor addresses the read row.
+    {
+      code: readGuardWrite(
+        "prisma.invoice.update({ where: { 1: { id: row.id } }, data: { note: 'x' } })",
+      ),
+    },
     // WHERE shapes that still name the read row and its status.
     {
       code: readGuardWrite(

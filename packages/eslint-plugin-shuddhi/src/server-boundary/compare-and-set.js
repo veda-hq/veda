@@ -320,7 +320,9 @@ export function regressingCursorColumns(sql) {
   const tail = /\b(WHERE|RETURNING)\b|;/i.exec(assignments);
   if (tail) {
     if (tail[1] && tail[1].toUpperCase() === 'WHERE') {
-      const rest = assignments.slice(tail.index + tail[0].length);
+      // The clause keeps its WHERE keyword: no cursor column is named
+      // WHERE, so advancesInWhere reads it the same.
+      const rest = assignments.slice(tail.index);
       const end = /\bRETURNING\b|;/i.exec(rest);
       where = { text: end ? rest.slice(0, end.index) : rest };
     }

@@ -117,6 +117,13 @@ tester.run('no-local-api-contract', rule, {
       options: [{ allow: ['src/auth/types/auth-request.type.ts'] }],
       errors: [{ messageId: 'namedContract' }],
     },
+    // An empty allow list allows no file.
+    {
+      code: 'interface AuthenticatedRequest { user: { sub: string } }',
+      filename: '/repo/server/src/admin/controllers/admin-stores.controller.ts',
+      options: [{ allow: [] }],
+      errors: [{ messageId: 'namedContract' }],
+    },
     // Interface DTOs declared in a service.
     {
       code: 'export interface CreateCampaignDto { name: string }',

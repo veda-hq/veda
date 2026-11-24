@@ -59,7 +59,8 @@ export const windowOf = (lines: readonly string[], center: number): string =>
 export const hasCitation = (window: string, claimingFile: string, opts: Options, git: Git, adrFiles: readonly string[]): boolean => {
   if (/ALLOW-AUTHORITY-PHRASE:[^\S\n]*\S/.test(window)) return true;
   if (opts.issuePrefixes.length > 0 && new RegExp(`\\b(?:${opts.issuePrefixes.map(escape).join('|')})-[0-9]+\\b`).test(window)) return true;
-  if (/https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:pull|issues)\/[0-9]+/.test(window)) return true;
+  // A digit after pull/ or issues/ is enough: the number's length decides nothing.
+  if (/https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:pull|issues)\/[0-9]/.test(window)) return true;
   if (/\bPR #[0-9]+\b/.test(window)) return true;
   for (const [, n] of window.matchAll(new RegExp(`(?:ADR-|${escape(opts.adrDir)}/)([0-9]{4})`, 'g'))) {
     if (adrFiles.some((f) => f.startsWith(`${opts.adrDir}/${n}-`) && f.endsWith('.md') && f !== claimingFile)) return true;

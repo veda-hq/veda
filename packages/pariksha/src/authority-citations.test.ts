@@ -507,6 +507,7 @@ describe('citations', () => {
     assert.equal(hasCitation('ALLOW-AUTHORITY-PHRASE:fixture text', 'x.md', DEFAULTS, none, []), true);
     assert.equal(hasCitation('https://github.com/veda-hq/veda/pull/12', 'x.md', DEFAULTS, none, []), true);
     assert.equal(hasCitation('https://github.com/veda-hq/veda/issues/3', 'x.md', DEFAULTS, none, []), true);
+    assert.equal(hasCitation('https://github.com/veda-hq/veda/pull/x', 'x.md', DEFAULTS, none, []), false);
   });
 
   it('starts with no configured authority or issue prefix, and ADRs under docs/adr', () => {

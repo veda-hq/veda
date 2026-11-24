@@ -1114,10 +1114,9 @@ const writeText = (io: Io, stream: 'out' | 'err', text: string): void => {
     io.write(stream, text);
     return;
   }
-  const lines = text.split('\n');
+  if (text === '') return;
   // The line ending `out` and `err` add stands in for the last one.
-  if (text.endsWith('\n')) lines.pop();
-  if (text !== '') lines.forEach(stream === 'out' ? io.out : io.err);
+  text.replace(/\n$/, '').split('\n').forEach(stream === 'out' ? io.out : io.err);
 };
 
 /**

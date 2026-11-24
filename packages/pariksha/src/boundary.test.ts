@@ -20,6 +20,12 @@ describe('parseDenyList', () => {
   it('refuses a line that is not a hash', () => {
     assert.throws(() => parseDenyList('acme\n'), /not a SHA-256 hash: "acme"/);
   });
+  it('refuses a hash with anything before or after it', () => {
+    const acme = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    assert.throws(() => parseDenyList(`z${acme}\n`), { message: `not a SHA-256 hash: "z${acme}"` });
+    assert.throws(() => parseDenyList(`${acme}0\n`), { message: `not a SHA-256 hash: "${acme}0"` });
+    assert.deepEqual([...parseDenyList(`${acme}\n`)], [acme]);
+  });
 });
 
 describe('isText', () => {
@@ -50,6 +56,21 @@ describe('findDenied', () => {
   it('finds a denied word in a path, as line 0', () => {
     assert.deepEqual(findDenied([{ path: 'docs/acme.md', text: 'clean\n' }], deny), [
       { file: 'docs/acme.md', line: 0, word: 'acme' },
+    ]);
+  });
+
+  it('hashes each distinct word once, and nothing for a line with no word', () => {
+    const asked: string[] = [];
+    const digest = (word: string): string => {
+      asked.push(word);
+      return word === 'acme' ? 'denied' : 'allowed';
+    };
+    const hits = findDenied([{ path: 'a.md', text: 'acme acme\n---\nACME other' }], new Set(['denied']), digest);
+    assert.deepEqual(asked, ['a', 'md', 'acme', 'other']);
+    assert.deepEqual(hits, [
+      { file: 'a.md', line: 1, word: 'acme' },
+      { file: 'a.md', line: 1, word: 'acme' },
+      { file: 'a.md', line: 3, word: 'acme' },
     ]);
   });
 

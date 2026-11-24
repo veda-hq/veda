@@ -164,8 +164,10 @@ export const findUncited = (source: Source, opts: Options, git: Git, adrFiles: r
   for (const file of source.files) {
     if (!SOURCE_EXT.test(file) || SKIPPED_PATH.test(file)) continue;
     const text = source.content(file);
-    if (text === undefined || !phrase.test(text)) continue;
+    if (text === undefined) continue;
     const lines = text.split('\n');
+    // A file naming no phrase has no line to judge, so its judged lines are never asked for.
+    if (!phrase.test(text)) continue;
     const judged = source.judged(file);
     lines.forEach((line, i) => {
       const n = i + 1;
@@ -181,8 +183,9 @@ export const findUncited = (source: Source, opts: Options, git: Git, adrFiles: r
 /**
  * An ADR directory as the claiming files' paths spell it: `./docs//adr/`
  * is `docs/adr`, so an ADR citing itself is still recognised as itself.
+ * normalize leaves at most one trailing slash.
  */
-export const adrDirOf = (dir: string): string => posix.normalize(dir).replace(/\/+$/, '') || '.';
+export const adrDirOf = (dir: string): string => posix.normalize(dir).replace(/\/$/, '') || '.';
 
 /** Files (not directories) under the ADR directory, relative to the root. */
 export const listAdrs = (root: string, adrDir: string): string[] => {
@@ -195,7 +198,8 @@ export const readOrUndefined = (path: string): string | undefined => {
   try {
     return readFileSync(path, 'utf8');
   } catch (e) {
-    if (['ENOENT', 'ENOTDIR', 'EISDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) return undefined;
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR') return undefined;
     throw e;
   }
 };
@@ -203,7 +207,7 @@ export const readOrUndefined = (path: string): string | undefined => {
 export const formatClaims = (claims: readonly Claim[], opts: Options): { ok: boolean; out: string[]; err: string[] } => {
   if (claims.length === 0) return { ok: true, out: ['pariksha authority-citations: every authority claim cites an anchor'], err: [] };
   const err: string[] = [];
-  let last = '';
+  let last: string | undefined;
   for (const c of claims) {
     if (c.file !== last) err.push(`pariksha authority-citations: uncited authority claim(s) in ${c.file}:`);
     last = c.file;

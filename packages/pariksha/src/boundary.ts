@@ -31,14 +31,18 @@ export const parseDenyList = (text: string): Set<string> => {
 /** A file is text unless it holds a NUL byte. */
 export const isText = (bytes: Uint8Array): boolean => !bytes.includes(0);
 
-/** Every word of every file whose hash is denied, by file and line. */
-export const findDenied = (files: readonly TrackedFile[], deny: ReadonlySet<string>): Hit[] => {
+/**
+ * Every word of every file whose hash is denied, by file and line. Each
+ * distinct word is hashed once, with `digest` (`hash` unless a caller counts
+ * the calls).
+ */
+export const findDenied = (files: readonly TrackedFile[], deny: ReadonlySet<string>, digest: (word: string) => string = hash): Hit[] => {
   const hits: Hit[] = [];
   const seen = new Map<string, boolean>();
   const denied = (word: string): boolean => {
     let d = seen.get(word);
     if (d === undefined) {
-      d = deny.has(hash(word));
+      d = deny.has(digest(word));
       seen.set(word, d);
     }
     return d;

@@ -134,8 +134,13 @@ describe('errorHandlingBlocks', () => {
     assert.deepEqual(ruleIds(blocks, code, 'scripts/lib/run-child.ts'), []);
     for (const exempt of [
       'src/run.test.ts',
+      'src/run.spec.ts',
+      'src/run.perf-test.ts',
+      'src/run.fixture.ts',
+      'src/__tests__/run.ts',
       'src/__mocks__/run.ts',
       'test/utils/run.ts',
+      'e2e/run.ts',
       'src/fixtures/run.ts',
     ])
       assert.deepEqual(ruleIds(blocks, code, exempt), [], exempt);

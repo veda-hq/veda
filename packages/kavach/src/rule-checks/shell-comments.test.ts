@@ -193,6 +193,11 @@ describe('shellComments', () => {
 
   it('stops at a heredoc word it cannot settle, whatever follows on the line', () => {
     assert.deepEqual(texts('cat <<1x <<EOF\nbody\nEOF\n# after'), []);
+    assert.deepEqual(texts("cat <<1x '<<A '\nA\n# after"), []);
+  });
+
+  it('opens no nesting at an escaped backquote', () => {
+    assert.deepEqual(texts('echo \\` # c'), [' c']);
   });
 
   it('ends a <<- body only at a line that is its word after leading tabs', () => {

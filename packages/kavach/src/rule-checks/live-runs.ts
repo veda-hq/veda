@@ -172,15 +172,16 @@ export function liveRun(path: string, read: Read, probe: Probe): Run | null {
  */
 export function gitDir(root: string, read: Read): string {
   const dotGit = join(root, '.git');
+  let text: string | undefined;
   try {
-    // `.` stops at the end of the line.
-    const named = /^gitdir: (.+)/m.exec(read(dotGit))?.[1];
-    if (named === undefined) return dotGit;
-    return isAbsolute(named) ? named : resolve(root, named);
+    text = read(dotGit);
   } catch {
-    // fail-open: a folder (the primary checkout) or nothing reads as .git itself.
-    return dotGit;
+    // fail-open: a folder (the primary checkout) or nothing reads as .git itself: no text names no gitdir.
   }
+  // `.` stops at the end of the line; no text reads as "undefined", which names none.
+  const named = /^gitdir: (.+)/m.exec(String(text))?.[1];
+  if (named === undefined) return dotGit;
+  return isAbsolute(named) ? named : resolve(root, named);
 }
 
 /** The marker push `pid` writes: one per push, so two pushes never share one. */

@@ -113,7 +113,7 @@ describe('isCheck and checksOf', () => {
 });
 
 describe('loadChecks', () => {
-  it('imports a JavaScript module and a TypeScript one', async () => {
+  it('imports a JavaScript module and a TypeScript one', { timeout: 15_000 }, async () => {
     const dir = scratch();
     writeFileSync(join(dir, 'checks.mjs'), REFUSE_MERGE);
     writeFileSync(
@@ -130,7 +130,7 @@ describe('loadChecks', () => {
     );
   });
 
-  it('rejects a module that is missing', async () => {
+  it('rejects a module that is missing', { timeout: 15_000 }, async () => {
     await assert.rejects(loadChecks(join(scratch(), 'none.mjs')), /Cannot find module/);
   });
 });
@@ -145,7 +145,7 @@ describe('hook', () => {
     return worktree;
   }
 
-  it('refuses with the registry title and owner, paths relative to the project folder', async () => {
+  it('refuses with the registry title and owner, paths relative to the project folder', { timeout: 15_000 }, async () => {
     const root = consumer();
     const fires = join(scratch(), 'fires');
     const out = await hook(
@@ -159,7 +159,7 @@ describe('hook', () => {
     assert.match(readFileSync(join(fires, 'fires.jsonl'), 'utf8'), /"outcome":"refused"/);
   });
 
-  it('is silent when no check fires', async () => {
+  it('is silent when no check fires', { timeout: 15_000 }, async () => {
     const root = consumer();
     const out = await hook(['--checks', join(root, 'rules', 'checks.mjs')], event(root, 'git status'), {
       CLAUDE_PROJECT_DIR: root,
@@ -167,7 +167,7 @@ describe('hook', () => {
     assert.equal(out, '');
   });
 
-  it('takes its paths from the variables, a flag winning over its variable', async () => {
+  it('takes its paths from the variables, a flag winning over its variable', { timeout: 15_000 }, async () => {
     const root = consumer();
     const fires = join(scratch(), 'fires');
     const env = {
@@ -183,7 +183,7 @@ describe('hook', () => {
     assert.match(JSON.parse(fromEnv).hookSpecificOutput.permissionDecisionReason, /^Refused by H-14/);
   });
 
-  it('logs to the primary checkout when no fire-log folder is named, an empty variable included', async () => {
+  it('logs to the primary checkout when no fire-log folder is named, an empty variable included', { timeout: 15_000 }, async () => {
     const root = consumer();
     const out = await hook(['--checks', 'rules/checks.mjs'], event(root, 'git merge x'), {
       CLAUDE_PROJECT_DIR: root,
@@ -216,7 +216,7 @@ describe('hook', () => {
     });
   }
 
-  it('names a thrown value that is not an Error', async () => {
+  it('names a thrown value that is not an Error', { timeout: 15_000 }, async () => {
     const root = scratch();
     writeFileSync(join(root, 'throws.mjs'), 'throw "not loaded";\n');
     const out = await hook(['--checks', 'throws.mjs'], event(root, 'ls'), {
@@ -231,7 +231,7 @@ describe('hook', () => {
 });
 
 describe('run', () => {
-  it('answers a hook event read from stdin, as written', async () => {
+  it('answers a hook event read from stdin, as written', { timeout: 15_000 }, async () => {
     const root = scratch();
     writeFileSync(join(root, 'checks.mjs'), REFUSE_MERGE);
     const io = capture();
@@ -245,7 +245,7 @@ describe('run', () => {
     assert.deepEqual([io.lines, io.errors], [[], []]);
   });
 
-  it('hands count its arguments', async () => {
+  it('hands count its arguments', { timeout: 15_000 }, async () => {
     const root = scratch();
     writeFileSync(join(root, 'registry.json'), REGISTRY);
     const io = capture();
@@ -254,7 +254,7 @@ describe('run', () => {
     assert.equal(await run(['count'], io, () => '', {}), 2);
   });
 
-  it('hands push-marker its arguments', async () => {
+  it('hands push-marker its arguments', { timeout: 15_000 }, async () => {
     const dir = scratch();
     const io = capture();
     assert.equal(await run(['push-marker', 'write', dir, String(process.pid)], io, () => '', {}), 0);
@@ -276,7 +276,7 @@ describe('run', () => {
     return root;
   }
 
-  it('reports a latency run that cannot start', async () => {
+  it('reports a latency run that cannot start', { timeout: 15_000 }, async () => {
     const io = capture();
     assert.equal(await run(['latency', '--root', timed(), '--rounds', '0'], io, () => '', {}), 2);
     assert.deepEqual(io.errors, ['latency: --rounds needs a positive whole number']);
@@ -285,7 +285,7 @@ describe('run', () => {
     assert.match(settings.errors[0] ?? '', /^latency: ENOENT/);
   });
 
-  it('runs latency over the hooks of the checkout named', async () => {
+  it('runs latency over the hooks of the checkout named', { timeout: 15_000 }, async () => {
     const root = timed();
     const io = capture();
     assert.equal(await run(['latency', '--root', root, '--rounds', '1'], io, () => '', {}), 0);
@@ -297,7 +297,7 @@ describe('entry', () => {
   const CLI = fileURLToPath(new URL('cli.ts', import.meta.url));
   const CLI_URL = new URL('cli.ts', import.meta.url).href;
 
-  it('runs nothing when argv[1] is another file', async () => {
+  it('runs nothing when argv[1] is another file', { timeout: 15_000 }, async () => {
     const io = capture();
     let read = 0;
     const stdin = (): string => {
@@ -309,14 +309,14 @@ describe('entry', () => {
     assert.deepEqual([io.lines, io.errors, io.written, read], [[], [], [], 0]);
   });
 
-  it('runs the CLI on the words after the script when argv[1] is this module', async () => {
+  it('runs the CLI on the words after the script when argv[1] is this module', { timeout: 15_000 }, async () => {
     const io = capture();
     assert.equal(await entry(['node', CLI, 'count'], CLI_URL, io, () => '', {}), 2);
     assert.equal(io.errors[0], 'count: no registry: pass --registry or set KAVACH_RULE_REGISTRY');
     assert.deepEqual(io.written, []);
   });
 
-  it('answers the hook from the stdin it is handed', async () => {
+  it('answers the hook from the stdin it is handed', { timeout: 15_000 }, async () => {
     const root = scratch();
     writeFileSync(join(root, 'checks.mjs'), REFUSE_MERGE);
     const io = capture();

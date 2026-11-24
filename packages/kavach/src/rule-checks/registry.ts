@@ -210,7 +210,8 @@ export function main(
     onlyKnown(argv, ['--registry', '--root'], ['--json']);
     const path = option(argv, '--registry') ?? env[REGISTRY_ENV];
     if (path === undefined || path === '') throw new Error(`no registry: pass --registry or set ${REGISTRY_ENV}`);
-    result = count(loadRegistry(resolve(cwd, path)), resolve(cwd, option(argv, '--root') ?? '.'));
+    const root = option(argv, '--root');
+    result = count(loadRegistry(resolve(cwd, path)), root === undefined ? resolve(cwd) : resolve(cwd, root));
   } catch (error) {
     io.err(`count: ${error instanceof Error ? error.message : String(error)}`);
     io.err(USAGE);

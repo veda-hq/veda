@@ -60,7 +60,8 @@ export function shellComments(command: string): Comment[] {
     let escaped = false;
     for (const [i, char] of line.split('').entries()) {
       if (escaped) {
-        [escaped, breaks] = [false, false];
+        escaped = false;
+        breaks = false;
         continue;
       }
       if (skip > 0) {

@@ -270,6 +270,7 @@ describe('simpleCommands', () => {
     ['ls; echo $((1+2', [['ls']], ' echo $((1+2'],
     ['cat <<EOF\n$(open\nEOF', [['cat'], ['open']], '$(open\nEOF'],
     ['ls; cat <<1x <<EOF\nbody\nEOF', [['ls']], ' cat <<1x <<EOF\nbody\nEOF'],
+    ['ls; cat <<EOF x', [['ls']], ' cat <<EOF x'],
   ])) {
   it(`stops at what it cannot follow in ${JSON.stringify(text)}, keeping the rest`, () => {
       assert.deepEqual(simpleCommands(text), { commands, unread });
@@ -741,6 +742,7 @@ describe('programOf', () => {
   it('stops at any other program', () => {
     assert.deepEqual(programOf(['pnpm', 'test'])?.args, ['pnpm', 'test']);
     assert.deepEqual(programOf(['pnpm'])?.args, ['pnpm']);
+    assert.deepEqual(programOf(['yarn', 'exec', 'rg', 'x'])?.args, ['yarn', 'exec', 'rg', 'x']);
     assert.deepEqual(programOf(['git', 'A=1'])?.args, ['git', 'A=1']);
     assert.deepEqual(programOf(['1A=x', 'b'])?.args, ['1A=x', 'b']);
   });

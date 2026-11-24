@@ -100,7 +100,8 @@ const negated = (text: string, at: number): boolean => {
   // A negation covers its own clause only: in "never npm install; run yarn
   // install", the second instruction stands.
   const clauses = text.slice(0, at).split(/[;.!?]|\bbut\b/i);
-  return NEGATION.test(clauses.at(-1) ?? "");
+  // A split always yields one part at least.
+  return NEGATION.test(clauses.at(-1) as string);
 };
 
 const scan = (

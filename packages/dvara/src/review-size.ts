@@ -50,6 +50,10 @@ export interface Size {
   readonly files: readonly { path: string; lines: number }[];
 }
 
+/** A numstat count: a binary file's `-`, or a field the entry lacks, counts nothing. */
+const count = (field: string | undefined): number =>
+  Number.parseInt(String(field), 10) || 0;
+
 /**
  * The size of `git diff --numstat -z` output: binary files (`-`) count no
  * lines, and a path any `ignore` glob matches is left out. A rename's entry
@@ -57,22 +61,19 @@ export interface Size {
  * under the new one.
  */
 export const sizeOf = (numstat: string, ignore: readonly string[]): Size => {
-  const fields = numstat.split("\0");
+  const fields = numstat.split("\0").values();
   const files: { path: string; lines: number }[] = [];
-  for (let i = 0; i < fields.length; i += 1) {
-    const entry = fields[i] ?? "";
+  for (const entry of fields) {
     if (entry === "") continue;
-    const [added = "", deleted = "", inline = ""] = entry.split("\t");
+    const [added, deleted, inline] = entry.split("\t");
     let path = inline;
-    if (path === "") {
+    if (!path) {
       // A rename: the old path and the new one follow.
-      path = fields[i + 2] ?? "";
-      i += 2;
+      fields.next();
+      path = fields.next().value ?? "";
     }
     if (ignore.some((glob) => matchesGlob(path, glob))) continue;
-    const lines =
-      (Number.parseInt(added, 10) || 0) + (Number.parseInt(deleted, 10) || 0);
-    files.push({ path, lines });
+    files.push({ path, lines: count(added) + count(deleted) });
   }
   files.sort((a, b) => b.lines - a.lines || a.path.localeCompare(b.path));
   return { lines: files.reduce((sum, file) => sum + file.lines, 0), files };

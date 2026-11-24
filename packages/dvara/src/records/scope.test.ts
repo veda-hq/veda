@@ -40,6 +40,23 @@ describe("scope", () => {
     assert.equal(isCodePath("src/App.TSX"), true);
   });
 
+  it("knows each spelling of an extension, and only at the path's end", () => {
+    for (const path of ["a.jpg", "a.jpeg", "a.woff", "a.woff2"])
+      assert.equal(isTextPath(path), false, path);
+    for (const path of ["a.png.md", "x/pnpm-lock.yaml.md", "a.lock.txt"])
+      assert.equal(isTextPath(path), true, path);
+  });
+
+  it("reads no path under any skipped prefix", () => {
+    const records: RecordsConfig = {
+      ...DEFAULTS.records,
+      skip: ["tools/records/", "vendor/"],
+    };
+    assert.equal(isReadPath("vendor/a.md", records, []), false);
+    assert.equal(isReadPath("tools/records/a.md", records, []), false);
+    assert.equal(isReadPath("docs/a.md", records, []), true);
+  });
+
   it("reads no binary, own, skipped or frozen path", () => {
     const own = [".dvara.json", DEFAULTS.records.baseline];
     for (const path of [

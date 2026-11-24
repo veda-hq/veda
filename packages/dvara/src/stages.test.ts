@@ -30,6 +30,12 @@ describe("stageViolation", () => {
       );
   });
 
+  it("passes a hook with no list that marked none of its own stages", () => {
+    const lists = { "pre-push": ["lint"] };
+    assert.equal(stageViolation("pre-commit", ["startup"], lists), null);
+    assert.equal(stageViolation("pre-commit", [], {}), null);
+  });
+
   it("names a stage the list lacks, one out of order, and a hook with no list", () => {
     assert.equal(
       stageViolation("pre-push", ["startup", "deps", "typo"], LISTS),
@@ -60,6 +66,16 @@ describe("stageVerdict", () => {
     assert.deepEqual(
       stageVerdict("pre-push", ["startup"], unreadable, ["pre-push"]),
       PASS,
+    );
+  });
+
+  it("reads the list for a run that marked a stage beside its own", () => {
+    const failing = () => {
+      throw new Error("dvara: cannot read the stage list y.");
+    };
+    assert.deepEqual(
+      stageVerdict("pre-push", ["startup", "lint"], failing, ["pre-push"]),
+      { refusal: "dvara: cannot read the stage list y.", warning: null },
     );
   });
 
@@ -112,6 +128,17 @@ describe("parseStageLists", () => {
     assert.deepEqual(parseStageLists({}, "x"), {});
     const odd = parseStageLists(JSON.parse('{"__proto__": ["a"]}'), "x");
     assert.equal(stageViolation("__proto__", ["a"], odd), null);
+  });
+
+  it("names the field a value that is no map, and the hook whose list is not names", () => {
+    for (const value of [null, [], "ab", 5])
+      assert.throws(() => parseStageLists(value, "f"), {
+        message: "f must map each hook to its stage names",
+      });
+    for (const value of [{ a: "b" }, { a: ["lint", ""] }, { a: ["", "lint"] }])
+      assert.throws(() => parseStageLists(value, "f"), {
+        message: "f.a must be a list of stage names",
+      });
   });
 
   it("refuses anything but a map of name lists", () => {

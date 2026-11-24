@@ -39,9 +39,12 @@ interface MdNode {
 export const group = (match: RegExpExecArray, index: number): string =>
   match[index] ?? "";
 
-/** 1-based line `n` of `lines`: '' past the end. */
+/**
+ * 1-based line `n` of `lines`. mdast parsed these very lines, so every line
+ * it places a node on is one of them.
+ */
 const lineAt = (lines: readonly string[], n: number): string =>
-  lines[n - 1] ?? "";
+  lines[n - 1] as string;
 
 /** A fenced block's opener, read where mdast places the code node. */
 const FENCE_MARKER = /^(`{3,}|~{3,})/;
@@ -67,9 +70,10 @@ export const parseMarkdown = (text: string): MarkdownDoc => {
   // Frontmatter is not Markdown: a `---` block on the first line is skipped,
   // and its lines are never in a fence.
   let offset = 0;
-  if (lines[0]?.trim() === "---") {
-    const end = lines.findIndex((line, i) => i > 0 && line.trim() === "---");
-    if (end !== -1) offset = end + 1;
+  // A split always yields a first line.
+  if ((lines[0] as string).trim() === "---") {
+    // Past the closing line; 0 (-1 + 1) when there is none.
+    offset = lines.findIndex((line, i) => i > 0 && line.trim() === "---") + 1;
   }
   const fences: Fence[] = [];
   const inFence = new Array<boolean>(lines.length + 1).fill(false);
@@ -92,7 +96,7 @@ export const parseMarkdown = (text: string): MarkdownDoc => {
     // trailing blank lines count, and a lone blank line is '' (0 < 2).
     const closed =
       closer !== null &&
-      group(closer, 1).startsWith(group(marker, 1).charAt(0)) &&
+      group(closer, 1).charAt(0) === group(marker, 1).charAt(0) &&
       group(closer, 1).length >= group(marker, 1).length &&
       bodyLines !== last - n;
     // Unclosed, a fence runs to the end of its container: the document's

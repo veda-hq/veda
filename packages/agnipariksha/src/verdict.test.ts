@@ -35,6 +35,17 @@ test('readMutants tolerates a mutant without fields, as NaN locations and "undef
   assert.ok(Number.isNaN(m?.line));
 });
 
+test('readMutants says what a report without files lacks', () => {
+  assert.equal(readMutants({}, ''), 'the report has no `files`');
+});
+
+test('readMutants prefixes a workspace path only where the report left it out', () => {
+  const at = (path: string): string | undefined =>
+    (readMutants({ files: { [path]: { mutants: [{ status: 'Killed' }] } } }, 'apps/web') as Mutant[])[0]?.file;
+  assert.equal(at('apps/web/src/b.ts'), 'apps/web/src/b.ts');
+  assert.equal(at('src/apps/web/'), 'apps/web/src/apps/web/');
+});
+
 test('readMutants refuses a report without files or mutant lists', () => {
   assert.equal(typeof readMutants(null, ''), 'string');
   assert.equal(typeof readMutants({ files: null }, ''), 'string');

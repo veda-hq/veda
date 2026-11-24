@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
@@ -47,6 +48,42 @@ test("shared's own key leaves its sources out", () => {
   const paths = keyInputPaths('packages/shared', 'stryker.config.mjs', tracked, KEY_POLICY);
   assert.equal(paths.includes('packages/shared/src/money.ts'), false);
   assert.equal(paths.includes('packages/shared/stryker.config.mjs'), true);
+});
+
+test('a workspace key tells test files, configs and helpers from look-alikes', () => {
+  const policy = { always: [], pluginDir: 'tools/stryker/', helperPackages: ['libs/a/', 'libs/b/'], sharedWorkspace: 'shared' };
+  const paths = [
+    'w/test/x.test.ts.bak',
+    'w/test/x.test.mts',
+    'w/vite.config.mts',
+    'w/vite.config.ts.bak',
+    'w/src/vite.config.ts',
+    'w/tsconfig.json.bak',
+    'w/src/tsconfig.json',
+    'libs/b/src/x.ts',
+    'web/test/x.ts',
+    'w/src/fixture/a.ts',
+    'w/src/fixtures/a.ts',
+    'w/src/__mocks__/a.ts',
+    'w/contest/a.ts',
+    'w/src/latest/a.ts',
+  ];
+  assert.deepEqual(keyInputPaths('w', 'stryker.config.mjs', paths, policy), [
+    'libs/b/src/x.ts',
+    'w/src/__mocks__/a.ts',
+    'w/src/fixture/a.ts',
+    'w/src/fixtures/a.ts',
+    'w/stryker.config.mjs',
+    'w/test/x.test.ts.bak',
+    'w/vite.config.mts',
+  ]);
+});
+
+test('the key hashes each path with its content hash, in order', () => {
+  const files: Record<string, string> = { a: '1', b: '2' };
+  const sha = (text: string): string => createHash('sha256').update(text).digest('hex');
+  const expected = createHash('sha256').update(`a\0${sha('1')}\n`).update(`b\0${sha('2')}\n`).digest('hex').slice(0, 16);
+  assert.equal(incrementalKey(['a', 'b'], (path) => files[path]), expected);
 });
 
 test('the key is stable, moves with content, and is null when an input is unreadable', () => {

@@ -69,6 +69,46 @@ test('a bad file is refused with the field that is wrong', () => {
   }
 });
 
+test('the upstream is origin/main unless the config names one', () => {
+  const minimal = JSON.stringify({
+    lanes: [{ name: 'lib', cwd: 'lib', config: 'stryker.config.mjs', reuse: true, include: ['^lib/src/'] }],
+    reuseKey: { always: [], pluginDir: 'tools/', helperPackages: [], sharedWorkspace: 'lib' },
+  });
+  assert.equal((parseConfig(minimal) as Config).upstream, 'origin/main');
+});
+
+test('a file that is not an object is refused as one, whatever it is', () => {
+  for (const source of ['null', '"lanes"', '7', 'true']) assert.equal(parseConfig(source), 'agnipariksha.json must be an object', source);
+});
+
+test('each reuseKey field is named when it is wrong, and reuseKey takes no other field', () => {
+  const lanes = [{ name: 'lib', cwd: 'lib', config: 'stryker.config.mjs', reuse: true, include: ['^lib/src/'] }];
+  const key = { always: [], pluginDir: 'tools/', helperPackages: [], sharedWorkspace: 'lib' };
+  const refused = (reuseKey: Record<string, unknown>): unknown => parseConfig(JSON.stringify({ lanes, reuseKey }));
+  assert.equal(refused({ ...key, helperPackages: 'x' }), 'agnipariksha.json.reuseKey.helperPackages must be an array of strings');
+  assert.equal(refused({ ...key, sharedWorkspace: '' }), 'agnipariksha.json.reuseKey.sharedWorkspace must be a non-empty string');
+  assert.equal(refused({ ...key, 'Stryker was here': 1 }), 'agnipariksha.json.reuseKey.Stryker was here is not a known field');
+});
+
+test("a lane's empty config file is named", () => {
+  const source = JSON.stringify({
+    lanes: [{ name: 'lib', cwd: 'lib', config: '', reuse: true, include: ['^lib/src/'] }],
+    reuseKey: { always: [], pluginDir: 'tools/', helperPackages: [], sharedWorkspace: 'lib' },
+  });
+  assert.equal(parseConfig(source), 'agnipariksha.json.lanes[0].config must be a non-empty string');
+});
+
+test('a lane with several extensions selects a file with any one of them', () => {
+  const source = JSON.stringify({
+    lanes: [{ name: 'web', cwd: 'web', config: 's.mjs', reuse: false, include: ['^web/'], extensions: ['.ts', '.tsx'] }],
+    reuseKey: { always: [], pluginDir: 'tools/', helperPackages: [], sharedWorkspace: 'web' },
+  });
+  const [web] = lanesOf(parseConfig(source) as Config);
+  assert.equal(web?.selects('web/a.ts'), true);
+  assert.equal(web?.selects('web/a.tsx'), true);
+  assert.equal(web?.selects('web/a.js'), false);
+});
+
 test("maxLines: a lane takes its own, else the config's, else has no cut-off", () => {
   assert.equal(Object.hasOwn(parsed(valid()), 'maxLines'), false, 'absent means no cut-off');
   assert.equal(Object.hasOwn(parsed(valid()).lanes[0] ?? {}, 'maxLines'), false);

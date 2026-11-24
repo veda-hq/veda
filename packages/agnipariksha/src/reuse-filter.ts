@@ -10,8 +10,10 @@ interface StoredMutant {
 }
 
 export function reusable(mutant: StoredMutant): boolean {
-  if (typeof mutant.status !== 'string' || !REUSED_STATUSES.includes(mutant.status)) return false;
-  return mutant.static !== true || !STATIC_RERUN_STATUSES.includes(mutant.status);
+  // A status that is not text is in neither list.
+  const status = mutant.status as string;
+  if (!REUSED_STATUSES.includes(status)) return false;
+  return mutant.static !== true || !STATIC_RERUN_STATUSES.includes(status);
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -23,8 +25,7 @@ export function forReuse(text: string): string | null {
   try {
     raw = JSON.parse(text);
   } catch {
-    // fail-open: a reuse file that is not JSON is dropped, and the lane runs in full.
-    return null;
+    // fail-open: a reuse file that is not JSON is dropped, and the lane runs in full: `raw` stays undefined, which the check below refuses.
   }
   if (!isRecord(raw) || !isRecord(raw.files)) return null;
   const files: Record<string, unknown> = {};

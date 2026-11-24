@@ -24,6 +24,12 @@ test('a path with no extension keeps its whole name as the stem', () => {
   assert.deepEqual(suiteCandidatesFor('bin/tool'), ['bin/tool.test.ts', 'bin/tool.test.tsx', 'bin/tool.test.mjs']);
 });
 
+test('an extension is read from the file name only, never from a folder with a dot', () => {
+  assert.deepEqual(suiteCandidatesFor('a.d/tool'), ['a.d/tool.test.ts', 'a.d/tool.test.tsx', 'a.d/tool.test.mjs']);
+  assert.deepEqual(siblingSuites('a.d/tool', ['a.d/tool-x.test.ts', 'a.d/tool.test.ts']), ['a.d/tool-x.test.ts']);
+  assert.deepEqual(siblingSuites('bin/tool', ['bin/tool-x.test.ts', 'bin/tool.test.ts']), ['bin/tool-x.test.ts']);
+});
+
 test('ownerOf finds the first existing candidate, or null; a qualified suite never owns', () => {
   const on = (...paths: string[]) => (path: string) => paths.includes(path);
   assert.equal(ownerOf('a/foo.ts', on('a/foo.test.tsx')), 'a/foo.test.tsx');

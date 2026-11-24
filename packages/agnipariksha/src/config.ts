@@ -168,8 +168,8 @@ export function parseConfig(source: string): Config | string {
     if (raw.maxLines !== undefined) config.maxLines = positiveInteger(raw.maxLines, `${CONFIG_FILE}.maxLines`);
     return config;
   } catch (error: unknown) {
-    if (error instanceof ConfigError) return error.message;
-    throw error;
+    // fail-open: every throw above is a ConfigError, whose message is the refusal the caller reports with exit 2.
+    return (error as ConfigError).message;
   }
 }
 

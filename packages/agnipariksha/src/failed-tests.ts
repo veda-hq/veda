@@ -20,7 +20,7 @@ export const MAX_NAMED = 5;
 const ANSI = new RegExp(String.raw`\u001B\[[0-9;]*m`, 'g');
 /** The prefix of every Stryker log record: time, (pid), level, category. */
 const LOG_RECORD = /^\d\d:\d\d:\d\d \(\d+\) [A-Z]+ /;
-const TEST_NAME = /^\t([^\t].*)$/;
+const TEST_NAME = /^\t[^\t].*$/;
 
 export interface FailedTestReader {
   /** One line of Stryker's output, without its newline. */
@@ -44,8 +44,10 @@ export function failedTestReader(): FailedTestReader {
         inside = false;
         return;
       }
-      const name = TEST_NAME.exec(line)?.[1]?.trim();
-      if (name !== undefined && name !== '' && !names.includes(name) && names.length < MAX_KEPT) names.push(name);
+      if (!TEST_NAME.test(line)) return;
+      // The name is the line past its one tab; trimming drops that tab too.
+      const name = line.trim();
+      if (name !== '' && !names.includes(name) && names.length < MAX_KEPT) names.push(name);
     },
     names: () => [...names],
   };

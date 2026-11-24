@@ -41,6 +41,38 @@ test('each name once, in order; failure messages, blank names and lines outside 
   assert.deepEqual(read(text), ['b fails', 'a fails']);
 });
 
+test('a coloured record ends the list, however many colour codes lead it', () => {
+  const reader = failedTestReader();
+  for (const line of [
+    '\u001B[91m09:00:00 (4242) ERROR DryRunExecutor\u001B[39m One or more tests failed in the initial test run:',
+    '\ta fails',
+    '\u001B[1m\u001B[91m09:00:01 (4242) ERROR Stryker\u001B[39m There were failed tests in the initial test run.',
+    '\tnot a name: after the record',
+  ]) {
+    reader.read(line);
+  }
+  assert.deepEqual(reader.names(), ['a fails']);
+});
+
+test('a record ends only at a line that starts with a log prefix, any pid long', () => {
+  const reader = failedTestReader();
+  for (const line of [
+    'One or more tests failed in the initial test run:',
+    '\tat 09:00:00 (1) ERROR a name that mentions a log line',
+    '09:00:00 (12345) INFO Stryker the record ends',
+    '\tnot a name',
+  ]) {
+    reader.read(line);
+  }
+  assert.deepEqual(reader.names(), ['at 09:00:00 (1) ERROR a name that mentions a log line']);
+});
+
+test('only a trailing carriage return is dropped, and a name is one line', () => {
+  const reader = failedTestReader();
+  for (const line of ['One or more tests failed in the initial test run:', '\ta\rb', '\tc d', '\te fails\r']) reader.read(line);
+  assert.deepEqual(reader.names(), ['e fails']);
+});
+
 test('a header seen again reads on; at most MAX_KEPT names are kept', () => {
   const again = [FAILED_TESTS_HEADER, '\tfirst', `09:00:00 (1) ERROR DryRunExecutor ${FAILED_TESTS_HEADER}`, '\tsecond', '\tfirst'].join('\n');
   assert.deepEqual(read(again), ['first', 'second'], 'a second record adds its names; a name seen in both is kept once');

@@ -36,6 +36,16 @@ test('forReuse refuses anything Stryker could not have written', () => {
   assert.equal(forReuse('{"files":{"a":null}}'), null);
 });
 
+test('stripRange removes a range of many-digit lines and columns, and only at the end', () => {
+  assert.equal(stripRange('src/a.ts:12:34-56:78'), 'src/a.ts');
+  assert.equal(stripRange('src/a.ts:120-345'), 'src/a.ts');
+  assert.equal(stripRange('src/x:1-2/a.ts'), 'src/x:1-2/a.ts');
+});
+
+test('pruneToTargets with no workspace keeps a path as the report writes it', () => {
+  assert.deepEqual(pruneToTargets({ files: { '/x.ts': {}, 'y.ts': {} } }, '', ['x.ts', 'y.ts']), { files: { 'y.ts': {} } });
+});
+
 test('stripRange removes a mutation range only', () => {
   assert.equal(stripRange('src/a.ts:3:4-5:6'), 'src/a.ts');
   assert.equal(stripRange('src/a.ts:3-5'), 'src/a.ts');

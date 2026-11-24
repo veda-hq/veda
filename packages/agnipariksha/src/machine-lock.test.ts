@@ -8,8 +8,11 @@ function fakeLock(alive: (pid: number) => boolean, initial?: string, onSleep?: (
   if (initial !== undefined) files.set('/lock', initial);
   const logs: string[] = [];
   let clock = 0;
+  let creates = 0;
   const deps: LockDeps = {
     create: (path, text) => {
+      // A mutant that spins without polling fails here instead of hanging the run.
+      if ((creates += 1) > 1000) throw new Error('tried to create the lock over 1000 times');
       if (files.has(path)) return false;
       files.set(path, text);
       return true;
@@ -21,7 +24,8 @@ function fakeLock(alive: (pid: number) => boolean, initial?: string, onSleep?: (
     alive,
     now: () => clock,
     sleep: async (ms) => {
-      clock += ms;
+      // A mutant that never stops polling fails here at once instead of hanging the run.
+      if ((clock += ms) > 24 * 60 * 60_000) throw new Error('polled for over a day');
       onSleep?.(files);
     },
     log: (line) => logs.push(line),
@@ -133,6 +137,16 @@ test('a wait past the limit refuses, counting the runs that held the lock in tur
     'agnipariksha: waiting for pid 8 2026-11-15, which holds /lock',
     'agnipariksha: waiting for pid 9 2026-11-16, which holds /lock',
   ]);
+});
+
+test('a stale lock with a holder named in it is taken over at once, with no poll', async () => {
+  let polls = 0;
+  const { deps, files } = fakeLock(() => false, '99 2026-11-14', () => {
+    polls += 1;
+  });
+  await acquireLock('/lock', 42, deps, 60_000);
+  assert.equal(polls, 0);
+  assert.match(files.get('/lock') ?? '', /^42 /);
 });
 
 test('pidAlive: signal 0 succeeds or EPERM is alive, anything else is dead', () => {

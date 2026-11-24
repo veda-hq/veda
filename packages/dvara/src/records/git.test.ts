@@ -155,6 +155,15 @@ describe("git and tryGit", () => {
     assert.equal(tryGit(at, ["cat-file", "-p", "HEAD"]), commit);
   });
 
+  it("answers more than a pipe holds", () => {
+    const { r, at } = committed();
+    // Past the 64 KiB a pipe buffers, git cannot finish before a small buffer stops it.
+    const big = "x".repeat(200_000);
+    r.write("big.txt", big);
+    r.git("add", "big.txt");
+    assert.equal(tryGit(at, ["cat-file", "-p", ":big.txt"]), big);
+  });
+
   it("reads exit 1 as no and throws any other failure", () => {
     const { at } = committed();
     assert.equal(

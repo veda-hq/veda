@@ -34,7 +34,7 @@ import subprocess
 import sys
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -59,6 +59,12 @@ FILE_CAP = 1_000_000 * 1024
 # that sees its child die of it fails as if it had caught the mutant.
 NEAR_MEMORY_CAP = 2 * 1024**3
 CAP_SIGNS = ("MemoryError", "File too large", "[Errno 27]")
+
+
+def say(text: str) -> None:
+    """A progress line on stderr, so a long run shows where it is."""
+
+    print(f"gate: {text}", file=sys.stderr, flush=True)
 
 
 class GateError(Exception):
@@ -832,34 +838,37 @@ def run(base: str, work: Path, workers: int, pattern: str = "test_*.py") -> Verd
                 mutant = chosen.setdefault((module, mutant.operator, mutant.occurrence), mutant)
                 mutant.expected, mutant.row = row.outcome, row
 
+    statements_of = {module: Statements(read_module(module + ".py")) for module in set(every) | set(planned["lines"])}
     executable = [
         (module, number)
         for module, lines in planned["lines"].items()
         for number in lines
-        if Statements(read_module(module + ".py")).executable(number)
+        if statements_of[module].executable(number)
     ]
+    say(f"{len(chosen)} mutant(s) and {len(executable)} executable changed line(s) to judge")
     if not chosen and not executable:
         # Comments, blank lines or docstrings only: nothing to record or run.
         verdict.timings["total"] = round(time.monotonic() - began, 1)
         return verdict
 
     modules = sorted(p.stem for p in (ROOT / SOURCES).glob("*.py") if p.stem != "__init__")
+    say("recording the suite under coverage")
     recorded = record(work, sys.executable, modules, pattern)
     verdict.timings["record"] = recorded["timings"]
+    say(f"recorded {len(recorded['order'])} tests: {json.dumps(recorded['timings'])}")
     if recorded["strays"]:
         verdict.faults.append("lines recorded under no test: " + ", ".join(recorded["strays"][:20]))
     seconds = recorded["seconds"]
 
     # Uncovered: a changed statement no test runs.
     for module, lines in planned["lines"].items():
-        statements = Statements(read_module(module + ".py"))
+        statements = statements_of[module]
         source = read_module(module + ".py").splitlines()
         cover = recorded["modules"].get(module, {})
         for number in lines:
             if statements.executable(number) and str(statements.first(number)) not in cover:
                 verdict.uncovered.append(f"{module}.py:{number} `{source[number - 1].strip()}`")
 
-    statements_of = {module: Statements(read_module(module + ".py")) for module in every}
     for mutant in chosen.values():
         mutant.tests = select(mutant.lines(), statements_of[mutant.module], recorded["modules"].get(mutant.module, {}), seconds)
         if not mutant.tests:
@@ -868,6 +877,7 @@ def run(base: str, work: Path, workers: int, pattern: str = "test_*.py") -> Verd
     to_run = [m for m in chosen.values() if m.tests]
     copies = Copies(work, max(1, workers))
     selections = sorted({tuple(m.tests) for m in to_run})
+    say(f"{len(selections)} unmutated baseline run(s) of the selected tests")
     start = time.monotonic()
     limits: dict[tuple, float] = {}
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -877,6 +887,7 @@ def run(base: str, work: Path, workers: int, pattern: str = "test_*.py") -> Verd
         }
         for names, future in futures.items():
             outcome, took, detail = future.result()
+            say(f"baseline of {len(names)} test(s): {outcome} in {took} s")
             if outcome != "survived":
                 verdict.faults.append(
                     f"the unmutated run of {len(names)} selected test(s) gave {outcome}, not a pass: "
@@ -889,10 +900,14 @@ def run(base: str, work: Path, workers: int, pattern: str = "test_*.py") -> Verd
         verdict.timings["total"] = round(time.monotonic() - began, 1)
         return verdict
 
+    say(f"{len(to_run)} mutant run(s)")
     start = time.monotonic()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        for future in [pool.submit(mutate_and_run, copies, work, m, limits[tuple(m.tests)]) for m in to_run]:
+        futures = {pool.submit(mutate_and_run, copies, work, m, limits[tuple(m.tests)]): m for m in to_run}
+        for done, future in enumerate(as_completed(futures), 1):
             future.result()
+            m = futures[future]
+            say(f"[{done}/{len(to_run)}] {m.label()}: {m.outcome} in {m.seconds} s ({len(m.tests)} test(s))")
     verdict.timings["mutants"] = round(time.monotonic() - start, 1)
     verdict.mutants = sorted(chosen.values(), key=lambda m: (m.module, m.start, m.operator, m.occurrence))
     verdict.refusals += judge(verdict.mutants)

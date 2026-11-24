@@ -14,12 +14,15 @@ import { CONTRACTS_PACKAGE_SCHEMA, packagePattern } from './helpers.js';
 /** Server DTO classes: the wire shape the server validates or returns. */
 const DTO_CLASS = /(?:Dto|DTO)$/;
 
-/** Root identifier of an `implements` entry (`A`, `A<T>`, `ns.A`). */
+/**
+ * Root identifier of an `implements` entry (`A`, `A<T>`, `ns.A`). TypeScript
+ * allows only an identifier or a member chain there, so the root is always
+ * an Identifier.
+ */
 function implementedRoot(heritage) {
   let expression = heritage.expression;
-  while (expression?.type === 'MemberExpression')
-    expression = expression.object;
-  return expression?.type === 'Identifier' ? expression.name : null;
+  while (expression.type === 'MemberExpression') expression = expression.object;
+  return expression.name;
 }
 
 const dtoImplementsContract = {
@@ -63,8 +66,9 @@ const dtoImplementsContract = {
       },
       'Program:exit'() {
         for (const node of classes) {
+          // A parser without TypeScript (espree) leaves `implements` unset.
           const implemented = (node.implements ?? []).map(implementedRoot);
-          if (implemented.some(root => root !== null && shared.has(root))) {
+          if (implemented.some(root => shared.has(root))) {
             continue;
           }
           context.report({

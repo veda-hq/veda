@@ -85,6 +85,10 @@ describe('keyName', () => {
       assert.equal(keyName(key), null);
     });
   }
+
+  it('reads a string value only off a Literal key', () => {
+    assert.equal(keyName({ type: 'PrivateName', value: 'sku_id' }), null);
+  });
 });
 
 describe('contractsLabel', () => {

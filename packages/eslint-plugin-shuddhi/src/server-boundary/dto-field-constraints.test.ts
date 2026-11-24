@@ -319,8 +319,65 @@ tester.run('dto-field-constraints (branches)', rule, {
     },
     { code: "import { z } from 'zod';\nmakeSchema();" },
     { code: "import { z } from 'zod';\nz.object();" },
+    // Names that only contain an id, page or instant word.
+    {
+      code: `class D {
+        @IsString() paid!: string;
+        @IsString() codename!: string;
+        @IsString() Identifier!: string;
+        @IsArray() @ArrayNotEmpty() @ArrayMaxSize(5) kids!: string[];
+        @IsArray() @ArrayNotEmpty() @ArrayMaxSize(5) storeIdsByRegion!: string[];
+        @Type(() => Number) @IsInt() homepage!: number;
+        @Type(() => Number) @IsInt() limitless!: number;
+        @IsDateString() last_attempt_date!: string;
+      }`,
+    },
+    // A computed key has no name to judge.
+    { code: 'class D { @IsArray() [KEYS.tags]!: string[] }' },
+    { code: zod('[KEYS.tags]: z.array(z.string())') },
+    // Only @Transform's function is judged, and only a function.
+    {
+      code: "class D { @ValidateIf(() => { throw new Error('x'); }) @IsString() name!: string }",
+    },
+    {
+      code: "class D { @Transform(class { static run() { throw new Error('x'); } }) @IsString() name!: string }",
+    },
+    // A bare @Transform passes no function.
+    { code: 'class D { @Transform @IsString() name!: string }' },
+    // zod: an id-named number is not a blank string, and a computed method
+    // or a shape built elsewhere is not read.
+    { code: zod('sku_id: z.number()') },
+    { code: zod("sku_id: z.string()['min'](1)") },
+    { code: "import { z } from 'zod';\nz.object(baseShape);" },
+    {
+      code: "import { z } from 'zod';\nclass K { #object(x: unknown) { return x; } m() { return z.#object({ sku_id: z.string() }); } }",
+    },
   ],
   invalid: [
+    // Page sizes spelled without a separator.
+    {
+      code: `class D {
+        @Type(() => Number) @IsInt() pagesize!: number;
+        @Type(() => Number) @IsInt() perpage!: number;
+      }`,
+      errors: [
+        { messageId: 'pageMax', data: { field: 'pagesize' } },
+        { messageId: 'pageMax', data: { field: 'perpage' } },
+      ],
+    },
+    // A throw in a catch, or in a finally, escapes too.
+    {
+      code: `class D { @Transform(({ value }) => {
+        try { return BigInt(value); } catch { throw new BadRequestException('bad'); }
+      }) @IsString() version!: string }`,
+      errors: [{ messageId: 'transformThrows' }],
+    },
+    {
+      code: `class D { @Transform(({ value }) => {
+        try { return BigInt(value); } catch { return value; } finally { throw new Error('x'); }
+      }) @IsString() version!: string }`,
+      errors: [{ messageId: 'transformThrows' }],
+    },
     {
       code: 'class D { @cv.IsString() sku_id!: string }',
       errors: [{ messageId: 'blankId', data: { field: 'sku_id' } }],
@@ -444,5 +501,29 @@ describe('dto-field-constraints meta', () => {
       () => lint('', ['error', { extra: true }]),
       /additional properties/,
     );
+  });
+
+  it('refuses an empty or non-string @IsInstant() module', () => {
+    assert.throws(
+      () => lint('', ['error', { instantDecoratorModule: '' }]),
+      /should NOT be shorter than 1 characters/,
+    );
+    assert.throws(
+      () => lint('', ['error', { instantDecoratorModule: 7 }]),
+      /should be string/,
+    );
+  });
+
+  it('reads class fields a parser without TypeScript leaves undecorated', () => {
+    // A config without `files` applies to ESLint's default .js pattern.
+    const messages = new Linter({ cwd: '/repo' }).verify(
+      "class S { sku_id = ''; }",
+      {
+        plugins: { b: { rules: { 'dto-field-constraints': rule } } },
+        rules: { 'b/dto-field-constraints': 'error' },
+      },
+      '/repo/s.js',
+    );
+    assert.deepEqual(messages, []);
   });
 });

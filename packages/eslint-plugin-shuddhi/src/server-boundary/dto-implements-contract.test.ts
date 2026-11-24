@@ -212,6 +212,53 @@ describe('dto-implements-contract meta', () => {
     );
   });
 
+  it('reports a DTO that a parser without TypeScript reads', () => {
+    const messages = new Linter({ cwd: '/repo' }).verify(
+      'export class OrdersDto {}',
+      {
+        plugins: { b: { rules: { 'dto-implements-contract': rule } } },
+        rules: {
+          'b/dto-implements-contract': [
+            'error',
+            { contractsPackage: '@acme/shared' },
+          ],
+        },
+      },
+      '/repo/orders.dto.js',
+    );
+    assert.deepEqual(
+      messages.map(message => [message.ruleId, message.line, message.column]),
+      [['b/dto-implements-contract', 1, 14]],
+    );
+  });
+
+  it('judges only classes whose name ends in Dto or DTO', () => {
+    const names = (code: string) =>
+      new Linter({ cwd: '/repo' })
+        .verify(
+          code,
+          {
+            files: ['**/*.ts'],
+            languageOptions: { parser: tseslint.parser },
+            plugins: { b: { rules: { 'dto-implements-contract': rule } } },
+            rules: {
+              'b/dto-implements-contract': [
+                'error',
+                { contractsPackage: '@acme/shared' },
+              ],
+            },
+          },
+          '/repo/orders.dto.ts',
+        )
+        .map(message => message.message.split('`')[1]);
+    assert.deepEqual(
+      names(
+        'export class DtoFactory {}\nexport class DTOMapper {}\nexport class OrderDTO {}',
+      ),
+      ['OrderDTO'],
+    );
+  });
+
   it('refuses a config that names no contracts package', () => {
     assert.throws(() => lint('error'), /contractsPackage/);
   });

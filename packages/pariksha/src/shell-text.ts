@@ -530,8 +530,11 @@ const commandStart = (): string => {
   );
 };
 
-/** What follows a case pattern's first word: more `|word`s, then `)`. */
-const CASE_LABEL_REST = /^(?:\s*\|\s*[^\s|;&()]+)*\s*\)/;
+/**
+ * What follows a case pattern's first word: more `|word`s, then `)`. Sticky,
+ * so it matches only where its `lastIndex` is set: right after the word.
+ */
+const CASE_LABEL_REST = /(?:\s*\|\s*[^\s|;&()]+)*\s*\)/y;
 
 /**
  * Indexes of the `)` that close case patterns, in quote-masked text: one
@@ -573,7 +576,8 @@ export const commandPositions = (code: string, command: string): number[] => {
   for (const match of separated.matchAll(pattern)) {
     const end = match.index + match[0].length;
     // A case label (`node)`, `node|npm)`) names a pattern, not a command.
-    const rest = CASE_LABEL_REST.exec(masked.slice(end));
+    CASE_LABEL_REST.lastIndex = end;
+    const rest = CASE_LABEL_REST.exec(masked);
     if (rest !== null && labels.has(end + rest[0].length - 1)) continue;
     // Past a closing quote the blanking removed, so callers read the args.
     // A quote here was blanked: the match needs a blank or an operator after the word.

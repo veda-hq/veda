@@ -254,6 +254,13 @@ describe('codeLines', () => {
     assert.deepEqual(codeLines('echo "a\nb" "c \\\nd"'), [{ line: 1, code: 'echo "a\nb" "c d"' }]);
   });
 
+  it('holds no line open on a bare (, outside any quote', () => {
+    assert.deepEqual(codeLines('f (\nnode'), [
+      { line: 1, code: 'f (' },
+      { line: 2, code: 'node' },
+    ]);
+  });
+
   it('drops a line of blanks, and a continuation that ends in blanks', () => {
     assert.deepEqual(codeLines('a\n   \nb'), [
       { line: 1, code: 'a' },
@@ -522,10 +529,11 @@ describe('commandPositions', () => {
     // A ) that closes no paren starts a command; one that closes a subshell does not.
     ['(a) b) node', 'node', [11]],
     ['x=$(case $y in a) node;; esac)', 'node', [22]],
-    // The first word of a pattern list, whatever the spacing, is a label.
-    ['case $x in node | npm) a ;; esac', 'node', []],
-    ['case $x in node|npm) a ;; esac', 'node', []],
-    ['case $x in node ) a ;; esac', 'node', []],
+    // The first word of an arm's pattern list, whatever the spacing, is a label.
+    ['node | npm) a ;;', 'node', []],
+    ['node|npm) a ;;', 'node', []],
+    ['node ) a ;;', 'node', []],
+    ['a) b;; node | npm) c', 'node', []],
     // Only a label right after the word makes it one.
     ['node; a) |b)', 'node', [4]],
     // A quoted command word after a separator, at the end, or before an operator.

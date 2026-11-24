@@ -36,6 +36,10 @@ const isJsonObject = (value: unknown): value is Record<string, unknown> =>
 const isRuleId = (rule: string): rule is RuleId =>
   (RULE_IDS as readonly string[]).includes(rule);
 
+/** An allowance: a whole number above zero (an integer is a number). */
+const isCount = (value: unknown): value is number =>
+  Number.isInteger(value) && (value as number) >= 1;
+
 /** The baseline in `text`; `where` names it in errors. Absent or blank is empty. */
 export const parseBaseline = (text: string | null, where: string): Baseline => {
   if (text === null || text.trim() === "") return { files: pathMap() };
@@ -58,7 +62,7 @@ export const parseBaseline = (text: string | null, where: string): Baseline => {
     for (const [rule, count] of Object.entries(counts)) {
       if (!isRuleId(rule))
         throw new Error(`${where}: ${path} names unknown rule ${rule}`);
-      if (typeof count !== "number" || !Number.isInteger(count) || count < 1)
+      if (!isCount(count))
         throw new Error(`${where}: ${path} ${rule} must be a positive integer`);
       entry[rule] = count;
     }
@@ -73,8 +77,8 @@ export const renderBaseline = (baseline: Baseline): string => {
   for (const path of Object.keys(baseline.files).sort()) {
     const counts: Counts = {};
     for (const rule of RULE_IDS) {
-      const count = baseline.files[path]?.[rule];
-      if (count !== undefined && count > 0) counts[rule] = count;
+      const count = baseline.files[path]?.[rule] ?? 0;
+      if (count > 0) counts[rule] = count;
     }
     if (Object.keys(counts).length > 0) files[path] = counts;
   }

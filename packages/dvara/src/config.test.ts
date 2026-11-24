@@ -152,6 +152,71 @@ describe("parseConfig", () => {
       );
   });
 
+  it("has these defaults", () => {
+    const { records, ...rest } = parseConfig("{}");
+    assert.deepEqual(rest, {
+      historyDir: ".dvara",
+      quietHooks: ["pre-commit"],
+      watchdog: null,
+      baseRefs: ["origin/main", "origin/develop", "origin/master"],
+      stages: {},
+      stageList: null,
+      stageListRequired: ["pre-push"],
+      trailerKeys: [],
+    });
+    // As entries: niyam's Guard reads a `skip` key in a test file as node:test's skip option.
+    assert.deepEqual(
+      new Map(Object.entries(records)),
+      new Map<string, unknown>([
+        ["baseline", ".dvara/records-baseline.json"],
+        ["skip", []],
+        ["frozen", { paths: [], except: [] }],
+        ["identityPaths", []],
+        ["repository", null],
+        ["allowPaths", []],
+        ["packageManager", null],
+      ]),
+    );
+  });
+
+  it("refuses with these exact messages", () => {
+    for (const [text, message] of [
+      ["1", "the config must be an object"],
+      ['"x"', "the config must be an object"],
+      ['{"records": 1}', "records must be an object"],
+      ['{"records": "x"}', "records must be an object"],
+      ['{"records": null}', "records must be an object"],
+      ['{"records": {"frozen": null}}', "records.frozen must be an object"],
+      ['{"records": {"frozen": 1}}', "records.frozen must be an object"],
+      ['{"records": {"baseline": ""}}', "records.baseline must be a file path inside the repository"],
+      ['{"records": {"baseline": 1}}', "records.baseline must be a file path inside the repository"],
+      [
+        '{"records": {"baseline": {"toString": 1}}}',
+        "records.baseline must be a file path inside the repository",
+      ],
+      ['{"records": {"baseline": "a/"}}', "records.baseline must be a file path inside the repository"],
+      ['{"records": {"repository": ["a/b"]}}', 'records.repository must be "owner/name" or null'],
+      ['{"records": {"repository": "a b/c"}}', 'records.repository must be "owner/name" or null'],
+      ['{"records": {"repository": "a/b c"}}', 'records.repository must be "owner/name" or null'],
+      [
+        '{"records": {"packageManager": "bun"}}',
+        "records.packageManager must be one of pnpm, npm, yarn, or null",
+      ],
+      [
+        '{"trailerKeys": ["Slice", "Two words"]}',
+        "trailerKeys must hold trailer keys: letters, digits and -",
+      ],
+    ] as const)
+      assert.throws(() => parseConfig(text), { message }, text);
+  });
+
+  it("takes a stage list path with a colon past its start", () => {
+    assert.equal(
+      parseConfig('{"stageList": "tools/a:b.json"}').stageList,
+      "tools/a:b.json",
+    );
+  });
+
   it("names the config file as loadConfig reads it", () => {
     assert.equal(configName({}), CONFIG_FILE);
     assert.equal(

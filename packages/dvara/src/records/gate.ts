@@ -118,9 +118,12 @@ export interface Settings {
   readonly rules?: readonly Rule[];
 }
 
-/** The paths in `--name-status -z` output: each change is `<status>\0<path>\0`. */
+/**
+ * The paths in `--name-status -z --no-renames` output: each change is
+ * `<status>\0<path>\0`, its status one letter (no rename or copy score).
+ */
 const changedPaths = (out: string): string[] =>
-  [...out.matchAll(/[^\0]+\0([^\0]+)\0/g)].map((m) => m[1] ?? "");
+  [...out.matchAll(/[^\0]\0([^\0]+)\0/g)].map((m) => String(m[1]));
 
 /** Renames git detects in a diff, new path to old path. */
 const renamesIn = (
@@ -135,10 +138,11 @@ const renamesIn = (
     "--name-status",
     "-z",
   ]);
-  // Each rename is `R<score>\0<old>\0<new>\0`.
+  // Each rename is `R<score>\0<old>\0<new>\0`, one straight after another
+  // (sticky: a match starts where the last one ended).
   const out = new Map<string, string>();
-  for (const m of listing.matchAll(/[^\0]+\0([^\0]+)\0([^\0]+)\0/g))
-    out.set(m[2] ?? "", m[1] ?? "");
+  for (const m of listing.matchAll(/[^\0]+\0([^\0]+)\0([^\0]+)\0/gy))
+    out.set(String(m[2]), String(m[1]));
   return out;
 };
 
@@ -202,10 +206,9 @@ const plan = (
       baselineBefore: branchBase,
       check: changes,
       baselineChanged: changes.includes(baselinePath),
-      renames: () =>
-        branchBase === null
-          ? new Map()
-          : renamesIn(repo, ["--cached", branchBase]),
+      // Asked only when the baseline moved against an earlier one, which
+      // takes a base.
+      renames: () => renamesIn(repo, ["--cached", String(branchBase)]),
     };
   }
   let base: string | undefined;
@@ -293,8 +296,9 @@ const survey = (
       `rule ${rule}: ${byRule.get(rule) ?? 0} findings in ${filesWith} files`,
     );
   }
-  for (const [check, n] of [...byCheck].sort(([a], [b]) => (a < b ? -1 : 1)))
-    log(`check ${check}: ${n}`);
+  // The default sort orders strings by code unit, as `<` does.
+  for (const check of [...byCheck.keys()].sort())
+    log(`check ${check}: ${byCheck.get(check)}`);
 };
 
 /**
@@ -324,7 +328,7 @@ const runChecks = (
 ): number => {
   const started = Date.now();
   const baselinePath = settings.records.baseline;
-  const own = [baselinePath, ...(settings.own ?? [])];
+  const own = settings.own?.concat(baselinePath) ?? [baselinePath];
   const rules = settings.rules ?? rulesFor(settings.records);
   const planned = plan(options, repo, settings);
   if ("error" in planned) {
@@ -335,8 +339,8 @@ const runChecks = (
   // path's, so what it already cited stays legacy.
   let baseRenames: Map<string, string> | null = null;
   const renamedFrom = (path: string): string | undefined => {
-    const base = planned.branchBase;
-    if (typeof base !== "string") return undefined;
+    // The tree asks only for a base text, so only with a base.
+    const base = String(planned.branchBase);
     baseRenames ??= renamesIn(
       repo,
       planned.ref === ":" ? ["--cached", base] : [base, "HEAD"],
@@ -345,10 +349,11 @@ const runChecks = (
   };
   // Pushed history: HEAD's, and that of the ref CI names and the base refs.
   const pushed = [
-    ...new Set([
-      ...(options.base === null ? [] : [options.base]),
-      ...settings.baseRefs,
-    ]),
+    ...new Set(
+      options.base === null
+        ? settings.baseRefs
+        : [options.base, ...settings.baseRefs],
+    ),
   ];
   const tree = treeContext(
     repo,
@@ -357,27 +362,30 @@ const runChecks = (
     renamedFrom,
     pushed,
   );
+  // Recording replaces the baseline, so it reads none: a broken one is no
+  // obstacle.
   const recording = options.writeBaseline || options.survey;
-  let baseline: Baseline = { files: pathMap() };
+  let baseline: Baseline;
   let before: Baseline | null = null;
   // The commit that adds the baseline has nothing to compare it with, so it
   // must match the tree exactly: every entry is checked, over and under.
   let adding = false;
   try {
-    if (!recording) {
-      baseline = parseBaseline(tree.read(baselinePath), baselinePath);
-      if (planned.baselineChanged) {
-        // A root commit has no base at all: its baseline is a first one.
-        if (planned.baselineBefore === null) adding = true;
-        else {
-          const name = `${planned.baselineBefore}:${baselinePath}`;
-          const previous = readBlobs(repo, [name]).get(name) ?? null;
-          if (previous !== null) before = parseBaseline(previous, name);
-          else if (treeLists(repo, planned.baselineBefore, baselinePath))
-            // The base has a baseline git cannot read: not a first baseline.
-            throw new UnreadableObject(name);
-          else adding = true;
-        }
+    baseline = parseBaseline(
+      recording ? null : tree.read(baselinePath),
+      baselinePath,
+    );
+    if (!recording && planned.baselineChanged) {
+      // A root commit has no base at all: its baseline is a first one.
+      if (planned.baselineBefore === null) adding = true;
+      else {
+        const name = `${planned.baselineBefore}:${baselinePath}`;
+        const previous = readBlobs(repo, [name]).get(name) ?? null;
+        if (previous !== null) before = parseBaseline(previous, name);
+        else if (treeLists(repo, planned.baselineBefore, baselinePath))
+          // The base has a baseline git cannot read: not a first baseline.
+          throw new UnreadableObject(name);
+        else adding = true;
       }
     }
   } catch (error) {
@@ -386,18 +394,15 @@ const runChecks = (
     return 1;
   }
   // A baseline edit re-checks every file whose entry it changed, so a lowered
-  // or removed allowance must match the tree in the same change.
-  const moved =
-    before === null
-      ? []
-      : changedEntries(before, baseline).filter((p) => tree.pathExists(p));
-  const paths = [
-    ...new Set([
-      ...planned.check,
-      ...moved,
-      ...(adding ? Object.keys(baseline.files) : []),
-    ]),
-  ]
+  // or removed allowance must match the tree in the same change; a first
+  // baseline re-checks every file it names. With no earlier baseline to
+  // compare, the baseline is compared with itself: no entry changed.
+  const moved = adding
+    ? Object.keys(baseline.files)
+    : changedEntries(before ?? baseline, baseline).filter((p) =>
+        tree.pathExists(p),
+      );
+  const paths = [...new Set([...planned.check, ...moved])]
     .sort()
     // No rule reads a binary, the gate's own files, a skipped or a frozen
     // path, so they are not read at all. Nor a symlink or a submodule: they

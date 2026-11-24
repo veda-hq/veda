@@ -91,6 +91,12 @@ describe("baseline", () => {
     });
   });
 
+  it("renders no file whose entry is missing its counts", () => {
+    // Only a caller outside the types can hand one over; it renders as none.
+    const sparse = { files: { a: undefined } } as unknown as Baseline;
+    assert.equal(renderBaseline(sparse), '{\n  "files": {}\n}\n');
+  });
+
   it("counts findings per file and rule", () => {
     assert.deepEqual(
       [
@@ -135,6 +141,18 @@ describe("baseline", () => {
     );
   });
 
+  it("lists each file's unheld findings under that file alone", () => {
+    const fa = { ...at("a", "EVIDENCE-01", 1), ratchet: false } as const;
+    const fb = { ...at("b", "EVIDENCE-01", 2), ratchet: false } as const;
+    assert.deepEqual(ratchet([], [fa, fb], parse(null)), {
+      over: [
+        { file: "a", rule: "EVIDENCE-01", allowed: 0, now: 1, findings: [fa] },
+        { file: "b", rule: "EVIDENCE-01", allowed: 0, now: 1, findings: [fb] },
+      ],
+      under: [],
+    });
+  });
+
   it("goes over past the allowance alone, listing every finding of that rule", () => {
     const one = parse('{"files": {"a": {"EVIDENCE-01": 1}}}');
     const [f1, f2] = [at("a", "EVIDENCE-01", 1), at("a", "EVIDENCE-01", 2)];
@@ -174,6 +192,17 @@ describe("baseline", () => {
     // A count higher than the old entry's, or a rule it never held.
     assert.equal(refused({ files: { b: { "EVIDENCE-01": 3 } } }).length, 1);
     assert.equal(refused({ files: { b: { "EVIDENCE-02": 1 } } }).length, 1);
+  });
+
+  it("carries no entry from a file named undefined without a rename", () => {
+    // A tracked file may be called `undefined`; no rename names it here.
+    const before: Baseline = { files: { undefined: { "EVIDENCE-01": 2 } } };
+    assert.deepEqual(
+      baselineIncreases(before, { files: { b: { "EVIDENCE-01": 1 } } }),
+      [
+        "b: a new baseline entry; fix the file instead of recording its findings",
+      ],
+    );
   });
 
   it("names a raised count with both numbers", () => {

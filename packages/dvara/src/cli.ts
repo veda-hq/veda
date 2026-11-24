@@ -101,20 +101,19 @@ export const parseTrailersArgs = (
 ): { file: string; keys: string[] } | { error: string } => {
   const files: string[] = [];
   const keys: string[] = [];
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i] ?? "";
-    if (arg !== "--key") {
-      files.push(arg);
-      continue;
-    }
-    const key = args[i + 1];
-    if (key === undefined || !TRAILER_KEY.test(key))
-      return { error: "--key takes a trailer key: letters, digits and -" };
-    keys.push(key);
-    i += 1;
+  let takesKey = false;
+  for (const arg of args) {
+    if (takesKey) {
+      if (!TRAILER_KEY.test(arg)) break;
+      keys.push(arg);
+      takesKey = false;
+    } else if (arg === "--key") takesKey = true;
+    else files.push(arg);
   }
-  const [file] = files;
-  return file === undefined || files.length !== 1
+  if (takesKey)
+    return { error: "--key takes a trailer key: letters, digits and -" };
+  const [file, ...more] = files;
+  return file === undefined || more.length > 0
     ? { error: "give one commit message file" }
     : { file, keys };
 };
@@ -133,9 +132,7 @@ const trailers = (
   try {
     text = readFileSync(resolve(cwd, file), "utf8");
   } catch (error) {
-    throw new Error(`cannot read ${file}: ${(error as Error).message}`, {
-      cause: error,
-    });
+    throw new Error(`cannot read ${file}: ${(error as Error).message}`);
   }
   const misplaced = misplacedTrailers(text, [...GIT_TRAILER_KEYS, ...keys]);
   if (misplaced.length === 0) return 0;
@@ -233,7 +230,7 @@ const reviewSize = (args: readonly string[], { io, cwd, env }: Context): number 
     for (const line of lines) io.err(line);
   } catch (error) {
     // fail-open: a size warning must never stop a push; the line says it was not checked.
-    io.err(`⚠ review-size: not checked: ${(error as Error).message.split("\n")[0] ?? ""}`);
+    io.err(`⚠ review-size: not checked: ${String((error as Error).message.split("\n")[0])}`);
   }
   return 0;
 };
@@ -252,9 +249,9 @@ export const run = async (
   if (
     command === "shell" &&
     rest.length === 1 &&
-    SHELL_HELPERS.has(rest[0] ?? "")
+    SHELL_HELPERS.has(String(rest[0]))
   ) {
-    io.out(shellHelper(rest[0] ?? ""));
+    io.out(shellHelper(String(rest[0])));
     return 0;
   }
   if (command === "records" || command === "frozen" || command === "trailers")
@@ -283,7 +280,7 @@ export const run = async (
         io.err((error as Error).message);
         return 2;
       }
-      for (const name of lists ? (listFor(lists, rest[0] ?? "") ?? []) : [])
+      for (const name of lists ? (listFor(lists, String(rest[0])) ?? []) : [])
         io.out(name);
       return 0;
     }
@@ -319,10 +316,24 @@ export const processIo: Io = {
   err: (line) => process.stderr.write(`${line}\n`),
 };
 
-if (isEntry(process.argv[1], import.meta.url)) {
-  process.exitCode = await run(process.argv.slice(2), {
-    io: processIo,
-    cwd: process.cwd(),
-    env: process.env,
-  });
-}
+/**
+ * The exit code of the command `argv` asks for when `argv[1]` is the module
+ * at `moduleUrl`, else undefined: a test or a consumer that imports the
+ * module runs nothing. `cwd` is asked only for a run, so an import never
+ * reads it.
+ */
+export const entry = async (
+  argv: readonly string[],
+  moduleUrl: string,
+  io: Io,
+  cwd: () => string,
+  env: NodeJS.ProcessEnv,
+): Promise<number | undefined> =>
+  isEntry(argv[1], moduleUrl)
+    ? run(argv.slice(2), { io, cwd: cwd(), env })
+    : undefined;
+
+// `??` keeps an importer's own exit code.
+process.exitCode =
+  (await entry(process.argv, import.meta.url, processIo, process.cwd, process.env)) ??
+  process.exitCode;

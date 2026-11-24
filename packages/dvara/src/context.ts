@@ -25,14 +25,15 @@ export const processTable = (
   text: string,
 ): Map<number, { parent: number; command: string }> => {
   const parents = new Map<number, { parent: number; command: string }>();
-  for (const line of text.trim().split("\n")) {
+  // A blank line matches no row, so the text needs no trim of its own.
+  for (const line of text.split("\n")) {
     const match = /^(\d+)\s+(\d+)\s+(.+)$/.exec(line.trim());
     if (!match) continue;
     const pid = Number(match[1]);
     const parent = Number(match[2]);
     // A digit run too long for a number is no process.
     if (!Number.isFinite(pid) || !Number.isFinite(parent)) continue;
-    parents.set(pid, { parent, command: match[3] ?? "" });
+    parents.set(pid, { parent, command: String(match[3]) });
   }
   return parents;
 };
@@ -77,8 +78,8 @@ export const perfLevelNames = (
 ): string[] => {
   if (platform !== "darwin") return [];
   try {
+    // Junk is NaN, a length of 0; Infinity is a length Array.from throws on.
     const levels = Number(exec("sysctl", ["-n", "hw.nperflevels"]));
-    if (!Number.isFinite(levels)) return [];
     return Array.from({ length: levels }, (_, i) =>
       exec("sysctl", ["-n", `hw.perflevel${i}.name`]).trim(),
     );

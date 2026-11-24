@@ -26,8 +26,8 @@ export const droppedBits = (raw: string): Dropped[] => {
   const fields = raw.split("\0");
   const dropped: Dropped[] = [];
   for (let i = 0; i + 1 < fields.length; i += 2) {
-    const header = fields[i] ?? "";
-    const path = fields[i + 1] ?? "";
+    const header = String(fields[i]);
+    const path = String(fields[i + 1]);
     const [oldMode, newMode, oldId, newId, status] = header
       .replace(/^:/, "")
       .split(" ");

@@ -63,7 +63,8 @@ export const parseRecords = (text: string | null): Records => {
   const proofDiagnostics: ProofReason[] = [];
   if (text === null) return { pushed: null, declared, proof, proofDiagnostics };
   const pushed: Pushed = { source: "none", refs: [] };
-  for (const line of text.split("\n").filter(Boolean)) {
+  // A blank line's type is empty, which no record has: it is ignored.
+  for (const line of text.split("\n")) {
     const [type, ...f] = line.split("\t");
     if (type === "refs-source") pushed.source = f[0] ?? "";
     else if (type === "ref")
@@ -121,17 +122,18 @@ export const treeUsage = (
   table: string,
   rootPid: number,
 ): { rssKiB: number; processes: number } => {
+  // Splitting yields at least one field, so every row has a pid; a blank row
+  // reads as pid 0 with no parent and no memory, which adds nothing.
   const rows = table
-    .trim()
     .split("\n")
-    .map((row) => row.trim().split(/\s+/).map(Number));
+    .map(
+      (row) => row.trim().split(/\s+/).map(Number) as [number, ...number[]],
+    );
   const ids = new Set([rootPid]);
   // A Set visits what is added while iterating it: a breadth-first walk.
   for (const id of ids)
-    for (const [pid, ppid] of rows)
-      if (ppid === id && pid !== undefined) ids.add(pid);
+    for (const [pid, ppid] of rows) if (ppid === id) ids.add(pid);
   let rssKiB = 0;
-  for (const [pid, , rss] of rows)
-    if (pid !== undefined && ids.has(pid)) rssKiB += rss ?? 0;
+  for (const [pid, , rss] of rows) if (ids.has(pid)) rssKiB += rss ?? 0;
   return { rssKiB, processes: ids.size };
 };

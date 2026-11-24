@@ -16,6 +16,9 @@ error. `--root <dir>` (default:
 the current directory) names the repository. Node 24 or later. MIT; one
 ported file is ISC, see `NOTICE`.
 
+The package ships its own rules in [`standards/`](standards/README.md): each
+best-practice rule a check enforces, beside that check.
+
 ## The config file
 
 One committed file, `.pariksha.json`, holds every check's settings, so a hook

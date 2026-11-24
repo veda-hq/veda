@@ -29,12 +29,14 @@
     },
     "./dist/*": "./dist/*",
     "./baselines/*": "./baselines/*",
+    "./standards/*": "./standards/*",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
     "python",
     "baselines",
+    "standards",
     "NOTICE"
   ],
   "scripts": {

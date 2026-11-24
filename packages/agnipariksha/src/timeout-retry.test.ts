@@ -27,7 +27,9 @@ test('a span keeps lines 1-based and moves report columns to 0-based', () => {
   }
 });
 
-test('sameMutant compares file, start, mutator and replacement', () => {
+test('sameMutant compares file, start, end, mutator and replacement', () => {
+  assert.equal(sameMutant(mutant('Killed'), { ...mutant('Killed'), endLine: 4 }), false);
+  assert.equal(sameMutant(mutant('Killed'), { ...mutant('Killed'), endColumn: 10 }), false);
   assert.equal(sameMutant(mutant('Killed'), mutant('Timeout')), true);
   assert.equal(sameMutant(mutant('Killed'), { ...mutant('Killed'), replacement: '"x"' }), false);
   assert.equal(sameMutant(mutant('Killed'), mutant('Killed', 4)), false);
@@ -105,6 +107,20 @@ test('the budget counts from the pass start: a retry starts at exactly the budge
   const past = await retryTimeouts([mutant('Timeout', 2), mutant('Timeout', 3), mutant('Timeout', 4)], retry, clock(0, 0, B + 1, B + 2));
   assert.deepEqual(past.mutants.map((m) => m.line), [2]);
   assert.equal(past.refusals.length, 1, 'once stopped, the pass refuses once');
+});
+
+test('a retry takes its own mutant, not a nested one that starts at the same place (#557)', async () => {
+  // `if (held === '' && !sawEmpty)`: the outer condition and the nested `held === ''` both start at 3:5.
+  const outer: Mutant = { ...mutant('Timeout'), mutator: 'ConditionalExpression', replacement: 'true', endColumn: 30 };
+  const nested: Mutant = { ...outer, endColumn: 16 };
+  const pass = await retryTimeouts(
+    [outer],
+    async () => ({ mutants: [{ ...nested, status: 'Ignored' }, { ...outer, status: 'Killed' }] }),
+    clock(0, 0),
+  );
+  assert.deepEqual(pass.refusals, []);
+  assert.deepEqual(pass.mutants.map((m) => `${m.line}:${m.endColumn}:${m.status}`), ['3:30:Killed']);
+  assert.equal(pass.retried, 1);
 });
 
 test('a retry that reports its own mutant Ignored refuses: the verdict would not count it', async () => {

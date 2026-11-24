@@ -21,8 +21,20 @@ export function mutantSpan(m: Mutant): string | null {
   return `${m.line}:${m.column - 1}-${m.endLine}:${m.endColumn - 1}`;
 }
 
+/**
+ * The same mutant: file, full location, mutator and replacement. A retry's
+ * `--mutate` range also selects mutants nested in this one, and a nested one
+ * can share its start, mutator and replacement (`a === b && c`), so the end
+ * tells them apart (veda#557).
+ */
 export const sameMutant = (a: Mutant, b: Mutant): boolean =>
-  a.file === b.file && a.line === b.line && a.column === b.column && a.mutator === b.mutator && a.replacement === b.replacement;
+  a.file === b.file &&
+  a.line === b.line &&
+  a.column === b.column &&
+  a.endLine === b.endLine &&
+  a.endColumn === b.endColumn &&
+  a.mutator === b.mutator &&
+  a.replacement === b.replacement;
 
 export interface RetryPass {
   mutants: Mutant[];

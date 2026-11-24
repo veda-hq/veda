@@ -8,7 +8,7 @@ import { RuleTester } from '@typescript-eslint/rule-tester';
 import { Linter } from 'eslint';
 import tseslint from 'typescript-eslint';
 
-import { packageTypeLookup } from './import-meta-cjs.js';
+import { packageTypeLookup, readPackageJson } from './import-meta-cjs.js';
 import plugin, { rules } from './index.js';
 
 /**
@@ -99,6 +99,8 @@ ruleTester.run(
         const at = import.meta[key];
         const name = import.meta['url'];
         function F() { return new.target; }
+        function G() { return new.target.dirname; }
+        const keyed = x[import.meta];
         const { url, [key]: other, 'env': quoted, ...rest } = import.meta;
         let meta; meta = import.meta;
         log(import.meta);
@@ -208,6 +210,15 @@ describe('packageTypeLookup', () => {
     assert.equal(typeOf('/b'), 'unknown');
   });
 
+  it('reads a package.json from disk as text, a missing one as null, an unreadable one as undefined', () => {
+    assert.equal(
+      readPackageJson(file('esm/package.json')),
+      '{ "name": "esm", "type": "module" }',
+    );
+    assert.equal(readPackageJson(file('cjs/scripts/package.json')), null);
+    assert.equal(readPackageJson(file('unreadable/package.json')), undefined);
+  });
+
   it('looks each directory up once', () => {
     const { typeOf, reads } = memoryLookup({
       '/repo/package.json': '{ "type": "module" }',
@@ -253,6 +264,33 @@ describe('no-import-meta-dirname-cjs on ESLint filenames', () => {
   it('resolves a relative filename against the working directory', () => {
     assert.deepEqual(messageIds(DIRNAME, 'cjs/scripts/build.ts'), [
       'cjsPackage',
+    ]);
+  });
+
+  it('judges the file on disk, not the name a processor gives its code', () => {
+    const rule = rules['no-import-meta-dirname-cjs']!;
+    const visitors = (context: Record<string, string>) =>
+      Object.keys(rule.create(context as never));
+    // A `.mjs` file on disk always runs as ESM, whatever its block is named.
+    assert.deepEqual(
+      visitors({
+        cwd: root,
+        physicalFilename: file('cjs/run.mjs'),
+        filename: file('cjs/run.mjs/0.cjs'),
+      }),
+      [],
+    );
+    assert.deepEqual(
+      visitors({
+        cwd: root,
+        physicalFilename: file('cjs/run.cjs'),
+        filename: file('cjs/run.cjs/0.mjs'),
+      }),
+      ['MetaProperty'],
+    );
+    // With no physical filename, the filename is the file.
+    assert.deepEqual(visitors({ cwd: root, filename: file('cjs/run.cjs') }), [
+      'MetaProperty',
     ]);
   });
 

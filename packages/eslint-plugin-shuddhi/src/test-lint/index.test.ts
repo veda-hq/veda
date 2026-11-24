@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { Linter } from 'eslint';
+import tseslint from 'typescript-eslint';
+
 import plugin, { C05_CANDIDATE_RULES, rules } from './index.js';
 
 /**
@@ -98,6 +101,38 @@ describe('the test-lint rule map', () => {
     for (const name of C05_CANDIDATE_RULES) {
       assert.ok(Object.hasOwn(rules, name), name);
     }
+  });
+
+  it('hands the c05 rules and their candidates the shared helpers', () => {
+    const report = (rule: string, code: string) =>
+      new Linter({ configType: 'flat' })
+        .verify(
+          code,
+          [
+            {
+              files: ['**/*.ts'],
+              languageOptions: { parser: tseslint.parser },
+              plugins: { shuddhi: plugin },
+              rules: { [`shuddhi/${rule}`]: 'error' },
+            },
+          ],
+          'probe.test.ts',
+        )
+        .map(message => message.messageId ?? message.message);
+    assert.deepEqual(
+      report(
+        'no-silent-early-return',
+        `it('a', () => { if (!row) return; expect(row.id).toBe(1); });`,
+      ),
+      ['silentReturn'],
+    );
+    assert.deepEqual(
+      report(
+        'no-fixed-sleep',
+        `it('a', async () => { render(); await new Promise(r => setTimeout(r, 500)); expect(shown()).toBe(true); });`,
+      ),
+      ['fixedSleep'],
+    );
   });
 
   it('exports the family as a plugin named shuddhi', () => {

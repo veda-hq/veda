@@ -71,34 +71,28 @@ function readPackageJson(path) {
  */
 function packageTypeLookup(read = readPackageJson) {
   const cache = new Map();
-  return function packageTypeOf(start) {
-    const passed = [];
-    let type = 'commonjs';
-    for (let dir = start; ; dir = dirname(dir)) {
-      if (cache.has(dir)) {
-        type = cache.get(dir);
-        break;
-      }
-      passed.push(dir);
-      const text = read(join(dir, 'package.json'));
-      if (text !== null) {
-        type = formatOf(text);
-        break;
-      }
-      if (dirname(dir) === dir) break;
-    }
-    for (const dir of passed) cache.set(dir, type);
-    return type;
-  };
+  /** The format in `dir`: its own package.json's, else its parent's. */
+  function typeIn(dir) {
+    const text = read(join(dir, 'package.json'));
+    if (text !== null) return formatOf(text);
+    return dirname(dir) === dir ? 'commonjs' : packageTypeOf(dirname(dir));
+  }
+  function packageTypeOf(dir) {
+    if (!cache.has(dir)) cache.set(dir, typeIn(dir));
+    return cache.get(dir);
+  }
+  return packageTypeOf;
 }
 
-/** The format a package.json's text sets, or `'unknown'` when unreadable. */
+/**
+ * The format a package.json's text sets, or `'unknown'` when it does not
+ * parse. An unreadable one (`undefined`) does not parse either.
+ */
 function formatOf(text) {
-  if (text === undefined) return 'unknown';
   try {
     return JSON.parse(text)?.type === 'module' ? 'module' : 'commonjs';
   } catch {
-    // fail-open: a package.json that does not parse leaves the format unknown, and the rule reports nothing.
+    // fail-open: a package.json that cannot be read or parsed leaves the format unknown, and the rule reports nothing.
     return 'unknown';
   }
 }
@@ -123,25 +117,20 @@ const noImportMetaDirnameCjs = {
   },
   create(context) {
     const given = context.physicalFilename ?? context.filename;
-    // `<input>` and `<text>`: ESLint's names for code with no file.
-    if (/^<.*>$/.test(given)) return {};
     const filename = resolve(context.cwd, given);
     const name = basename(filename);
     if (TEST_FILE.test(name)) return {};
+    // `<input>` and `<text>`, ESLint's names for code with no file, end in
+    // `>` and so have no extension the rule knows.
     const extension = extname(name);
     if (!ALWAYS_CJS.has(extension) && !BY_PACKAGE.has(extension)) return {};
-    /** The message for this file, decided on the first hit. */
-    let messageId;
-    const messageFor = () => {
-      if (messageId === undefined) {
-        messageId = ALWAYS_CJS.has(extension)
-          ? 'cjsFile'
-          : packageTypeOf(dirname(filename)) === 'commonjs'
-            ? 'cjsPackage'
-            : null;
-      }
-      return messageId;
-    };
+    /** The message for this file; the package lookup is cached per directory. */
+    const messageFor = () =>
+      ALWAYS_CJS.has(extension)
+        ? 'cjsFile'
+        : packageTypeOf(dirname(filename)) === 'commonjs'
+          ? 'cjsPackage'
+          : null;
     const report = (node, property) => {
       if (property !== 'dirname' && property !== 'filename') return;
       const id = messageFor();
@@ -158,26 +147,23 @@ const noImportMetaDirnameCjs = {
     };
     return {
       MetaProperty(node) {
-        if (node.meta.name !== 'import' || node.property.name !== 'meta') {
-          return;
-        }
-        // Through type-only wrappers: `(import.meta as Meta).dirname`.
+        // `import.meta` is the one meta property `import` starts; the other
+        // is `new.target`.
+        if (node.meta.name !== 'import') return;
+        // Through type-only wrappers: `(import.meta as Meta).dirname`. A
+        // wrapper's one expression child is its `expression`.
         let inner = node;
-        while (
-          WRAPPERS.has(inner.parent.type) &&
-          inner.parent.expression === inner
-        ) {
-          inner = inner.parent;
-        }
+        while (WRAPPERS.has(inner.parent.type)) inner = inner.parent;
         const parent = inner.parent;
-        if (parent.type === 'MemberExpression' && parent.object === inner) {
+        // `import.meta.dirname`; as a key (`x[import.meta]`) it names nothing.
+        if (parent.type === 'MemberExpression') {
           report(parent, propertyName(parent));
           return;
         }
-        // `const { dirname } = import.meta`
+        // `const { dirname } = import.meta`: a declarator's one expression
+        // child is its `init`.
         if (
           parent.type === 'VariableDeclarator' &&
-          parent.init === inner &&
           parent.id.type === 'ObjectPattern'
         ) {
           for (const property of parent.id.properties) {
@@ -192,4 +178,4 @@ const noImportMetaDirnameCjs = {
   },
 };
 
-export { noImportMetaDirnameCjs, packageTypeLookup };
+export { noImportMetaDirnameCjs, packageTypeLookup, readPackageJson };

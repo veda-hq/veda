@@ -83,6 +83,17 @@ ruleTester.run('jsonnull-in-matcher', rules['jsonnull-in-matcher']!, {
       function check(nil: unknown) { expect(row).toMatchObject({ meta: nil }); }
       expect(row).toMatchObject({ a: JsonNull, b: DbNull, c: AnyNull, d: other, e: dynamic, f: money, g: first, h: Decimal, i: undeclared });`,
     },
+    // A package that only ends in @prisma/client; a sentinel name bound
+    // twice; a rest element; a computed key that reads a sentinel's name.
+    {
+      filename: TEST_FILE,
+      code: `import { JsonNull } from 'vendor/@prisma/client';
+      var { DbNull } = Prisma;
+      var { DbNull } = Prisma;
+      const { ...rest } = Prisma;
+      const { [AnyNull]: computed } = Prisma;
+      expect(row).toMatchObject({ a: JsonNull, b: DbNull, c: rest, d: computed });`,
+    },
     // A binding that is not a single const is not followed.
     {
       filename: TEST_FILE,

@@ -165,10 +165,10 @@ export const findUncited = (source: Source, opts: Options, git: Git, adrFiles: r
   for (const file of source.files) {
     if (!SOURCE_EXT.test(file) || SKIPPED_PATH.test(file)) continue;
     const text = source.content(file);
-    if (text === undefined) continue;
-    const lines = text.split('\n');
     // A file naming no phrase has no line to judge, so its judged lines are never asked for.
-    if (!phrase.test(text)) continue;
+    // `search`, unlike `phrase.test`, cannot read an unread file as the text "undefined".
+    if (text === undefined || text.search(phrase) === -1) continue;
+    const lines = text.split('\n');
     const judged = source.judged(file);
     lines.forEach((line, i) => {
       const n = i + 1;

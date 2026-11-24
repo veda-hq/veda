@@ -95,6 +95,9 @@ describe('simpleCommands', () => {
     ['a 2>/dev/null b', [['a', 'b']]],
     ['a x2>y b', [['a', 'x2', 'b']]],
     ['grep -q x <<<"$v"', [['grep', '-q', 'x']]],
+    ['ls &>| out', [['ls']]],
+    ['ls > out >> more', [['ls']]],
+    ['ls >\tout', [['ls']]],
   ])) {
   it(`drops redirections in ${JSON.stringify(text)}`, () => {
     assert.deepEqual(simpleCommands(text).commands, expected);
@@ -112,6 +115,7 @@ describe('simpleCommands', () => {
     ['cat <<EOF\nEOF\nls', [['cat'], ['ls']]],
     ['cat <<A\nA\ncat <<B\nB\nls', [['cat'], ['cat'], ['ls']]],
     ['cat <<EOF', []],
+    ['cat <<-EOF\nEOF\t\ngit merge main\n\t\tEOF\nls', [['cat'], ['ls']]],
   ])) {
   it(`skips heredoc bodies in ${JSON.stringify(text)}`, () => {
     assert.deepEqual(simpleCommands(text).commands, expected);
@@ -265,6 +269,8 @@ describe('simpleCommands', () => {
     ['ls; (a', [['ls']], 'a'],
     ['ls; echo $((1+2', [['ls']], ' echo $((1+2'],
     ['cat <<EOF\n$(open\nEOF', [['cat'], ['open']], '$(open\nEOF'],
+    ['ls; cat <<1x <<EOF\nbody\nEOF', [['ls']], ' cat <<1x <<EOF\nbody\nEOF'],
+    ['ls; cat <<EOF x', [['ls']], ' cat <<EOF x'],
   ])) {
   it(`stops at what it cannot follow in ${JSON.stringify(text)}, keeping the rest`, () => {
       assert.deepEqual(simpleCommands(text), { commands, unread });
@@ -736,6 +742,7 @@ describe('programOf', () => {
   it('stops at any other program', () => {
     assert.deepEqual(programOf(['pnpm', 'test'])?.args, ['pnpm', 'test']);
     assert.deepEqual(programOf(['pnpm'])?.args, ['pnpm']);
+    assert.deepEqual(programOf(['yarn', 'exec', 'rg', 'x'])?.args, ['yarn', 'exec', 'rg', 'x']);
     assert.deepEqual(programOf(['git', 'A=1'])?.args, ['git', 'A=1']);
     assert.deepEqual(programOf(['1A=x', 'b'])?.args, ['1A=x', 'b']);
   });
@@ -830,5 +837,43 @@ describe('steps', () => {
   it('finds a search inside shell control words', () => {
     const found = steps('if true; then rg -r secret /etc; fi', '/w', '/h').map((step) => step.args);
     assert.ok(found.some((args) => JSON.stringify(args) === JSON.stringify(['rg', '-r', 'secret', '/etc'])));
+  });
+
+  it('takes only whole cd options as options', () => {
+    const dirs = (cd: string): (string | null)[] => steps(`${cd}; rg y`, '/w', '/h').map((step) => step.dir);
+    assert.deepEqual(dirs('cd x-L'), ['/w/x-L']);
+    assert.deepEqual(dirs('cd -Lfoo'), ['/w/-Lfoo']);
+    assert.deepEqual(dirs('cd -LP x'), ['/w/x']);
+    assert.deepEqual(dirs('cd a--'), ['/w/a--']);
+    assert.deepEqual(dirs('cd --x'), ['/w/--x']);
+  });
+});
+
+describe('simpleCommands at the edges of its reading', () => {
+  it('decodes an escaped blank in $\'…\'', () => {
+    assert.deepEqual(simpleCommands("echo $'a\\ b'"), { commands: [['echo', 'a b']], unread: '' });
+  });
+
+  it('reads a digit word before a heredoc as a word, and a digit-led word before a redirection too', () => {
+    assert.deepEqual(simpleCommands('cat 2<<EOF>out\nbody\nEOF').commands, [['cat', '2']]);
+    assert.deepEqual(simpleCommands('a 2x>y b').commands, [['a', '2x', 'b']]);
+  });
+
+  it('ends a heredoc at the end of the text only when it is the one body open', () => {
+    assert.deepEqual(simpleCommands('cat <<A <<B\nA'), { commands: [['cat']], unread: 'A' });
+    assert.deepEqual(simpleCommands('cat <<A\nA'), { commands: [['cat']], unread: '' });
+  });
+
+  it("stops, without crashing, where a substitution's own heredoc left a body with nothing open", () => {
+    assert.deepEqual(simpleCommands('cat <<EOF\n$(cat <<X\nx\nX\n)\nEOF'), { commands: [['cat'], ['cat']], unread: 'EOF' });
+  });
+
+  it('reads no arithmetic through a newline or a backquote inside it', () => {
+    assert.deepEqual(simpleCommands('echo $((a\n))'), { commands: [['a'], ['echo', '$']], unread: '' });
+    assert.deepEqual(simpleCommands('echo $((a`))'), { commands: [], unread: 'echo $((a`))' });
+  });
+
+  it('keeps a ~ inside a word as written', () => {
+    assert.equal(resolvePath('a~b', '/w', '/h/u'), '/w/a~b');
   });
 });

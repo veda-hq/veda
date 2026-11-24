@@ -25,4 +25,14 @@ describe('onlyKnown', () => {
     assert.throws(() => onlyKnown(['--rot', 'x'], ['--root']), { message: 'unknown argument "--rot"' });
     assert.throws(() => onlyKnown(['--json'], ['--root']), { message: 'unknown argument "--json"' });
   });
+
+  it("takes the one word after an option as its value, and reads the word after that as an argument", () => {
+    assert.doesNotThrow(() => onlyKnown(['--root', '/r'], ['--root']));
+    assert.doesNotThrow(() => onlyKnown(['--root', '/r', '--root', '/s'], ['--root']));
+    assert.throws(() => onlyKnown(['--root', '/r', 'stray'], ['--root']), { message: 'unknown argument "stray"' });
+  });
+
+  it('knows no flag unless it is given some', () => {
+    assert.throws(() => onlyKnown(['Stryker was here'], ['--root']), { message: 'unknown argument "Stryker was here"' });
+  });
 });

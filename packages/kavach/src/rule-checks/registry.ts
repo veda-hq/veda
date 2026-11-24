@@ -110,10 +110,11 @@ function enforcer(value: unknown, where: string): Enforcer | null {
   if (value === null) return null;
   const raw = record(value, where);
   const pr = raw['pr'];
-  if (typeof pr !== 'number' || !Number.isSafeInteger(pr) || pr <= 0) {
+  // isSafeInteger is false for anything that is not a number.
+  if (!Number.isSafeInteger(pr) || (pr as number) <= 0) {
     throw new Error(`${where}.pr: expected a positive integer`);
   }
-  return { pr, files: texts(raw['files'], `${where}.files`, REPO_PATH) };
+  return { pr: pr as number, files: texts(raw['files'], `${where}.files`, REPO_PATH) };
 }
 
 /** Validate a parsed registry file; throws naming the first bad field. */
@@ -209,7 +210,8 @@ export function main(
     onlyKnown(argv, ['--registry', '--root'], ['--json']);
     const path = option(argv, '--registry') ?? env[REGISTRY_ENV];
     if (path === undefined || path === '') throw new Error(`no registry: pass --registry or set ${REGISTRY_ENV}`);
-    result = count(loadRegistry(resolve(cwd, path)), resolve(cwd, option(argv, '--root') ?? '.'));
+    const root = option(argv, '--root');
+    result = count(loadRegistry(resolve(cwd, path)), root === undefined ? resolve(cwd) : resolve(cwd, root));
   } catch (error) {
     io.err(`count: ${error instanceof Error ? error.message : String(error)}`);
     io.err(USAGE);

@@ -2,7 +2,7 @@
  * The fire log: where it lives, what a row keeps, and that appends add rows.
  */
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, writeSync } from 'node:fs';
+import { fstatSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
@@ -91,6 +91,24 @@ describe('appendFires', () => {
       lines.slice(0, 3).map((line) => JSON.parse(line) as unknown),
       [row, second, row].map((item) => JSON.parse(JSON.stringify(item)) as unknown),
     );
+  });
+
+  it('closes the log after a write, whole or short', () => {
+    const dir = scratch();
+    const row: FireRow = { ts: '2026-11-24T00:00:00.000Z', rule: 'H-01', outcome: 'refused', branch: 'b', excerpt: 'e' };
+    const fds: number[] = [];
+    appendFires(dir, [row], (fd, bytes) => {
+      fds.push(fd);
+      return writeSync(fd, bytes);
+    });
+    assert.throws(() =>
+      appendFires(dir, [row], (fd) => {
+        fds.push(fd);
+        return 0;
+      }),
+    );
+    assert.equal(fds.length, 2);
+    for (const fd of fds) assert.throws(() => fstatSync(fd), { code: 'EBADF' });
   });
 
   it('throws on a short write rather than append the rest apart', () => {

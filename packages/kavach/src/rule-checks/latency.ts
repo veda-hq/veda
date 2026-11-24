@@ -79,17 +79,17 @@ type Outcome = 'exit' | 'spawn-error' | 'timeout';
 function runBash(command: string, input: string, env: NodeJS.ProcessEnv, timeoutMs: number): Promise<Outcome> {
   return new Promise((done) => {
     const child = spawn('bash', ['-c', command], { env, stdio: ['pipe', 'ignore', 'ignore'], detached: true });
-    let settled = false;
+    // The first outcome stands: a promise settles once, so a later `exit`
+    // (the killed group) or `error` changes nothing.
     const settle = (outcome: Outcome): void => {
-      if (settled) return;
-      settled = true;
       clearTimeout(timer);
       done(outcome);
     };
     const timer = setTimeout(() => {
       try {
-        // Never `kill(-0)`: without a pid that would signal this process's own group.
-        if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+        // Never `kill(-0)`, which would signal this process's own group: a
+        // child that never started has no pid, `-NaN` throws, and the catch takes it.
+        process.kill(-Number(child.pid), 'SIGKILL');
       } catch {
         // fail-open: a group that already ended has nothing left to kill.
       }

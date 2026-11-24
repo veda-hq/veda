@@ -177,4 +177,36 @@ describe('shellComments', () => {
     ]);
     assert.deepEqual(texts('x=1 <<EOF\nbody\nEOF\n# a comment'), [' a comment']);
   });
+
+  it('reads a comment that starts the command', () => {
+    assert.deepEqual(texts('# first'), [' first']);
+  });
+
+  it('reads on after an escaped character, and the character after it starts no word', () => {
+    assert.deepEqual(texts('echo \\ x # c'), [' c']);
+    assert.deepEqual(texts('echo a\\\nx#c'), []);
+  });
+
+  it('reads a comment right after a here-string operator', () => {
+    assert.deepEqual(texts('cat <<<#x'), ['x']);
+  });
+
+  it('stops at a heredoc word it cannot settle, whatever follows on the line', () => {
+    assert.deepEqual(texts('cat <<1x <<EOF\nbody\nEOF\n# after'), []);
+    assert.deepEqual(texts("cat <<1x '<<A '\nA\n# after"), []);
+  });
+
+  it('opens no nesting at an escaped backquote', () => {
+    assert.deepEqual(texts('echo \\` # c'), [' c']);
+  });
+
+  it('ends a <<- body only at a line that is its word after leading tabs', () => {
+    assert.deepEqual(shellComments('cat <<-EOF\nEOF\t\n# in the body\n\t\tEOF\n# after'), [{ line: 4, text: ' after' }]);
+  });
+
+  it('stops at ${ and ` wherever they open', () => {
+    assert.deepEqual(texts('echo ${x} # c'), []);
+    assert.deepEqual(texts('echo `x` # c'), []);
+    assert.deepEqual(texts('echo "${x}" # c'), []);
+  });
 });

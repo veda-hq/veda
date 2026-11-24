@@ -131,6 +131,12 @@ describe('parseRegistry', () => {
       'registry.rules[0].enforcer.files[0]',
     ],
     [
+      'an enforcer file that ends in a parent folder',
+      row({ enforcer: { pr: 1, files: ['a/..'] } }),
+      'registry.rules[0].enforcer.files[0]',
+    ],
+    ['a PR given as text', row({ enforcer: { pr: '7', files: ['a.ts'] } }), 'registry.rules[0].enforcer.pr: expected a positive integer'],
+    [
       'an enforcer file with a space',
       row({ enforcer: { pr: 1, files: ['a b.ts'] } }),
       'registry.rules[0].enforcer.files[0]',
@@ -244,7 +250,7 @@ describe('main', () => {
 
   for (const [name, argv, env, expected] of rows([
     ['no registry', [], {}, 'count: no registry: pass --registry or set KAVACH_RULE_REGISTRY'],
-    ['an empty registry variable', [], { [REGISTRY_ENV]: '' }, 'count: no registry'],
+    ['an empty registry variable', [], { [REGISTRY_ENV]: '' }, 'count: no registry: pass --registry or set KAVACH_RULE_REGISTRY'],
     ['a registry option with no value', ['--registry'], {}, 'count: --registry needs a value'],
     ['an unknown argument', ['--registry', 'registry.json', '--all'], {}, 'count: unknown argument "--all"'],
     ['a registry that does not load', ['--registry', 'missing.json'], {}, 'count: ENOENT'],

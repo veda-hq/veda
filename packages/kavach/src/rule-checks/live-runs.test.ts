@@ -193,17 +193,19 @@ describe('processProbe', () => {
   });
 
   it('lets ps decide when the signal is refused or reaches the process', () => {
-    for (const kill of [coded('EPERM'), () => undefined, () => { throw 'odd'; }]) {
+    for (const kill of [coded('EPERM'), () => undefined, () => { throw 'odd'; }, () => { throw null; }]) {
       const { probe: p, seen } = calls(kill, () => Buffer.from('Ss\n'));
       assert.equal(p.isAlive(42), true);
       assert.deepEqual(seen[0]?.args, ['-o', 'stat=', '-p', '42']);
       assert.equal(seen[0]?.file, 'ps');
       assert.equal((seen[0]?.options.env ?? {})['LC_ALL'], 'C');
+      assert.deepEqual(seen[0]?.options.stdio, ['ignore', 'pipe', 'ignore']);
     }
   });
 
   it('reads a zombie as dead, and a ps that fails as alive', () => {
     assert.equal(calls(() => undefined, () => 'Z+').probe.isAlive(42), false);
+    assert.equal(calls(() => undefined, () => '  Z+\n').probe.isAlive(42), false, 'ps pads its column');
     assert.equal(calls(() => undefined, coded('ENOENT')).probe.isAlive(42), true);
   });
 
@@ -211,6 +213,7 @@ describe('processProbe', () => {
     const { probe: p, seen } = calls(() => undefined, () => 'Mon Oct  5 16:29:20 2026\n');
     assert.equal(p.startIdentityOf(42), ID);
     assert.deepEqual(seen[0]?.args, ['-o', 'lstart=', '-p', '42']);
+    assert.deepEqual(seen[0]?.options.stdio, ['ignore', 'pipe', 'ignore']);
     assert.equal((seen[0]?.options.env ?? {})['TZ'], 'UTC');
     assert.equal((seen[0]?.options.env ?? {})['LC_ALL'], 'C');
   });
@@ -409,6 +412,24 @@ describe('sweepMarkers', () => {
     };
     sweepMarkers(dir, racing);
     assert.deepEqual(readdirSync(dir), []);
+  });
+
+  it('leaves a marker whose probe fails, and sweeps on', () => {
+    const dir = scratch();
+    writeFileSync(join(dir, markerName(41)), record(41));
+    writeFileSync(join(dir, markerName(43)), record(43));
+    const failing: Effects = {
+      ...effects([]),
+      probe: {
+        isAlive: (pid) => {
+          if (pid === 41) throw new Error('ps is gone');
+          return false;
+        },
+        startIdentityOf: () => null,
+      },
+    };
+    assert.doesNotThrow(() => sweepMarkers(dir, failing));
+    assert.deepEqual(readdirSync(dir), [markerName(41)]);
   });
 
   it('sweeps nothing from a folder it cannot list', () => {

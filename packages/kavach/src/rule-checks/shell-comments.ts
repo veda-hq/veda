@@ -17,8 +17,8 @@
  * point counts, which can only withhold a pass, never grant one.
  */
 
-/** Characters after which a `#` starts a word: bash's metacharacters. */
-const WORD_BREAK = /[ \t\n;|&()<>]/;
+/** Characters after which a `#` starts a word: bash's metacharacters (a line's start is one too). */
+const WORD_BREAK = /[ \t;|&()<>]/;
 const HEREDOC = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"\\$`]*)"|([A-Za-z_]\w*))(?=[ \t;|&()<>]|$)/;
 
 /**
@@ -44,8 +44,9 @@ export function shellComments(command: string): Comment[] {
   let quote: Quote = null;
   let bodies: Body[] = [];
   let opened: Body[] = [];
-  // The character the shell read last; an escaped one reads as a word's.
-  let before = '\n';
+  // Whether the shell read a word break last: a `#` there starts a comment.
+  // An escaped character reads as a word's.
+  let breaks = true;
   for (const [index, line] of command.split('\n').entries()) {
     const [body] = bodies;
     if (body !== undefined) {
@@ -53,18 +54,24 @@ export function shellComments(command: string): Comment[] {
       if (end === body.word) bodies.shift();
       continue;
     }
-    // Characters already read, each standing for what the shell saw there.
-    let skip = '';
+    // Characters already read as part of the one before them; they leave `breaks` as it was.
+    let skip = 0;
+    // Whether a backslash escapes the next character.
+    let escaped = false;
     for (const [i, char] of line.split('').entries()) {
-      if (skip !== '') {
-        before = skip.charAt(0);
-        skip = skip.slice(1);
+      if (escaped) {
+        escaped = false;
+        breaks = false;
+        continue;
+      }
+      if (skip > 0) {
+        skip -= 1;
         continue;
       }
       if (quote === "'") {
         if (char === "'") quote = null;
       } else if (char === '\\') {
-        skip = 'x';
+        escaped = true;
         continue;
       } else if (quote !== null) {
         if (quote === '"' && opensAt(line, i, QUOTED_NESTING)) return comments;
@@ -72,27 +79,28 @@ export function shellComments(command: string): Comment[] {
       } else if (char === "'" || char === '"') {
         quote = char;
       } else if (line.startsWith("$'", i)) {
-        [quote, skip] = ["$'", "'"];
+        [quote, skip] = ["$'", 1];
       } else if (opensAt(line, i, NESTING)) {
         return comments;
-      } else if (char === '#' && WORD_BREAK.test(before)) {
+      } else if (char === '#' && breaks) {
         comments.push({ line: index, text: line.slice(i + 1) });
         break;
       } else if (line.startsWith('<<<', i)) {
-        skip = '<<';
+        skip = 2;
       } else if (line.startsWith('<<', i)) {
         const marker = HEREDOC.exec(line.slice(i));
         if (marker === null) return comments;
         // The word's own characters are read on as usual: its quotes open and
         // close, and the character after it breaks a word.
         const [, dash, single, double, bare] = marker;
-        opened.push({ word: single ?? double ?? bare ?? '', tabs: dash === '-' });
+        // HEREDOC matched one of its three words.
+        opened.push({ word: String(single ?? double ?? bare), tabs: dash === '-' });
       }
-      before = char;
+      breaks = WORD_BREAK.test(char);
     }
     // A backslash ending the line joins the next one to it.
-    if (skip !== '') continue;
-    before = '\n';
+    if (escaped) continue;
+    breaks = true;
     if (quote === null) [bodies, opened] = [opened, []];
   }
   return comments;

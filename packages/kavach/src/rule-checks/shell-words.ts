@@ -39,7 +39,8 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 const OPERATORS = ';&|()\n';
 /** Characters a backslash escapes inside double quotes. */
 const DOUBLE_ESCAPES = '"\\$`\n';
-const HEREDOC = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"\\$`]*)"|([A-Za-z_]\w*))(?=[ \t\n;|&()<>]|$)/;
+// A word with nothing after it ends the text, where an opened heredoc stops the reader anyway: no `|$`.
+const HEREDOC = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"\\$`]*)"|([A-Za-z_]\w*))(?=[ \t\n;|&()<>])/;
 /**
  * What `$(…)`, backquotes and `${…}` leave in a word: the value the shell
  * fills in, unknown here, so a check can tell `origin/${B}` from `origin/`.
@@ -55,13 +56,16 @@ const NESTING = /[$`"'{\\]/;
  */
 const ARITHMETIC_STOPS = /[()`\n]|\$\(/g;
 /** The rest of a redirection operator after its first character. */
-const REDIRECTION_TAIL = /^[<>&|]*/;
+const REDIRECTION_TAIL = /^[<>&|]+/;
+/** How many characters of a redirection operator's rest `text` starts with. */
+const tailLength = (text: string): number => text.length - text.replace(REDIRECTION_TAIL, '').length;
 /**
  * A `$'…'` escape: hex, Unicode or octal code, else the escaped character as
  * itself. `\n` reads as `n`, not a newline: a control character never makes a
  * command word, so only the codes that can spell one are decoded.
  */
-const ANSI_ESCAPE = /^\\(?:x([0-9A-Fa-f]{1,2})|[uU]([0-9A-Fa-f]{1,8})|([0-7]{1,3})|[\s\S])/;
+// Read at a backslash, where `[\s\S]` matches whenever anything follows it, so no `^` is needed.
+const ANSI_ESCAPE = /\\(?:x([0-9A-Fa-f]{1,2})|[uU]([0-9A-Fa-f]{1,8})|([0-7]{1,3})|[\s\S])/;
 const MAX_CODE_POINT = 0x10ffff;
 
 type Heredoc = {
@@ -159,7 +163,8 @@ export function simpleCommands(text: string): Reading {
   let escaped = false;
   // Heredocs opened on this line; their bodies start after its newline.
   let opened: Heredoc[] = [];
-  let bodies: Heredoc[] = [];
+  // The bodies being read: set when body mode starts, and read only in it.
+  let bodies!: Heredoc[];
   // The body line read so far; every body newline empties it, so it is empty
   // whenever a body starts.
   let line = '';
@@ -224,9 +229,10 @@ export function simpleCommands(text: string): Reading {
       continue;
     }
     const arithmetic = arithmeticLength(text, i);
-    // Body mode always has a body open: entering it moves at least one there.
-    const [body] = bodies;
-    if (mode === 'body' && body !== undefined) {
+    // Entering body mode moves at least one body there; a substitution that
+    // read a heredoc of its own can close back into body mode with none left.
+    const body = mode === 'body' ? bodies[0] : undefined;
+    if (body !== undefined) {
       if (arithmetic > 0) {
         line += text.slice(i, i + arithmetic + 1);
         skip = arithmetic;
@@ -283,7 +289,8 @@ export function simpleCommands(text: string): Reading {
         open('`');
       } else if (text.startsWith('${', i)) {
         if (!braced(i)) return stop();
-      } else if (char === '\\' && next !== undefined && DOUBLE_ESCAPES.includes(next)) {
+      } else if (char === '\\' && DOUBLE_ESCAPES.includes(String(next))) {
+        // Past the end, `next` reads as "undefined", which DOUBLE_ESCAPES does not hold.
         escaped = true;
       } else {
         add(char);
@@ -332,16 +339,18 @@ export function simpleCommands(text: string): Reading {
       endWord();
       const [whole, dash, single, double, bare] = marker;
       opened.push({
-        word: single ?? double ?? bare ?? '',
+        // HEREDOC matched one of its three words.
+        word: String(single ?? double ?? bare),
         tabs: dash === '-',
         expands: bare !== undefined,
       });
       skip = whole.length - 1;
     } else if (char === '<' || char === '>' || text.startsWith('&>', i)) {
-      if (word !== null && /^\d+$/.test(word)) word = null;
+      // No word reads as "null", which is not a number.
+      if (/^\d+$/.test(String(word))) word = null;
       endWord();
       target = true;
-      skip = REDIRECTION_TAIL.exec(text.slice(i + 1))?.[0].length ?? 0;
+      skip = tailLength(text.slice(i + 1));
     } else if (char === '\n') {
       endCommand(i + 1);
       if (opened.length > 0) [mode, bodies, opened] = ['body', opened, []];
@@ -354,9 +363,11 @@ export function simpleCommands(text: string): Reading {
   // A body may end at the end of the text, without a newline after its word.
   // Bodies are open only in body mode or a substitution inside one, which
   // stops below either way.
-  const [last] = bodies;
-  if (bodies.length === 1 && last !== undefined && ends(last, line)) {
-    mode = 'plain';
+  if (mode === 'body') {
+    // A substitution that read a heredoc of its own can close back into body
+    // mode with no body left: then the reader stops below.
+    const [last, ...more] = bodies;
+    if (last !== undefined && more.length === 0 && ends(last, line)) mode = 'plain';
   }
   if (mode !== 'plain' && mode !== 'comment') return stop();
   if (opened.length > 0 || frames.length > 0) return stop();
@@ -378,7 +389,8 @@ export function roughCommands(unread: string): string[][] {
     .map((part) =>
       part
         .replace(/['"\\]/g, '')
-        .split(/[ \t]+/)
+        // Each blank splits; the empty words between blanks are dropped below.
+        .split(/[ \t]/)
         .filter((word) => word !== ''),
     )
     .filter((words) => words.length > 0);

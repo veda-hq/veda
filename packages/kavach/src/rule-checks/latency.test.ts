@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, describe, it, mock } from 'node:test';
 
 import { scratchDirs } from './fixture.test.ts';
 import {
@@ -170,7 +170,7 @@ describe('a real run', () => {
     );
   });
 
-  it('times a hook to its exit, whatever its status', async () => {
+  it('times a hook to its exit, whatever its status', { timeout: 15_000 }, async () => {
     const root = fixture();
     const ms = await timeHook('sleep 0.2; exit 3', '', process.env);
     assert.ok(ms >= 200);
@@ -181,11 +181,11 @@ describe('a real run', () => {
     assert.equal(readFileSync(join(root, 'seen'), 'utf8'), 'IN\n');
   });
 
-  it('takes no offence at a hook that exits without reading its input', async () => {
+  it('takes no offence at a hook that exits without reading its input', { timeout: 15_000 }, async () => {
     await timeHook('exit 0', 'x'.repeat(1 << 20), process.env);
   });
 
-  it('reports the clock’s elapsed time', async () => {
+  it('reports the clock’s elapsed time', { timeout: 15_000 }, async () => {
     const readings = [100, 350];
     const ms = await timeHook('true', '', process.env, 1000, () => {
       const next = readings.shift();
@@ -195,13 +195,13 @@ describe('a real run', () => {
     assert.equal(ms, 250);
   });
 
-  it('rejects when bash cannot start or the hook hangs', async () => {
+  it('rejects when bash cannot start or the hook hangs', { timeout: 15_000 }, async () => {
     await assert.rejects(timeHook('true', '', { PATH: '/nonexistent' }), { message: 'true: spawn-error' });
     await assert.rejects(timeHook('sleep 5', '', process.env, 100), { message: 'sleep 5: timeout' });
     assert.equal(HOOK_TIMEOUT_MS, 30_000);
   });
 
-  it('kills what a hung hook started along with it', async () => {
+  it('kills what a hung hook started along with it', { timeout: 15_000 }, async () => {
     const root = scratch();
     const mark = join(root, 'mark');
     await assert.rejects(timeHook(`(sleep 0.6; touch ${mark}) & sleep 5`, '', process.env, 100), {
@@ -211,7 +211,33 @@ describe('a real run', () => {
     assert.equal(spawnSync('test', ['-e', mark]).status, 1);
   });
 
-  it('times every hook alone and all together, rounds × corpus each', async () => {
+  it('kills a hung hook that ignores TERM: the signal is KILL', { timeout: 15_000 }, async () => {
+    const root = scratch();
+    const mark = join(root, 'mark');
+    await assert.rejects(timeHook(`trap '' TERM; (sleep 0.6; touch ${mark}) & sleep 5`, '', process.env, 100), {
+      message: /: timeout$/,
+    });
+    await new Promise((done) => setTimeout(done, 900));
+    assert.equal(spawnSync('test', ['-e', mark]).status, 1);
+  });
+
+  it('stops the hang timer once the hook exits: nothing is killed after', { timeout: 15_000 }, async () => {
+    const kill = mock.method(process, 'kill');
+    try {
+      await timeHook('true', '', process.env, 200);
+      await new Promise((done) => setTimeout(done, 400));
+      assert.deepEqual(kill.mock.calls.length, 0);
+    } finally {
+      kill.mock.restore();
+    }
+  });
+
+  it("drops a hook's output: one that writes more than a pipe holds still exits", { timeout: 15_000 }, async () => {
+    const ms = await timeHook('head -c 1048576 /dev/zero; head -c 1048576 /dev/zero >&2', '', process.env, 2000);
+    assert.ok(ms < 2000);
+  });
+
+  it('times every hook alone and all together, rounds × corpus each', { timeout: 15_000 }, async () => {
     const root = fixture();
     const series = await measure(['"$CLAUDE_PROJECT_DIR"/hooks/a.sh', 'true'], ['ls', 'pwd'], 2, root);
     assert.deepEqual(
@@ -229,7 +255,7 @@ describe('a real run', () => {
     );
   });
 
-  it('sends the timed hooks’ fires away from the real fire log', async () => {
+  it('sends the timed hooks’ fires away from the real fire log', { timeout: 15_000 }, async () => {
     const root = fixture();
     await measure(['echo "$KAVACH_RULE_FIRES_DIR" > "$CLAUDE_PROJECT_DIR/fires-dir"'], ['ls'], 1, root);
     assert.equal(
@@ -239,7 +265,7 @@ describe('a real run', () => {
     assert.equal(LATENCY_FIRES, '.tmp/rule-checks/latency-fires');
   });
 
-  it('runs a call’s hooks together and measures it by the slowest', async () => {
+  it('runs a call’s hooks together and measures it by the slowest', { timeout: 15_000 }, async () => {
     const root = fixture();
     // Each hook marks its run; on its second run (the parallel one) it waits
     // for the other's second mark, which only hooks running together meet.
@@ -253,7 +279,7 @@ describe('a real run', () => {
     assert.ok((together?.ms[0] ?? 0) >= 300);
   });
 
-  it('reports a parallel call by the clock’s elapsed time', async () => {
+  it('reports a parallel call by the clock’s elapsed time', { timeout: 15_000 }, async () => {
     const ticks = [1000, 1250];
     const [, together] = await measure(['true'], ['ls'], 1, fixture(), () => Number(ticks.shift()));
     assert.deepEqual(together?.ms, [250]);
@@ -264,7 +290,7 @@ describe('a real run', () => {
     assert.equal(which('no-such-program-kavach'), 'missing');
   });
 
-  it('reports the hooks of the checkout it is pointed at', async () => {
+  it('reports the hooks of the checkout it is pointed at', { timeout: 15_000 }, async () => {
     const root = fixture();
     const out: string[] = [];
     await main(['--rounds', '1', '--root', root], '/unused', (text) => out.push(text));

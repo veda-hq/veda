@@ -147,16 +147,31 @@ export async function run(argv: readonly string[], io: Io, stdin: () => string, 
   return 0;
 }
 
-if (isCliEntry(process.argv[1], import.meta.url)) {
-  process.exitCode = await run(
-    process.argv.slice(2),
-    {
-      ...STDIO,
-      write: (text) => {
-        process.stdout.write(text);
-      },
-    },
-    () => readFileSync(0).toString(),
-    process.env,
-  );
+/** The CLI's own streams: STDIO's lines, and the hook's answer written to stdout as it is. */
+export const LIVE_IO: Io = {
+  ...STDIO,
+  write: (text) => {
+    process.stdout.write(text);
+  },
+};
+
+/** The whole of `from`: this process's stdin unless a test names a file. */
+export const readStdin = (from: number | string = 0): string => readFileSync(from, 'utf8');
+
+/**
+ * The CLI's exit status when `argv[1]` is the module at `moduleUrl`, else
+ * undefined: a test or a consumer that imports the module runs nothing.
+ */
+export async function entry(
+  argv: readonly string[],
+  moduleUrl: string,
+  io: Io,
+  stdin: () => string,
+  env: Env,
+): Promise<number | undefined> {
+  if (!isCliEntry(argv[1], moduleUrl)) return undefined;
+  return run(argv.slice(2), io, stdin, env);
 }
+
+// `??` keeps an importer's own exit code.
+process.exitCode = (await entry(process.argv, import.meta.url, LIVE_IO, readStdin, process.env)) ?? process.exitCode;

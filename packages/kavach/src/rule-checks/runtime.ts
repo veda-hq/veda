@@ -158,9 +158,9 @@ export function statedPasses(command: string): Map<string, string> {
   for (const comment of shellComments(text)) {
     const match = PASS.exec(comment.text);
     if (comment.line !== last || match === null) continue;
-    const [, id = '', said = ''] = match;
-    const reason = said.trim();
-    if (reason.length >= MIN_REASON) passes.set(id, reason);
+    // PASS has both groups, so a match always carries them.
+    const reason = String(match[2]).trim();
+    if (reason.length >= MIN_REASON) passes.set(String(match[1]), reason);
   }
   return passes;
 }
@@ -442,7 +442,8 @@ export function rulesOf(registry: Registry): Rules {
 
 /** The registry at `path`; none (every rule unregistered) when no path is given. */
 export function registryRules(path?: string): Rules {
-  return rulesOf(path === undefined || path === '' ? { rules: [] } : loadRegistry(path));
+  if (path === undefined || path === '') return { find: () => undefined, owner: DEFAULT_OWNER };
+  return rulesOf(loadRegistry(path));
 }
 
 export type LiveOptions = {

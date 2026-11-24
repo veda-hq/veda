@@ -609,7 +609,8 @@ describe('mergeParents', () => {
       PATH: '/bin',
       [`GITHEAD_${A}`]: 'main',
       [`GITHEAD_${B}`]: 'other',
-      [`XGITHEAD_${A}`]: 'x',
+      // Anything before GITHEAD_, on an id not counted already: no GITHEAD_ name.
+      [`XGITHEAD_${'c'.repeat(40)}`]: 'x',
       [`GITHEAD_${A}0`]: 'x',
       GITHEAD_a: 'x',
       [`GITHEAD_${'z'.repeat(64)}`]: 'x',

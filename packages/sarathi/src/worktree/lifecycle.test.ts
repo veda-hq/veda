@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { afterEach, beforeEach, describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 
 import {
   ancestor,
@@ -17,18 +17,24 @@ import {
   compileCache,
   context,
   exclusive,
+  git,
+  huskyShim,
+  ignoredArtifacts,
   inspect,
   launchBranch,
   lifecycleMain,
   nodeHost,
+  parseArgs,
   pullRequest,
   readReceipt,
+  real,
   restRead,
   retire,
   runProgram,
   sameHead,
   tmpChildren,
   UNMERGED,
+  validBranch,
   within,
   writeReceipt,
   type Context,
@@ -930,5 +936,693 @@ describe('begin', () => {
     } finally {
       fixture.remove();
     }
+  });
+});
+
+/** A host that answers only the calls it lists, exactly, and refuses any other. */
+function strictHost(answers: Record<string, string>, env: Record<string, string | undefined> = {}, cloud = false): Host & { readonly calls: string[]; readonly clouds: string[] } {
+  const calls: string[] = [];
+  const clouds: string[] = [];
+  return {
+    calls,
+    clouds,
+    env,
+    cloudSession: root => {
+      clouds.push(root);
+      return cloud;
+    },
+    run: (cwd, file, args) => {
+      const call = [file, ...args].join(' ');
+      calls.push(call);
+      const answer = answers[call];
+      if (answer === undefined) throw new Error(`unexpected call: ${call}`);
+      return answer;
+    },
+  };
+}
+
+/** A scratch folder for one test, removed when it ends. */
+function scratchDir(prefix: string): string {
+  return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+}
+
+describe('the lifecycle, part by part', () => {
+  it('names its refusals Blocked', () => {
+    assert.equal(new Blocked('x').name, 'Blocked');
+  });
+
+  it('runs a program with git’s optional locks off, its output kept off this process’s stderr', () => {
+    const dir = scratchDir('sarathi-run-');
+    const write = mock.method(process.stderr, 'write', () => true);
+    try {
+      assert.equal(runProgram(dir, 'sh', ['-c', 'printf "%s:%s" "$GIT_OPTIONAL_LOCKS" "$FOO"'], { PATH: process.env.PATH, FOO: 'bar' }), '0:bar');
+      assert.throws(() => runProgram(dir, 'sh', ['-c', 'echo secret >&2; exit 3']), (error: unknown) => error instanceof Blocked && error.message === 'sh -c failed (exit 3); nothing may be discarded');
+      assert.throws(() => runProgram(dir, 'false', []), (error: unknown) => error instanceof Blocked && error.message === 'false  failed (exit 1); nothing may be discarded');
+      assert.throws(() => runProgram(dir, join(dir, 'missing'), ['x']), (error: unknown) => error instanceof Blocked && error.message === `${join(dir, 'missing')} x failed (exit none); nothing may be discarded`);
+      assert.equal(write.mock.callCount(), 0);
+    } finally {
+      write.mock.restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('drops only the trailing newlines of git’s output', () => {
+    const host = strictHost({ 'git log': 'a\nb\n\n' });
+    assert.equal(git({ host }, '/x', 'log'), 'a\nb');
+  });
+
+  it('answers ancestry exactly: true, false, or Blocked, quietly, in the repository and environment given', () => {
+    const dir = scratchDir('sarathi-ancestor-');
+    const env = { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+    const run = (...args: string[]): string => execFileSync('git', args, { cwd: dir, env, encoding: 'utf8' }).trim();
+    const write = mock.method(process.stderr, 'write', () => true);
+    try {
+      run('init', '-q');
+      run('-c', 'user.name=t', '-c', 'user.email=t@e', 'commit', '-q', '--allow-empty', '-m', 'one');
+      const one = run('rev-parse', 'HEAD');
+      run('-c', 'user.name=t', '-c', 'user.email=t@e', 'commit', '-q', '--allow-empty', '-m', 'two');
+      const two = run('rev-parse', 'HEAD');
+      assert.equal(ancestor(dir, one, two, env), true);
+      assert.equal(ancestor(dir, two, one, env), false);
+      assert.throws(() => ancestor(dir, 'nope', two, env), (error: unknown) => error instanceof Blocked && error.message === 'merge evidence is unavailable locally');
+      // The environment given is the one git sees: a GIT_DIR elsewhere is that repository's question.
+      assert.throws(() => ancestor(dir, one, two, { ...env, GIT_DIR: join(dir, 'missing') }), /merge evidence is unavailable locally/);
+      assert.equal(write.mock.callCount(), 0);
+    } finally {
+      write.mock.restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs the cloud check in the root, with the environment given, and keeps its output quiet', () => {
+    const dir = scratchDir('sarathi-cloud-');
+    const check = join(dir, 'check.sh');
+    writeFileSync(check, 'echo noise >&2\ntest "$(pwd -P)" = "$1" && test "$MARK" = yes\n');
+    const write = mock.method(process.stderr, 'write', () => true);
+    try {
+      const env = { PATH: process.env.PATH, CLAUDE_CODE_REMOTE: 'true', MARK: 'yes' };
+      assert.equal(cloudSessionWith({ ...SETTINGS, cloudCheck: check }, env)(dir), true);
+      assert.equal(cloudSessionWith({ ...SETTINGS, cloudCheck: check }, { ...env, MARK: 'no' })(dir), false);
+      assert.equal(write.mock.callCount(), 0);
+    } finally {
+      write.mock.restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('counts a path as inside a folder only when it is the folder or below it', () => {
+    assert.equal(within('/a/b', '/a/b'), true);
+    assert.equal(within('/a/b/c', '/a/b'), true);
+    assert.equal(within('/a', '/a/b'), false);
+    assert.equal(within('/a/bc', '/a/b'), false);
+    assert.equal(within('/x', '/a/b'), false);
+  });
+
+  it('resolves a path that does not exist as written', () => {
+    assert.equal(real('/nonexistent-sarathi/x/../y'), '/nonexistent-sarathi/y');
+  });
+
+  it('finds the provider from the managed roots the environment names', () => {
+    const answers = (root: string, primary: string): Record<string, string> => ({
+      'git rev-parse --show-toplevel': root,
+      'git rev-parse --absolute-git-dir': `${primary}/.git/worktrees/t`,
+      'git rev-parse --path-format=absolute --git-common-dir': `${primary}/.git`,
+      'git worktree list --porcelain -z': `worktree ${primary}\0HEAD 1\0branch refs/heads/main\0\0worktree ${root}\0HEAD 2\0\0`,
+    });
+    const provider = (root: string, env: Record<string, string | undefined>, primary = '/nonexistent-p'): string => context('/x', strictHost(answers(root, primary), env), SETTINGS).provider;
+    // CODEX_HOME, then HOME's .codex; CODEX_MANAGED_WORKTREE_ROOT over both.
+    assert.equal(provider('/nonexistent-c/worktrees/t/repo', { CODEX_HOME: '/nonexistent-c', HOME: '/nonexistent-h' }), 'codex');
+    assert.equal(provider('/nonexistent-h/.codex/worktrees/t/repo', { HOME: '/nonexistent-h' }), 'codex');
+    assert.equal(provider(resolve('.codex/worktrees/t/repo'), {}), 'codex');
+    assert.equal(provider('/nonexistent-m/t/repo', { CODEX_MANAGED_WORKTREE_ROOT: '/nonexistent-m', CODEX_HOME: '/nonexistent-c' }), 'codex');
+    assert.equal(provider('/nonexistent-p/.claude/worktrees/t', { CODEX_HOME: '/nonexistent-c' }), 'claude');
+    assert.throws(() => provider('/nonexistent-c/other/t', { CODEX_HOME: '/nonexistent-c' }), (error: unknown) => error instanceof Blocked && error.message === 'worktree is outside the Codex/Claude managed roots');
+    assert.throws(() => provider('/nonexistent-p/.claude/other/t', { CODEX_HOME: '/nonexistent-c' }), /outside the Codex\/Claude managed roots/);
+    assert.throws(() => provider('/nonexistent-p/worktrees/t', { CODEX_HOME: '/nonexistent-c' }), /outside the Codex\/Claude managed roots/);
+  });
+
+  it('reads the primary checkout from the first worktree line, and blocks when git lists none', () => {
+    const base = {
+      'git rev-parse --show-toplevel': '/nonexistent-p/.claude/worktrees/t',
+      'git rev-parse --absolute-git-dir': '/nonexistent-p/.git/worktrees/t',
+      'git rev-parse --path-format=absolute --git-common-dir': '/nonexistent-p/.git',
+    };
+    const host = strictHost({ ...base, 'git worktree list --porcelain -z': 'HEAD 1\0worktree /nonexistent-p\0\0' }, { CODEX_HOME: '/nonexistent-c' });
+    const found = context('/x', host, SETTINGS);
+    assert.deepEqual({ ...found, host: undefined }, { root: '/nonexistent-p/.claude/worktrees/t', gitdir: '/nonexistent-p/.git/worktrees/t', provider: 'claude', settings: SETTINGS, host: undefined });
+    const none = strictHost({ ...base, 'git worktree list --porcelain -z': '' }, { CODEX_HOME: '/nonexistent-c' });
+    assert.throws(() => context('/x', none, SETTINGS), (error: unknown) => error instanceof Blocked && error.message === 'git lists no worktrees');
+  });
+
+  it('refuses a receipt that is not a version 1 object, and reads one that is', () => {
+    const gitdir = scratchDir('sarathi-receipt-');
+    const at = { gitdir, settings: SETTINGS };
+    try {
+      for (const text of ['5', '"x"', 'null', '[]', '{}', '{"version":2}', '{"version":"1"}', '{']) {
+        writeFileSync(join(gitdir, 'acme-lifecycle.json'), text);
+        assert.throws(() => readReceipt(at), (error: unknown) => error instanceof Blocked && error.message === 'lifecycle receipt is unreadable; retain the worktree', text);
+      }
+      writeFileSync(join(gitdir, 'acme-lifecycle.json'), '{"version":1,"phase":"active","note":"é"}');
+      assert.deepEqual(readReceipt(at), { version: 1, phase: 'active', note: 'é' });
+      rmSync(join(gitdir, 'acme-lifecycle.json'));
+      mkdirSync(join(gitdir, 'acme-lifecycle.json'));
+      assert.throws(() => readReceipt(at), /lifecycle receipt is unreadable/);
+    } finally {
+      rmSync(gitdir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes the receipt through a temporary file it then renames, leaving only the receipt', () => {
+    const gitdir = scratchDir('sarathi-receipt-');
+    try {
+      writeReceipt({ gitdir, settings: SETTINGS }, { phase: 'active' });
+      assert.deepEqual(readdirSync(gitdir), ['acme-lifecycle.json']);
+      assert.equal(readFileSync(join(gitdir, 'acme-lifecycle.json'), 'utf8'), '{\n  "phase": "active",\n  "version": 1\n}\n');
+    } finally {
+      rmSync(gitdir, { recursive: true, force: true });
+    }
+  });
+
+  it('knows the launch branch only from a current receipt, or a branch with none', () => {
+    assert.equal(launchBranch({}, 'codex/a'), 'codex/a');
+    assert.equal(launchBranch({}, 'HEAD'), null);
+    assert.equal(launchBranch({ phase: 'active', branch: 'codex/a', launchBranch: 'claude/x' }, 'codex/a'), 'claude/x');
+    assert.equal(launchBranch({ phase: 'active', branch: 'codex/a', launchBranch: 'claude/x' }, 'codex/b'), 'codex/b');
+    assert.equal(launchBranch({ phase: 'active', branch: 'codex/a' }, 'codex/a'), null);
+  });
+
+  it("knows every one of husky's own files, and nothing that only resembles them", () => {
+    const root = scratchDir('sarathi-husky-');
+    const shims = join(root, '.husky', '_');
+    const names = ['.gitignore', 'h', 'husky.sh', 'pre-commit', 'pre-merge-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit', 'applypatch-msg', 'pre-applypatch', 'post-applypatch', 'pre-rebase', 'post-rewrite', 'post-checkout', 'post-merge', 'pre-push', 'pre-auto-gc'];
+    try {
+      assert.equal(huskyShim(root, ['.husky', '_', 'h']), false);
+      assert.equal(huskyShim(root, ['.husky', '_']), false);
+      mkdirSync(shims, { recursive: true });
+      for (const name of names) writeFileSync(join(shims, name), '');
+      for (const name of names) assert.equal(huskyShim(root, ['.husky', '_', name]), true, name);
+      assert.equal(huskyShim(root, ['.husky', '_']), true);
+      assert.equal(huskyShim(root, ['.husky', '_', 'h', 'x']), false);
+      assert.equal(huskyShim(root, ['.husky', '_', 'notes']), false);
+      assert.equal(huskyShim(root, ['other', '_', 'h']), false);
+      assert.equal(huskyShim(root, ['.husky', 'x', 'h']), false);
+      // A shim that is a dangling link is no file.
+      rmSync(join(shims, 'h'));
+      symlinkSync(join(root, 'gone'), join(shims, 'h'));
+      assert.equal(huskyShim(root, ['.husky', '_', 'h']), false);
+      assert.equal(huskyShim(root, ['.husky', '_']), false);
+      // The shim folder must be a real folder.
+      rmSync(join(root, '.husky'), { recursive: true });
+      mkdirSync(join(root, 'real', '_'), { recursive: true });
+      writeFileSync(join(root, 'real', '_', 'h'), '');
+      mkdirSync(join(root, '.husky'));
+      symlinkSync(join(root, 'real', '_'), shims);
+      assert.equal(huskyShim(root, ['.husky', '_', 'h']), false);
+      rmSync(shims);
+      writeFileSync(shims, '');
+      assert.equal(huskyShim(root, ['.husky', '_']), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("knows Node's compile-cache layout exactly", () => {
+    const root = scratchDir('sarathi-cache-');
+    const cache = join(root, '.tmp', 'node-compile-cache');
+    const judge = (folder: string, file: string): boolean => {
+      rmSync(join(root, '.tmp'), { recursive: true, force: true });
+      mkdirSync(join(cache, folder), { recursive: true });
+      writeFileSync(join(cache, folder, file), '');
+      return compileCache(root, ['.tmp', 'node-compile-cache']);
+    };
+    try {
+      assert.equal(judge('v24.12.15-arm64', '0123abcd'), true);
+      assert.equal(judge('xv24.1.0-arm64', '0123abcd'), false);
+      assert.equal(judge('v24.1.0-a b', '0123abcd'), false);
+      assert.equal(judge('v24.1.0-arm64', 'x0123abcd'), false);
+      assert.equal(judge('v24.1.0-arm64', '0123abcdx'), false);
+      judge('v24.1.0-arm64', '0123abcd');
+      assert.equal(compileCache(root, ['.tmp', 'node-compile-cache', 'x']), false);
+      assert.equal(compileCache(root, ['x', 'node-compile-cache']), false);
+      assert.equal(compileCache(root, ['.tmp', 'other']), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('lists .tmp child by child in order, and any other item as it is', () => {
+    const root = scratchDir('sarathi-tmp-');
+    try {
+      mkdirSync(join(root, '.tmp'));
+      for (const name of ['a', 'B', 'c']) mkdirSync(join(root, '.tmp', name));
+      for (const name of ['a-b', 'z', 'C-d']) writeFileSync(join(root, '.tmp', name), '');
+      const sorted = ['.tmp/B/', '.tmp/C-d', '.tmp/a-b', '.tmp/a/', '.tmp/c/', '.tmp/z'];
+      assert.deepEqual(tmpChildren(root, '.tmp/'), sorted);
+      assert.deepEqual(tmpChildren(root, '.tmp//'), sorted);
+      assert.deepEqual(tmpChildren(root, '.tmp'), sorted);
+      assert.deepEqual(tmpChildren(root, 'other/'), ['other/']);
+      assert.deepEqual(tmpChildren(root, '.t/mp'), ['.t/mp']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps every ignored item but caches, shims and links out of the worktree', () => {
+    const root = scratchDir('sarathi-ignored-');
+    const outside = scratchDir('sarathi-outside-');
+    try {
+      mkdirSync(join(root, 'sub'));
+      symlinkSync(outside, join(root, 'link'));
+      symlinkSync(outside, join(root, 'sub', 'link'));
+      symlinkSync(join(root, 'sub'), join(root, 'inner'));
+      writeFileSync(join(outside, 'file'), '');
+      symlinkSync(join(root, 'gone'), join(root, 'dangling'));
+      mkdirSync(join(root, '.tmp', 'node-compile-cache', 'v24.1.0-arm64'), { recursive: true });
+      writeFileSync(join(root, '.tmp', 'node-compile-cache', 'v24.1.0-arm64', '0123abcd'), '');
+      const items = ['node_modules/', '.turbo/', '.cache/', '__pycache__/', 'pkg/node_modules/', 'link/', 'link//', 'sub/link', 'inner', 'dangling', 'ghost', 'keep', 'link/file', '.tmp/node-compile-cache//'];
+      const host = strictHost({ 'git ls-files --others --ignored --exclude-standard --directory -z': `${items.join('\0')}\0` });
+      const found: Context = { root, gitdir: join(root, '.git'), provider: 'claude', settings: SETTINGS, host };
+      assert.deepEqual(ignoredArtifacts(found), ['inner', 'dangling', 'ghost', 'keep', 'link/file']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('says what the recovery and the archive need, word for word', () => {
+    assert.equal(
+      BEGIN_RECOVERY,
+      "if this branch's PR merged, run retire --pr <N> first, then begin; to keep commits made before begin, first commit any uncommitted work (git reset --hard discards it), then: git branch <save-branch> HEAD, git reset --hard origin/main, begin again, then git cherry-pick origin/main..<save-branch> and re-point any citation to the new shas",
+    );
+    assert.equal(UNMERGED, 'HEAD contains work not proven merged into origin/main');
+    const ignored = 'ignored artifacts need preservation or explicit discard';
+    assert.equal(cloudArchiveStep('Ana', [], []), 'Archive this session in the app; its container takes this worktree.');
+    assert.equal(cloudArchiveStep('Ana', [ignored], ['a', 'b']), "First get Ana's explicit OK to discard: a, b. Then archive this session in the app; its container takes this worktree.");
+    assert.equal(cloudArchiveStep('Ana', [ignored, UNMERGED], ['a']), undefined);
+    assert.equal(cloudArchiveStep('Ana', [UNMERGED], []), undefined);
+  });
+});
+
+/** Runs `body` with a fixture of its own, removed after. */
+function withFixture(body: (fx: Fixture) => void): void {
+  const fx = new Fixture();
+  try {
+    body(fx);
+  } finally {
+    fx.remove();
+  }
+}
+
+/** The fixture's host with origin's URL replaced. */
+function remoteAt(fx: Fixture, url: string): Host {
+  const host = fx.host();
+  return { ...host, run: (cwd, file, args) => (file === 'git' && args.join(' ') === 'remote get-url origin' ? `${url}\n` : host.run(cwd, file, args)) };
+}
+
+const isBlocked = (message: string) => (error: unknown): boolean => error instanceof Blocked && error.message === message;
+const NOT_PROVEN = 'PR is not a merged same-repository PR for this branch into main (a PR under another head ref counts only when its head sha is this clean HEAD)';
+
+describe('the lifecycle against real git, case by case', () => {
+  it('reports every field of a worktree in the middle of a git operation', () => {
+    withFixture(fx => {
+      const head = fx.git(fx.worktree, 'rev-parse', 'HEAD');
+      writeFileSync(join(fx.gitdir, 'MERGE_HEAD'), `${head}\n`);
+      writeFileSync(join(fx.gitdir, 'REVERT_HEAD'), `${head}\n`);
+      assert.deepEqual(inspect(fx.context()), {
+        worktree: fx.worktree,
+        provider: 'codex',
+        branch: 'codex/task',
+        head,
+        changes: '',
+        ignoredArtifacts: [],
+        blockers: ['Git operation in progress: MERGE_HEAD, REVERT_HEAD'],
+        archiveReady: false,
+        appLimitations: ['direct UI archive cannot be vetoed by repository hooks', 'Codex self-handoff and fresh worktree rebinding require host support'],
+      });
+    });
+  });
+
+  it('blocks archive on a protected branch', () => {
+    withFixture(fx => {
+      fx.git(fx.worktree, 'switch', '-qc', 'staging');
+      assert.deepEqual(inspect(fx.context()).blockers, ['protected branch checked out']);
+    });
+  });
+
+  it('asks the cloud check only when there is a step to name', () => {
+    withFixture(fx => {
+      const asked: string[] = [];
+      const host: Host = { ...fx.host(), cloudSession: root => (asked.push(root), true) };
+      fx.commitWork();
+      assert.equal(inspect(fx.context(host)).next, undefined);
+      assert.deepEqual(asked, []);
+    });
+  });
+
+  it('takes squash-merge proof only from a receipt whose merge commit is a sha', () => {
+    withFixture(fx => {
+      fx.merge(true);
+      fx.retire();
+      const receipt = readReceipt(fx.context());
+      assert.equal(inspect(fx.context()).archiveReady, true);
+      writeReceipt(fx.context(), { ...receipt, mergeCommit: [receipt.mergeCommit] });
+      assert.deepEqual(inspect(fx.context()).blockers, [UNMERGED]);
+      writeReceipt(fx.context(), { ...receipt, mergeCommit: 'not-a-sha' });
+      assert.deepEqual(inspect(fx.context()).blockers, [UNMERGED]);
+    });
+  });
+
+  it('begins over ignored files, and records the phase, branch, base and launch branch', () => {
+    withFixture(fx => {
+      fx.write(join(fx.worktree, '.env'), 'local\n');
+      assert.deepEqual(begin(fx.context(), 'codex/next'), { branch: 'codex/next', worktree: fx.worktree, phase: 'active' });
+      assert.deepEqual(readReceipt(fx.context()), { phase: 'active', branch: 'codex/next', base: fx.git(fx.main, 'rev-parse', 'main'), launchBranch: 'codex/task', version: 1 });
+    });
+  });
+
+  it('names every blocker of begin, then the recovery, in one message', () => {
+    withFixture(fx => {
+      fx.commitWork();
+      fx.write(join(fx.worktree, 'new'), 'untracked\n');
+      assert.throws(() => begin(fx.context(), 'codex/next'), isBlocked(`staged, unstaged or untracked files remain; ${UNMERGED}; ${BEGIN_RECOVERY}`));
+    });
+  });
+
+  it('checks a new branch name before anything else, in this repository and environment', () => {
+    withFixture(fx => {
+      assert.throws(() => begin(fx.context(), 'claude/next'), isBlocked('new branch must use the codex/ prefix'));
+      assert.equal(fx.branch(), 'codex/task');
+      fx.git(fx.main, 'branch', 'codex/taken');
+      assert.throws(() => begin(fx.context(), 'codex/taken'), isBlocked('successor branch already exists or cannot be checked'));
+      // The host's environment decides which repository is asked.
+      const other = join(fx.home, 'other');
+      fx.git(fx.home, 'init', '-q', other);
+      fx.git(other, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'x');
+      fx.git(other, 'branch', 'codex/elsewhere');
+      const host = { ...fx.host(), env: { ...fx.env, GIT_DIR: join(other, '.git') } };
+      assert.throws(() => begin(fx.context(host), 'codex/elsewhere'), isBlocked('successor branch already exists or cannot be checked'));
+    });
+  });
+
+  it('reads only an origin that is wholly a GitHub repository', () => {
+    withFixture(fx => {
+      for (const url of ['xhttps://github.com/acme/test', 'https://github.com/acme/test/extra']) {
+        assert.throws(() => retire(fx.context(remoteAt(fx, url)), 7), isBlocked('origin is not an identifiable GitHub repository'), url);
+      }
+    });
+  });
+
+  it('reads an origin with no .git suffix as the same repository', () => {
+    withFixture(fx => {
+      fx.merge();
+      assert.equal(retire(fx.context(remoteAt(fx, 'https://github.com/acme/test')), 7).phase, 'retired');
+    });
+  });
+
+  it('takes a branch as existing only by its exact ref', () => {
+    withFixture(fx => {
+      fx.git(fx.main, 'update-ref', 'refs/keep/refs/heads/codex/fresh', 'HEAD');
+      validBranch(fx.context(), 'codex/fresh');
+    });
+  });
+
+  it('keeps git’s complaint off this process’s stderr when it cannot check a branch', () => {
+    const dir = scratchDir('sarathi-branch-');
+    const host = strictHost({ 'git check-ref-format --branch codex/fresh': 'codex/fresh\n' }, { PATH: process.env.PATH, GIT_CEILING_DIRECTORIES: dirname(dir) });
+    const write = mock.method(process.stderr, 'write', () => true);
+    try {
+      const found: Context = { root: dir, gitdir: dir, provider: 'codex', settings: SETTINGS, host };
+      assert.throws(() => validBranch(found, 'codex/fresh'), isBlocked('successor branch already exists or cannot be checked'));
+      assert.equal(write.mock.callCount(), 0);
+    } finally {
+      write.mock.restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('needs the PR to merge into main of this repository, with shas for its head and merge', () => {
+    withFixture(fx => {
+      fx.merge();
+      const saved = structuredClone(fx.pr);
+      const cases: Array<(pr: Pr) => void> = [
+        pr => (pr.base.ref = 'dev'),
+        pr => (pr.base.repo.full_name = 'someone/test'),
+        pr => (pr.head.sha = [pr.head.sha] as unknown as string),
+        pr => (pr.merge_commit_sha = [pr.merge_commit_sha] as unknown as string),
+        pr => (pr.head.sha = `${pr.head.sha}x`),
+        pr => (pr.head.sha = `x${pr.head.sha}`),
+        pr => (pr.merge_commit_sha = `${pr.merge_commit_sha}x`),
+        pr => (pr.merge_commit_sha = `x${pr.merge_commit_sha}`),
+      ];
+      for (const change of cases) {
+        fx.pr = structuredClone(saved);
+        if (fx.pr === undefined) throw new Error('no pr');
+        change(fx.pr);
+        assert.throws(() => fx.retire(), isBlocked(NOT_PROVEN), change.toString());
+        assert.equal(fx.branch(), 'codex/task');
+      }
+    });
+  });
+
+  it('needs the merge commit in fetched main', () => {
+    withFixture(fx => {
+      fx.merge();
+      fx.commitLater();
+      if (fx.pr === undefined) throw new Error('no pr');
+      fx.pr.merge_commit_sha = fx.git(fx.worktree, 'rev-parse', 'HEAD');
+      assert.throws(() => fx.retire(), isBlocked('merged PR is not contained in fetched main'));
+    });
+  });
+
+  it('answers a repeat retirement only on a detached HEAD', () => {
+    withFixture(fx => {
+      fx.merge();
+      const head = fx.git(fx.worktree, 'rev-parse', 'HEAD');
+      writeReceipt(fx.context(), { phase: 'retired', pr: 7, retiredHead: head });
+      // On the task branch the receipt is another checkout's: the retirement runs.
+      const first = fx.retire();
+      assert.equal(first.phase, 'retired');
+      assert.equal(first.alreadyRetired, undefined);
+      assert.equal(fx.branch(), 'HEAD');
+      assert.deepEqual(fx.retire(), { phase: 'retired', alreadyRetired: true, worktree: fx.worktree });
+    });
+  });
+
+  it('refuses each protected branch and a git operation before asking anyone', () => {
+    const gitdir = scratchDir('sarathi-retire-');
+    try {
+      for (const name of ['main', 'master', 'prod', 'staging']) {
+        const host = strictHost({ 'git rev-parse --abbrev-ref HEAD': name });
+        const found: Context = { root: gitdir, gitdir, provider: 'codex', settings: SETTINGS, host };
+        assert.throws(() => retire(found, 7), isBlocked('retirement requires a task branch'), name);
+      }
+      writeFileSync(join(gitdir, 'MERGE_HEAD'), 'x');
+      const host = strictHost({ 'git rev-parse --abbrev-ref HEAD': 'codex/task' });
+      const found: Context = { root: gitdir, gitdir, provider: 'codex', settings: SETTINGS, host };
+      assert.throws(() => retire(found, 7), isBlocked('finish the active Git operation before retiring the branch'));
+      assert.deepEqual(host.calls, ['git rev-parse --abbrev-ref HEAD']);
+    } finally {
+      rmSync(gitdir, { recursive: true, force: true });
+    }
+  });
+
+  it('retires a contained head detached, whatever successor was named, and says what it did', () => {
+    withFixture(fx => {
+      fx.merge();
+      const result = retire(fx.context(), 7, 'claude/unused');
+      assert.match(String(result.recoveryRef), /^refs\/acme\/lifecycle\/[0-9a-f]{32}$/);
+      assert.deepEqual(result, {
+        phase: 'retired',
+        deletedLocalBranch: 'codex/task',
+        worktree: fx.worktree,
+        recoveryRef: result.recoveryRef,
+        successor: null,
+        next: 'retain worktree until explicit archive',
+        remote: 'use GitHub automatic head-branch deletion; no remote mutation performed',
+      });
+      assert.equal(fx.branch(), 'HEAD');
+    });
+  });
+
+  it('moves later work to a successor, and says so', () => {
+    withFixture(fx => {
+      fx.merge();
+      fx.commitLater();
+      const result = retire(fx.context(), 7, 'codex/after');
+      assert.deepEqual(result, {
+        phase: 'continued',
+        deletedLocalBranch: 'codex/task',
+        worktree: fx.worktree,
+        recoveryRef: result.recoveryRef,
+        successor: 'codex/after',
+        next: 'preserved post-merge work; reconcile successor with latest main before further edits',
+        remote: 'use GitHub automatic head-branch deletion; no remote mutation performed',
+      });
+      assert.equal(fx.branch(), 'codex/after');
+    });
+  });
+
+  it('refuses a worktree that changed while it was being inspected', () => {
+    const changes: Array<(fx: Fixture) => void> = [
+      fx => writeFileSync(join(fx.gitdir, 'MERGE_HEAD'), 'x'),
+      fx => fx.commitLater(),
+      fx => fx.git(fx.worktree, 'switch', '-qc', 'codex/moved'),
+    ];
+    for (const change of changes) {
+      withFixture(fx => {
+        fx.merge();
+        let done = false;
+        const host = fx.host({
+          after: args => {
+            if (!done && args.join(' ') === 'rev-parse HEAD') {
+              done = true;
+              change(fx);
+            }
+          },
+        });
+        assert.throws(() => retire(fx.context(host), 7), isBlocked('worktree changed during inspection; retry when idle'), change.toString());
+      });
+    }
+  });
+
+  it('keeps the old branch when another worktree took it during the switch', () => {
+    withFixture(fx => {
+      fx.merge();
+      const host = fx.host({
+        after: args => {
+          if (args[0] === 'switch') fx.git(fx.main, 'worktree', 'add', '-q', join(fx.home, 'taker'), 'codex/task');
+        },
+      });
+      assert.throws(() => retire(fx.context(host), 7), isBlocked('another worktree owns the old branch; keep its ref'));
+      assert.equal(fx.git(fx.main, 'rev-parse', 'codex/task'), fx.head);
+    });
+  });
+});
+
+describe('exclusive, case by case', () => {
+  it('takes over the lock of a process that is gone, and holds one whose holder it cannot signal', () => {
+    const gitdir = scratchDir('sarathi-lock-');
+    const lock = join(gitdir, 'acme-lifecycle.mutex');
+    try {
+      const gone = spawnSync('true').pid;
+      mkdirSync(lock);
+      writeFileSync(join(lock, 'pid'), String(gone));
+      assert.equal(exclusive(gitdir, 'acme', () => 'ran'), 'ran');
+      mkdirSync(lock);
+      writeFileSync(join(lock, 'pid'), '1');
+      assert.throws(() => exclusive(gitdir, 'acme', () => 'ran'), isBlocked('another lifecycle operation is running'));
+    } finally {
+      rmSync(gitdir, { recursive: true, force: true });
+    }
+  });
+
+  it('holds a lock whose pid is not a positive whole number', () => {
+    const gitdir = scratchDir('sarathi-lock-');
+    const lock = join(gitdir, 'acme-lifecycle.mutex');
+    try {
+      for (const pid of ['1.5', '0', '-3', 'abc', '']) {
+        rmSync(lock, { recursive: true, force: true });
+        mkdirSync(lock);
+        writeFileSync(join(lock, 'pid'), pid);
+        assert.throws(() => exclusive(gitdir, 'acme', () => 'ran', () => false), isBlocked('another lifecycle operation is running'), pid);
+      }
+    } finally {
+      rmSync(gitdir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes its own pid into the lock, and survives a lock that vanished', () => {
+    const gitdir = scratchDir('sarathi-lock-');
+    const lock = join(gitdir, 'acme-lifecycle.mutex');
+    try {
+      assert.equal(exclusive(gitdir, 'acme', () => readFileSync(join(lock, 'pid'), 'utf8')), String(process.pid));
+      assert.equal(existsSync(lock), false);
+      // The body, or the dead holder's cleanup, may remove the lock first.
+      assert.equal(exclusive(gitdir, 'acme', () => (rmSync(lock, { recursive: true }), 'ran')), 'ran');
+      mkdirSync(lock);
+      writeFileSync(join(lock, 'pid'), '2147483646');
+      const vanishing = (): boolean => (rmSync(lock, { recursive: true }), false);
+      assert.equal(exclusive(gitdir, 'acme', () => 'ran', vanishing), 'ran');
+      assert.equal(existsSync(lock), false);
+    } finally {
+      rmSync(gitdir, { recursive: true, force: true });
+    }
+  });
+
+  it('passes on a failure to make the lock that is not another holder', () => {
+    const dir = scratchDir('sarathi-lock-');
+    try {
+      assert.throws(
+        () => exclusive(join(dir, 'missing'), 'acme', () => 'ran'),
+        (error: unknown) => !(error instanceof Blocked) && (error as NodeJS.ErrnoException).code === 'ENOENT',
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the lifecycle command line, case by case', () => {
+  const USAGE_TEXT = 'usage: sarathi worktree status|archive-check|begin --branch <name>|retire --pr <n> [--branch <successor>]|hook\n';
+
+  it('reads each action and its flags exactly, and names the usage word for word', () => {
+    assert.deepEqual(parseArgs(['status']), { action: 'status' });
+    assert.deepEqual(parseArgs(['retire', '--pr', '12']), { action: 'retire', pr: 12 });
+    assert.deepEqual(parseArgs(['retire', '--pr', '-3']), { action: 'retire', pr: -3 });
+    assert.deepEqual(parseArgs(['begin', '--branch', 'codex/x']), { action: 'begin', branch: 'codex/x' });
+    assert.deepEqual(parseArgs(['retire', '--pr', '7', '--branch', 'codex/next']), { action: 'retire', pr: 7, branch: 'codex/next' });
+    for (const value of ['12x', 'x12', '1.5', '']) assert.equal(parseArgs(['retire', '--pr', value]), `--pr needs a number\n${USAGE_TEXT}`, value);
+    assert.equal(parseArgs(['other']), USAGE_TEXT);
+    assert.equal(parseArgs(['status', '--odd', 'x']), `unknown option --odd\n${USAGE_TEXT}`);
+    assert.equal(parseArgs(['status', '--pr']), `--pr needs a value\n${USAGE_TEXT}`);
+  });
+
+  it('refuses an empty --branch for begin, and any --pr below 1 for retire', () => {
+    withFixture(fx => {
+      const blocked = (...args: string[]): string => String((JSON.parse(fx.cli(fx.worktree, ...args).stdout) as { blocked?: string }).blocked);
+      assert.equal(blocked('begin', '--branch', ''), 'begin requires --branch');
+      assert.equal(blocked('retire'), 'retire requires a positive --pr');
+      for (const pr of ['0', '-3']) assert.equal(blocked('retire', '--pr', pr), 'retire requires a positive --pr', pr);
+      assert.notEqual(blocked('retire', '--pr', '1'), 'retire requires a positive --pr');
+    });
+  });
+
+  it('runs retire through the host it is given', () => {
+    withFixture(fx => {
+      fx.merge();
+      const result = fx.cli(fx.worktree, 'retire', '--pr', '7');
+      assert.equal(result.code, 0, result.stdout);
+      assert.equal((JSON.parse(result.stdout) as { phase: string }).phase, 'retired');
+    });
+  });
+
+  it('builds the real host when none is given', () => {
+    withFixture(fx => {
+      let stdout = '';
+      const code = lifecycleMain(['status'], { cwd: fx.worktree, env: fx.env, out: text => (stdout += text), err: text => (stdout += text) });
+      assert.equal(code, 0, stdout);
+      assert.equal((JSON.parse(stdout) as { provider: string }).provider, 'codex');
+    });
+  });
+
+  it('answers a refusal as JSON, and lets any other failure through', () => {
+    withFixture(fx => {
+      const run = (failure: unknown): { code: number; stdout: string } => {
+        let stdout = '';
+        const code = lifecycleMain(['status'], {
+          cwd: fx.worktree,
+          env: fx.env,
+          out: text => (stdout += text),
+          err: text => (stdout += text),
+          host: () => {
+            throw failure;
+          },
+        });
+        return { code, stdout };
+      };
+      assert.deepEqual(run(new Blocked('held')), { code: 2, stdout: '{\n  "blocked": "held"\n}\n' });
+      assert.deepEqual(run(Object.assign(new Error('gone'), { code: 'ENOENT' })), { code: 2, stdout: '{\n  "blocked": "gone"\n}\n' });
+      assert.throws(() => run(new Error('boom')), /^Error: boom$/);
+    });
   });
 });

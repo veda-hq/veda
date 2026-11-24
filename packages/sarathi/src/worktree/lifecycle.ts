@@ -22,7 +22,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
-import { readSettings, type WorktreeSettings } from './settings.ts';
+import { DEFAULT_SETTINGS, readSettings, type WorktreeSettings } from './settings.ts';
 
 /** A safety precondition could not be established. */
 export class Blocked extends Error {
@@ -60,7 +60,8 @@ export function runProgram(cwd: string, file: string, args: readonly string[], e
       cwd,
       encoding: 'utf8',
       timeout: 60_000,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      // Every stream piped: the output is returned or dropped, never shown.
+      stdio: 'pipe',
       env: { ...env, GIT_OPTIONAL_LOCKS: '0' },
     });
   } catch (error) {
@@ -106,8 +107,9 @@ export function nodeHost(settings: WorktreeSettings, env: Readonly<Record<string
 
 /** Is `path` `folder` or inside it? */
 export function within(path: string, folder: string): boolean {
+  // The folder itself is '', which passes every test below.
   const rel = relative(folder, path);
-  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+  return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
 /** The path with every link resolved, as far as it exists (Python's `Path.resolve()`). */
@@ -153,21 +155,25 @@ export function operations(gitdir: string): string[] {
 
 const receiptPath = (context: Pick<Context, 'gitdir' | 'settings'>): string => join(context.gitdir, `${context.settings.name}-lifecycle.json`);
 
+const UNREADABLE_RECEIPT = 'lifecycle receipt is unreadable; retain the worktree';
+
 export function readReceipt(context: Pick<Context, 'gitdir' | 'settings'>): Receipt {
   const path = receiptPath(context);
   if (!existsSync(path)) return {};
+  let state: unknown;
   try {
-    const state: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    if (typeof state !== 'object' || state === null || Array.isArray(state) || (state as Receipt).version !== 1) throw new Error('shape');
-    return state as Receipt;
+    state = JSON.parse(String(readFileSync(path)));
   } catch {
-    throw new Blocked('lifecycle receipt is unreadable; retain the worktree');
+    // fail-open: a receipt that cannot be read or parsed leaves no state, which is refused below.
   }
+  // Object() gives null, a number, a string and a list no version 1: only a receipt object has one.
+  if (Object(state).version !== 1) throw new Blocked(UNREADABLE_RECEIPT);
+  return state as Receipt;
 }
 
 export function writeReceipt(context: Pick<Context, 'gitdir' | 'settings'>, state: Receipt): void {
   const target = receiptPath(context);
-  const temporary = join(context.gitdir, `${context.settings.name}-lifecycle-${randomUUID().replaceAll('-', '')}.tmp`);
+  const temporary = join(context.gitdir, `${context.settings.name}-lifecycle-${randomUUID()}.tmp`);
   writeFileSync(temporary, `${JSON.stringify({ ...state, version: 1 }, null, 2)}\n`);
   renameSync(temporary, target);
 }
@@ -192,7 +198,8 @@ export function receiptIsCurrent(state: Receipt, current: string): boolean {
  * older receipt that never recorded it, or a detached HEAD with no receipt.
  */
 export function launchBranch(state: Receipt, current: string): string | null {
-  const own = Object.keys(state).length > 0 && !receiptIsCurrent(state, current) ? {} : state;
+  // An empty receipt is current: it names no phase.
+  const own = receiptIsCurrent(state, current) ? state : {};
   if (Object.hasOwn(own, 'launchBranch')) return (own.launchBranch as string | null | undefined) ?? null;
   if (Object.keys(own).length > 0 || current === 'HEAD') return null;
   return current;
@@ -231,8 +238,9 @@ export function huskyShim(root: string, parts: readonly string[]): boolean {
   }
   if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
   if (parts.length === 2) return readdirSync(shims).every(name => HUSKY_SHIMS.has(name) && isFile(join(shims, name)));
-  const name = parts[2];
-  return parts.length === 3 && name !== undefined && HUSKY_SHIMS.has(name) && isFile(join(shims, name));
+  // A third part exists whenever the length is 3, the only case that reads it.
+  const name = String(parts[2]);
+  return parts.length === 3 && HUSKY_SHIMS.has(name) && isFile(join(shims, name));
 }
 
 const DISPOSABLE = new Set(['node_modules', '.turbo', '.cache', '__pycache__']);
@@ -289,12 +297,15 @@ export function tmpChildren(root: string, item: string): string[] {
 
 /** A link to something outside the worktree: removing the worktree removes the link, not the target. */
 function sharedLink(root: string, path: string): boolean {
+  let target: string;
   try {
-    return lstatSync(path).isSymbolicLink() && existsSync(path) && !within(realpathSync(path), root);
+    if (!lstatSync(path).isSymbolicLink() || !existsSync(path)) return false;
+    target = realpathSync(path);
   } catch {
     // fail-open: a link that cannot be followed is kept as an artifact, so it blocks archive.
     return false;
   }
+  return !within(target, root);
 }
 
 /**
@@ -417,17 +428,19 @@ export function exclusive<T>(gitdir: string, name: string, body: () => T, alive:
     writeFileSync(owner, String(process.pid));
     return true;
   };
-  if (!take()) {
+  // A lock whose holder died is removed and taken; false when it stays another's.
+  const takeOver = (): boolean => {
     let holder = Number.NaN;
     try {
-      holder = Number(readFileSync(owner, 'utf8'));
+      holder = Number(String(readFileSync(owner)));
     } catch {
       // fail-open: between its mkdir and writing its pid, a live holder; the check below blocks.
     }
-    if (!(Number.isInteger(holder) && holder > 0 && !alive(holder))) throw new Blocked('another lifecycle operation is running');
+    if (!(Number.isInteger(holder) && holder > 0 && !alive(holder))) return false;
     rmSync(lock, { recursive: true, force: true });
-    if (!take()) throw new Blocked('another lifecycle operation is running');
-  }
+    return take();
+  };
+  if (!take() && !takeOver()) throw new Blocked('another lifecycle operation is running');
   try {
     return body();
   } finally {
@@ -504,11 +517,11 @@ export function mergeProof(context: Context, number: number, current: string): [
   const remote = git(context, context.root, 'remote', 'get-url', 'origin');
   const match = REMOTE.exec(remote);
   if (match === null) throw new Blocked('origin is not an identifiable GitHub repository');
-  const [, host = '', owner = '', repo = ''] = match;
-  const identity = `${owner}/${repo}`;
+  // The pattern's three groups always match: String() only names their type.
+  const host = String(match[1]);
+  const identity = `${String(match[2])}/${String(match[3])}`;
   const raw = pullRequest(context, host, identity, number);
-  let head: string;
-  let merged: string;
+  let proof: [string, string] | undefined;
   try {
     const pr = JSON.parse(raw) as {
       merged: unknown;
@@ -516,19 +529,18 @@ export function mergeProof(context: Context, number: number, current: string): [
       head: { ref: unknown; sha: unknown; repo: { full_name: unknown } };
       base: { ref: unknown; repo: { full_name: unknown } };
     };
-    if (pr.merged !== true || !sameHead(context, pr.head, current) || pr.base.ref !== 'main' || pr.head.repo.full_name !== identity || pr.base.repo.full_name !== identity) {
-      throw new Error('not merged here');
-    }
-    if (typeof pr.head.sha !== 'string' || typeof pr.merge_commit_sha !== 'string' || !SHA.test(pr.head.sha) || !SHA.test(pr.merge_commit_sha)) {
-      throw new Error('not a sha');
-    }
-    head = pr.head.sha;
-    merged = pr.merge_commit_sha;
+    const { sha } = pr.head;
+    const mergeCommit = pr.merge_commit_sha;
+    const here = pr.merged === true && sameHead(context, pr.head, current) && pr.base.ref === 'main' && pr.head.repo.full_name === identity && pr.base.repo.full_name === identity;
+    if (here && typeof sha === 'string' && typeof mergeCommit === 'string' && SHA.test(sha) && SHA.test(mergeCommit)) proof = [sha, mergeCommit];
   } catch {
+    // fail-open: an answer without a PR's shape proves nothing, and no proof blocks below.
+  }
+  if (proof === undefined) {
     throw new Blocked('PR is not a merged same-repository PR for this branch into main (a PR under another head ref counts only when its head sha is this clean HEAD)');
   }
-  if (!ancestor(context.root, merged, 'refs/remotes/origin/main', context.host.env)) throw new Blocked('merged PR is not contained in fetched main');
-  return [head, merged];
+  if (!ancestor(context.root, proof[1], 'refs/remotes/origin/main', context.host.env)) throw new Blocked('merged PR is not contained in fetched main');
+  return proof;
 }
 
 const hex = (length: number): string => randomUUID().replaceAll('-', '').slice(0, length);
@@ -546,7 +558,7 @@ export function retire(context: Context, number: number, successorName?: string)
   const [mergedHead, mergeCommit] = mergeProof(context, number, current);
   let known = true;
   try {
-    execFileSync('git', ['cat-file', '-e', `${mergedHead}^{commit}`], { cwd: root, stdio: 'ignore', timeout: 30_000, env: { ...context.host.env } });
+    git(context, root, 'cat-file', '-e', `${mergedHead}^{commit}`);
   } catch {
     // fail-open: a head missing here is fetched from its PR ref next.
     known = false;
@@ -567,9 +579,11 @@ export function retire(context: Context, number: number, successorName?: string)
   // A durable ref before the branch changes, even if the process dies between
   // detach, compare-and-delete and writing its receipt.
   const recovery = `refs/${settings.name}/lifecycle/${hex(32)}`;
-  git(context, root, 'update-ref', recovery, tip, '0'.repeat(tip.length));
+  // An empty old value: update-ref creates the ref only if it does not exist yet.
+  git(context, root, 'update-ref', recovery, tip, '');
   if (contained) git(context, root, 'switch', '--no-overwrite-ignore', '--detach', tip);
-  else git(context, root, 'switch', '--no-overwrite-ignore', '--no-track', '-c', successor ?? '', tip);
+  // Not contained, the successor was named or made above.
+  else git(context, root, 'switch', '--no-overwrite-ignore', '--no-track', '-c', String(successor), tip);
   if (git(context, root, 'worktree', 'list', '--porcelain', '-z').includes(`branch refs/heads/${current}\0`)) {
     throw new Blocked('another worktree owns the old branch; keep its ref');
   }
@@ -600,8 +614,9 @@ export function retire(context: Context, number: number, successorName?: string)
 /** `archive-check`: inspect, and refuse a stale origin/main; exit 2 unless archive-ready. */
 export function archiveCheck(context: Context): { report: Report; code: number } {
   const report = inspect(context);
-  const remote = git(context, context.root, 'ls-remote', '--exit-code', 'origin', 'refs/heads/main').split(/\s+/);
-  if (remote[0] === undefined || remote[0] === '' || remote[0] !== git(context, context.root, 'rev-parse', 'refs/remotes/origin/main')) {
+  // One line, `<sha>\trefs/heads/main`; rev-parse answers a sha or throws, so an empty answer never matches.
+  const remote = git(context, context.root, 'ls-remote', '--exit-code', 'origin', 'refs/heads/main').split(/\s/);
+  if (remote[0] !== git(context, context.root, 'rev-parse', 'refs/remotes/origin/main')) {
     throw new Blocked('origin/main is stale; fetch and recheck before archive');
   }
   return { report, code: report.archiveReady ? 0 : 2 };
@@ -652,7 +667,8 @@ export function lifecycleMain(args: readonly string[], io: Io): number {
   let result: unknown;
   let code = 0;
   try {
-    const probe = nodeHost({ name: 'sarathi', owner: 'the owner' }, io.env);
+    // The probe only runs git, which no setting changes.
+    const probe = nodeHost(DEFAULT_SETTINGS, io.env);
     const root = resolve(git({ host: probe }, io.cwd, 'rev-parse', '--show-toplevel'));
     const settings = readSettings(root);
     const host = io.host?.(settings) ?? nodeHost(settings, io.env);

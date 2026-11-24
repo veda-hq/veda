@@ -48,9 +48,10 @@ describe("scope", () => {
   });
 
   it("reads no path under any skipped prefix", () => {
+    // A computed key: niyam's Guard reads a bare `skip` key in a test file as node:test's skip option.
     const records: RecordsConfig = {
       ...DEFAULTS.records,
-      skip: ["tools/records/", "vendor/"],
+      ["skip"]: ["tools/records/", "vendor/"],
     };
     assert.equal(isReadPath("vendor/a.md", records, []), false);
     assert.equal(isReadPath("tools/records/a.md", records, []), false);

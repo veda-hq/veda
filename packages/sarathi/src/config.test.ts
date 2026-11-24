@@ -172,3 +172,77 @@ describe('forbidEnv', () => {
     assert.deepEqual(forbiddenSet(config, Object.fromEntries([['toString', '1']])), [['toString', 't']]);
   });
 });
+
+describe('the hook list, rule by rule', () => {
+  const message = (text: string): string => {
+    try {
+      parseConfig(text, 'sarathi.json', '/project');
+    } catch (error) {
+      assert.ok(error instanceof ConfigError, String(error));
+      return error.message;
+    }
+    return 'accepted';
+  };
+
+  it('names its refusals ConfigError', () => {
+    assert.equal(new ConfigError('x').name, 'ConfigError');
+  });
+
+  it('runs each of the three guards, keeps the worktree settings key, and leaves an absent matcher out', () => {
+    const config = parseConfig(
+      JSON.stringify({ worktree: { name: 'acme' }, hooks: { PreToolUse: [{ guard: 'worktree' }, { guard: 'command' }, { guard: 'tool' }, { command: 'x' }] } }),
+      'sarathi.json',
+      '/project',
+    );
+    assert.deepEqual(config.hooks.PreToolUse, [{ guard: 'worktree' }, { guard: 'command' }, { guard: 'tool' }, { command: 'x' }]);
+  });
+
+  it('names every unknown key, where it is, word for word', () => {
+    assert.equal(message('{"hooks":{},"a":1,"b":2}'), 'sarathi.json: unknown key "a", "b"');
+    assert.equal(message('{"kavach":{"other":1},"hooks":{}}'), 'sarathi.json kavach: unknown key "other"');
+    assert.equal(message('{"hooks":{"Stop":["x"]}}'), 'sarathi.json Stop[0]: an entry must be an object');
+    assert.equal(message('{"hooks":{"Stop":[{"command":"x"},{"command":5}]}}'), 'sarathi.json Stop[1]: "command" must be a non-empty string');
+  });
+
+  it('refuses a timeout that is not a finite number of seconds', () => {
+    assert.equal(message('{"hooks":{"Stop":[{"command":"x","timeout":1e999}]}}'), 'sarathi.json Stop[0]: "timeout" must be a positive number of seconds');
+    assert.equal(message('{"hooks":{"Stop":[{"command":"x","timeout":-1}]}}'), 'sarathi.json Stop[0]: "timeout" must be a positive number of seconds');
+    assert.equal(message('{"hooks":{"Stop":[{"command":"x","timeout":0.5}]}}'), 'accepted');
+  });
+
+  it('takes a pattern that ends in a plain name as a pattern', () => {
+    const pattern = compileMatcher('Notebook.*Edit');
+    assert.equal(pattern('NotebookXEdit'), true);
+    assert.equal(pattern('Notebook.*Edit'), true);
+    assert.equal(compileMatcher('')('Anything'), true);
+    assert.throws(() => compileMatcher('('), (error: unknown) => error instanceof ConfigError && /^matcher: "matcher" is not a regular expression \(/.test(error.message));
+  });
+
+  it('gives the settings matcher in sorted order, and all for an empty or "*" matcher', () => {
+    const config = parseConfig(
+      JSON.stringify({ hooks: { A: [{ matcher: 'Write', command: 'x' }, { matcher: 'Edit|Bash', command: 'y' }], B: [{ matcher: '', command: 'x' }], C: [{ matcher: '*', command: 'x' }], D: [{ matcher: 'x.*y', command: 'x' }] } }),
+      'sarathi.json',
+      '/project',
+    );
+    assert.equal(settingsMatcher(config, 'A'), 'Bash|Edit|Write');
+    assert.equal(settingsMatcher(config, 'B'), undefined);
+    assert.equal(settingsMatcher(config, 'C'), undefined);
+    assert.equal(settingsMatcher(config, 'D'), undefined);
+  });
+
+  it('gives no timeout for an event it does not list', () => {
+    const config = parseConfig('{"hooks":{}}', 'sarathi.json', '/project');
+    assert.equal(longestTimeout(config, 'Missing'), 0);
+  });
+
+  it('reads the file as UTF-8', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sarathi-config-'));
+    try {
+      const file = join(dir, 'sarathi.json');
+      writeFileSync(file, JSON.stringify({ hooks: {}, forbidEnv: { NO_ADVISOR: 'l’avis' } }));
+      assert.deepEqual(loadConfig(file, dir).forbidEnv, { NO_ADVISOR: 'l’avis' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

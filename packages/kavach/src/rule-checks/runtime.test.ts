@@ -250,6 +250,14 @@ describe('statedPasses', () => {
     });
   }
 
+  it('reads a pass with any run of blanks after rule-pass', () => {
+    assert.equal(statedPasses('x # rule-pass  \t H-14: a reason long enough').get('H-14'), 'a reason long enough');
+  });
+
+  it('reads no pass whose reason runs past a carriage return', () => {
+    assert.equal(statedPasses('x # rule-pass H-14: a reason long enough\rand more').size, 0);
+  });
+
   it('keeps the reason to its own line', () => {
     assert.equal(statedPasses('x\ny # rule-pass H-14: the last line only').get('H-14'), 'the last line only');
   });
@@ -549,6 +557,12 @@ describe('excerptOf', () => {
     assert.equal(search({ path: '/home/a' }), '/home/a');
     assert.equal(search({ command: 'grep x', pattern: 'p' }), 'grep x');
   });
+
+  it('reads only fields that are text', () => {
+    const search = (tool_input: Record<string, unknown>): string => excerptOf(input({ tool_name: 'Grep', tool_input }));
+    assert.equal(search({ pattern: 7, path: '/home/a' }), '/home/a');
+    assert.equal(search({ command: ['ls'], file_path: '/w/a.md' }), '/w/a.md');
+  });
 });
 
 describe('runHook', () => {
@@ -585,6 +599,13 @@ describe('runHook', () => {
     assert.equal(runHook(stdin('/w'), options([], quiet)), '');
     assert.equal(runHook(stdin('/w'), options([check({ run: () => null })], quiet)), '');
     assert.deepEqual(calls, []);
+  });
+
+  it("names the registry's owner in a file edit's refusal, through the registry loaded on demand", () => {
+    const edit = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Write', cwd: '/w', tool_input: { file_path: '/w/a.md' } });
+    const owned: Rules = { find: () => RULE, owner: 'the docs team' };
+    const out = runHook(edit, options([check({ tools: ['Write'] })], { rules: () => owned, git: () => '/w/.git' }));
+    assert.match(out, /File edits have no pass: ask the docs team\./);
   });
 
   it("hands checks the deps' git", () => {

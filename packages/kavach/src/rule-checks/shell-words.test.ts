@@ -95,6 +95,9 @@ describe('simpleCommands', () => {
     ['a 2>/dev/null b', [['a', 'b']]],
     ['a x2>y b', [['a', 'x2', 'b']]],
     ['grep -q x <<<"$v"', [['grep', '-q', 'x']]],
+    ['ls &>| out', [['ls']]],
+    ['ls > out >> more', [['ls']]],
+    ['ls >\tout', [['ls']]],
   ])) {
   it(`drops redirections in ${JSON.stringify(text)}`, () => {
     assert.deepEqual(simpleCommands(text).commands, expected);
@@ -112,6 +115,7 @@ describe('simpleCommands', () => {
     ['cat <<EOF\nEOF\nls', [['cat'], ['ls']]],
     ['cat <<A\nA\ncat <<B\nB\nls', [['cat'], ['cat'], ['ls']]],
     ['cat <<EOF', []],
+    ['cat <<-EOF\nEOF\t\ngit merge main\n\t\tEOF\nls', [['cat'], ['ls']]],
   ])) {
   it(`skips heredoc bodies in ${JSON.stringify(text)}`, () => {
     assert.deepEqual(simpleCommands(text).commands, expected);
@@ -265,6 +269,7 @@ describe('simpleCommands', () => {
     ['ls; (a', [['ls']], 'a'],
     ['ls; echo $((1+2', [['ls']], ' echo $((1+2'],
     ['cat <<EOF\n$(open\nEOF', [['cat'], ['open']], '$(open\nEOF'],
+    ['ls; cat <<1x <<EOF\nbody\nEOF', [['ls']], ' cat <<1x <<EOF\nbody\nEOF'],
   ])) {
   it(`stops at what it cannot follow in ${JSON.stringify(text)}, keeping the rest`, () => {
       assert.deepEqual(simpleCommands(text), { commands, unread });

@@ -211,6 +211,21 @@ describe('a real run', () => {
     assert.equal(spawnSync('test', ['-e', mark]).status, 1);
   });
 
+  it('kills a hung hook that ignores TERM: the signal is KILL', async () => {
+    const root = scratch();
+    const mark = join(root, 'mark');
+    await assert.rejects(timeHook(`trap '' TERM; (sleep 0.6; touch ${mark}) & sleep 5`, '', process.env, 100), {
+      message: /: timeout$/,
+    });
+    await new Promise((done) => setTimeout(done, 900));
+    assert.equal(spawnSync('test', ['-e', mark]).status, 1);
+  });
+
+  it("drops a hook's output: one that writes more than a pipe holds still exits", async () => {
+    const ms = await timeHook('head -c 1048576 /dev/zero; head -c 1048576 /dev/zero >&2', '', process.env, 2000);
+    assert.ok(ms < 2000);
+  });
+
   it('times every hook alone and all together, rounds × corpus each', async () => {
     const root = fixture();
     const series = await measure(['"$CLAUDE_PROJECT_DIR"/hooks/a.sh', 'true'], ['ls', 'pwd'], 2, root);

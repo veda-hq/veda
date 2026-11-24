@@ -33,6 +33,13 @@ describe('isCliEntry', () => {
     assert.equal(isCliEntry(join(import.meta.dirname, 'cli-entry.ts'), SELF_URL), false);
   });
 
+  it('is true for the module path itself even when the file is gone from disk', () => {
+    // The fast path compares resolved paths without touching the disk; the
+    // real-path comparison after it would throw and answer false.
+    const gone = join(tmpdir(), 'cli-entry-gone-xyz', 'cli.js');
+    assert.equal(isCliEntry(gone, pathToFileURL(gone).href), true);
+  });
+
   it('is false for an entry path that does not exist', () => {
     // The dangerous direction is returning TRUE here: the module would run
     // its CLI body during import from a host with an exotic argv[1].

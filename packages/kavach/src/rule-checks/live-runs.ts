@@ -141,30 +141,27 @@ export type List = (dir: string) => readonly string[];
 
 /** A run record's pid and start identity; `null` for anything else. */
 export function parseRun(raw: string): Run | null {
-  let value: unknown;
   try {
-    value = JSON.parse(raw);
+    // JSON `null` fails the destructuring; any other value that is not an object names no pid.
+    const { pid, startIdentity } = JSON.parse(raw) as Record<string, unknown>;
+    if (!Number.isSafeInteger(pid) || (pid as number) <= 1) return null;
+    if (startIdentity !== null && typeof startIdentity !== 'string') return null;
+    return { pid: pid as number, startIdentity };
   } catch {
     // fail-open: a torn or foreign record names no run.
     return null;
   }
-  if (typeof value !== 'object' || value === null) return null;
-  const { pid, startIdentity } = value as Record<string, unknown>;
-  if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 1) return null;
-  if (startIdentity !== null && typeof startIdentity !== 'string') return null;
-  return { pid, startIdentity };
 }
 
 /** The live run recorded at `path`; `null` when none is recorded or it ended. */
 export function liveRun(path: string, read: Read, probe: Probe): Run | null {
-  let raw: string;
+  let run: Run | null;
   try {
-    raw = read(path);
+    run = parseRun(read(path));
   } catch {
     // fail-open: no record (or none readable) is no run.
     return null;
   }
-  const run = parseRun(raw);
   return run === null || isGone(run, probe) ? null : run;
 }
 
@@ -175,16 +172,15 @@ export function liveRun(path: string, read: Read, probe: Probe): Run | null {
  */
 export function gitDir(root: string, read: Read): string {
   const dotGit = join(root, '.git');
-  let text: string;
   try {
-    text = read(dotGit);
+    // `.` stops at the end of the line.
+    const named = /^gitdir: (.+)/m.exec(read(dotGit))?.[1];
+    if (named === undefined) return dotGit;
+    return isAbsolute(named) ? named : resolve(root, named);
   } catch {
     // fail-open: a folder (the primary checkout) or nothing reads as .git itself.
     return dotGit;
   }
-  const named = /^gitdir: (.+)$/m.exec(text)?.[1];
-  if (named === undefined) return dotGit;
-  return isAbsolute(named) ? named : resolve(root, named);
 }
 
 /** The marker push `pid` writes: one per push, so two pushes never share one. */
@@ -244,11 +240,17 @@ export function sweepMarkers(dir: string, effects: Effects): void {
   }
   for (const name of names.filter((entry) => MARKER_NAME.test(entry))) {
     const path = join(dir, name);
+    let run: Run | null = null;
     try {
-      const run = parseRun(effects.read(path));
-      if (run !== null && isGone(run, effects.probe)) effects.remove(path);
+      run = parseRun(effects.read(path));
     } catch {
-      // fail-open: a marker another sweep took first is already gone.
+      // fail-open: a marker another sweep took first is already gone, and `run` stays null.
+    }
+    if (run === null || !isGone(run, effects.probe)) continue;
+    try {
+      effects.remove(path);
+    } catch {
+      // fail-open: as above, another sweep removed it first.
     }
   }
 }
@@ -297,7 +299,7 @@ function errorDetail(error: unknown): string {
 export function main(args: readonly string[], effects: Effects, warn: (line: string) => void): number {
   const [verb, dir, pidText] = args;
   const pid = Number(pidText);
-  if ((verb !== 'write' && verb !== 'clear') || dir === undefined || dir === '' || !(pid > 1)) {
+  if ((verb !== 'write' && verb !== 'clear') || !dir || !(pid > 1)) {
     warn('usage: push-marker write|clear <git-dir> <pid>');
     return 2;
   }

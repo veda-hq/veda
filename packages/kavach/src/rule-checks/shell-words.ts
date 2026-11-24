@@ -39,7 +39,8 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 const OPERATORS = ';&|()\n';
 /** Characters a backslash escapes inside double quotes. */
 const DOUBLE_ESCAPES = '"\\$`\n';
-const HEREDOC = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"\\$`]*)"|([A-Za-z_]\w*))(?=[ \t\n;|&()<>]|$)/;
+// A word with nothing after it ends the text, where an opened heredoc stops the reader anyway: no `|$`.
+const HEREDOC = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"\\$`]*)"|([A-Za-z_]\w*))(?=[ \t\n;|&()<>])/;
 /**
  * What `$(…)`, backquotes and `${…}` leave in a word: the value the shell
  * fills in, unknown here, so a check can tell `origin/${B}` from `origin/`.
@@ -55,7 +56,9 @@ const NESTING = /[$`"'{\\]/;
  */
 const ARITHMETIC_STOPS = /[()`\n]|\$\(/g;
 /** The rest of a redirection operator after its first character. */
-const REDIRECTION_TAIL = /^[<>&|]*/;
+const REDIRECTION_TAIL = /^[<>&|]+/;
+/** How many characters of a redirection operator's rest `text` starts with. */
+const tailLength = (text: string): number => text.length - text.replace(REDIRECTION_TAIL, '').length;
 /**
  * A `$'…'` escape: hex, Unicode or octal code, else the escaped character as
  * itself. `\n` reads as `n`, not a newline: a control character never makes a
@@ -341,7 +344,7 @@ export function simpleCommands(text: string): Reading {
       if (word !== null && /^\d+$/.test(word)) word = null;
       endWord();
       target = true;
-      skip = REDIRECTION_TAIL.exec(text.slice(i + 1))?.[0].length ?? 0;
+      skip = tailLength(text.slice(i + 1));
     } else if (char === '\n') {
       endCommand(i + 1);
       if (opened.length > 0) [mode, bodies, opened] = ['body', opened, []];

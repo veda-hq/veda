@@ -110,10 +110,11 @@ function enforcer(value: unknown, where: string): Enforcer | null {
   if (value === null) return null;
   const raw = record(value, where);
   const pr = raw['pr'];
-  if (typeof pr !== 'number' || !Number.isSafeInteger(pr) || pr <= 0) {
+  // isSafeInteger is false for anything that is not a number.
+  if (!Number.isSafeInteger(pr) || (pr as number) <= 0) {
     throw new Error(`${where}.pr: expected a positive integer`);
   }
-  return { pr, files: texts(raw['files'], `${where}.files`, REPO_PATH) };
+  return { pr: pr as number, files: texts(raw['files'], `${where}.files`, REPO_PATH) };
 }
 
 /** Validate a parsed registry file; throws naming the first bad field. */

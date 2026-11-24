@@ -163,7 +163,7 @@ function whereKeys(where) {
       }
       into.add(name);
       // Compound unique input: `where: { id_status: { id, status } }`. A
-      // spread or computed inner key reads as null, which names no column.
+      // spread has no key, so it reads as null, which names no column.
       if (property.value.type === 'ObjectExpression' && name.includes('_')) {
         for (const inner of property.value.properties) {
           into.add(keyName(inner.key));
@@ -638,7 +638,7 @@ const compareAndSet = {
             if (reported || !TRANSITION_WRITES.has(write.method)) continue;
             if (!write.data || write.data.type !== 'ObjectExpression') continue;
             for (const property of write.data.properties) {
-              // A spread or computed key reads as null, no transition column.
+              // A spread has no key, so it reads as null: no transition column.
               const field = keyName(property.key);
               if (!TRANSITION_COLUMNS.has(field)) continue;
               if (write.keys.has(field)) continue;

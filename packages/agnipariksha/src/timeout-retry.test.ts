@@ -28,6 +28,7 @@ test('a span keeps lines 1-based and moves report columns to 0-based', () => {
 });
 
 test('sameMutant compares file, start, end, mutator and replacement', () => {
+  assert.equal(sameMutant(mutant('Killed'), { ...mutant('Killed'), line: 2 }), false, 'a mutant from line 2 to 3 is not the one on line 3');
   assert.equal(sameMutant(mutant('Killed'), { ...mutant('Killed'), endLine: 4 }), false);
   assert.equal(sameMutant(mutant('Killed'), { ...mutant('Killed'), endColumn: 10 }), false);
   assert.equal(sameMutant(mutant('Killed'), mutant('Timeout')), true);

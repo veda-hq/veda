@@ -745,6 +745,86 @@ const pythonFloorRecorder = () => {
   return { calls, python };
 };
 
+describe('run license-check: flags and exit codes', () => {
+  const settings = '{"allow": ["MIT"], "packages": {}}';
+  const listed = '{"MIT": [{"name": "a", "versions": ["1.0.0"]}]}';
+
+  it('refuses to run with no allow list, asking pnpm nothing', () => {
+    const asked: string[] = [];
+    const r = cli(['license-check', '--root', NOWHERE], {
+      licenses: (root) => {
+        asked.push(root);
+        return listed;
+      },
+    });
+    assert.deepEqual(r, {
+      code: 2,
+      out: [],
+      err: ['pariksha license-check: no allow list: name a settings file with --config or set checks.license-check in .pariksha.json; nothing was checked, so this is not a pass'],
+    });
+    assert.deepEqual(asked, []);
+  });
+
+  it('asks the runner it is given for the list at --root, and judges it by --config', () => {
+    const root = tree({ 'licences.json': settings }, false);
+    const asked: string[] = [];
+    const r = cli(['license-check', '--config', 'licences.json', '--root', root], {
+      licenses: (at) => {
+        asked.push(at);
+        return listed;
+      },
+    });
+    assert.deepEqual(r, { code: 0, out: ['license-check: 1 packages, every licence allowed exactly'], err: [] });
+    assert.deepEqual(asked, [root]);
+  });
+
+  it('reads a saved --report instead of asking the runner', () => {
+    const root = tree({ 'licences.json': settings, 'report.json': '{"GPL-3.0-only": [{"name": "b", "versions": ["2.0.0"]}]}' }, false);
+    const r = cli(['license-check', '--config', 'licences.json', '--report', join(root, 'report.json'), '--root', root], {
+      licenses: () => {
+        throw new Error('pnpm must not run');
+      },
+    });
+    assert.deepEqual(r, { code: 1, out: ['license-check: 1 of 1 packages have a licence not on the allow list:', '  b@2.0.0  GPL-3.0-only'], err: [] });
+  });
+
+  it('exits 2 on settings it cannot read, and on a runner that fails', () => {
+    const root = tree({ 'licences.json': '{"allow": []}', 'good.json': settings }, false);
+    const bad = cli(['license-check', '--config', 'licences.json', '--root', root], { licenses: () => listed });
+    assert.equal(bad.code, 2);
+    assert.deepEqual(bad.err, ['pariksha license-check: "allow" must be a non-empty list of licence names, none blank or with surrounding spaces; nothing was checked, so this is not a pass']);
+    const failing = cli(['license-check', '--config', 'good.json', '--root', root], {
+      licenses: () => {
+        throw new Error('pnpm is not installed');
+      },
+    });
+    assert.deepEqual(failing, { code: 2, out: [], err: ['pariksha license-check: cannot read pnpm licenses list: pnpm is not installed; nothing was checked, so this is not a pass'] });
+  });
+});
+
+describe('run codeql-baseline: flags and exit codes', () => {
+  const log = '{"runs": [{"results": [{"ruleId": "js/x", "level": "error", "locations": [{"physicalLocation": {"artifactLocation": {"uri": "a.ts"}, "region": {"startLine": 2}}}]}]}]}';
+
+  it('asks for exactly one of --check and --write', () => {
+    assertUsage(cli(['codeql-baseline', '--root', NOWHERE]));
+    assertUsage(cli(['codeql-baseline', '--check', 'a.sarif', '--write', 'a.sarif']));
+  });
+
+  it('writes with --write and checks with --check, under --root', () => {
+    const root = tree({ 'scan.sarif': log }, false);
+    assert.deepEqual(cli(['codeql-baseline', '--write', join(root, 'scan.sarif'), '--root', root, '--baseline', 'b.json']), { code: 0, out: ['Wrote 1 alert(s) to b.json'], err: [] });
+    assert.deepEqual(cli(['codeql-baseline', '--check', join(root, 'scan.sarif'), '--root', root, '--baseline', 'b.json']), { code: 0, out: ['CodeQL: 1 error-level alert(s), 1 in the baseline'], err: [] });
+  });
+
+  it('exits 2, naming what it could not read', () => {
+    const root = tree({ 'scan.sarif': log }, false);
+    const r = cli(['codeql-baseline', '--check', join(root, 'scan.sarif'), '--root', root, '--baseline', 'none.json']);
+    assert.equal(r.code, 2);
+    assert.deepEqual(r.out, []);
+    assert.deepEqual(r.err, [`pariksha codeql-baseline: cannot read the baseline none.json: ENOENT: no such file or directory, open '${join(root, 'none.json')}'; nothing was checked, so this is not a pass`]);
+  });
+});
+
 describe('run python-floor', () => {
   it('refuses a missing --python or --floor-file with the usage, running nothing', () => {
     const { calls, python } = pythonFloorRecorder();

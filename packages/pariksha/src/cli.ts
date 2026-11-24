@@ -1020,7 +1020,7 @@ const licenseCheck = (f: Map<string, string>, io: Io): number => {
     io.err(`${P} no allow list: name a settings file with --config or set checks.license-check in ${CONFIG_FILE}; nothing was checked, so this is not a pass`);
     return 2;
   }
-  const root = resolve(f.get('--root') ?? '.');
+  const root = rootOf(f);
   const config = unchecked(P, io, () => parseLicenseConfig(configText(f, root)));
   if (config === undefined) return 2;
   const report = f.get('--report');
@@ -1036,7 +1036,7 @@ const codeqlBaseline = (f: Map<string, string>, io: Io): number => {
     io.err(USAGE);
     return 2;
   }
-  const options = { mode: check === undefined ? 'write' : 'check', sarif, root: resolve(f.get('--root') ?? '.'), baseline: f.get('--baseline') ?? CODEQL_BASELINE } as const;
+  const options = { mode: check === undefined ? 'write' : 'check', sarif, root: rootOf(f), baseline: f.get('--baseline') ?? CODEQL_BASELINE } as const;
   return unchecked('pariksha codeql-baseline:', io, () => runCodeqlBaseline(options, io.out)) ?? 2;
 };
 

@@ -464,6 +464,17 @@ class CommitBodyRefLineLength(Repo):
                 self.assertIn("holding `#3606`", found or "")
                 self.assertIn(f"{len(LONG_REF)} characters", found or "")
 
+    def test_the_limit_is_100_characters(self) -> None:
+        for length, fires in ((100, False), (101, True)):
+            line = "x" * (length - len(" #3606")) + " #3606"
+            with self.subTest(length=length):
+                self.assertEqual(len(line), length)
+                found = self.find(f'git commit -m "fix: title" -m "{line}"')
+                if fires:
+                    self.assertIn(f"a body line of {length} characters holding `#3606`", found or "")
+                else:
+                    self.assertIsNone(found)
+
     def test_other_messages_pass(self) -> None:
         Path(self.repo, "comment.txt").write_text(f"fix: title\n\n# {LONG_REF}\n", encoding="utf-8")
         for command in (

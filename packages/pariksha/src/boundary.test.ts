@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { findDenied, hash, isText, parseDenyList } from './boundary.ts';
+import { findDenied, hash, isText, once, parseDenyList } from './boundary.ts';
 
 // Test words only: the real deny list is the repository's own.
 const ACME = hash('acme');
@@ -35,6 +35,28 @@ describe('isText', () => {
   });
 });
 
+describe('once', () => {
+  it('asks f once per distinct word, and gives every repeat its first answer', () => {
+    const asked: string[] = [];
+    const lengthOf = once((word) => {
+      asked.push(word);
+      return word.length;
+    });
+    assert.deepEqual(['ab', 'c', 'ab', 'ab', 'c', 'def'].map(lengthOf), [2, 1, 2, 2, 1, 3]);
+    assert.deepEqual(asked, ['ab', 'c', 'def']);
+  });
+
+  it('keeps an answer that is falsy', () => {
+    let calls = 0;
+    const no = once(() => {
+      calls += 1;
+      return false;
+    });
+    assert.deepEqual([no('a'), no('a')], [false, false]);
+    assert.equal(calls, 1);
+  });
+});
+
 describe('findDenied', () => {
   const deny = new Set([ACME]);
 
@@ -59,19 +81,8 @@ describe('findDenied', () => {
     ]);
   });
 
-  it('hashes each distinct word once, and nothing for a line with no word', () => {
-    const asked: string[] = [];
-    const digest = (word: string): string => {
-      asked.push(word);
-      return word === 'acme' ? 'denied' : 'allowed';
-    };
-    const hits = findDenied([{ path: 'a.md', text: 'acme acme\n---\nACME other' }], new Set(['denied']), digest);
-    assert.deepEqual(asked, ['a', 'md', 'acme', 'other']);
-    assert.deepEqual(hits, [
-      { file: 'a.md', line: 1, word: 'acme' },
-      { file: 'a.md', line: 1, word: 'acme' },
-      { file: 'a.md', line: 3, word: 'acme' },
-    ]);
+  it('reads past a line with no word', () => {
+    assert.deepEqual(findDenied([{ path: 'a.md', text: '---\n\nACME' }], deny), [{ file: 'a.md', line: 3, word: 'acme' }]);
   });
 
   it('finds nothing in clean files or with an empty list', () => {

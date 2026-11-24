@@ -14,8 +14,10 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { after, describe, it } from "node:test";
 import {
+  entry,
   isEntry,
   ownVersion,
+  parseTrailersArgs,
   processIo,
   run,
   shellHelper,
@@ -163,6 +165,77 @@ describe("dvara", () => {
       assert.equal(await run(argv, { io, cwd: "/", env: {} }), 2);
       assert.deepEqual(err, [USAGE]);
     }
+  });
+
+  it("prints the whole usage, word for word", async () => {
+    const { io, err } = capture();
+    assert.equal(await run(["help"], { io, cwd: "/", env: {} }), 2);
+    assert.deepEqual(err, [
+      [
+        "usage: dvara run <hook-file> [hook args…]   run a git hook under the supervisor",
+        "       dvara stages <hook>                  the hook stages the config lists, one per line",
+        "       dvara shell <stages|keep-going>      the path of a shell helper to source",
+        "       dvara records <--staged | --all [--base REF] [--write-baseline | --survey] | --base REF>",
+        "                                            the record gate: no new non-durable paths, a baseline that only falls",
+        "       dvara frozen <--staged | --base REF [--head REF]>",
+        "                                            refuse changes to the frozen paths",
+        "       dvara trailers [--key KEY]… <commit-msg-file>",
+        "                                            refuse trailer lines git would not read (commit-msg)",
+        "       dvara exec-bits --staged [--refuse]",
+        "                                            warn on (or refuse) a dropped executable bit (pre-commit)",
+        "       dvara review-size --cap N [--ignore GLOB]… [--base REF]",
+        "                                            warn when the branch is over a reviewer's line cap (pre-push)",
+        "       dvara slot --name <name> [--dir <dir>] [--set NAME=VALUE]… [--unset NAME]… -- <command> [args…]",
+        "                                            run a command, with the variables set while it holds the machine's slot",
+        "       dvara --version",
+      ].join("\n"),
+    ]);
+  });
+
+  it("prints each shell helper's path in the package's shell folder", async () => {
+    const shell = resolve(import.meta.dirname, "..", "shell");
+    for (const name of ["stages", "keep-going"]) {
+      const { io, out, err } = capture();
+      assert.equal(await run(["shell", name], { io, cwd: "/", env: {} }), 0);
+      assert.deepEqual([out, err], [[join(shell, `${name}.sh`)], []]);
+    }
+    assert.equal(shellHelper("x"), join(shell, "x.sh"));
+  });
+
+  it("names a shell helper only for `shell` with one known name", async () => {
+    const root = scratch("dvara-cli-");
+    for (const argv of [
+      ["shell"],
+      ["shell", "keep-going", "extra"],
+      ["help", "keep-going"],
+    ]) {
+      const { io, out, err } = capture();
+      assert.equal(await run(argv, { io, cwd: root, env: {} }), 2, argv.join(" "));
+      assert.deepEqual(out, [], argv.join(" "));
+      assert.equal(err.length, 1, argv.join(" "));
+    }
+    // `stages` with a helper's name lists that hook's stages: none here.
+    const { io, out, err } = capture();
+    assert.equal(await run(["stages", "keep-going"], { io, cwd: root, env: {} }), 0);
+    assert.deepEqual([out, err], [[], []]);
+  });
+
+  it("lists no stages when the config has none", async () => {
+    const root = scratch("dvara-cli-");
+    const { io, out, err } = capture();
+    assert.equal(await run(["stages", "pre-push"], { io, cwd: root, env: {} }), 0);
+    assert.deepEqual([out, err], [[], []]);
+  });
+
+  it("says review-size was not checked, with the first line of why", async () => {
+    const root = scratch("dvara-cli-");
+    writeFileSync(join(root, ".dvara.json"), JSON.stringify({ "first\nsecond": 1 }));
+    const { io, out, err } = capture();
+    assert.equal(await run(["review-size", "--cap", "10"], { io, cwd: root, env: {} }), 0);
+    assert.deepEqual(out, []);
+    assert.deepEqual(err, [
+      `⚠ review-size: not checked: dvara: ${join(root, ".dvara.json")}: unknown field first`,
+    ]);
   });
 
   it("offers --write-baseline and --survey with --all only, as the gate takes them", () => {
@@ -375,6 +448,20 @@ describe("dvara trailers", () => {
   it("is in the usage", () => {
     assert.ok(USAGE.includes("dvara trailers [--key KEY]… <commit-msg-file>"), USAGE);
   });
+
+  it("parses one file and each --key, in any order", () => {
+    assert.deepEqual(parseTrailersArgs(["msg"]), { file: "msg", keys: [] });
+    assert.deepEqual(
+      parseTrailersArgs(["--key", "Slice", "msg", "--key", "--key"]),
+      { file: "msg", keys: ["Slice", "--key"] },
+    );
+    assert.deepEqual(parseTrailersArgs(["--key", "Slice"]), {
+      error: "give one commit message file",
+    });
+    assert.deepEqual(parseTrailersArgs(["a", "--key", "Bad key", "b"]), {
+      error: "--key takes a trailer key: letters, digits and -",
+    });
+  });
 });
 
 describe("isEntry", () => {
@@ -397,6 +484,8 @@ describe("isEntry", () => {
       false,
     );
     assert.equal(isEntry("/nonexistent/x.js", pathToFileURL(self).href), false);
+    // An empty entry would resolve to the working folder; it is still no entry.
+    assert.equal(isEntry("", pathToFileURL(process.cwd()).href), false);
   });
 
   it("writes its own output a line at a time", (t) => {
@@ -418,6 +507,45 @@ describe("isEntry", () => {
       encoding: "utf8",
     });
     assert.equal(out.trim(), ownVersion());
+  });
+
+  it("leaves an importer's exit code alone", () => {
+    const imported = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `process.exitCode = 7; await import(${JSON.stringify(pathToFileURL(self).href)});`,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.deepEqual([imported.status, imported.stdout], [7, ""]);
+  });
+
+  it("runs the command after the script's path when that path is the module", async () => {
+    const root = scratch("dvara-cli-");
+    writeFileSync(
+      join(root, ".dvara.json"),
+      JSON.stringify({ stages: { "pre-push": ["lint"] } }),
+    );
+    const { io, out, err } = capture();
+    const url = pathToFileURL(self).href;
+    assert.equal(
+      await entry(["node", self, "stages", "pre-push"], url, io, () => root, {}),
+      0,
+    );
+    assert.deepEqual([out, err], [["lint"], []]);
+    const asked: string[] = [];
+    const cwd = () => {
+      asked.push("cwd");
+      return root;
+    };
+    assert.equal(
+      await entry(["node", resolve(root, "other.js"), "stages", "pre-push"], url, io, cwd, {}),
+      undefined,
+    );
+    assert.equal(await entry(["node"], url, io, cwd, {}), undefined);
+    assert.deepEqual([out, err, asked], [["lint"], [], []]);
   });
 });
 

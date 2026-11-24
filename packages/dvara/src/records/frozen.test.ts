@@ -97,7 +97,12 @@ describe("parseArgs", () => {
       assert.deepEqual(parseArgs(args), {
         error: "give --staged, or --base REF [--head REF]",
       });
-    for (const args of [["--nope"], ["stray"], ["--base"]]) {
+    for (const args of [
+      ["--nope"],
+      ["stray"],
+      ["--staged", "stray"],
+      ["--base"],
+    ]) {
       const parsed = parseArgs(args);
       assert.ok("error" in parsed && parsed.error !== "", args.join(" "));
     }
@@ -348,6 +353,64 @@ describe("--staged: a merge commit", () => {
       second,
     ]);
     rmSync(file);
+  });
+
+  /**
+   * A git whose files live in `dir`, whose every merge-tree is clean, and
+   * whose index matches any tree: only the names decide what counts.
+   */
+  const agreeable = (dir: string, asked: string[][] = []): GitRun => {
+    return (args) => {
+      asked.push([...args]);
+      if (args[0] === "rev-parse") return join(dir, String(args.at(-1)));
+      if (args[0] === "merge-tree") return `${"c".repeat(40)}\n`;
+      return "";
+    };
+  };
+
+  it("takes only whole SHA-1 or SHA-256 ids from MERGE_HEAD", (t) => {
+    const dir = mkdtempSync(join(tmpdir(), "dvara-frozen-heads-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const sha1 = "a".repeat(40);
+    const sha256 = "b".repeat(64);
+    writeFileSync(
+      join(dir, "MERGE_HEAD"),
+      [
+        sha1,
+        `g${"1".repeat(40)}`,
+        `${"2".repeat(40)}g`,
+        "3".repeat(41),
+        `${"4".repeat(40)}${"z".repeat(24)}`,
+        sha256,
+        "",
+      ].join("\n"),
+    );
+    assert.deepEqual(mergeHeads(agreeable(dir), {}), [sha1, sha256]);
+  });
+
+  it("reads merged commits only from variables named GITHEAD_", (t) => {
+    const dir = mkdtempSync(join(tmpdir(), "dvara-frozen-named-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const sha = "d".repeat(40);
+    assert.deepEqual(mergeHeads(agreeable(dir), { [`NOTHEAD_${sha}`]: "x" }), []);
+    assert.deepEqual(mergeHeads(agreeable(dir), { [`GITHEAD_${sha}`]: "x" }), [
+      sha,
+    ]);
+  });
+
+  it("asks for no merge of HEAD when no commit is named", (t) => {
+    const dir = mkdtempSync(join(tmpdir(), "dvara-frozen-none-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const asked: string[][] = [];
+    assert.equal(isCleanMerge(agreeable(dir, asked), []), false);
+    assert.deepEqual(asked, [
+      [
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "AUTO_MERGE",
+      ],
+    ]);
   });
 
   it("keeps a path only when every merged commit differs from the index there", (t) => {

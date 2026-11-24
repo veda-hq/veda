@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
-import { chmodSync, rmSync } from "node:fs";
+import { chmodSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { run } from "./cli.ts";
-import { ADVICE, droppedBits, parseArgs, report } from "./exec-bits.ts";
+import {
+  ADVICE,
+  droppedBits,
+  parseArgs,
+  report,
+  stagedDroppedBits,
+} from "./exec-bits.ts";
 import { repo } from "./records/fixture.test.ts";
 
 const capture = () => {
@@ -53,6 +59,48 @@ describe("droppedBits", () => {
   it("reads nothing from an empty diff", () => {
     assert.deepEqual(droppedBits(""), []);
   });
+
+  it("reads no entry from a header with no path after it", () => {
+    assert.deepEqual(droppedBits(`:100755 100644 ${A} ${A} M`), []);
+  });
+
+  it("drops only the bit of a modified file, from 100755 to 100644", () => {
+    const raw = [
+      `:100755 100644 ${A} ${A} T`,
+      "typechange",
+      `:100644 100644 ${A} ${A} M`,
+      "plain",
+      `:100755 100755 ${A} ${A} M`,
+      "kept",
+      // Only a leading colon is the header's: this one ends the status.
+      `100755 100644 ${A} ${A} M:`,
+      "colon-last",
+      `:100755 100644 ${A} ${A} M`,
+      "dropped",
+      "",
+    ].join("\0");
+    assert.deepEqual(droppedBits(raw), [{ path: "dropped" }]);
+  });
+});
+
+describe("stagedDroppedBits", () => {
+  it("runs git in the environment it is given, and says why git failed", () => {
+    const r = repo("dvara-exec-bits-");
+    try {
+      // Only the given environment names this index; the repository's own is fine.
+      const index = join(r.root, "corrupt-index");
+      writeFileSync(index, "not an index, but long enough to have a header\n");
+      assert.deepEqual(
+        stagedDroppedBits({ cwd: r.root, env: { ...r.env, GIT_INDEX_FILE: index } }),
+        {
+          error:
+            "git diff failed (128): error: bad signature 0x20746f6e\nfatal: index file corrupt",
+        },
+      );
+    } finally {
+      rmSync(r.root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("report", () => {
@@ -67,6 +115,13 @@ describe("report", () => {
     assert.equal(
       report(dropped, true)[0],
       "❌ exec-bits: 2 staged file(s) lose the executable bit (100755 → 100644) with no change to their content:",
+    );
+  });
+
+  it("ends with the advice, word for word", () => {
+    assert.equal(
+      report([], false).at(-1),
+      "  The content is unchanged, so this is a tool dropping the bit (Stryker's in-place restore does), not an edit. Put it back with `git update-index --chmod=+x <path>` (and `chmod +x <path>`).",
     );
   });
 });

@@ -83,6 +83,12 @@ describe("parseStages", () => {
     ]);
   });
 
+  it("reads no stage from blank space around the markers", () => {
+    assert.deepEqual(parseStages("  \n1\tlint\n \t \n", 0), [
+      { name: "lint", startMs: 1000 },
+    ]);
+  });
+
   it("has no stages without markers, and names a nameless one empty", () => {
     assert.deepEqual(parseStages(null, 0), []);
     assert.deepEqual(parseStages("4", 0), [{ name: "", startMs: 4000 }]);

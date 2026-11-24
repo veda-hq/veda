@@ -44,6 +44,19 @@ describe("processTable", () => {
       ],
     );
   });
+
+  it("reads a row only whole, from its first field, and the command after all the spaces", () => {
+    const table = processTable(
+      ["junk 7 1 cmd", "5 1 a b", "60 1    zsh", " 61 60 /bin/sh -c x  "].join("\n"),
+    );
+    assert.deepEqual(
+      [...table],
+      [
+        [60, { parent: 1, command: "zsh" }],
+        [61, { parent: 60, command: "/bin/sh -c x" }],
+      ],
+    );
+  });
 });
 
 describe("invocationContext", () => {
@@ -107,6 +120,42 @@ describe("invocationContext", () => {
       invocationContext("pre-push", {}, process.pid),
       /^(git-hook|manual|unknown)$/,
     );
+    // init's chain ends at once, so only an unreadable table makes it unknown.
+    assert.equal(invocationContext("pre-push", {}, 1), "manual");
+  });
+
+  it("asks ps for each pid's parent and command", () => {
+    const calls: unknown[] = [];
+    const exec = (file: string, args: readonly string[]) => {
+      calls.push([file, args]);
+      return "30 1 bash";
+    };
+    assert.equal(invocationContext("pre-push", {}, 30, exec), "manual");
+    assert.deepEqual(calls, [["ps", ["-axo", "pid=,ppid=,comm="]]]);
+  });
+
+  it("reads the process table unless the run is a background preflight", () => {
+    const table = ps("30 20 git\n20 1 zsh");
+    assert.equal(
+      invocationContext("pre-push", { DVARA_BACKGROUND: "1" }, 30, table),
+      "git-hook",
+    );
+    assert.equal(invocationContext("preflight", {}, 30, table), "git-hook");
+    assert.equal(
+      invocationContext("preflight", { DVARA_BACKGROUND: "0" }, 30, table),
+      "git-hook",
+    );
+  });
+
+  it("takes git by its whole name, with or without a folder", () => {
+    assert.equal(
+      invocationContext("pre-push", {}, 30, ps("30 20 git-lfs\n20 1 /usr/bin/gitk")),
+      "manual",
+    );
+    assert.equal(
+      invocationContext("pre-push", {}, 30, ps("30 20 /usr/bin/git-lfs\n20 1 legit")),
+      "manual",
+    );
   });
 });
 
@@ -134,6 +183,32 @@ describe("perfLevelNames", () => {
       perfLevelNames("darwin", () => "junk"),
       [],
     );
+    assert.deepEqual(
+      perfLevelNames("darwin", () => "Infinity"),
+      [],
+    );
+  });
+
+  it("asks sysctl for the count, then each level's name", () => {
+    const calls: unknown[] = [];
+    const answers = new Map([
+      ["sysctl -n hw.nperflevels", "2\n"],
+      ["sysctl -n hw.perflevel0.name", "Performance\n"],
+      ["sysctl -n hw.perflevel1.name", "Efficiency\n"],
+    ]);
+    const sysctl = (file: string, args: readonly string[]) => {
+      calls.push([file, args]);
+      return answers.get([file, ...args].join(" ")) ?? "";
+    };
+    assert.deepEqual(perfLevelNames("darwin", sysctl), [
+      "Performance",
+      "Efficiency",
+    ]);
+    assert.deepEqual(calls, [
+      ["sysctl", ["-n", "hw.nperflevels"]],
+      ["sysctl", ["-n", "hw.perflevel0.name"]],
+      ["sysctl", ["-n", "hw.perflevel1.name"]],
+    ]);
   });
 
   it("reads the real sysctl by default", () => {

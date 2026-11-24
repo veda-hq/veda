@@ -146,19 +146,13 @@ const parseRecordsConfig = (value: unknown): RecordsConfig => {
   if ("baseline" in value) {
     const path = value.baseline;
     // Compared with the paths git prints: `./a/../b.json` is `b.json`. A
-    // folder (`.`, `archive/`) names no tracked file, so it is no baseline.
-    const normal = typeof path === "string" ? posix.normalize(path) : "";
-    if (
-      typeof path !== "string" ||
-      path === "" ||
-      isAbsolute(path) ||
-      escapes(path) ||
-      normal === "." ||
-      normal.endsWith("/")
-    )
-      throw new Error(
-        "records.baseline must be a file path inside the repository",
-      );
+    // folder (``, `.`, `archive/`) names no tracked file, so it is no
+    // baseline.
+    const invalid = "records.baseline must be a file path inside the repository";
+    if (typeof path !== "string" || isAbsolute(path) || escapes(path))
+      throw new Error(invalid);
+    const normal = posix.normalize(path);
+    if (normal === "." || normal.endsWith("/")) throw new Error(invalid);
     records.baseline = normal;
   }
   if ("skip" in value) records.skip = repoPaths(value.skip, "records.skip");
@@ -284,7 +278,8 @@ export const loadConfig = (root: string, env: NodeJS.ProcessEnv): Config => {
   const path = resolve(root, env.DVARA_CONFIG || CONFIG_FILE);
   let text: string;
   try {
-    text = readFileSync(path, "utf8");
+    // A Buffer's toString reads UTF-8, as JSON.parse would read the Buffer itself.
+    text = readFileSync(path).toString();
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT" && !env.DVARA_CONFIG)
       return DEFAULTS;

@@ -62,8 +62,9 @@ export interface Change {
 export const parseNameStatus = (out: string): Change[] => {
   const fields = out.split("\0");
   const changes: Change[] = [];
+  // The bound keeps both fields of each pair inside the list.
   for (let i = 0; i + 1 < fields.length; i += 2)
-    changes.push({ status: fields[i] ?? "", path: fields[i + 1] ?? "" });
+    changes.push({ status: String(fields[i]), path: String(fields[i + 1]) });
   return changes;
 };
 
@@ -91,13 +92,17 @@ const gitFileShas = (git: GitRun, name: string): string[] => {
 /** The tree of git's own clean merge of HEAD and `head`; none on a conflict. */
 export const mergedTree = (git: GitRun, head: string): string | undefined => {
   try {
-    return git(["merge-tree", "--write-tree", "--no-messages", "HEAD", head])
-      .split("\n")[0]
-      ?.trim();
+    // The tree's id is the first line, whole.
+    return git([
+      "merge-tree",
+      "--write-tree",
+      "--no-messages",
+      "HEAD",
+      head,
+    ]).split("\n")[0];
   } catch {
     // merge-tree exits 1 on a conflict; with no clean merge to compare,
-    // `head` is not trusted, the stricter answer.
-    return undefined;
+    // `head` is not trusted, the stricter answer: no tree (undefined).
   }
 };
 
@@ -112,8 +117,8 @@ export const isCleanMerge = (
   heads: readonly string[],
 ): boolean => {
   const trees = gitFileShas(git, "AUTO_MERGE");
-  const [only] = heads;
-  if (heads.length === 1 && only !== undefined) {
+  const [only, ...others] = heads;
+  if (only !== undefined && others.length === 0) {
     const tree = mergedTree(git, only);
     if (tree !== undefined) trees.push(tree);
   }

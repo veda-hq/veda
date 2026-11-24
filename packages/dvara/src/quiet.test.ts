@@ -29,6 +29,30 @@ describe("successNotices", () => {
       " ⚠ second",
     ]);
   });
+
+  it("keeps no indented line before the first warning", () => {
+    assert.deepEqual(successNotices("  indented first\n⚠ warned"), [
+      "⚠ warned",
+    ]);
+  });
+
+  it("continues a warning only with lines indented before their text", () => {
+    const text = [
+      "⚠ warned",
+      " one space",
+      "\tone tab",
+      "   ",
+      "  after a blank",
+      "⚠ again",
+      "text  with inner spaces",
+    ].join("\n");
+    assert.deepEqual(successNotices(text), [
+      "⚠ warned",
+      " one space",
+      "\tone tab",
+      "⚠ again",
+    ]);
+  });
 });
 
 describe("successLine", () => {

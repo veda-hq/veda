@@ -450,6 +450,8 @@ describe("pre-commit: what is staged", () => {
     const r = init();
     r.write("docs/notes/n.txt", "Ran in /Users/someone/x.\n\0\n");
     r.write("docs/notes/n.png", "Ran in /Users/someone/x.\n");
+    // Markdown by its last extension only.
+    r.write("docs/notes/n.md.txt", "Ran in /Users/someone/x.\n\0\n");
     r.git("add", "-A");
     const result = staged(r);
     assert.equal(result.code, 0);
@@ -571,6 +573,167 @@ describe("pre-commit: what is staged", () => {
       code: 1,
       out: `dvara records: ${BASELINE}: x names unknown rule NOPE`,
     });
+  });
+
+  it("takes the first base ref that resolves", () => {
+    const r = init();
+    r.git("rm", "-q", BASELINE);
+    r.commit("main has no baseline");
+    r.git("update-ref", "refs/remotes/origin/main", "HEAD");
+    r.write(BASELINE, baseline({ [LEGACY]: { "EVIDENCE-02": 1 } }));
+    r.git("add", BASELINE);
+    r.git("commit", "-q", "-m", "branch adds the baseline");
+    r.write(LEGACY, `${LEGACY_TEXT}And /Users/someone/other.\n`);
+    r.write(BASELINE, baseline({ [LEGACY]: { "EVIDENCE-02": 2 } }));
+    r.git("add", "-A");
+    const lines: string[] = [];
+    const code = records(
+      { mode: "staged", base: null, writeBaseline: false, survey: false },
+      { cwd: r.root, env: r.env },
+      (line) => lines.push(line),
+      {
+        records: RECORDS,
+        baseRefs: ["origin/missing", "origin/main"],
+        rules: [durablePaths(RECORDS)],
+      },
+    );
+    // Against origin/main, which has no baseline: a first one, matching.
+    assert.equal(code, 0, lines.join("\n"));
+    assert.match(lines.join("\n"), passed(1));
+  });
+
+  it("judges an orphan branch's first commit as a root, and cannot base-check it", () => {
+    const r = init();
+    r.git("update-ref", "refs/remotes/origin/main", "HEAD");
+    r.git("checkout", "-q", "--orphan", "fresh");
+    const result = staged(r);
+    assert.equal(result.code, 0, result.out);
+    assert.match(result.out, passed(4));
+    assert.deepEqual(gate(r, { mode: "base", base: "main" }), {
+      code: 2,
+      out: "dvara records: cannot resolve main or HEAD",
+    });
+  });
+
+  it("checks a staged file that returns to the base's text", () => {
+    const r = init();
+    r.git("update-ref", "refs/remotes/origin/main", "HEAD");
+    r.write(DOC, "# Guide\n\nReproduced once.\n");
+    r.commit("branch edit");
+    r.write(DOC, GOOD_DOC);
+    r.git("add", DOC);
+    assert.match(staged(r).out, passed(1));
+  });
+
+  it("answers for a hand edit staged in a merge", () => {
+    const r = init();
+    r.git("checkout", "-q", "-b", "feature");
+    r.write("docs/notes/f.md", "# F\n");
+    r.commit("feature");
+    r.git("checkout", "-q", "main");
+    r.write("docs/notes/m.md", "# M\n");
+    r.commit("main moves on");
+    r.git("update-ref", "refs/remotes/origin/main", "HEAD");
+    r.git("checkout", "-q", "feature");
+    r.git("merge", "-q", "--no-commit", "--no-ff", "main");
+    r.write(DOC, BAD_DOC);
+    r.git("add", DOC);
+    const result = staged(r);
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.out.split("\n").slice(0, -1), [
+      "❌ records: refused",
+      `${DOC} — EVIDENCE-02:`,
+      `  ${DOC}:3 ${HOME}: "/Users/someone"`,
+    ]);
+  });
+
+  it("reads not the baseline when given no other files of its own", () => {
+    const r = init();
+    r.write(
+      BASELINE,
+      baseline({ [LEGACY]: { "EVIDENCE-02": 1 } }).replace(
+        "{",
+        '{"_": "/Users/someone/x",',
+      ),
+    );
+    r.git("add", BASELINE);
+    const lines: string[] = [];
+    const code = records(
+      { mode: "staged", base: null, writeBaseline: false, survey: false },
+      { cwd: r.root, env: r.env },
+      (line) => lines.push(line),
+      { records: RECORDS, baseRefs: [], rules: [durablePaths(RECORDS)] },
+    );
+    assert.equal(code, 0, lines.join("\n"));
+    assert.match(lines.join("\n"), passed(0));
+  });
+
+  it("answers for no entry a change leaves alone", () => {
+    const r = init();
+    r.write(BASELINE, baseline({ [LEGACY]: { "EVIDENCE-02": 2 } }));
+    r.commit("a loose allowance");
+    r.write("docs/notes/n.md", "# N\n");
+    r.git("add", "-A");
+    assert.match(staged(r).out, passed(1));
+  });
+
+  it("leaves a baseline the branch already changed to the commit that changed it", () => {
+    const r = init();
+    r.git("update-ref", "refs/remotes/origin/main", "HEAD");
+    r.write(LEGACY, `${LEGACY_TEXT}And /Users/someone/other.\n`);
+    r.write(BASELINE, baseline({ [LEGACY]: { "EVIDENCE-02": 2 } }));
+    r.commit("the branch raises an allowance");
+    r.write("docs/notes/n.md", "# N\n");
+    r.git("add", "-A");
+    assert.match(staged(r).out, passed(1));
+  });
+
+  it("lists a first baseline's refusals in path order", () => {
+    const r = init();
+    r.git("rm", "-q", BASELINE);
+    r.write("docs/notes/b.md", BAD_DOC);
+    r.commit("no baseline");
+    // Entries out of path order: the refusals still come sorted.
+    r.write(
+      BASELINE,
+      baseline({
+        [LEGACY]: { "EVIDENCE-02": 2 },
+        "docs/notes/b.md": { "EVIDENCE-02": 2 },
+      }),
+    );
+    r.git("add", BASELINE);
+    const result = staged(r);
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.out.split("\n").slice(0, -1), [
+      "❌ records: refused",
+      `docs/notes/b.md — EVIDENCE-02: 1 left of 2; lower its count in ${BASELINE} to 1`,
+      `${LEGACY} — EVIDENCE-02: 1 left of 2; lower its count in ${BASELINE} to 1`,
+    ]);
+  });
+
+  it("asks git about every file's citations in one batch", () => {
+    const r = init();
+    r.write(".tmp/keep", "");
+    for (let i = 0; i < 3; i += 1)
+      r.write(
+        `docs/rfcs/0003-t-${i}.md`,
+        `# T\n\nBuilt from ${String(i).repeat(40)}.\n`,
+      );
+    r.git("add", "-A");
+    const trace = join(r.root, ".tmp", "trace");
+    const code = records(
+      { mode: "staged", base: null, writeBaseline: false, survey: false },
+      { cwd: r.root, env: { ...r.env, GIT_TRACE: trace } },
+      () => undefined,
+      { records: RECORDS, baseRefs: [], rules: [ids] },
+    );
+    assert.equal(code, 1);
+    const batches = readFileSync(trace, "utf8")
+      .split("\n")
+      .filter((line) =>
+        line.endsWith("trace: built-in: git cat-file --batch-check"),
+      );
+    assert.equal(batches.length, 1);
   });
 
   it("runs the shipped rules when given none", () => {
@@ -717,6 +880,77 @@ describe("CI: the branch and the whole tree", () => {
     assert.ok(
       lines.includes(`docs/gone.md — gone; remove its entry from ${BASELINE}`),
     );
+  });
+
+  it("refuses an allowance for a folder as gone, reading no folder as a document", () => {
+    const r = feature();
+    r.write("docs/dir.md/inner.md", GOOD_DOC);
+    r.write(
+      BASELINE,
+      baseline({
+        [LEGACY]: { "EVIDENCE-02": 1 },
+        "docs/dir.md": { "EVIDENCE-02": 1 },
+      }),
+    );
+    r.commit("an allowance for a folder");
+    const result = gate(r, { mode: "all" });
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.out.split("\n").slice(0, -1), [
+      "❌ records: refused",
+      `docs/dir.md — gone; remove its entry from ${BASELINE}`,
+    ]);
+  });
+
+  it("gives a rule a renamed file's base text in CI, whatever the index holds", () => {
+    const r = init();
+    r.write("docs/rfcs/0003-r.md", `# R\n\nBuilt from ${UNRESOLVED}.\n`);
+    r.commit("legacy document");
+    r.git("checkout", "-q", "-b", "feature");
+    r.git("mv", "docs/rfcs/0003-r.md", "docs/rfcs/0003-s.md");
+    r.commit("rename");
+    // Staged but not committed: CI judges the commit.
+    r.git("mv", "docs/rfcs/0003-s.md", "docs/rfcs/0003-r.md");
+    const result = gate(r, { mode: "base", base: "main" });
+    assert.equal(result.code, 0, result.out);
+    assert.match(result.out, passed(1));
+  });
+
+  it("writes a baseline over a broken one at the base too", () => {
+    const r = init();
+    r.write(BASELINE, '{"files": {"x": {"NOPE": 1}}}\n');
+    r.commit("a broken baseline");
+    r.git("checkout", "-q", "-b", "feature");
+    assert.deepEqual(
+      gate(r, { mode: "all", base: "main", writeBaseline: true }),
+      {
+        code: 0,
+        out: `dvara records: wrote ${BASELINE} (1 files, 1 findings)`,
+      },
+    );
+  });
+
+  it("re-checks no gone file whose allowance a baseline edit lowers", () => {
+    const r = init();
+    r.write(
+      BASELINE,
+      baseline({
+        [LEGACY]: { "EVIDENCE-02": 1 },
+        "docs/gone.md": { "EVIDENCE-02": 2 },
+      }),
+    );
+    r.commit("an allowance for a file long gone");
+    r.git("checkout", "-q", "-b", "feature");
+    r.write(
+      BASELINE,
+      baseline({
+        [LEGACY]: { "EVIDENCE-02": 1 },
+        "docs/gone.md": { "EVIDENCE-02": 1 },
+      }),
+    );
+    r.commit("lower it");
+    const result = gate(r, { mode: "base", base: "main" });
+    assert.equal(result.code, 0, result.out);
+    assert.match(result.out, passed(0));
   });
 
   it("refuses a base it cannot resolve, or one with no merge base", () => {
@@ -874,6 +1108,22 @@ describe("EVIDENCE-01 through the gate: cited commits on pushed history", () => 
     const ci = real(r, { mode: "base", base: "origin/main" });
     assert.equal(ci.code, 1, ci.out);
     assert.ok(ci.out.includes(`${RFC}:5 [EVIDENCE-01/unpushed-id] ${message}`));
+  });
+
+  it("counts a --base ref's history as pushed, and no ref without one", () => {
+    const r = cited();
+    const { gone } = ids(r);
+    // Without --base, not even a ref called `null` counts.
+    r.git("branch", "null", gone);
+    r.write(RFC, `# Cites\n\nFixed in ${gone}.\n`);
+    r.git("add", "-A");
+    const pre = real(r, { mode: "staged" });
+    assert.equal(pre.code, 1, pre.out);
+    r.commit("cites");
+    r.git("branch", "keep", gone);
+    const kept = real(r, { mode: "base", base: "keep" });
+    assert.equal(kept.code, 0, kept.out);
+    assert.match(kept.out, passed(2));
   });
 
   it("passes the same citation once the commit is merged", () => {

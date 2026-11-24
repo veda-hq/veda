@@ -96,6 +96,9 @@ describe('maskQuoted', () => {
     assert.equal(maskQuoted('"$(case $x in a | b) y;; esac) w"'), '"$(case $x in a | b) y;; esac)  "');
     assert.equal(maskQuoted('"$(case $x in a|bc) y;; esac) w"'), '"$(case $x in a|bc) y;; esac)  "');
     assert.equal(maskQuoted('"$(case $x in a ) y;; esac) w"'), '"$(case $x in a ) y;; esac)  "');
+    // A command whose name holds the word case is no case: its ) closes the substitution.
+    assert.equal(maskQuoted('"$(test-case) y"'), '"$(test-case)  "');
+    assert.equal(maskQuoted('"$(case.sh) y"'), '"$(case.sh)  "');
     // A subshell in an arm closes its own (, not a pattern.
     assert.equal(maskQuoted('"$(case $x in a) (b) ;; esac) z"'), '"$(case $x in a) (b) ;; esac)  "');
   });

@@ -124,8 +124,9 @@ const NEVER_CLOSES = Number.POSITIVE_INFINITY;
 
 /**
  * A case pattern just before its `)`: after `in`, `;;` or a newline. Only
- * text holding a `case` is asked, so a pattern at the very start would be
- * that `case` word itself, which starts no pattern.
+ * text holding the word `case` is asked, so a "pattern" at the very start
+ * holds that word itself: a command such as `test-case` or `case.sh`, whose
+ * `)` closes its substitution.
  */
 const CASE_PATTERN_BEFORE = /(?:\bin|;;|\n)\s*[^\s;&|()]+(?:\s*\|\s*[^\s;&|()]+)*\s*$/;
 

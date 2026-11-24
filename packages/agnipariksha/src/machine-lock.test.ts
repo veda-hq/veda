@@ -135,6 +135,16 @@ test('a wait past the limit refuses, counting the runs that held the lock in tur
   ]);
 });
 
+test('a stale lock with a holder named in it is taken over at once, with no poll', async () => {
+  let polls = 0;
+  const { deps, files } = fakeLock(() => false, '99 2026-11-14', () => {
+    polls += 1;
+  });
+  await acquireLock('/lock', 42, deps, 60_000);
+  assert.equal(polls, 0);
+  assert.match(files.get('/lock') ?? '', /^42 /);
+});
+
 test('pidAlive: signal 0 succeeds or EPERM is alive, anything else is dead', () => {
   assert.equal(pidAlive(process.pid), true);
   // No such process (above every system's pid limit); signal 0 only asks, it sends nothing.

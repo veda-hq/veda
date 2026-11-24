@@ -251,10 +251,49 @@ describe('discovery: what one module shows', () => {
     assert.deepEqual([...scanSource(ts, 'x.ts', `// shell words\nconst q = ["a", 'b', 'c'];\n`).formats], []);
   });
 
+  it('reads CSV only from a split on a comma literal in a module about CSV', () => {
+    const csv = (call: string): string[] => [...scanSource(ts, 'x.ts', `// csv rows\nexport const r = (l: string) => ${call};\n`).formats];
+    assert.deepEqual(csv("l.split(',')"), ['csv']);
+    for (const call of ['l.split()', 'l.split(`,`)', "l.split(';')", "split(',')", 'l.split(sep)']) assert.deepEqual(csv(call), [], call);
+  });
+
+  it('reads no export list that re-exports from another module, and no destructured or bare declaration', () => {
+    assert.deepEqual(scanSource(ts, 'x.ts', "function writeRow() {}\nfunction readRow() {}\nexport { writeRow, readRow } from './y';\n").exported, []);
+    assert.deepEqual(scanSource(ts, 'x.ts', 'export const { length } = () => 1;\nexport let pending;\n').exported, []);
+    const bare = scanSource(ts, 'x.ts', "import { createHash } from 'node:crypto';\nexport let SCHEMA;\nexport const k = () => createHash('sha256');\n");
+    assert.deepEqual([bare.createsHash, bare.schemaMarked], [true, false]);
+  });
+
   it('lists the exported functions, an async one and a listed one included, and no other name', () => {
     const scanned = scanSource(ts, 'x.ts', 'function S() {}\nexport async function writeRow() {}\nfunction readRow() {}\nconst other = 1;\nexport { readRow, other };\n');
     assert.deepEqual(scanned.exported, ['writeRow', 'readRow']);
     assert.deepEqual(scanSource(ts, 'x.ts', 'function S() {}\nfunction t() {}\n').exported, []);
+  });
+
+  it('pairs a producer and a consumer only by whole names, and nothing that is neither', () => {
+    assert.deepEqual(pairsIn('m.ts', ['rewriteRow', 'readRow']), []);
+    assert.deepEqual(pairsIn('m.ts', ['writeRow$', 'readRow']), []);
+    assert.deepEqual(pairsIn('m.ts', ['writeRow', 'unreadRow']), []);
+    assert.deepEqual(pairsIn('m.ts', ['writeRow', 'readRow$']), []);
+    assert.deepEqual(pairsIn('m.ts', ['writeLone']), []);
+    assert.deepEqual(pairsIn('m.ts', ['helper', 'other']), []);
+    assert.deepEqual(pairsIn('m.ts', ['readRow', 'helper', 'writeRow']), ['m.ts#writeRow->readRow']);
+  });
+
+  it('sorts what it discovers, whatever order the files come in', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'pariksha-codec-order-'));
+    try {
+      put(repo, {
+        'scripts/b.ts': "export const D = '---';\nexport function writeRow() {}\nexport function readRow() {}\n",
+        'scripts/a.ts': "export const D = '---';\nexport const F = '```';\nexport function writeCell() {}\nexport function readCell() {}\n",
+      });
+      assert.deepEqual(discover(ts, repo, ['scripts/b.ts', 'scripts/a.ts'], ALL), {
+        handParsers: ['scripts/a.ts#markdown', 'scripts/a.ts#yaml', 'scripts/b.ts#yaml'],
+        pairs: ['scripts/a.ts#writeCell->readCell', 'scripts/b.ts#writeRow->readRow'],
+      });
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
 
@@ -547,6 +586,22 @@ describe('suite wiring', () => {
     assert.deepEqual(checkWiring(ts, root, parsed({ surfaces: null, pairs: [{ id: 'scripts/row.ts#writeRow->readRow', kind: 'round-trip', suite: 'scripts/row.test.ts' }] })), []);
   });
 
+  it('passes a suite on any one of several surfaces, and lists them all for one on none', () => {
+    const root = make({ 'scripts/row.test.ts': PAIR });
+    const surfaces = ['docs/**', 'scripts/**/*.{differential,roundtrip}.properties.test.ts'];
+    assert.deepEqual(checkWiring(ts, root, parsed({ surfaces })), []);
+    const off = parsed({
+      surfaces,
+      handParsers: [{ source: 'scripts/md.ts', formats: ['markdown'], suite: 'scripts/md.test.ts', outOfModel: 'x' }],
+      pairs: [{ id: 'scripts/row.ts#writeRow->readRow', kind: 'round-trip', suite: 'scripts/row.test.ts' }],
+    });
+    assert.deepEqual(checkWiring(ts, root, off), [
+      'hand parser scripts/md.ts: scripts/md.test.ts is not on a property-suite surface (docs/**, scripts/**/*.{differential,roundtrip}.properties.test.ts)',
+      'hand parser scripts/md.ts: the suite scripts/md.test.ts does not exist',
+      'pair scripts/row.ts#writeRow->readRow: scripts/row.test.ts is not on a property-suite surface (docs/**, scripts/**/*.{differential,roundtrip}.properties.test.ts)',
+    ]);
+  });
+
   it('names no repository’s check ids in its messages, only the kind', () => {
     const root = make({ 'scripts/md.differential.properties.test.ts': '' });
     for (const line of checkWiring(ts, root, parsed())) assert.match(line, /^(?:hand parser|pair) scripts\//);
@@ -566,6 +621,19 @@ describe('findings', () => {
       'scripts/old.ts#yaml: in baseline.json, but registered, exempt, gone or in the wrong list; remove it from the baseline',
       'scripts/old.ts#yaml: added to baseline.json since the merge base; the baseline only shrinks, so register a suite instead',
     ]);
+  });
+
+  it('names nothing for an exempt id discovery still finds', () => {
+    const exempt = parsed({ handParsers: [], pairs: [], exempt: [{ id: 'scripts/a.ts#yaml', reason: 'r' }, { id: 'scripts/b.ts#digest', reason: 'r' }] });
+    assert.deepEqual(findings(ts, root, exempt, { handParsers: ['scripts/a.ts#yaml'], pairs: ['scripts/b.ts#digest'] }, { handParsers: [], pairs: [] }, []), []);
+  });
+
+  it('counts both baselined lists in its summary', () => {
+    const found = { handParsers: ['a#yaml', 'b#yaml'], pairs: ['c#digest', 'd#digest', 'e#digest'] };
+    assert.deepEqual(formatFindings([], found, { handParsers: ['a#yaml', 'b#yaml'], pairs: ['c#digest', 'd#digest', 'e#digest'] }, [], false).out, [
+      'pariksha codec-registry: 2 hand parser(s) and 3 pair(s) discovered, each registered, exempt or among the 5 baselined',
+    ]);
+    assert.deepEqual(formatFindings([], found, { pairs: ['c#digest'] }, [], false).out, ['pariksha codec-registry: 2 hand parser(s) and 3 pair(s) discovered, each registered, exempt or among the 1 baselined']);
   });
 
   it('checks the catalogue examples when the config names them', () => {

@@ -250,6 +250,20 @@ def run_env(tmp: Path) -> dict[str, str]:
     return env
 
 
+_TEMP: list[Path] = []
+
+
+def temp_root() -> Path:
+    """Where test runs keep their TMPDIR: the system's temp folder, since
+    kavach's tests refuse a TMPDIR inside any repository (tests/outside.py)."""
+
+    if not _TEMP:
+        import tempfile
+
+        _TEMP.append(Path(tempfile.mkdtemp(prefix="kavach-mutation-")))
+    return _TEMP[0]
+
+
 def fresh(path: Path) -> Path:
     shutil.rmtree(path, ignore_errors=True)
     path.mkdir(parents=True)
@@ -358,6 +372,11 @@ def attribute(contexts: set[str], order: list[str]) -> tuple[set[str], set[str],
     ``@after:X`` and ``@before`` cover what runs between tests: class and
     module fixtures, which run before the next test starts, so they go to
     that test. ``@import:M`` is test module M's import, in a fresh process.
+    ``@load`` and ``@end`` are the recorder's loading and finishing, already
+    covered by the imports. Anything else is a stray, a fault of the
+    recording: ``@none`` is a child started with no test named, and the
+    empty context is a child whose coverage something other than the hook
+    started.
     """
 
     following = {"@before": order[0] if order else None}
@@ -367,7 +386,10 @@ def attribute(contexts: set[str], order: list[str]) -> tuple[set[str], set[str],
     imports: set[str] = set()
     strays: set[str] = set()
     for context in contexts:
-        if context in ("", "@load", "@end"):
+        if context in ("@load", "@end"):
+            continue
+        if not context:
+            strays.add("(no context)")
             continue
         if context.startswith("@import:"):
             imports.add(context.removeprefix("@import:"))
@@ -402,7 +424,7 @@ def record(work: Path, python: str, modules: list[str], pattern: str = "test_*.p
     shutil.rmtree(copy, ignore_errors=True)
     copy_package(copy)
     python_dir = copy / "python"
-    tmp = work / "record-tmp"
+    tmp = temp_root() / "record"
     rc, sidecar, pth = install_hook(work, modules)
     out = work / "record-run.json"
     timings = {}
@@ -709,7 +731,7 @@ def mutate_and_run(copies: Copies, work: Path, mutant: Mutant, timeout: float) -
             for stale in (copy / "python" / "kavach" / "__pycache__",):
                 shutil.rmtree(stale, ignore_errors=True)
             mutant.outcome, mutant.seconds, mutant.detail = run_tests(
-                copy, mutant.tests, timeout, work / "tmp" / f"w{index}"
+                copy, mutant.tests, timeout, temp_root() / f"w{index}"
             )
     finally:
         copies.give((index, copy))
@@ -718,7 +740,7 @@ def mutate_and_run(copies: Copies, work: Path, mutant: Mutant, timeout: float) -
 def baseline(copies: Copies, work: Path, names: list[str], timeout: float) -> tuple[str, float, str]:
     index, copy = copies.take()
     try:
-        return run_tests(copy, names, timeout, work / "tmp" / f"w{index}")
+        return run_tests(copy, names, timeout, temp_root() / f"w{index}")
     finally:
         copies.give((index, copy))
 
@@ -935,6 +957,9 @@ def main(argv: list[str]) -> int:
         verdict = run(args.base, args.work.resolve(), args.workers, args.pattern)
     except GateError as error:
         verdict = Verdict(faults=[str(error)])
+    finally:
+        for path in _TEMP:
+            shutil.rmtree(path, ignore_errors=True)
     text = report(verdict)
     (args.work / "report.md").write_text(text, encoding="utf-8")
     (args.work / "mutants.json").write_text(

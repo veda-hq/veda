@@ -159,7 +159,9 @@ the release rules (`.github/workflows/release.yml`,
 `.github/workflows/version-rule.yml`, `scripts/version-rule.mjs`,
 `README.md`), what the mutation gate judges (`agnipariksha.json`,
 `stryker/`, each package's `stryker.config.mjs`,
-`scripts/mutation-lanes.mjs`), the lint rules and their suppressions
+`scripts/mutation-lanes.mjs`), the kavach Python mutation gate's list of
+mutants no test can kill (`packages/kavach/python/mutation-equivalents.tsv`,
+veda#558), the lint rules and their suppressions
 (`eslint.config.js`, `eslint-suppressions.json`), and `.github/CODEOWNERS`
 itself; a change to any one of them alone waits too. Until he approves, it
 is open, not done. Every other path, the other workflows included, has no

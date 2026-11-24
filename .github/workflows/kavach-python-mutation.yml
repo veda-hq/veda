@@ -1,0 +1,126 @@
+name: kavach Python mutation
+
+# kavach's Python mutation gate (veda#558, under #238): cosmic-ray 8.9.0
+# mutates the lines a pull request adds or changes in
+# packages/kavach/python/kavach and fails on any mutant that is not killed,
+# unless packages/kavach/python/mutation-equivalents.tsv, which Alok owns,
+# lists it with the outcome it gets. scripts/kavach_mutation/gate.py does the
+# work; its docstring says how.
+#
+# No `paths:` filter, so the gate's check reports on every pull request, and
+# no `workflow_dispatch`, whose run would post the gate as skipped on the
+# pull request's head (docs/lessons/github-actions.md). The plan job is
+# cheap; the mutants job runs only when a module line or a list row changed.
+# Making "kavach Python mutation" a required check on main's ruleset is
+# Alok's step.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kavach-python-mutation-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  COSMIC_RAY: cosmic-ray==8.9.0
+  COVERAGE: coverage==7.17.4
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  # The pull request's checkout is its merge with the base, so HEAD^1 is the
+  # base it merges into and the diff's line numbers are the files' own.
+  plan:
+    name: kavach Python mutation plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      any: ${{ steps.plan.outputs.any }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Add coverage.py and cosmic-ray (this job only)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "$COVERAGE" "$COSMIC_RAY"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+      - name: The gate's own tests
+        run: python -B -m unittest discover -s scripts/kavach_mutation -t scripts/kavach_mutation
+      # Fails on a no-mutate pragma under packages/kavach/python/ and on a
+      # malformed or stale list, whatever the pull request changes.
+      - id: plan
+        name: Plan
+        run: python -B scripts/kavach_mutation/gate.py plan --base HEAD^1
+
+  mutants:
+    name: kavach Python mutants
+    needs: plan
+    if: ${{ needs.plan.outputs.any == 'true' }}
+    runs-on: ubuntu-latest
+    # The suite runs once under coverage, then each mutant runs only the
+    # tests recorded on its lines; a changed import-time line runs the test
+    # modules that import it.
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Add coverage.py and cosmic-ray (this job only)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "$COVERAGE" "$COSMIC_RAY"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          python --version >> "$GITHUB_STEP_SUMMARY"
+      - name: The caps hold
+        run: |
+          set -euo pipefail
+          # The 3 GB cap must stop a planted 8 GB allocation.
+          if python -B scripts/kavach_mutation/gate.py cap "$RUNNER_TEMP/cap.json" -- python -c "x = bytearray(8 * 2**30)"; then
+            echo "- The 3 GB cap did not stop an 8 GB allocation" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: cosmic-ray on the changed lines
+        timeout-minutes: 330
+        run: python -B scripts/kavach_mutation/gate.py run --base HEAD^1 --work "$RUNNER_TEMP/gate" --workers "$(nproc)"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: kavach-python-mutation
+          path: |
+            ${{ runner.temp }}/gate/report.md
+            ${{ runner.temp }}/gate/mutants.json
+            ${{ runner.temp }}/gate/record.log
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # Passes when the plan passed and, if it found work, the mutants job did.
+  gate:
+    name: kavach Python mutation
+    needs: [plan, mutants]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - env:
+          PLAN: ${{ needs.plan.result }}
+          ANY: ${{ needs.plan.outputs.any }}
+          MUTANTS: ${{ needs.mutants.result }}
+        run: |
+          set -euo pipefail
+          echo "plan: $PLAN, work: ${ANY:-unknown}, mutants job: $MUTANTS"
+          if [ "$PLAN" != success ]; then
+            echo "::error::the kavach Python mutation plan did not succeed ($PLAN)"
+            exit 1
+          fi
+          case "$ANY/$MUTANTS" in
+            true/success) echo "every mutant on a changed line was killed or got its listed outcome" ;;
+            false/skipped) echo "no kavach module line or list row changed" ;;
+            *) echo "::error::work: $ANY, mutants job: $MUTANTS"; exit 1 ;;
+          esac

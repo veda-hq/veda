@@ -12,6 +12,11 @@ reads the file, not an inherited variable: some tests build their child's
 environment when their module is imported, before any test runs. The name
 goes into ``MUTATION_TEST_CONTEXT``, which the coveragerc names as its static
 context, so the child's lines are recorded against that test.
+
+``COVERAGE_PROCESS_START`` is taken back out of the environment once
+coverage has started. Left there, it would reach the process's own children,
+and coverage.py's own .pth file, which runs before this one, would start
+their coverage under the context the environment held, not the sidecar's.
 """
 
 import json
@@ -19,9 +24,15 @@ import os
 
 RECORDER = "MUTATION_RECORDER"
 CONTEXT = "MUTATION_TEST_CONTEXT"
+_started: list[bool] = []
 
 
 def start(config: str) -> None:
+    # A site-packages folder reached by two paths (lib and lib64) runs the
+    # .pth file twice; only the first call counts.
+    if _started:
+        return
+    _started.append(True)
     # The recorder measures itself, switching its context at each test; its
     # own children must not see the marker, so it is removed here.
     if os.environ.pop(RECORDER, None) is not None:
@@ -35,6 +46,9 @@ def start(config: str) -> None:
         return
     os.environ[CONTEXT] = name or "@none"
     os.environ["COVERAGE_PROCESS_START"] = settings["rc"]
-    import coverage
+    try:
+        import coverage
 
-    coverage.process_startup()
+        coverage.process_startup()
+    finally:
+        os.environ.pop("COVERAGE_PROCESS_START", None)

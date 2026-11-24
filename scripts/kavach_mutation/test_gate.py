@@ -205,7 +205,7 @@ class Attribute(unittest.TestCase):
 
     def test_imports_loading_and_strays(self):
         tests, imports, strays = gate.attribute({"", "@load", "@end", "@import:tests.t", "@none"}, self.ORDER)
-        self.assertEqual((tests, imports, strays), (set(), {"tests.t"}, {"@none"}))
+        self.assertEqual((tests, imports, strays), (set(), {"tests.t"}, {"@none", "(no context)"}))
 
 
 class ModuleOf(unittest.TestCase):
@@ -327,59 +327,78 @@ class Cap(unittest.TestCase):
 
 
 class Hook(unittest.TestCase):
-    def test_the_recorder_is_skipped_and_its_marker_removed(self):
+    def setUp(self):
         saved = dict(os.environ)
-        try:
-            os.environ[hook.RECORDER] = "1"
-            os.environ.pop(hook.CONTEXT, None)
-            hook.start("/nonexistent/config.json")
-            self.assertNotIn(hook.RECORDER, os.environ)
-            self.assertNotIn(hook.CONTEXT, os.environ)
-        finally:
-            os.environ.clear()
-            os.environ.update(saved)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(saved)))
+        hook._started.clear()
+        self.addCleanup(hook._started.clear)
+
+    def test_the_recorder_is_skipped_and_its_marker_removed(self):
+        os.environ[hook.RECORDER] = "1"
+        os.environ.pop(hook.CONTEXT, None)
+        hook.start("/nonexistent/config.json")
+        self.assertNotIn(hook.RECORDER, os.environ)
+        self.assertNotIn(hook.CONTEXT, os.environ)
+
+    def test_only_the_first_call_counts(self):
+        os.environ[hook.RECORDER] = "1"
+        hook.start("/nonexistent/config.json")
+        os.environ[hook.RECORDER] = "1"
+        hook.start("/nonexistent/config.json")
+        self.assertEqual(os.environ.get(hook.RECORDER), "1")
 
     def test_a_missing_config_or_sidecar_starts_nothing(self):
-        saved = dict(os.environ)
-        try:
-            os.environ.pop(hook.RECORDER, None)
-            with tempfile.TemporaryDirectory() as folder:
-                config = Path(folder) / "c.json"
-                config.write_text(json.dumps({"sidecar": str(Path(folder) / "missing"), "rc": "x"}))
-                hook.start(str(config))
-                hook.start(str(Path(folder) / "absent.json"))
-            self.assertNotIn(hook.CONTEXT, os.environ)
-        finally:
-            os.environ.clear()
-            os.environ.update(saved)
+        os.environ.pop(hook.RECORDER, None)
+        with tempfile.TemporaryDirectory() as folder:
+            config = Path(folder) / "c.json"
+            config.write_text(json.dumps({"sidecar": str(Path(folder) / "missing"), "rc": "x"}))
+            hook.start(str(config))
+            hook._started.clear()
+            hook.start(str(Path(folder) / "absent.json"))
+        self.assertNotIn(hook.CONTEXT, os.environ)
 
-    def test_a_child_records_its_lines_against_the_sidecar_test(self):
+    def test_children_and_grandchildren_record_against_the_sidecar_test(self):
+        """Through the installed .pth, as the recording runs it: a child
+        handed a stale context and a bare environment, and its own child."""
+
         import coverage
 
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            data = root / "data"
-            data.mkdir()
-            sidecar = root / "side"
-            sidecar.write_text("tests.t.A.test_x")
-            rc = root / "rc"
-            rc.write_text(
-                f"[run]\nparallel = true\ndata_file = {data}/.coverage\ncontext = ${{MUTATION_TEST_CONTEXT}}\n"
-                "include =\n    */guardlike.py\n"
+            (root / "kavach").mkdir()
+            grand = root / "kavach" / "grandlike.py"
+            grand.write_text("import os\nprint(os.environ.get('COVERAGE_PROCESS_START'))\nz = 3\n")
+            child = root / "kavach" / "guardlike.py"
+            child.write_text(
+                "import os, subprocess, sys\n"
+                "print(os.environ.get('COVERAGE_PROCESS_START'))\n"
+                f"subprocess.run([sys.executable, {str(grand)!r}], check=True, env={{'MUTATION_TEST_CONTEXT': 'stale'}})\n"
             )
-            config = root / "c.json"
-            config.write_text(json.dumps({"sidecar": str(sidecar), "rc": str(rc)}))
-            (root / "guardlike.py").write_text("x = 1\nif x:\n    y = 2\n")
-            boot = f"import sys; sys.path.insert(0, {str(Path(hook.__file__).parent)!r}); import hook; hook.start({str(config)!r})\n"
-            program = boot + "import runpy; runpy.run_path(" + repr(str(root / "guardlike.py")) + ")\n"
-            subprocess.run([sys.executable, "-B", "-c", program], check=True, env={"PATH": os.environ.get("PATH", "")})
-            cov = coverage.Coverage(data_file=str(data / ".coverage"), config_file=False)
-            cov.combine([str(data)], strict=True)
+            rc, sidecar, pth = gate.install_hook(root, ["guardlike", "grandlike"])
+            try:
+                sidecar.write_text("tests.t.A.test_x")
+                done = subprocess.run(
+                    [sys.executable, "-B", str(child)],
+                    env={"PATH": os.environ.get("PATH", ""), "MUTATION_TEST_CONTEXT": "stale"},
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+            finally:
+                gate.remove_hook(pth)
+            self.assertEqual(done.stdout.split(), ["None", "None"])
+            cov = coverage.Coverage(data_file=str(root / "coverage" / ".coverage"), config_file=False)
+            cov.combine([str(root / "coverage")], strict=True)
             measured = cov.get_data()
-            (path,) = [p for p in measured.measured_files() if p.endswith("guardlike.py")]
-            contexts = measured.contexts_by_lineno(path)
-        self.assertEqual(sorted(contexts), [1, 2, 3])
-        self.assertEqual(contexts[3], ["tests.t.A.test_x"])
+            found = {
+                Path(p).name: measured.contexts_by_lineno(p)
+                for p in measured.measured_files()
+                if p.endswith(("guardlike.py", "grandlike.py"))
+            }
+        self.assertEqual(sorted(found), ["grandlike.py", "guardlike.py"])
+        for name, contexts in found.items():
+            self.assertEqual({c for cs in contexts.values() for c in cs}, {"tests.t.A.test_x"}, name)
+        self.assertFalse(pth.exists())
 
 
 if __name__ == "__main__":

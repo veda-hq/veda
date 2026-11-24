@@ -23,6 +23,14 @@
 /packages/*/stryker.config.mjs      @AlokBansal8
 /scripts/mutation-lanes.mjs         @AlokBansal8
 
+# The kavach Python mutation gate's list of mutants no test can kill, each
+# with the outcome it gets (veda#558). A row lets a mutant on a changed line
+# pass, so adding one waits for the owner's review. The gate's workflow,
+# .github/workflows/kavach-python-mutation.yml, and its script,
+# scripts/kavach_mutation/, are not here: niyam's Guard judges the workflow
+# against the approved slice, and the slice names only the list.
+/packages/kavach/python/mutation-equivalents.tsv @AlokBansal8
+
 # What veda's lint enforces and what it forgives: the rules, and the findings
 # suppressed when they were turned on. Turning a rule off or adding a
 # suppression waits for the owner's review too.

@@ -318,9 +318,9 @@ const heredocsOpenedBy = (code: string): PendingHeredoc[] => {
 
 /** The quoting a line leaves open at its end (it starts outside any quote). */
 const openQuoteAfter = (line: string): QuoteStack => {
-  const { stack } = scanQuotes(line, OUTSIDE_QUOTES, false);
-  // Only a quote holds the logical line open; a bare `$(` is not tracked.
-  return stack[0] === '"' || stack[0] === "'" ? stack : [];
+  // Only a quote holds the logical line open. scanQuotes tracks a `$(` or
+  // `(` only inside a quote, so whatever it leaves open starts with one.
+  return scanQuotes(line, OUTSIDE_QUOTES, false).stack;
 };
 
 /**
@@ -359,7 +359,7 @@ export const codeLines = (text: string): CodeLine[] => {
   const openedHeredocs: PendingHeredoc[] = [];
   let continued: CodeLine | null = null;
   // The quoting an earlier physical line left open; empty when none.
-  let openQuote: QuoteStack = [];
+  let openQuote: QuoteStack = OUTSIDE_QUOTES;
   // Heredoc bodies start after the next newline the shell reads as a token:
   // not one inside a string (`cat <<EOF; echo "a` + `b"` puts the body after
   // `b"`), and not a backslash-newline it removes (`cat <<'EOF' \` +
@@ -402,8 +402,9 @@ export const codeLines = (text: string): CodeLine[] => {
       }
       continue;
     }
-    // A quote left open is always on a logical line still being built.
-    if (openQuote.length > 0 && continued !== null) {
+    if (openQuote.length > 0) {
+      // A quote left open is always on a logical line still being built.
+      const building = continued as CodeLine;
       // Inside a string that began on an earlier line: its text joins that
       // logical line verbatim (no comment stripping, no heredoc openers).
       // The whole nesting carries over, so in `"$(printf "%s` the next
@@ -414,8 +415,8 @@ export const codeLines = (text: string): CodeLine[] => {
       // In double quotes or a substitution a backslash-newline is still
       // removed: `"$(no\` + `de x)"` runs node. In single quotes both stay.
       continued = {
-        line: continued.line,
-        code: openQuote.at(-1) !== "'" && CONTINUATION.test(continued.code) ? `${continued.code.slice(0, -1)}${inside}` : `${continued.code}\n${inside}`,
+        line: building.line,
+        code: openQuote.at(-1) !== "'" && CONTINUATION.test(building.code) ? `${building.code.slice(0, -1)}${inside}` : `${building.code}\n${inside}`,
       };
       if (scan.close === -1) {
         openQuote = scan.stack;
@@ -437,7 +438,7 @@ export const codeLines = (text: string): CodeLine[] => {
       }
       continue;
     }
-    if (continued === null && /^\s*#/.test(raw)) continue;
+    // A comment-only line strips to nothing, so it opens nothing and is no line.
     const withoutComment = stripComment(raw);
     openQuote = openQuoteAfter(withoutComment);
     openedHeredocs.push(...heredocsOpenedBy(withoutComment));
@@ -575,7 +576,8 @@ export const commandPositions = (code: string, command: string): number[] => {
     const rest = CASE_LABEL_REST.exec(masked.slice(end));
     if (rest !== null && labels.has(end + rest[0].length - 1)) continue;
     // Past a closing quote the blanking removed, so callers read the args.
-    out.push(unquoted[end] === ' ' && /["']/.test(code.charAt(end)) ? end + 1 : end);
+    // A quote here was blanked: the match needs a blank or an operator after the word.
+    out.push(/["']/.test(code.charAt(end)) ? end + 1 : end);
   }
   return out;
 };

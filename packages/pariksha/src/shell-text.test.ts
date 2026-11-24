@@ -192,6 +192,7 @@ describe('words', () => {
     ['echo ${a} b', ['echo', '${a}', 'b']],
     ['echo {a b}', ['echo', '{a', 'b}']],
     ['echo $(a (b) c) d', ['echo', '$(a (b) c)', 'd']],
+    ['echo $(a|b) c', ['echo', '$(a|b)', 'c']],
     ['a b|c', ['a', 'b']],
     ['a b;c', ['a', 'b']],
     ['a b&c', ['a', 'b']],
@@ -246,6 +247,19 @@ describe('codeLines', () => {
 
   it('continues code after a closing quote that ends in a backslash', () => {
     assert.deepEqual(codeLines('echo "a\nb" \\\nnode'), [{ line: 1, code: 'echo "a\nb" node' }]);
+    assert.deepEqual(codeLines('echo "a\nb" c \\\nnode'), [{ line: 1, code: 'echo "a\nb" c node' }]);
+  });
+
+  it('removes a backslash-newline inside a string that opens after a closing quote', () => {
+    assert.deepEqual(codeLines('echo "a\nb" "c \\\nd"'), [{ line: 1, code: 'echo "a\nb" "c d"' }]);
+  });
+
+  it('drops a line of blanks, and a continuation that ends in blanks', () => {
+    assert.deepEqual(codeLines('a\n   \nb'), [
+      { line: 1, code: 'a' },
+      { line: 3, code: 'b' },
+    ]);
+    assert.deepEqual(codeLines('x\n  \\'), [{ line: 1, code: 'x' }]);
   });
 
   it('strips a comment line inside a continuation, as bash does', () => {
@@ -430,6 +444,32 @@ describe('codeLines', () => {
       ]);
     });
 
+    it('strips every leading tab for <<-, and only leading ones', () => {
+      assert.deepEqual(codeLines('cat <<-EOF\n\t\tEOF\nnode'), [
+        { line: 1, code: 'cat <<-EOF' },
+        { line: 3, code: 'node' },
+      ]);
+      assert.deepEqual(codeLines('cat <<-EOF\nE\tOF\nnode\nEOF\nnpm'), [
+        { line: 1, code: 'cat <<-EOF' },
+        { line: 5, code: 'npm' },
+      ]);
+    });
+
+    it('judges a substitution still open at the delimiter where the body ends', () => {
+      assert.deepEqual(codeLines('cat <<EOF\n$(node\nEOF\nnpm'), [
+        { line: 1, code: 'cat <<EOF' },
+        { line: 2, code: '$(node' },
+        { line: 4, code: 'npm' },
+      ]);
+    });
+
+    it('runs no substitution in a quoted heredoc body', () => {
+      assert.deepEqual(codeLines("cat <<'EOF'\n$(node x)\nEOF\nnpm"), [
+        { line: 1, code: "cat <<'EOF'" },
+        { line: 4, code: 'npm' },
+      ]);
+    });
+
     it('strips leading tabs only for <<-', () => {
       assert.deepEqual(codeLines('cat <<EOF\n\tEOF\nEOF\nnode'), [
         { line: 1, code: 'cat <<EOF' },
@@ -479,6 +519,19 @@ describe('commandPositions', () => {
     ['X=1 node a', 'node', [8]],
     ['>/dev/null node a', 'node', [15]],
     ['x=`node a`', 'node', [7]],
+    // A ) that closes no paren starts a command; one that closes a subshell does not.
+    ['(a) b) node', 'node', [11]],
+    ['x=$(case $y in a) node;; esac)', 'node', [22]],
+    // The first word of a pattern list, whatever the spacing, is a label.
+    ['case $x in node | npm) a ;; esac', 'node', []],
+    ['case $x in node|npm) a ;; esac', 'node', []],
+    ['case $x in node ) a ;; esac', 'node', []],
+    // Only a label right after the word makes it one.
+    ['node; a) |b)', 'node', [4]],
+    // A quoted command word after a separator, at the end, or before an operator.
+    ['a; "node" x', 'node', [9]],
+    ['a; "node"', 'node', [9]],
+    ['"node"; x', 'node', [6]],
   ];
   for (const [code, command, ends] of cases) {
     it(`finds ${JSON.stringify(code)} running ${command} at ${JSON.stringify(ends)}`, () => {

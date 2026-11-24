@@ -131,27 +131,30 @@ function key(pr: string): string {
   return pr.toLowerCase();
 }
 
+/** owner/repo#N and its URL, from one match of PR_URL. */
+function prOf([whole, , owner, repo, number]: RegExpExecArray): { pr: string; url: string } {
+  return { pr: `${owner}/${repo}#${number}`, url: whole };
+}
+
 /** owner/repo#N and its URL, from a PR URL. */
 export function fromUrl(url: string): { pr: string; url: string } | undefined {
   const match = new RegExp(PR_URL.source).exec(url);
-  if (match === null) return undefined;
-  const [whole, , owner, repo, number] = match;
-  return { pr: `${owner}/${repo}#${number}`, url: whole };
+  return match === null ? undefined : prOf(match);
 }
 
 /** Every distinct PR a text names by URL, in order. */
 export function prUrls(text: string): Array<{ pr: string; url: string }> {
   const found = new Map<string, { pr: string; url: string }>();
   for (const match of text.matchAll(PR_URL)) {
-    const parsed = fromUrl(match[0]);
-    if (parsed !== undefined && !found.has(key(parsed.pr))) found.set(key(parsed.pr), parsed);
+    const parsed = prOf(match);
+    if (!found.has(key(parsed.pr))) found.set(key(parsed.pr), parsed);
   }
   return [...found.values()];
 }
 
-/** Does this shell command run `gh pr create`? */
-export function runsPrCreate(command: string): boolean {
-  return PR_CREATE.test(command);
+/** Does this shell command run `gh pr create`? Anything but a string runs nothing. */
+export function runsPrCreate(command: unknown): boolean {
+  return typeof command === 'string' && PR_CREATE.test(command);
 }
 
 /** The text of a tool's answer: a string, MCP text blocks, or an object holding them. */
@@ -175,12 +178,11 @@ export function readRows(file: string): Row[] {
   }
   const rows: Row[] = [];
   for (const line of text.split('\n')) {
-    if (line.trim() === '') continue;
     try {
       const row: unknown = JSON.parse(line);
       if (isRecord(row) && typeof row.pr === 'string' && typeof row.event === 'string') rows.push(row as unknown as Row);
     } catch {
-      // fail-open: a partial line from a short append is skipped
+      // fail-open: a blank line, which JSON.parse refuses too, or a partial line from a short append is skipped
     }
   }
   return rows;
@@ -195,8 +197,8 @@ export function fold(rows: readonly Row[]): Pr[] {
     const url = known?.url !== undefined && known.url !== '' ? known.url : (row.url ?? '');
     if (row.event === 'warned') continue;
     if (row.event === 'opened') {
-      if (known === undefined) prs.set(id, { pr: row.pr, url, state: 'opened' });
-      else if (known.url === '' && url !== '') prs.set(id, { ...known, url });
+      // A second `opened` changes only a URL the PR did not have yet: `url` above keeps one it had.
+      prs.set(id, known === undefined ? { pr: row.pr, url, state: 'opened' } : { ...known, url });
       continue;
     }
     const next: Pr = { pr: known?.pr ?? row.pr, url, state: row.event };
@@ -212,13 +214,18 @@ export function appendRows(file: string, rows: readonly Row[]): void {
   appendFileSync(file, `\n${rows.map(row => JSON.stringify(row)).join('\n')}\n`);
 }
 
-/** For another hook: put a PR it opened on a session's list. Returns false when nothing could be added. */
-export function addOpened(url: string, session: string, source: string, deps: Deps): boolean {
+/** Puts the PR at `url` on the list in `file`: its owner/repo#N, or undefined when `url` names none. */
+function putOpened(file: string, url: string, source: string, clock: Pick<Deps, 'now'>): string | undefined {
   const parsed = fromUrl(url);
+  if (parsed === undefined) return undefined;
+  appendRows(file, [{ at: clock.now().toISOString(), ...parsed, event: 'opened', source }]);
+  return parsed.pr;
+}
+
+/** For another hook: put a PR it opened on a session's list. Returns false when nothing could be added. */
+export function addOpened(url: string, session: unknown, source: string, deps: Deps): boolean {
   const file = listFile(session, deps.env);
-  if (parsed === undefined || file === undefined) return false;
-  appendRows(file, [{ at: deps.now().toISOString(), ...parsed, event: 'opened', source }]);
-  return true;
+  return file !== undefined && putOpened(file, url, source, deps) !== undefined;
 }
 
 interface HookEvent {
@@ -242,8 +249,7 @@ function urlFor(pr: string, input: unknown): string {
 }
 
 function bashFacts(event: HookEvent): Fact[] {
-  const command = isRecord(event.tool_input) && typeof event.tool_input.command === 'string' ? event.tool_input.command : '';
-  if (!runsPrCreate(command)) return [];
+  if (!runsPrCreate(isRecord(event.tool_input) ? event.tool_input.command : undefined)) return [];
   return prUrls(textOf(event.tool_response)).map(found => ({ ...found, event: 'opened', source: 'gh pr create' }));
 }
 
@@ -260,12 +266,18 @@ function setMonitorFacts(text: string, input: unknown): Fact[] {
     if (match === null) continue;
     const pr = `${match[1]}#${match[2]}`;
     const fact: Fact = { pr, url: urlFor(pr, input), event: state, source: SET_MONITOR };
-    return [state === 'refused' ? { ...fact, reason: (match[3] ?? '').trim() } : fact];
+    // Every refusal pattern's third group takes part in any match it makes, if only as ''.
+    return [state === 'refused' ? { ...fact, reason: (match[3] as string).trim() } : fact];
   }
   return [];
 }
 
 const ENDED = new Set(['merged', 'closed']);
+
+/** Does a status's `state` say the PR merged or closed, in any case? */
+function ended(state: unknown): boolean {
+  return typeof state === 'string' && ENDED.has(state.toLowerCase());
+}
 
 function getStatusFacts(text: string, input: unknown): Fact[] {
   // Only this session's status says anything about this session's list.
@@ -274,8 +286,7 @@ function getStatusFacts(text: string, input: unknown): Fact[] {
   try {
     status = JSON.parse(text);
   } catch {
-    // fail-open: a status that is not JSON says nothing about the list
-    return [];
+    // fail-open: a status that is not JSON says nothing about the list; status stays undefined, which the next line refuses
   }
   if (!isRecord(status)) return [];
   const facts: Fact[] = [];
@@ -284,20 +295,19 @@ function getStatusFacts(text: string, input: unknown): Fact[] {
     const parsed = fromUrl(primary.url);
     const monitor = status.monitor;
     if (parsed !== undefined) {
-      const state = typeof primary.state === 'string' ? primary.state.toLowerCase() : '';
-      if (ENDED.has(state)) facts.push({ ...parsed, event: 'closed', source: GET_STATUS });
+      if (ended(primary.state)) facts.push({ ...parsed, event: 'closed', source: GET_STATUS });
       else if (isRecord(monitor) && typeof monitor.auto_fix === 'boolean') {
         facts.push({ ...parsed, event: monitor.auto_fix ? 'on' : 'off', source: GET_STATUS });
       }
     }
   }
-  const others = Array.isArray(status.otherBoundPrs) ? status.otherBoundPrs : [];
-  for (const other of others) {
-    if (!isRecord(other) || typeof other.repo !== 'string' || typeof other.number !== 'number') continue;
-    const state = typeof other.state === 'string' ? other.state.toLowerCase() : '';
-    if (!ENDED.has(state)) continue;
-    const pr = `${other.repo}#${other.number}`;
-    facts.push({ pr, url: urlFor(pr, undefined), event: 'closed', source: GET_STATUS });
+  const others = status.otherBoundPrs;
+  if (Array.isArray(others)) {
+    for (const other of others) {
+      if (!isRecord(other) || typeof other.repo !== 'string' || typeof other.number !== 'number' || !ended(other.state)) continue;
+      const pr = `${other.repo}#${other.number}`;
+      facts.push({ pr, url: urlFor(pr, undefined), event: 'closed', source: GET_STATUS });
+    }
   }
   return facts;
 }
@@ -321,7 +331,7 @@ export function factsOf(event: HookEvent): Fact[] {
  * adds nothing. A state the PR already has adds nothing either.
  */
 export function news(facts: readonly Fact[], list: readonly Pr[]): Fact[] {
-  const known = new Map(list.map(pr => [key(pr.pr), pr]));
+  const known = new Map<string, { readonly state: State; readonly reason?: string | undefined }>(list.map(pr => [key(pr.pr), pr]));
   const kept: Fact[] = [];
   for (const fact of facts) {
     const pr = known.get(key(fact.pr));
@@ -335,12 +345,8 @@ export function news(facts: readonly Fact[], list: readonly Pr[]): Fact[] {
             : pr === undefined || pr.state !== fact.event || pr.reason !== fact.reason;
     if (!changes) continue;
     kept.push(fact);
-    known.set(key(fact.pr), {
-      pr: fact.pr,
-      url: fact.url,
-      state: fact.event,
-      ...(fact.reason === undefined ? {} : { reason: fact.reason }),
-    });
+    // Only a PR's state and reason decide what changes it; a reason left undefined compares as one never given.
+    known.set(key(fact.pr), { state: fact.event, reason: fact.reason });
   }
   return kept;
 }
@@ -351,7 +357,8 @@ export function news(facts: readonly Fact[], list: readonly Pr[]): Fact[] {
  * addedNames) or a call to it count; a mention in text does not.
  */
 export function hasSetMonitor(path: unknown): boolean {
-  if (typeof path !== 'string' || path === '') return false;
+  // A number would name an open file descriptor; '' names no file, and the read below fails on it.
+  if (typeof path !== 'string') return false;
   let text: string;
   try {
     text = readFileSync(path, 'utf8');
@@ -365,16 +372,13 @@ export function hasSetMonitor(path: unknown): boolean {
     try {
       entry = JSON.parse(line);
     } catch {
-      // fail-open: a line that is not JSON shows nothing
-      continue;
+      // fail-open: a line that is not JSON shows nothing; entry stays undefined, which the next line skips
     }
     if (!isRecord(entry)) continue;
     const record = entry.attachment;
     if (isRecord(record)) {
-      const entries = Array.isArray(record.entries) ? record.entries : [];
-      if (entries.some(item => isRecord(item) && item.name === SET_MONITOR)) return true;
-      const added = Array.isArray(record.addedNames) ? record.addedNames : [];
-      if (added.includes(SET_MONITOR)) return true;
+      if (Array.isArray(record.entries) && record.entries.some(item => isRecord(item) && item.name === SET_MONITOR)) return true;
+      if (Array.isArray(record.addedNames) && record.addedNames.includes(SET_MONITOR)) return true;
     }
     const content = isRecord(entry.message) ? entry.message.content : undefined;
     if (Array.isArray(content) && content.some(item => isRecord(item) && item.type === 'tool_use' && item.name === SET_MONITOR)) {
@@ -391,9 +395,9 @@ export function callFor(pr: Pr): string {
 
 /**
  * The warning for the PRs still waiting, or '' for none. `opened`: the Bash
- * call that just recorded them; `wrap_up`: the turn's wrap-up.
+ * call that just recorded them; `wrap_up`, the default: the turn's wrap-up.
  */
-export function warning(waiting: readonly Pr[], when: 'opened' | 'wrap_up' = 'wrap_up'): string {
+export function warning(waiting: readonly Pr[], when?: 'opened' | 'wrap_up'): string {
   if (waiting.length === 0) return '';
   const lines = waiting.map(pr => `- ${pr.pr}${pr.state === 'off' ? ' (switched off)' : ''}: ${callFor(pr)}`);
   const what = waiting.length === 1 ? 'a pull request' : `${waiting.length} pull requests`;
@@ -434,7 +438,7 @@ function isWaiting(pr: Pr): boolean {
 function warn(waiting: readonly Pr[], when: 'opened' | 'wrap_up', event: HookEvent, file: string, deps: Deps): string {
   if (waiting.length === 0 || !canCall(event, deps)) return '';
   const at = deps.now().toISOString();
-  const source = when === 'opened' ? 'gh pr create' : WRAP_UP;
+  const source = when === 'wrap_up' ? WRAP_UP : 'gh pr create';
   try {
     appendRows(
       file,
@@ -446,9 +450,10 @@ function warn(waiting: readonly Pr[], when: 'opened' | 'wrap_up', event: HookEve
   return toModel(warning(waiting, when));
 }
 
-function runsInBackground(event: HookEvent): boolean {
+/** Does this Bash event run `gh pr create` with `run_in_background: true`? */
+export function runsInBackground(event: HookEvent): boolean {
   const input = event.tool_input;
-  return isRecord(input) && input.run_in_background === true && typeof input.command === 'string' && runsPrCreate(input.command);
+  return isRecord(input) && input.run_in_background === true && runsPrCreate(input.command);
 }
 
 /** The most of one event `keepRaw` keeps. */
@@ -461,7 +466,7 @@ const RAW_LIMIT = 16_384;
  * read from, so far known only from transcripts. Rare and small; Bash events
  * are not kept.
  */
-function keepRaw(event: HookEvent, file: string, deps: Deps): void {
+export function keepRaw(event: HookEvent, file: string, deps: Deps): void {
   if (typeof event.tool_name !== 'string' || !event.tool_name.startsWith('mcp__ccd_pr__')) return;
   const text = JSON.stringify(event);
   const row = { at: deps.now().toISOString(), event: text.length > RAW_LIMIT ? `${text.slice(0, RAW_LIMIT)}…` : event };
@@ -476,9 +481,8 @@ function keepRaw(event: HookEvent, file: string, deps: Deps): void {
 /** The hook's whole answer for one raw stdin: the JSON to print, or '' for none. Never throws. */
 export function respond(raw: string, deps: Deps): string {
   try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!isRecord(parsed)) return '';
-    const event = parsed as HookEvent;
+    // JSON null throws at its first field read, into the catch below; any other value that is no object has no session id.
+    const event = JSON.parse(raw) as HookEvent;
     const file = listFile(event.session_id, deps.env);
     if (file === undefined) return '';
     if (event.hook_event_name !== 'PostToolUse' && event.hook_event_name !== 'PostToolUseFailure') return '';
@@ -494,7 +498,8 @@ export function respond(raw: string, deps: Deps): string {
       file,
       fresh.map(fact => ({ at, ...fact })),
     );
-    if (!post || event.tool_name !== 'Bash') return '';
+    // Bash gives facts only on PostToolUse (factsOf), so a Bash event here is one.
+    if (event.tool_name !== 'Bash') return '';
     const named = new Set(facts.map(fact => key(fact.pr)));
     return warn(
       fold(readRows(file)).filter(pr => named.has(key(pr.pr)) && isWaiting(pr)),
@@ -529,16 +534,16 @@ export function autofixCommand(args: readonly string[], io: CliIo): number {
   const [verb, ...rest] = args;
   const flags = new Map<string, string>();
   const positional: string[] = [];
-  for (let index = 0; index < rest.length; index += 1) {
-    const arg = rest[index] ?? '';
+  // One iterator for the loop and the flag values it takes, so a value is never read as an argument.
+  const queue = rest.values();
+  for (const arg of queue) {
     if (arg === '--session' || arg === '--source') {
-      const value = rest[index + 1];
+      const value = queue.next().value;
       if (value === undefined || value === '') {
         io.err(`sarathi autofix: ${arg} needs a value\n${AUTOFIX_USAGE}`);
         return 1;
       }
       flags.set(arg, value);
-      index += 1;
     } else if (arg.startsWith('--')) {
       io.err(`sarathi autofix: unknown option ${arg}\n${AUTOFIX_USAGE}`);
       return 1;
@@ -546,19 +551,21 @@ export function autofixCommand(args: readonly string[], io: CliIo): number {
       positional.push(arg);
     }
   }
-  const session = flags.get('--session') ?? io.env.CLAUDE_CODE_SESSION_ID ?? '';
+  // No session at all names no file, as an unusable one does.
+  const session = flags.get('--session') ?? io.env.CLAUDE_CODE_SESSION_ID;
   const file = listFile(session, io.env);
   if (file === undefined) {
     io.err(`sarathi autofix: no usable session id (pass --session, or run inside a Claude Code session)\n`);
     return 1;
   }
-  if (verb === 'add' && positional.length === 1) {
-    const url = positional[0] ?? '';
-    if (!addOpened(url, session, flags.get('--source') ?? 'sarathi autofix add', io)) {
+  const [url, ...more] = positional;
+  if (verb === 'add' && url !== undefined && more.length === 0) {
+    const pr = putOpened(file, url, flags.get('--source') ?? 'sarathi autofix add', io);
+    if (pr === undefined) {
       io.err(`sarathi autofix: ${url} is not a pull request URL (https://<host>/<owner>/<repo>/pull/<N>)\n`);
       return 1;
     }
-    io.out(`sarathi autofix: ${fromUrl(url)?.pr} is on session ${session}'s list (${file})\n`);
+    io.out(`sarathi autofix: ${pr} is on session ${session}'s list (${file})\n`);
     return 0;
   }
   if (verb === 'list' && positional.length === 0) {
@@ -569,12 +576,23 @@ export function autofixCommand(args: readonly string[], io: CliIo): number {
   return 1;
 }
 
-async function main(): Promise<void> {
+/**
+ * The hook, when `script` (the path node was given) is this module at
+ * `moduleUrl`: answers the event read from `stdin` through `write`.
+ * Imported, it does nothing.
+ */
+export async function start(
+  script: string | undefined,
+  moduleUrl: string,
+  stdin: AsyncIterable<unknown> | Iterable<unknown>,
+  write: (text: string) => void,
+  deps: Deps = { env: process.env, now: () => new Date() },
+): Promise<void> {
+  // An empty path is the working folder, never this file.
+  if (script === undefined || realpathSync(script) !== fileURLToPath(moduleUrl)) return;
   let raw = '';
-  for await (const chunk of process.stdin) raw += String(chunk);
-  process.stdout.write(respond(raw, { env: process.env, now: () => new Date() }));
+  for await (const chunk of stdin) raw += String(chunk);
+  write(respond(raw, deps));
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  void main();
-}
+void start(process.argv[1], import.meta.url, process.stdin, text => process.stdout.write(text));

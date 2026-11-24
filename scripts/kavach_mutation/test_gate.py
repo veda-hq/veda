@@ -196,12 +196,19 @@ class StatementsMap(unittest.TestCase):
 class Attribute(unittest.TestCase):
     ORDER = ["tests.t.A.test_1", "tests.t.B.test_2"]
 
-    def test_fixtures_between_tests_go_to_the_next_test(self):
-        tests, imports, strays = gate.attribute(
-            {"@before", "@after:tests.t.A.test_1", "@after:tests.t.B.test_2", "tests.t.A.test_1"}, self.ORDER
-        )
-        self.assertEqual(tests, {"tests.t.A.test_1", "tests.t.B.test_2"})
-        self.assertEqual((imports, strays), (set(), set()))
+    def test_fixtures_between_tests_go_to_the_tests_either_side(self):
+        """Teardown of a test's class runs after it; setup of the next test's before that test."""
+
+        cases = {
+            "@before": {"tests.t.A.test_1"},
+            "@after:tests.t.A.test_1": {"tests.t.A.test_1", "tests.t.B.test_2"},
+            # The last class's and module's teardown: no next test, so the last one.
+            "@after:tests.t.B.test_2": {"tests.t.B.test_2"},
+            "tests.t.A.test_1": {"tests.t.A.test_1"},
+        }
+        for context, expected in cases.items():
+            with self.subTest(context=context):
+                self.assertEqual(gate.attribute({context}, self.ORDER), (expected, set(), set()))
 
     def test_imports_loading_and_strays(self):
         tests, imports, strays = gate.attribute({"", "@load", "@end", "@import:tests.t", "@none"}, self.ORDER)
@@ -309,7 +316,11 @@ class Cap(unittest.TestCase):
                  sys.executable, "-c", "x = bytearray(8 * 2**30)"],
                 capture_output=True, text=True,
             )
+            # The cap stopped it, not the host: both limits applied, and the
+            # allocation itself failed.
+            self.assertEqual(json.loads(report.read_text())["caps"], 2)
             self.assertNotEqual(done.returncode, 0)
+            self.assertIn("MemoryError", done.stderr)
             self.assertEqual(gate.classify(False, done.returncode, done.stderr, 0, False), "capped")
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "the runner's file cap is checked on Linux")
@@ -322,14 +333,33 @@ class Cap(unittest.TestCase):
                 [sys.executable, "-B", str(Path(gate.__file__)), "cap", str(report), "--", sys.executable, "-c", program],
                 capture_output=True, text=True,
             )
+            self.assertEqual(json.loads(report.read_text())["caps"], 2)
+            # The write stopped at the cap and the writer failed.
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("File too large", done.stderr)
+            self.assertLessEqual(target.stat().st_size, gate.FILE_CAP)
+            self.assertGreaterEqual(target.stat().st_size, gate.FILE_CAP - 2**20)
             big = gate.largest_file(Path(folder)) >= gate.FILE_CAP - 2**20
             self.assertEqual(gate.classify(False, done.returncode, done.stderr, 0, big), "capped")
+
+    def test_a_run_whose_caps_did_not_hold_is_an_error(self):
+        with tempfile.TemporaryDirectory() as folder:
+            copy = RunTests.copy_with(Path(folder), "        pass\n")
+            saved = gate.CAPS_REQUIRED
+            gate.CAPS_REQUIRED = 3  # more than the wrapper can apply
+            try:
+                outcome, _, detail = gate.run_tests(copy, ["tests.test_x.X.test_x"], 60, Path(folder) / "tmp")
+            finally:
+                gate.CAPS_REQUIRED = saved
+        self.assertEqual(outcome, "error")
+        self.assertIn("caps were applied", detail)
 
 
 class RunTests(unittest.TestCase):
     """One real, capped run of named tests in a copy, as each mutant gets."""
 
-    def copy_with(self, folder: Path, body: str) -> Path:
+    @staticmethod
+    def copy_with(folder: Path, body: str) -> Path:
         copy = folder / "kavach"
         (copy / "python" / "tests").mkdir(parents=True)
         (copy / "python" / "tests" / "__init__.py").write_text("")

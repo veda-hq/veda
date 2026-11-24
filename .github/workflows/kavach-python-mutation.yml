@@ -81,11 +81,16 @@ jobs:
       - name: The caps hold
         run: |
           set -euo pipefail
-          # The 3 GB cap must stop a planted 8 GB allocation.
-          if python -B scripts/kavach_mutation/gate.py cap "$RUNNER_TEMP/cap.json" -- python -c "x = bytearray(8 * 2**30)"; then
+          # The 3 GB cap must stop a planted 8 GB allocation: the wrapper
+          # applied both caps, and the allocation failed with MemoryError,
+          # not some other way.
+          if python -B scripts/kavach_mutation/gate.py cap "$RUNNER_TEMP/cap.json" -- python -c "x = bytearray(8 * 2**30)" 2> "$RUNNER_TEMP/cap.err"; then
             echo "- The 3 GB cap did not stop an 8 GB allocation" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
+          cat "$RUNNER_TEMP/cap.err"
+          grep -q MemoryError "$RUNNER_TEMP/cap.err"
+          python -c 'import json, sys; sys.exit(json.load(open(sys.argv[1]))["caps"] != 2)' "$RUNNER_TEMP/cap.json"
       - name: cosmic-ray on the changed lines
         timeout-minutes: 330
         run: python -B scripts/kavach_mutation/gate.py run --base HEAD^1 --work "$RUNNER_TEMP/gate" --workers "$(nproc)"

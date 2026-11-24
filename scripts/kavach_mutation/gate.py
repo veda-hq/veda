@@ -59,6 +59,9 @@ FILE_CAP = 1_000_000 * 1024
 # that sees its child die of it fails as if it had caught the mutant.
 NEAR_MEMORY_CAP = 2 * 1024**3
 CAP_SIGNS = ("MemoryError", "File too large", "[Errno 27]")
+# Both caps must hold on Linux, where CI runs; macOS refuses RLIMIT_AS, so a
+# local run there goes uncapped.
+CAPS_REQUIRED = 2 if sys.platform.startswith("linux") else 0
 
 
 def say(text: str) -> None:
@@ -378,9 +381,11 @@ def record_tests(rc: str, sidecar: str, out: str, pattern: str = "test_*.py") ->
 def attribute(contexts: set[str], order: list[str]) -> tuple[set[str], set[str], set[str]]:
     """The tests and test modules recorded on a line, and any context that names neither.
 
-    ``@after:X`` and ``@before`` cover what runs between tests: class and
-    module fixtures, which run before the next test starts, so they go to
-    that test. ``@import:M`` is test module M's import, in a fresh process.
+    ``@after:X`` and ``@before`` cover what runs between tests: X's class
+    and module teardown, and the next test's class and module setup. So
+    ``@after:X`` goes to X and to the test after it, if any, and ``@before``
+    to the first test. ``@import:M`` is test module M's import, in a fresh
+    process.
     ``@load`` and ``@end`` are the recorder's loading and finishing, already
     covered by the imports. Anything else is a stray, a fault of the
     recording: ``@none`` is a child started with no test named, and the
@@ -388,9 +393,9 @@ def attribute(contexts: set[str], order: list[str]) -> tuple[set[str], set[str],
     started.
     """
 
-    following = {"@before": order[0] if order else None}
+    following: dict[str, list[str]] = {"@before": order[:1]}
     for index, name in enumerate(order):
-        following["@after:" + name] = order[index + 1] if index + 1 < len(order) else None
+        following["@after:" + name] = order[index : index + 2]
     tests: set[str] = set()
     imports: set[str] = set()
     strays: set[str] = set()
@@ -403,8 +408,7 @@ def attribute(contexts: set[str], order: list[str]) -> tuple[set[str], set[str],
         if context.startswith("@import:"):
             imports.add(context.removeprefix("@import:"))
         elif context in following:
-            if following[context] is not None:
-                tests.add(following[context])
+            tests.update(following[context])
         elif context.startswith("@"):
             strays.add(context)
         else:
@@ -703,6 +707,11 @@ def run_tests(copy: Path, names: list[str], timeout: float, tmp: Path) -> tuple[
     code = proc.returncode if reported["code"] is None else reported["code"]
     big = largest_file(tmp) >= FILE_CAP - 1024 * 1024
     outcome = classify(timed_out, code, text, reported["maxrss"], big)
+    applied = reported.get("caps")
+    if applied is not None and applied < CAPS_REQUIRED:
+        # Uncapped, a survived or killed outcome is not the gate's to give.
+        outcome = "error"
+        text += f"\ngate: only {applied} of the {CAPS_REQUIRED} caps were applied to this run\n"
     shutil.rmtree(tmp, ignore_errors=True)
     return outcome, seconds, text[-3000:]
 

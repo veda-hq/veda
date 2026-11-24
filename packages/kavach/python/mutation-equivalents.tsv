@@ -24,8 +24,8 @@ command_guard.py	if __name__ == "__main__":	ReplaceComparisonOperator_Eq_LtE	1	s
 command_guard.py	if verdict("the git-command check", lambda: __import__("bash_guard"), "bash_guard.py", "bash_guard") == 2:	ReplaceComparisonOperator_Eq_GtE	1	survived	verdict returns only 0 or 2.
 command_guard.py	if verdict("the lesson rules", lambda: lesson_rules(loaded, contexts), "rules.py", "rules") == 2:	ReplaceComparisonOperator_Eq_GtE	1	survived	verdict returns only 0 or 2.
 command_guard.py	if code == 2:	ReplaceComparisonOperator_Eq_GtE	1	survived	code is verdict's, which is only 0 or 2.
-command_guard.py	getattr(error, "name", None) == module or getattr(error, "filename", None) == module	ReplaceComparisonOperator_Eq_Is	1	survived	Equal only because CPython interns both names.
-command_guard.py	getattr(error, "name", None) == module or getattr(error, "filename", None) == module	ReplaceComparisonOperator_Eq_Is	2	survived	Equal only because CPython interns both names.
+command_guard.py	getattr(error, "name", None) == module or getattr(error, "filename", None) == module	ReplaceComparisonOperator_Eq_Is	1	survived	Every caller passes module as a string literal, and the failing import sets error.name to the same identifier, which CPython interns, so == and is agree on every call kavach makes. Only a caller building the name at run time could tell them apart, and none does.
+command_guard.py	getattr(error, "name", None) == module or getattr(error, "filename", None) == module	ReplaceComparisonOperator_Eq_Is	2	survived	An error's filename is None or a path, never a bare module name such as "rules", so == and is are both False for every error the checks raise.
 command_guard.py	if type(end.code) is int and end.code in (0, 2):	ReplaceComparisonOperator_Is_Eq	1	survived	type(x) == int and type(x) is int agree for every x.
 refusal_log.py	if type(end.code) is int and end.code == 2:	ReplaceComparisonOperator_Is_Eq	1	survived	type(x) == int and type(x) is int agree for every x.
 refusal_log.py	if type(result) is int and result == 2:	ReplaceComparisonOperator_Is_Eq	1	survived	type(x) == int and type(x) is int agree for every x.

@@ -15,9 +15,10 @@ import { CONTRACTS_PACKAGE_SCHEMA, packagePattern } from './helpers.js';
 const DTO_CLASS = /(?:Dto|DTO)$/;
 
 /**
- * Root identifier of an `implements` entry (`A`, `A<T>`, `ns.A`). TypeScript
- * allows only an identifier or a member chain there, so the root is always
- * an Identifier.
+ * Root identifier of an `implements` entry (`A`, `A<T>`, `ns.A`). Any other
+ * root, such as `implements getBase()` (which the parser accepts and only
+ * TypeScript's checker refuses), has no `name`, so this yields `undefined`,
+ * which names no import.
  */
 function implementedRoot(heritage) {
   let expression = heritage.expression;

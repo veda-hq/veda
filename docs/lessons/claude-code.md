@@ -23,6 +23,7 @@ undoing another.
   descriptions say to call them only when the user asks. Have the user add
   `mcp__ccd_pr__get_status`, `mcp__ccd_pr__bind_pr` and `mcp__ccd_pr__set_monitor` to
   `permissions.allow` in user settings, and check that list first when denials recur.
+  <!-- held by: niyam onboard and doctor (onboard writes the three rules into the repository's .claude/settings.json; doctor reports any missing or denied); a repository niyam does not onboard is not checked -->
 - **Negative controls can be denied.** The classifier may deny running tests against code with
   a safety check deliberately switched off (a negative control), and sometimes broad typecheck
   runs. Restore the mutation at once, do not retry or route around it, and let the user choose

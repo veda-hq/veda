@@ -338,4 +338,164 @@ describe('entries, treePaths and listedPaths', () => {
     // Any other stat failure is raised as itself, never read as "no such file".
     assert.throws(() => listedPaths(root, 'x'.repeat(300)), /ENAMETOOLONG/);
   });
+
+  it('skips a listed symlink before asking where it is, and refuses the root’s parent', () => {
+    const root = realpathSync(tree({ 'a.ts': '' }));
+    const other = realpathSync(tree({ 'b.ts': '' }));
+    symlinkSync(join(other, 'b.ts'), join(other, 'link.ts'));
+    assert.deepEqual(listedPaths(root, join(other, 'link.ts')), []);
+    assert.throws(() => listedPaths(root, '..'), /listed file \.\. is outside/);
+  });
+});
+
+describe('the default vocabulary', () => {
+  it('reads each category by its folder, singular or plural, to the end of the path', () => {
+    const cases: ReadonlyArray<readonly [string, string | undefined]> = [
+      ['a/domain/d.ts', 'service'],
+      // Only the plural: `repository/` is no category.
+      ['a/repository/r.ts', undefined],
+      ['a/component/C.tsx', 'component'],
+      ['a/screen/S.tsx', 'screen'],
+      ['a/screens/Home.tsx', 'screen'],
+      ['a/hook/useThing.ts', 'hook'],
+      ['a/utils/format.ts', 'utility'],
+      ['a/context/Auth.tsx', 'context'],
+      ['a/services/x.ts.md', undefined],
+      ['a/repositories/x.ts.md', undefined],
+      ['a/components/C.tsx.md', undefined],
+      ['a/screens/S.tsx.md', undefined],
+      ['a/hooks/useThing.ts.md', undefined],
+      ['a/utils/x.ts.md', undefined],
+      ['a/context/A.tsx.md', undefined],
+    ];
+    for (const [path, category] of cases) assert.equal(categoryOf(DEFAULT_CONFIG, path), category, path);
+  });
+
+  it('excludes by a name’s end, and a types folder at the root', () => {
+    const cases: ReadonlyArray<readonly [string, boolean]> = [
+      ['a/lib/x.test.ts.md', false],
+      ['a/lib/x.d.ts.md', false],
+      ['a/lib/x.config.ts.md', false],
+      ['a/lib/index.ts.md', false],
+      ['a/lib/x.types.ts.md', false],
+      ['a/lib/x.type.ts', true],
+      ['types/x.ts', true],
+    ];
+    for (const [path, excluded] of cases) assert.equal(isExcluded(DEFAULT_CONFIG, path), excluded, path);
+  });
+
+  it('looks for each kind of test where the defaults say', () => {
+    assert.deepEqual(
+      DEFAULT_CONFIG.tests,
+      new Map([
+        [
+          'unit',
+          [
+            '{dir}/{name}.test.ts',
+            '{dir}/{name}.test.tsx',
+            '{dir}/__tests__/{name}.test.ts',
+            '{dir}/__tests__/{name}.test.tsx',
+            '{dir}/test/{name}.test.ts',
+            '{dir}/test/{name}.test.tsx',
+            '{dir}/tests/{name}.test.ts',
+            '{dir}/tests/{name}.test.tsx',
+          ],
+        ],
+        [
+          'integration',
+          [
+            '{dir}/{name}.integration.test.ts',
+            '{dir}/{name}.integration.test.tsx',
+            '{dir}/__tests__/integration/{name}.test.ts',
+            '{dir}/__tests__/integration/{name}.test.tsx',
+            '{dir}/test/integration/{name}.test.ts',
+            '{dir}/test/integration/{name}.test.tsx',
+            '{dir}/tests/integration/{name}.test.ts',
+            '{dir}/tests/integration/{name}.test.tsx',
+          ],
+        ],
+        ['ui', ['{dir}/{name}.test.tsx', '{dir}/__tests__/{name}.test.tsx', '{dir}/test/{name}.test.tsx', '{dir}/tests/{name}.test.tsx']],
+      ]),
+    );
+  });
+});
+
+describe('parseConfig edges', () => {
+  it('refuses a config that is no object, and lists that hold anything but strings', () => {
+    const bad: Array<[string, RegExp]> = [
+      ['null', /must be a JSON object/],
+      ['"x"', /must be a JSON object/],
+      ['{"exclude": [1]}', /"exclude" must be a list of strings/],
+      ['{"required": {"service": ["unit"], "b": "x"}}', /"required" must map names to lists of strings/],
+      ['{"maxHops": "1"}', /"maxHops" must be a whole number/],
+      ['{"categories": {"b": "x", "12": "y"}, "required": {"b": ["unit"], "12": ["unit"]}}', /category "12": a name that is a number/],
+    ];
+    for (const [text, message] of bad) assert.throws(() => parseConfig(text), message, text);
+  });
+
+  it('reads a name only as a number when it is one whole', () => {
+    const c = parseConfig('{"categories": {"1a": "x", "a1": "y"}, "required": {"1a": ["unit"], "a1": ["unit"]}}');
+    assert.deepEqual(
+      c.categories.map(([name]) => name),
+      ['1a', 'a1'],
+    );
+  });
+});
+
+describe('moduleSpecifiers edges', () => {
+  it('parses as TSX by default, and reads only string specifiers', () => {
+    assert.deepEqual(specs("const v = <string>require('./b');"), []);
+    assert.deepEqual(specs('const x = require(name);\nimport a from b;'), []);
+  });
+});
+
+describe('ImportWalk edges', () => {
+  it('reads each file once per walk', () => {
+    const root = tree({ 'src/s.ts': '', 'src/s.test.ts': "import './s';" });
+    const walk = new ImportWalk(ts, DEFAULT_CONFIG);
+    assert.equal(walk.reaches(join(root, 'src/s.test.ts'), join(root, 'src/s.ts')), true);
+    writeFileSync(join(root, 'src/s.test.ts'), '');
+    assert.equal(walk.reaches(join(root, 'src/s.test.ts'), join(root, 'src/s.ts')), true);
+    assert.equal(reaches(root, 'src/s.test.ts', 'src/s.ts'), false);
+  });
+
+  it('counts a suite that imports its subject by name, even before the subject exists', () => {
+    const root = tree({ 'src/t.test.ts': "import './ghost';" });
+    assert.equal(reaches(root, 'src/t.test.ts', 'src/ghost.ts'), true);
+  });
+
+  for (const ext of ['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs']) {
+    it(`follows an import with no extension to a ${ext} module, and to a folder's index${ext}`, () => {
+      const root = tree({ [`src/x${ext}`]: '', [`src/d/index${ext}`]: '', 'src/hop.test.ts': "import './x';\nimport './d';" });
+      assert.equal(reaches(root, 'src/hop.test.ts', `src/x${ext}`), true);
+      assert.equal(reaches(root, 'src/hop.test.ts', `src/d/index${ext}`), true);
+      assert.equal(reaches(root, 'src/hop.test.ts', 'src/y.ts'), false);
+    });
+  }
+});
+
+describe('findGaps and formatGaps edges', () => {
+  it('judges only .ts and .tsx paths, whatever the categories match', () => {
+    const config = { ...DEFAULT_CONFIG, categories: [['service', /\/services\//]] as const };
+    assert.deepEqual(findGaps(ts, config, tree({}), ['app/services/x.ts.md']), { gaps: [], judged: 0, listed: 1 });
+  });
+
+  it('finds no gap where a category requires nothing', () => {
+    const root = tree({ 'app/services/bare.ts': '' });
+    assert.deepEqual(findGaps(ts, { ...DEFAULT_CONFIG, required: new Map() }, root, ['app/services/bare.ts']), { gaps: [], judged: 1, listed: 1 });
+  });
+
+  it('lists every missing kind, with no hint when the config has none', () => {
+    assert.deepEqual(formatGaps(DEFAULT_CONFIG, { gaps: [{ file: 'a/repositories/r.ts', category: 'repository', missing: ['unit', 'integration'] }], judged: 1, listed: 2 }), {
+      ok: false,
+      out: [],
+      err: [
+        'pariksha coverage-by-type: repository (needs: unit, integration tests)',
+        '  a/repositories/r.ts: missing unit, integration',
+        '',
+        'pariksha coverage-by-type: 1 file(s) missing required tests. A suite counts only when it imports its subject at runtime.',
+      ],
+    });
+    assert.equal(formatGaps({ ...DEFAULT_CONFIG, required: new Map() }, { gaps: [{ file: 'x.ts', category: 'odd', missing: ['unit'] }], judged: 1, listed: 1 }).err[0], 'pariksha coverage-by-type: odd (needs:  tests)');
+  });
 });

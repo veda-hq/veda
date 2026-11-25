@@ -95,3 +95,22 @@ describe('usageLimit', () => {
     ).toBeUndefined();
   });
 });
+
+describe('usageLimit, event by event', () => {
+  it('takes the limit only from a result event', () => {
+    expect(usageLimit(JSON.stringify({ type: 'rate_limit_event', api_error: 'usage_limit_reached', result: 'resets' }))).toBeUndefined();
+    expect(usageLimit(JSON.stringify({ api_error: 'usage_limit_reached', result: 'resets' }))).toBeUndefined();
+  });
+
+  it('counts a tool only in an assistant turn’s content list', () => {
+    const limit = JSON.stringify({ type: 'result', api_error: 'usage_limit_reached', result: 'resets' });
+    const userTool = JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_use', id: 't' }] } });
+    expect(usageLimit([userTool, limit].join('\n'))).toBe('resets');
+    const textContent = JSON.stringify({ type: 'assistant', message: { content: 'tool_use' } });
+    const noMessage = JSON.stringify({ type: 'assistant', message: null });
+    const listMessage = JSON.stringify({ type: 'assistant', message: [{ type: 'tool_use' }] });
+    expect(usageLimit([textContent, noMessage, listMessage, 'null', '"tool_use"', limit].join('\n'))).toBe('resets');
+    const nullItem = JSON.stringify({ type: 'assistant', message: { content: [null, 'tool_use', 3] } });
+    expect(usageLimit([nullItem, limit].join('\n'))).toBe('resets');
+  });
+});

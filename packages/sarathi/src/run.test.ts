@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 
 import { parseConfig, type Config } from './config.ts';
 import { hooksDir, kavachDir, plan, runAll, runPlan } from './run.ts';
@@ -102,5 +102,58 @@ describe('runAll', () => {
       ['first\n', 'second\n'],
     );
     assert.ok(Date.now() - started < 790, 'the two sleeps overlapped');
+  });
+});
+
+describe('plan and runPlan, case by case', () => {
+  it('runs an entry with neither command nor guard as an empty command', () => {
+    const parsed = parseConfig(JSON.stringify({ hooks: {} }), 'sarathi.json', '/project');
+    assert.deepEqual(plan({}, parsed, () => '/kavach', () => '/sarathi/hooks'), {
+      label: '',
+      file: '/bin/sh',
+      args: ['-c', ''],
+      env: { SARATHI_HOOKS: '/sarathi/hooks' },
+      timeoutMs: 60_000,
+      failClosed: false,
+    });
+  });
+
+  it('kills a handler that ignores SIGTERM at its timeout', { timeout: 15_000 }, async () => {
+    const started = Date.now();
+    const outcome = await runPlan(
+      { label: 'stubborn', file: '/bin/sh', args: ['-c', 'trap "" TERM; sleep 4'], env: {}, timeoutMs: 200, failClosed: false },
+      '',
+      tmpdir(),
+    );
+    assert.deepEqual(outcome, { label: 'stubborn', code: null, stdout: '', stderr: '', timedOut: true, failClosed: false });
+    assert.ok(Date.now() - started < 3000, `took ${Date.now() - started} ms`);
+  });
+
+  it('reports a handler that cannot start once, with the reason', async () => {
+    const outcome = await runPlan({ label: 'ghost', file: '/no/such/program', args: [], env: {}, timeoutMs: 10_000, failClosed: true }, '', tmpdir());
+    assert.deepEqual(outcome, {
+      label: 'ghost',
+      code: null,
+      stdout: '',
+      stderr: 'ghost could not start (spawn /no/such/program ENOENT)\n',
+      timedOut: false,
+      failClosed: true,
+    });
+  });
+});
+
+describe('a handler’s timer', () => {
+  it('is cleared once the handler ends, so nothing kills its process group later', async () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const kill = mock.method(process, 'kill', () => true);
+    try {
+      const outcome = await runPlan(plan({ command: 'exit 0', timeout: 60 }, config(), () => '/kavach', () => '/sarathi/hooks'), '', tmpdir());
+      assert.equal(outcome.code, 0);
+      mock.timers.tick(60_000);
+      assert.equal(kill.mock.callCount(), 0);
+    } finally {
+      kill.mock.restore();
+      mock.timers.reset();
+    }
   });
 });

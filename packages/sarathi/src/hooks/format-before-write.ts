@@ -55,11 +55,13 @@ export function sessionRoot(event: ToolEvent, env: NodeJS.ProcessEnv = process.e
   const cwd = event.cwd;
   if (typeof cwd === 'string' && cwd !== '') {
     try {
+      // git prints a toplevel or fails: it never succeeds with an empty one.
       const top = execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], {
         encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
+        // Every stream piped: git's complaint about a folder that is no work tree stays off the hook's stderr.
+        stdio: 'pipe',
       }).trim();
-      if (top !== '') return realpathSync(top);
+      return realpathSync(top);
     } catch {
       // Not a directory or not a work tree: fall back.
     }
@@ -73,10 +75,10 @@ export function sessionRoot(event: ToolEvent, env: NodeJS.ProcessEnv = process.e
  * neither has one.
  */
 export function loadPrettier(root: string, env: NodeJS.ProcessEnv = process.env): Prettier | null {
-  const bases = [root, env['CLAUDE_PROJECT_DIR']].filter((b): b is string => typeof b === 'string' && b !== '');
-  for (const base of bases) {
+  for (const base of [root, env['CLAUDE_PROJECT_DIR']]) {
     try {
-      return createRequire(join(base, 'package.json'))('prettier') as Prettier;
+      // createRequire refuses a relative path, so an unset or empty base finds nothing.
+      return createRequire(join(base ?? '', 'package.json'))('prettier') as Prettier;
     } catch {
       // Try the next checkout.
     }
@@ -106,8 +108,8 @@ function inScope(filePath: string, mustExist: boolean, repoRoot: string): boolea
 /** Index of the only occurrence of needle in haystack, or -1. */
 function uniqueIndex(haystack: string, needle: string): number {
   const at = haystack.indexOf(needle);
-  if (at === -1 || haystack.indexOf(needle, at + 1) !== -1) return -1;
-  return at;
+  // Not found, the search from at + 1 finds nothing either, and at is already -1.
+  return haystack.indexOf(needle, at + 1) === -1 ? at : -1;
 }
 
 /**
@@ -115,23 +117,26 @@ function uniqueIndex(haystack: string, needle: string): number {
  * line at a time until old is non-empty and unique in `before`.
  */
 export function minimalEdit(before: string, after: string): Edit | null {
+  // charCodeAt past either end is NaN, which equals nothing, so the scan stops there.
   let start = 0;
+  while (before.charCodeAt(start) === after.charCodeAt(start)) start++;
   const shortest = Math.min(before.length, after.length);
-  while (start < shortest && before[start] === after[start]) start++;
   let tail = 0;
   while (tail < shortest - start && before[before.length - 1 - tail] === after[after.length - 1 - tail]) tail++;
   let from = start;
   let beforeEnd = before.length - tail;
   let afterEnd = after.length - tail;
   for (;;) {
+    // An empty old_string is never unique: uniqueIndex finds it twice.
     const old = before.slice(from, beforeEnd);
-    if (old !== '' && uniqueIndex(before, old) === from) {
+    if (uniqueIndex(before, old) === from) {
       return { old_string: old, new_string: after.slice(from, afterEnd) };
     }
     if (from === 0 && beforeEnd === before.length) return null;
-    // Back to the start of this line, or of the previous one when already there.
+    // Back to the start of this line, or of the previous one when already there;
+    // with no newline before it, lastIndexOf's -1 takes it to 0.
     const lineStart = from < 2 ? -1 : before.lastIndexOf('\n', from - 2);
-    from = lineStart === -1 ? 0 : lineStart + 1;
+    from = lineStart + 1;
     const lineEnd = before.indexOf('\n', beforeEnd + 1);
     const grow = (lineEnd === -1 ? before.length : lineEnd) - beforeEnd;
     beforeEnd += grow;
@@ -164,7 +169,8 @@ export async function updatedInput(
 ): Promise<Record<string, unknown> | null> {
   const input = event.tool_input ?? {};
   const filePath = input['file_path'];
-  if (typeof filePath !== 'string' || filePath === '') return null;
+  // An empty path has no extension, so inScope refuses it.
+  if (typeof filePath !== 'string') return null;
 
   if (event.tool_name === 'Write') {
     const content = input['content'];
@@ -182,8 +188,7 @@ export async function updatedInput(
     const formatted = await format(prettier, filePath, edited, root);
     if (formatted === null || formatted === edited || formatted === current) return null;
     const edit = minimalEdit(current, formatted);
-    if (edit === null) return null;
-    return { file_path: filePath, ...edit, replace_all: false };
+    return edit && { file_path: filePath, ...edit, replace_all: false };
   }
   return null;
 }
@@ -194,6 +199,7 @@ export async function respond(raw: string, env: NodeJS.ProcessEnv = process.env)
     const event = JSON.parse(raw) as ToolEvent;
     const root = sessionRoot(event, env);
     const prettier = loadPrettier(root, env);
+    // Without a prettier there is nothing to format: the file the tool names is never opened.
     if (prettier === null) return '';
     const next = await updatedInput(event, prettier, root);
     if (next === null) return '';
@@ -203,12 +209,23 @@ export async function respond(raw: string, env: NodeJS.ProcessEnv = process.env)
   }
 }
 
-async function main(): Promise<void> {
+/**
+ * The hook, when `script` (the path node was given) is this module at
+ * `moduleUrl`: answers the event read from `stdin` through `write`.
+ * Imported, it does nothing.
+ */
+export async function start(
+  script: string | undefined,
+  moduleUrl: string,
+  stdin: AsyncIterable<unknown> | Iterable<unknown>,
+  write: (text: string) => void,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  // An empty path is the working folder, never this file.
+  if (script === undefined || realpathSync(script) !== fileURLToPath(moduleUrl)) return;
   let raw = '';
-  for await (const chunk of process.stdin) raw += String(chunk);
-  process.stdout.write(await respond(raw));
+  for await (const chunk of stdin) raw += String(chunk);
+  write(await respond(raw, env));
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  void main();
-}
+void start(process.argv[1], import.meta.url, process.stdin, text => process.stdout.write(text));

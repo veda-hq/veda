@@ -55,13 +55,12 @@ export function detail(error: unknown): string {
 export function transcriptEvents(transcript: string): unknown[] {
   const events: unknown[] = [];
   for (const line of transcript.split('\n')) {
-    if (line.trim() === '') continue;
     try {
       events.push(JSON.parse(line));
     } catch {
-      // fail-open: a line that is not JSON holds no tool call, so skipping it
-      // can only leave a version unconfirmed, which refuses the publish.
-      continue;
+      // fail-open: a line that is not JSON, a blank one included, holds no
+      // tool call, so skipping it can only leave a version unconfirmed,
+      // which refuses the publish.
     }
   }
   return events;
@@ -176,16 +175,16 @@ export function readInput(
   stream: NodeJS.ReadableStream,
   done: (text: string) => void,
 ): void {
-  const chunks: string[] = [];
+  // Bytes until the end, so a character split across chunks decodes whole.
+  const chunks: Buffer[] = [];
   let settled = false;
   const finish = (text: string) => {
     if (settled) return;
     settled = true;
     done(text);
   };
-  stream.setEncoding('utf8');
-  stream.on('data', (chunk: string) => chunks.push(chunk));
-  stream.on('end', () => finish(chunks.join('')));
+  stream.on('data', (chunk: Buffer | string) => chunks.push(Buffer.from(chunk)));
+  stream.on('end', () => finish(Buffer.concat(chunks).toString()));
   stream.on('error', () => finish(''));
 }
 
@@ -202,9 +201,13 @@ export function hook(stdin: string): void {
  * lets the call run.
  */
 export function isEntry(script: string | undefined, moduleUrl: string): boolean {
-  return script !== undefined && script !== '' && moduleUrl === pathToFileURL(realpathSync(script)).href;
+  // An empty path resolves to the working folder, never a module.
+  return script !== undefined && moduleUrl === pathToFileURL(realpathSync(script)).href;
 }
 
-if (isEntry(process.argv[1], import.meta.url)) {
-  readInput(process.stdin, hook);
+/** Reads the hook input from `stdin` into `run` when `script` is this module; imported, it does nothing. */
+export function start(script: string | undefined, moduleUrl: string, stdin: NodeJS.ReadableStream, run: (text: string) => void): void {
+  if (isEntry(script, moduleUrl)) readInput(stdin, run);
 }
+
+start(process.argv[1], import.meta.url, process.stdin, hook);

@@ -72,10 +72,8 @@ export function runPlan(step: Plan, input: string, cwd: string): Promise<Outcome
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let timedOut = false;
-    let settled = false;
+    // A handler that cannot start may also close: the promise keeps the first answer.
     const finish = (code: number | null, extra = ''): void => {
-      if (settled) return;
-      settled = true;
       clearTimeout(timer);
       done({
         label: step.label,
@@ -89,13 +87,14 @@ export function runPlan(step: Plan, input: string, cwd: string): Promise<Outcome
     const child = spawn(step.file, [...step.args], {
       cwd,
       env: { ...process.env, ...step.env },
-      stdio: ['pipe', 'pipe', 'pipe'],
+      // spawn pipes all three streams by default.
       detached: true,
     });
     const timer = setTimeout(() => {
       timedOut = true;
       try {
-        if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+        // A handler that could not start has settled, its timer cleared, before this runs.
+        process.kill(-Number(child.pid), 'SIGKILL');
       } catch {
         // already gone: the close event still comes
       }

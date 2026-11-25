@@ -17,9 +17,11 @@ applies_to: ['apps', 'packages', 'scripts']
 
 ## Rule
 
-When a branch removes an exported symbol (`export const|let|var|function|class| interface|type|enum <Name>`) and that name appears **nowhere in the post-change
-tree**, the removal MUST be declared with a trailer in any commit body on the
-branch:
+When a branch removes an exported declaration (`export` then `const`, `let`,
+`var`, `function`, `class`, `interface`, `type`, `enum`, `const enum` or
+`namespace`, with `default`, `declare`, `async` or `abstract` allowed between)
+and its name appears **nowhere in the post-change tree**, the removal MUST be
+declared with a trailer in any commit body on the branch:
 
 ```
 Removes-Export: clearGiftSelection — superseded by resetCart(); no
@@ -38,13 +40,16 @@ The file form applies only to a file that no longer exists at the branch head.
 A file that survived with fewer exports still declares each symbol; that is the
 incident's own shape and the file form must not be able to hide it.
 
-A symbol that moved file, was re-exported elsewhere, or was renamed with its
-call sites updated still resolves in the tree, so refactors are silent. The
+A symbol that moved file or was re-exported elsewhere still resolves in the
+tree, so those refactors are silent. A rename is not: the old name is gone, so
+it needs a `Removes-Export:` naming it, even with every call site updated. The
 presence search covers source files only and skips comment lines — otherwise a
 changelog entry or a `// removed clearGiftSelection` note would read as
 "still present" and suppress the very finding this check exists to raise. Bare
 re-export lists (`export { a, b }`) are out of scope — they shuffle constantly
-and name nothing new.
+and name nothing new. That leaves a known gap: removing
+`export { internal as publicApi } from './internal.js'` goes unreported even
+when `publicApi` leaves the public surface.
 
 ## Rationale
 
@@ -97,7 +102,8 @@ remaining callers (ABC-447)
 
 - Deleting a public API becomes a sentence someone has to write and a reviewer
   can disagree with, instead of a green diff.
-- Genuine refactors pay nothing: the still-present filter keeps them silent.
+- Moves and re-exports pay nothing: the still-present filter keeps them
+  silent. A rename pays one trailer.
 - A symbol deleted together with its only consumer in the same branch still
   requires the trailer. That is intended — it is the incident's exact shape.
 - A symbol that never existed on the base branch is not covered: it was never
@@ -109,9 +115,9 @@ remaining callers (ABC-447)
 repository's pre-push hook with `--base` set to the push's base: the check
 compares the branch against its base and reads commit bodies for trailers,
 neither of which a pre-commit hook can do. Its tests live with the package.
-With no `BASE_BRANCH`, it takes the first of `origin/main`, `origin/develop`,
-`origin/master` and `main`, as the shell check did; when none exists it exits
-2 (nothing was checked), where the shell check passed by skipping.
+With no `--base`, it takes the first of `origin/main`, `origin/develop`,
+`origin/master` and `main` that names a commit; when none does it exits 2
+(nothing was checked), where the shell check it replaced passed by skipping.
 
 ## Related Rules
 

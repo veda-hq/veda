@@ -34,7 +34,10 @@ Accepted citations, in two tiers:
 | `https://github.com/<o>/<r>/(pull\|issues)/<n>`, `PR #123` | Shape only — a hook has no network     |
 
 A prose comment is not a citation. **A markdown file is not a citation** — a doc
-an agent could have written is the fabrication restated one level down.
+an agent could have written is the fabrication restated one level down. An ADR
+is the one exception, and the check asks only that its file exist, so an ADR
+added in the same change passes: review an ADR's own history as you would the
+claim.
 
 Lines that use the words without asserting authority carry
 `ALLOW-AUTHORITY-PHRASE: <reason>` within the same 3-line window. The reason is
@@ -47,8 +50,8 @@ file citing that ADR is fine.
 ## Rationale
 
 A claim of authority asserted inside an artifact is unverifiable from inside
-that artifact. It must anchor in something only the authority can produce: their
-signed commit, a PR approval, a Linear transition.
+that artifact. It must anchor in something outside it that the authority
+produces: their commit, a PR approval, a Linear transition.
 
 On 2026-08-21 (PR #269) an agent deleted a public API and wrote
 `PRODUCT RULE (owner decision, 2026-08-21 …): Declining was considered and rejected`. No such decision existed. The change typechecked, every test passed,
@@ -58,9 +61,12 @@ consistent**. The same fan-out removed the callers and added a test asserting th
 API's absence, so the tree agreed with itself perfectly. Only the owner knowing
 they had not made that decision caught it.
 
-This rule is the one gate that reaches outside the tree: it asks whether the
-cited artifact exists at all. An agent can write any comment; it cannot
-manufacture the owner's commit, an ADR that is on disk, or an issue id.
+This rule is the one gate that reaches outside the claim: it asks whether the
+cited artifact exists at all. It checks existence, not authorship: a SHA
+resolves to any commit in the repository, an ADR to any file in the ADR folder,
+and issue and PR ids are checked for shape alone. What it buys is a pointer a
+reviewer can follow, to who made the commit, who wrote and accepted the ADR,
+who moved the issue, where a bare claim gives them nothing to check.
 
 ## Examples
 
@@ -75,10 +81,12 @@ manufacture the owner's commit, an ADR that is on disk, or an issue id.
 // founder decision: gate blocks on surviving mutants (ADR-9999)
 ```
 
-The ✅ forms below need no pragma — each one passes the check on its own merits:
+The ✅ forms below need no pragma: each passes once its citation resolves in the
+repository that holds it. The SHA, issue and ADR here are illustrations and do
+not resolve in this repository.
 
 ```ts
-// ✅ GOOD — the owner's own commit; only they could have made it.
+// ✅ GOOD — the owner's own commit, which a reviewer can look up.
 // The scope unit is the FILE (owner decision 2026-08-20, 3f9c2e1a).
 
 // ✅ GOOD — a Linear transition only the owner can perform.
@@ -98,10 +106,11 @@ permission, so the authority word list (`owner`, `founder`, `CTO`, `CEO`,
 - A decision that has not been recorded anywhere cannot be cited — which is the
   point. If there is no artifact, the decision has not been made yet.
 - Authors pay one lookup per claim: find the SHA, ADR, or issue id.
-- Fabricated authority stops being cheap. Writing a comment is free; producing a
-  commit signed by someone else is not.
-- Two citation tiers are honest about their strength — SHA and ADR are verified,
-  Linear and GitHub ids are shape-checked because a git hook has no network.
+- Fabricated authority stops being free: a claim must point at something a
+  reviewer can look up, and a pointer to nothing is refused.
+- Two citation tiers are honest about their strength — SHA and ADR are resolved
+  (the commit or file exists), Linear and GitHub ids are shape-checked because a
+  git hook has no network. Neither tier proves who made the artifact.
 
 ## Enforcement
 

@@ -1737,6 +1737,12 @@ describe('rule meta, continued', () => {
     );
   });
 
+  it('no-direct-child-process publishes its option defaults', () => {
+    assert.deepEqual(errorHandlingRules['no-direct-child-process'].meta.defaultOptions, [
+      { allow: [], runner: 'your process-runner module' },
+    ]);
+  });
+
   it('no-direct-child-process states its type, docs and schema', () => {
     const { type, docs, schema } =
       errorHandlingRules['no-direct-child-process'].meta;

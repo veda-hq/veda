@@ -91,18 +91,22 @@ function processErrorHandler(call) {
 }
 
 /**
- * Walks `root` through its child nodes (the parser's visitor keys) without
- * entering nested functions. `visit` returns true to stop the walk early;
- * the walk returns whether it stopped.
+ * Walks `root` without entering nested functions. `visit` returns true to
+ * stop the walk early; the walk returns whether it stopped.
  */
-function walkSameFunction(sourceCode, root, visit) {
+function walkSameFunction(root, visit) {
   const stack = [root];
   while (stack.length > 0) {
     const node = stack.pop();
     if (visit(node)) return true;
-    for (const key of sourceCode.visitorKeys[node.type]) {
-      for (const child of [node[key]].flat()) {
-        if (child && !isFunction(child)) stack.push(child);
+    for (const key of Object.keys(node)) {
+      if (key === 'parent') continue;
+      const value = node[key];
+      const children = Array.isArray(value) ? value : [value];
+      for (const child of children) {
+        if (child && typeof child.type === 'string' && !isFunction(child)) {
+          stack.push(child);
+        }
       }
     }
   }
@@ -156,7 +160,6 @@ function rejectsPromise(sourceCode, callee) {
     outer = outer.parent;
   if (!outer) return false;
   return walkSameFunction(
-    sourceCode,
     wrapper.body,
     node =>
       node.type === 'CallExpression' &&
@@ -183,7 +186,7 @@ function caughtWithin(node, root) {
  * with a status all propagate; logging and returning a fallback do not.
  */
 function propagates(sourceCode, body) {
-  return walkSameFunction(sourceCode, body, node => {
+  return walkSameFunction(body, node => {
     // A throw a nested try/catch takes back never leaves this handler.
     if (node.type === 'ThrowStatement') return !caughtWithin(node, body);
     if (node.type === 'CallExpression') {
@@ -820,8 +823,10 @@ function staticKey(key, computed) {
   return null;
 }
 
-// `allow` has no default: without it, no file is exempt.
-const CHILD_PROCESS_DEFAULTS = { runner: 'your process-runner module' };
+const CHILD_PROCESS_DEFAULTS = {
+  allow: [],
+  runner: 'your process-runner module',
+};
 
 /** ERR-08 — no-direct-child-process. */
 const noDirectChildProcess = {
@@ -868,7 +873,7 @@ const noDirectChildProcess = {
     const { allow, runner, root } = context.options[0];
     // `allow` names files from the root, matched exactly: a suffix match
     // would also exempt any nested file of the same name.
-    if (allow?.includes(rootPath(root ?? context.cwd, context.filename)))
+    if (allow.includes(rootPath(root ?? context.cwd, context.filename)))
       return {};
 
     // Namespace bindings by variable, not name: a parameter `cp` that shadows

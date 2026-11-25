@@ -77,11 +77,31 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
       # Exit 1 is a blocking mutant and 2 a refusal: both fail the job.
+      # The dvara lane has lost its runner with no log (veda#469), so it
+      # samples memory, disk, load and the largest processes every 5 s into
+      # the step's live log while the gate runs.
       - name: agnipariksha
         env:
           LANE: ${{ matrix.lane }}
           BASE_REF: ${{ github.base_ref }}
-        run: node_modules/.bin/agnipariksha --lane "$LANE" --base "origin/$BASE_REF" --tracked-only --no-reuse
+        run: |
+          if [ "$LANE" = dvara ]; then
+            (
+              # The step's shell runs -e -o pipefail; ps dies of SIGPIPE at head.
+              set +e +o pipefail
+              while sleep 5; do
+                echo "--- resources $(date -u +%H:%M:%S)"
+                uptime
+                free -m
+                df -h / "${RUNNER_TEMP:-/tmp}" /tmp
+                echo "node processes: $(pgrep -c node || true)"
+                ps -eo rss,etime,args --sort=-rss | head -n 8 | cut -c1-160
+              done
+            ) &
+            sampler=$!
+            trap 'kill "$sampler" 2>/dev/null || true' EXIT
+          fi
+          node_modules/.bin/agnipariksha --lane "$LANE" --base "origin/$BASE_REF" --tracked-only --no-reuse
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ failure() }}
         with:

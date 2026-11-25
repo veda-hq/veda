@@ -728,8 +728,10 @@ def worktree_owners(root: Path, host: str) -> OwnerScan:
     text holds the worktree's folder name.
 
     A record that is a symlink, not a file or of the wrong shape names
-    nobody. One too large, unreadable or not JSON names nobody either, and is
-    counted in ``skipped``. A missing or symlinked records folder, or any
+    nobody. One too large names nobody either, and is counted in ``skipped``;
+    so is one that could name the worktree but cannot be read or parsed (one
+    the app is part way through writing, say). One that cannot name it is
+    never parsed, so it is not counted. A missing or symlinked records folder, or any
     other error, fails the whole scan: ``owners`` is ``None`` and
     ``failure`` says why. Never raises, so the caller decides what a failure
     means (veda#588: it allows the call and logs a row)."""

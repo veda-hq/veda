@@ -3021,10 +3021,20 @@ class OtherSessionsWorktreeTest(GuardFixture):
                 MODULE.worktree_owners(self.theirs, HOST), scan(None, failure="the app's records folder is missing")
             )
 
+    def write_cut_record(self) -> None:
+        # A record the app is part way through writing: it names the worktree
+        # but does not parse.
+        cut = f'{{"sessionId": "{STRANGER}", "cwd": "{self.theirs}", "isArch'
+        (self.records / f"{STRANGER}.json").write_text(cut, encoding="utf-8")
+
     def test_records_it_cannot_read_are_counted(self) -> None:
-        (self.records / f"{STRANGER}.json").write_text("{not json", encoding="utf-8")
+        self.write_cut_record()
         with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
             self.assertEqual(MODULE.worktree_owners(self.theirs, HOST), MODULE.OwnerScan((STARTER,), 1))
+            # One that cannot name the worktree is never parsed, so it is not counted.
+            (self.records / f"{STRANGER}.json").write_text("{not json", encoding="utf-8")
+            self.assertEqual(MODULE.worktree_owners(self.theirs, HOST), MODULE.OwnerScan((STARTER,)))
+            self.write_cut_record()
             # A record over the limit is counted, and names nobody.
             with mock.patch.object(MODULE, "RECORD_LIMIT", 10):
                 self.assertEqual(MODULE.worktree_owners(self.theirs, HOST), MODULE.OwnerScan((), 3))
@@ -3058,7 +3068,7 @@ class OtherSessionsWorktreeTest(GuardFixture):
         self.assertEqual(len(self.rows()), 2)
 
     def test_a_record_it_cannot_read_is_logged_and_the_rest_still_judge(self) -> None:
-        (self.records / f"{STRANGER}.json").write_text("{not json", encoding="utf-8")
+        self.write_cut_record()
         self.assert_warns(self.guard(self.theirs))
         scan, fire = self.rows()
         self.assertEqual((scan["mode"], fire["mode"]), ("scan-failed", "warn"))

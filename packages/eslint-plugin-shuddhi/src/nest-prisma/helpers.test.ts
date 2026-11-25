@@ -275,6 +275,22 @@ describe('bindings', () => {
     assert.deepEqual(out, [['inner', 5], undefined, 1, undefined, undefined, undefined, undefined]);
   });
 
+  it('finds an outer binding from an inner scope, and reads no binding for no node', () => {
+    const out = probe('const a = 1;\nfunction g() { a; }', (context, out) => {
+      const values = bindings(context);
+      return {
+        VariableDeclarator(node: { id: never; init: never }) {
+          values.bind(node.id, node.init);
+        },
+        'FunctionDeclaration ExpressionStatement'(node: { expression: never }) {
+          out.push((values.lookup(node.expression) as { value: number }).value);
+          out.push(values.lookup(undefined), values.lookup(null));
+        },
+      };
+    });
+    assert.deepEqual(out, [1, undefined, undefined]);
+  });
+
   it('has a stand-in that holds nothing', () => {
     assert.equal(NO_BINDINGS.lookup(), undefined);
   });

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { RuleTester } from '@typescript-eslint/rule-tester';
 import { Linter } from 'eslint';
+import tseslint from 'typescript-eslint';
 
 import { c05CandidateRules } from './c05-candidates.js';
 import { c05Rules } from './c05.js';
@@ -1635,5 +1636,425 @@ describe('candidate rule meta', () => {
         name,
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Edges each candidate rule's own branches hold: inputs that tell one reading
+// of a condition from another. Each case builds its code inside its `it`.
+// ---------------------------------------------------------------------------
+
+/** Options for one lint: the file, the settings and the rule's options. */
+type LintOptions = {
+  filename?: string;
+  settings?: Record<string, unknown>;
+  options?: unknown[];
+};
+
+/**
+ * Each finding of candidate rule `name` on `code`, as `messageId: message`.
+ * A parse error has no messageId and shows as `undefined: …`, so it fails
+ * any expectation.
+ */
+function findings(
+  name: string,
+  code: string,
+  { filename = TEST_FILE, settings = {}, options = [] }: LintOptions = {},
+): string[] {
+  return new Linter({ configType: 'flat', cwd: '/' })
+    .verify(
+      code,
+      [
+        {
+          files: ['**/*.ts', '**/*.tsx'],
+          languageOptions: {
+            parser: tseslint.parser,
+            parserOptions: { ecmaFeatures: { jsx: true } },
+          },
+          settings,
+          plugins: {
+            probe: { rules: { [name]: rules[name] } } as unknown as NonNullable<
+              Linter.Config['plugins']
+            >[string],
+          },
+          rules: { [`probe/${name}`]: ['error', ...options] as Linter.RuleEntry },
+        },
+      ],
+      filename,
+    )
+    .map(message => `${message.messageId}: ${message.message}`);
+}
+
+/** The messageIds alone. */
+function ids(name: string, code: string, lint: LintOptions = {}): string[] {
+  return findings(name, code, lint).map(finding => finding.split(':')[0]!);
+}
+
+describe('no-fixed-sleep edges', () => {
+  it('reads no delay from a bare await or a Promise with no executor', () => {
+    assert.deepEqual(
+      ids(
+        'no-fixed-sleep',
+        `async function f() { await ready; await new Promise(); }`,
+      ),
+      [],
+    );
+  });
+
+  it("finds the executor's setTimeout past an earlier call", () => {
+    assert.deepEqual(
+      findings(
+        'no-fixed-sleep',
+        `async function f() { await new Promise(r => { log(r); setTimeout(r, 5000); }); }`,
+      ).map(finding => finding.slice(0, 32)),
+      ['fixedSleep: A fixed 5000 ms wait'],
+    );
+  });
+
+  it('reads a loop outside the waiting function as no poll', () => {
+    assert.deepEqual(
+      ids(
+        'no-fixed-sleep',
+        `while (busy()) { const f = async () => { await sleep(50); }; }`,
+      ),
+      ['fixedSleep'],
+    );
+  });
+
+  it('reads two setTimeout arguments as the callback form, whose delay comes second', () => {
+    assert.deepEqual(
+      ids(
+        'no-fixed-sleep',
+        `async function f() { await setTimeout(5000, 'done'); }`,
+      ),
+      [],
+    );
+  });
+});
+
+describe('specific-rejection edges', () => {
+  it('passes counts and lists that are not a bare non-empty check', () => {
+    const code = [
+      `expect().not.toBe(201);`,
+      `expect().toBeGreaterThan(0);`,
+      `expect(res.status).not.toBe();`,
+      `expect(typeof errors).not.toHaveLength(0);`,
+      `expect(errors.length).toBeGreaterThanOrEqual(2);`,
+      `expect(errors.length).not.toBe(2);`,
+      `expect(errors.length).toBeGreaterThan(1 * n);`,
+      `expect(errors).not.toContain('x');`,
+      `expect(errors).not.toHaveLength(1);`,
+      `expect(errors).not.toEqual();`,
+      `expect(errors).not.toEqual([1]);`,
+    ].join('\n');
+    assert.deepEqual(ids('specific-rejection', code), []);
+  });
+
+  it('reads a method on the collection as an entry assertion', () => {
+    assert.deepEqual(
+      ids(
+        'specific-rejection',
+        `it('a', () => { expect(errors.length).toBeGreaterThan(0); expect(errors.some(e => e.ok)).toBe(true); });`,
+      ),
+      [],
+    );
+  });
+});
+
+describe('call-specific-matcher edges', () => {
+  it('reads repeats inside a test only, and only of toHaveBeenCalledWith', () => {
+    const code = [
+      `expect(m).toHaveBeenCalledWith(op); expect(m).toHaveBeenCalledWith(op);`,
+      `m.mockClear(); vi.clearAllMocks();`,
+      `it('a', () => { mockClear(); expect(m).toHaveBeenLastCalledWith(op); run(); expect(m).toHaveBeenLastCalledWith(op); });`,
+    ].join('\n');
+    assert.deepEqual(ids('call-specific-matcher', code), []);
+  });
+});
+
+describe('owned-db-schema edges', () => {
+  it('reads SQL whatever the spacing, and an `if…` name as a name', () => {
+    // Split so this file's own literals are not schema SQL to the rule.
+    const create = ['CREATE', 'SCHEMA'].join('  ');
+    const drop = ['DROP', 'SCHEMA'].join('  ');
+    const single = ['CREATE', 'SCHEMA'].join(' ');
+    assert.deepEqual(
+      ids(
+        'owned-db-schema',
+        `db.query('${create}  IF  NOT  EXISTS shared'); db.query('${drop} shared');`,
+      ),
+      ['adopted'],
+    );
+    assert.deepEqual(ids('owned-db-schema', `db.query('${create}  fixed_name');`), [
+      'fixedName',
+    ]);
+    assert.deepEqual(ids('owned-db-schema', `db.query('${single} iffy');`), [
+      'fixedName',
+    ]);
+  });
+});
+
+describe('teardown-in-finally edges', () => {
+  it('passes code whose cleanup and finally read nothing the rule flags', () => {
+    const cases = [
+      // A private field that shares the resource's name is not the resource.
+      `class K { #run; async m() { const run = start(); await x(); try { await y(); } finally { this.#run.stop(); } } }`,
+      // Only what comes before the cleanup can skip it.
+      `it('a', () => { const child = spawn('x'); child.kill(); expect(1).toBe(1); });`,
+      // A declaration after the try is not state the finally waits on.
+      `it('a', async () => { try { state = await start(); } finally { reap(state); } let state; });`,
+      // A var, and a let the try never assigns.
+      `it('a', async () => { var record; try { record = await start(); } finally { reap(record.pid); } });`,
+      `it('a', async () => { let record; try { other = await start(); } finally { reap(record); } });`,
+    ];
+    for (const code of cases) {
+      assert.deepEqual(ids('teardown-in-finally', code), [], code);
+    }
+  });
+});
+
+describe('cleanup-loop-settles edges', () => {
+  it('counts the steps a teardown loop runs itself, outside any catching try', () => {
+    const cases = [
+      // A callback the loop registers runs later, not as a step.
+      `afterEach(() => { for (const s of stacks) s.on('exit', () => { a(); b(); }); });`,
+      // Assignments are not steps.
+      `afterEach(() => { for (const s of stacks) { last = s; count += 1; } });`,
+      // Only forEach, and map under Promise.all, run a callback per resource.
+      `afterEach(() => { xs.some(x => { a(x); b(x); }); xs.forEach(); });`,
+      `afterEach(async () => { await Other.all(xs.map(async x => { a(x); b(x); })); await Promise.race(xs.map(async x => { a(x); b(x); })); });`,
+    ];
+    for (const code of cases) {
+      assert.deepEqual(ids('cleanup-loop-settles', code), [], code);
+    }
+  });
+
+  it("counts a catch's own steps", () => {
+    assert.deepEqual(
+      ids(
+        'cleanup-loop-settles',
+        `afterEach(() => { for (const s of stacks) { try { s.stop(); } catch { log(s); rmSync(s.dir); } } });`,
+      ),
+      ['aborts'],
+    );
+  });
+});
+
+describe('parse-structured-config edges', () => {
+  it('passes reads that name no structured file or match no text', () => {
+    const cases = [
+      `readFileSync();`,
+      `const t = readFileSync('a.yml.bak', 'utf8'); t.includes('x');`,
+      `const t = loadText('a.yml'); t.includes('x');`,
+      // Only expect's own matchers read the text it is handed.
+      `const t = readFileSync('a.yml', 'utf8'); check(t).toMatch('x');`,
+      `const { length } = readFileSync('a.yml', 'utf8'); const [first] = readFileSync('b.yml', 'utf8');`,
+      // A private field that shares a filtered parameter's name is not it.
+      `class K { #file; m(files) { return files.filter(file => /\\.ya?ml$/.test(file)).map(file => readFileSync(this.#file, 'utf8').split('x')); } }`,
+    ];
+    for (const code of cases) {
+      assert.deepEqual(ids('parse-structured-config', code), [], code);
+    }
+  });
+
+  it('follows every YAML filter regex, and any one filter argument', () => {
+    const cases = [
+      `files.filter(f => /\\.ya?ml$/.test(f), scope).map(file => readFileSync(file, 'utf8').split('x'));`,
+      `files.filter(f => /\\.yml$/.test(f)).map(file => readFileSync(file, 'utf8').split('x'));`,
+      `files.filter(f => /\\.yaml$/.test(f)).map(file => readFileSync(file, 'utf8').split('x'));`,
+      // Called, the binding is not handed to the call as text.
+      `const load = readFileSync('a.yml', 'utf8'); load(); load.includes('x');`,
+    ];
+    for (const code of cases) {
+      assert.deepEqual(ids('parse-structured-config', code), ['textMatched'], code);
+    }
+  });
+});
+
+describe('mock-state-reset edges', () => {
+  it('passes a suite with an expression body, a bare spyOn and an unbound mock', () => {
+    const cases = [
+      `const m = vi.fn(); describe('s', () => it('t', () => { m.mockReturnValue(2); }));`,
+      // A suite callback that returns a function has no statements of its own.
+      `const m = vi.fn(); describe('s', () => () => { it('t', () => { m.mockReturnValue(2); }); });`,
+      `it('w', () => { spyOn(console, 'warn'); expect(1).toBe(1); });`,
+      `describe('a', () => { it('t', () => { undeclared.mockReturnValue(1); }); });`,
+    ];
+    for (const code of cases) {
+      assert.deepEqual(ids('mock-state-reset', code), [], code);
+    }
+  });
+
+  it('reads only a reset of this mock, by its own name, as undoing it', () => {
+    const cases = [
+      partial(
+        'try { mockModel.mockReturnValue(1); } finally { other(mockModel).mockReset(); }',
+      ),
+      partial(
+        'try { mockModel.mockReturnValue(1); } finally { other.mockReset(); }',
+      ),
+      partial('mockReset(); mockModel.mockReturnValue(1)'),
+      partial('mockModel.mockReturnValue(1)', 'afterEach(() => { mockReset(); });'),
+    ];
+    for (const code of cases) {
+      assert.deepEqual(ids('mock-state-reset', code), ['implementationLeaks'], code);
+    }
+  });
+});
+
+describe('mock-export-parity edges', () => {
+  it('reads each export form, and nothing a comment holds', () => {
+    const forms = [
+      '// export const commented = 1;',
+      '  export const indented = 1;',
+      'export  const spaced = 1;',
+      'export const  late = 1;',
+      'export declare const declared: number;',
+      'export declare  const declaredSpaced: number;',
+      'export async  function asyncSpaced() {}',
+      'export abstract class Shape {}',
+      'export abstract  class Spaced {}',
+      'export function* gen() {}',
+      'export const ab = 1;',
+      '// export { hiddenName };',
+      '  export { braced };',
+      'export{ tight };',
+      'export { as, b as  c, d  as e };',
+    ].join('\n');
+    const modules: Record<string, string> = { '/repo/src/forms.ts': forms };
+    const settings = {
+      shuddhi: { readSource: (path: string) => modules[path] ?? null },
+    };
+    const code = `vi.mock('./forms', () => ({ indented: 1, spaced: 1, late: 1, declared: 1, declaredSpaced: 1, asyncSpaced: 1, Shape: 1, Spaced: 1, gen: 1, ab: 1, braced: 1, tight: 1, as: 1, c: 1, e: 1, commented: 1, hiddenName: 1, default: 1 }));`;
+    assert.deepEqual(
+      findings('mock-export-parity', code, {
+        filename: '/repo/src/probe.test.ts',
+        settings,
+      }).map(finding => finding.split('`')[1]),
+      ['commented', 'hiddenName', 'default'],
+    );
+  });
+
+  it('reads `export *` and `export default` only at the start of a line', () => {
+    const modules: Record<string, string> = {
+      '/repo/src/star-indented.ts':
+        "  export  * from './other';\nexport const a = 1;\n",
+      '/repo/src/star-comment.ts': '// we never export * here\nexport const a = 1;\n',
+      '/repo/src/default-comment.ts':
+        '// export default commentedDefault;\nexport const a = 1;\n',
+      '/repo/src/default-indented.ts': '  export  default 1;\n',
+    };
+    const settings = {
+      shuddhi: { readSource: (path: string) => modules[path] ?? null },
+    };
+    const lint = (code: string) =>
+      findings('mock-export-parity', code, {
+        filename: '/repo/src/probe.test.ts',
+        settings,
+      }).map(finding => finding.split('`')[1]);
+    assert.deepEqual(lint(`vi.mock('./star-indented', () => ({ b: 1 }));`), []);
+    assert.deepEqual(lint(`vi.mock('./star-comment', () => ({ b: 1 }));`), ['b']);
+    assert.deepEqual(
+      lint(`vi.mock('./default-comment', () => ({ a: 1, default: 1 }));`),
+      ['default'],
+    );
+    assert.deepEqual(lint(`vi.mock('./default-indented', () => ({ default: 1 }));`), []);
+  });
+
+  it('never reads a test file as the module, and keeps an extension that is not .js', () => {
+    const modules: Record<string, string> = {
+      '/repo/src/widget.test.ts': 'export const real = 1;\n',
+      '/repo/src/widget.test.mjs': 'export const real = 1;\n',
+      '/repo/src/widget.test.ts.bak': 'export const real = 1;\n',
+      '/repo/src/view.jsx': 'export const real = 1;\n',
+    };
+    const settings = {
+      shuddhi: { readSource: (path: string) => modules[path] ?? null },
+    };
+    const lint = (code: string) =>
+      findings('mock-export-parity', code, {
+        filename: '/repo/src/probe.test.ts',
+        settings,
+      }).map(finding => finding.split('`')[3]);
+    assert.deepEqual(
+      lint(
+        `vi.mock('./widget.test.ts', () => ({ nope: 1 })); vi.mock('./widget.test.mjs', () => ({ nope: 1 }));`,
+      ),
+      [],
+    );
+    assert.deepEqual(
+      lint(
+        `vi.mock('./widget.test.ts.bak', () => ({ nope: 1 })); vi.mock('./view.jsx', () => ({ nope: 1 }));`,
+      ),
+      ['./widget.test.ts.bak', './view.jsx'],
+    );
+  });
+
+  it('reads no factory that takes importOriginal, returns nothing, or has no specifier', () => {
+    const modules: Record<string, string> = {
+      '/repo/src/http.ts':
+        'export class HttpRequestError extends Error {}\nexport async function getJson() {}\n',
+    };
+    const settings = {
+      shuddhi: { readSource: (path: string) => modules[path] ?? null },
+    };
+    assert.deepEqual(
+      ids(
+        'mock-export-parity',
+        `vi.mock('./http', (importOriginal) => ({ invented: 1 })); vi.mock('./http', () => {}); vi.mock();`,
+        { filename: '/repo/src/probe.test.ts', settings },
+      ),
+      [],
+    );
+  });
+
+  it('keeps a module read while its mtime stays', () => {
+    const root = mkdtempSync(join(tmpdir(), 'c05-cache-'));
+    try {
+      const module = join(root, 'svc.mjs');
+      const lint = () =>
+        ids('mock-export-parity', `vi.mock('./svc.mjs', () => ({ a: 1 }));`, {
+          filename: join(root, 'probe.test.ts'),
+        });
+      writeFileSync(module, 'export const a = 1;\n');
+      utimesSync(module, 1_000, 1_000);
+      assert.deepEqual(lint(), []);
+      writeFileSync(module, 'export const b = 1;\n');
+      utimesSync(module, 1_000, 1_000);
+      assert.deepEqual(lint(), []);
+      utimesSync(module, 2_000, 2_000);
+      assert.deepEqual(lint(), ['invented']);
+    } finally {
+      removeRoot(root);
+    }
+  });
+});
+
+describe('spawn-result-checked, local-tool-spawn and fixture-root-tracked edges', () => {
+  it('reads only a discarded spawnSync call', () => {
+    assert.deepEqual(
+      ids('spawn-result-checked', `x = 1; const r = spawnSync('node'); r;`),
+      [],
+    );
+  });
+
+  it('reads npx only as the command a spawner or shell runs first', () => {
+    assert.deepEqual(
+      ids(
+        'local-tool-spawn',
+        `spawnSync(); execSync(); log('npx tsc'); execSync('echo npx tsc'); execSync(5);`,
+      ),
+      [],
+    );
+  });
+
+  it('passes a root a helper keeps in its own let', () => {
+    assert.deepEqual(
+      ids(
+        'fixture-root-tracked',
+        `function make() { let dir; dir = mkdtempSync('x-'); return dir; }`,
+      ),
+      [],
+    );
   });
 });

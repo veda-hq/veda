@@ -549,8 +549,9 @@ export function c05CandidateRules({
 
   /** `release()` / `child.kill()` on a resource the function owns → that call. */
   function ownedCleanup(statement, fn, context) {
-    // Of a block's statements, only an ExpressionStatement has an expression.
-    let expression = statement.expression;
+    // TypeScript's `export =` carries an expression too, but is no cleanup.
+    let expression =
+      statement.type === 'ExpressionStatement' ? statement.expression : null;
     if (expression?.type === 'AwaitExpression')
       expression = expression.argument;
     const call = unwrap(expression);

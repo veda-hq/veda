@@ -1815,6 +1815,8 @@ describe('teardown-in-finally edges', () => {
       // A var, and a let the try never assigns.
       `it('a', async () => { var record; try { record = await start(); } finally { reap(record.pid); } });`,
       `it('a', async () => { let record; try { other = await start(); } finally { reap(record); } });`,
+      // TypeScript's `export =` carries an expression, but is no cleanup.
+      `it('a', () => { const child = spawn('x'); expect(1).toBe(1); export = child.kill(); });`,
     ];
     for (const code of cases) {
       assert.deepEqual(ids('teardown-in-finally', code), [], code);

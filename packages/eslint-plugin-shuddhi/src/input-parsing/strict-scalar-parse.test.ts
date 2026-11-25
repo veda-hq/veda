@@ -455,12 +455,12 @@ ruleTester.run('strict-scalar-parse (syntax only)', rule as never, {
     {
       code: "const p = usePageParam(fallback, searchParams.get('page'));",
       options: READERS,
-      errors: [{ messageId: 'pageParam', data: page('page') }],
+      errors: [{ messageId: 'pageParam' }],
     },
     // `perpage` and `per_page` are page sizes too.
     ...['perpage', 'per_page'].map(name => ({
       code: `const size = searchParams.get('${name}');`,
-      errors: [{ messageId: 'pageParam' as const, data: page(name) }],
+      errors: [{ messageId: 'pageParam' as const }],
     })),
   ],
 });

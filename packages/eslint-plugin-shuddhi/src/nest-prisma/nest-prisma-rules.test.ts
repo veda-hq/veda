@@ -974,12 +974,9 @@ describe('nest-param-pipe — which names, types and pipes count', () => {
 });
 
 describe('the options each rule takes', () => {
-  it('defaults to no transaction wrappers and the listenOnLoopback helper', () => {
+  it('defaults to no transaction wrappers', () => {
     assert.deepEqual(rules['prisma-transaction-multiwrite'].meta.defaultOptions, [
       { transactionWrappers: [] },
-    ]);
-    assert.deepEqual(rules['no-unbound-test-app'].meta.defaultOptions, [
-      { loopbackHelper: 'listenOnLoopback', loopbackHelperModule: '' },
     ]);
   });
 

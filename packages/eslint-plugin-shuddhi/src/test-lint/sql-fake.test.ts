@@ -219,6 +219,10 @@ ruleTester.run('no-sql-fake: fake shapes', rules['no-sql-fake'], {
     },
     {
       filename: TEST_FILE,
+      code: `const db = { query: vi.waitUntil((sql: string) => rows) };`,
+    },
+    {
+      filename: TEST_FILE,
       code: `const api = { query: ({ text }: Params) => search(text) };`,
     },
     { filename: TEST_FILE, code: `const db = { query: () => rows };` },
@@ -239,11 +243,8 @@ ruleTester.run('no-sql-fake: fake shapes', rules['no-sql-fake'], {
       vi.spyOn(db, name).mockImplementation((sql: string) => rows);`,
     },
     // A mock given no implementation, or one built elsewhere.
-    {
-      filename: TEST_FILE,
-      code: `db.query.mockImplementation();
-      const db = { query: vi.fn(handler) };`,
-    },
+    { filename: TEST_FILE, code: `db.query.mockImplementation();` },
+    { filename: TEST_FILE, code: `const db = { query: vi.fn(handler) };` },
     // A plain call around the implementation is no vi.fn.
     {
       filename: TEST_FILE,
@@ -381,6 +382,13 @@ describe('no-sql-fake method and recording tables', () => {
         'no-sql-fake',
         `const db = { query: (sql: string) => { recorder.${call}(sql); return rows; } };`,
       ), ['sqlFake']);
+  });
+
+  it('reads no fake in a vi.fn whose implementation is built elsewhere', () => {
+    assert.deepEqual(
+      messageIds('no-sql-fake', `const db = { query: vi.fn(handler), execute: jest.fn(makeHandler()) };`),
+      [],
+    );
   });
 
   it('treats String(sql) as inspection, not execution', () => {

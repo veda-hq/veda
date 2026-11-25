@@ -51,12 +51,14 @@ export default {
           return;
         }
 
-        // Check if the object has an 'orderBy' property
+        // Check if the object has an 'orderBy' property. A key is read by
+        // its identifier's name, computed or not, or by its literal's value;
+        // no other key expression carries a `value`.
         const hasOrderBy = optionsArg.properties.some(
           prop =>
             prop.type === 'Property' &&
-            ((prop.key.type === 'Identifier' && prop.key.name === 'orderBy') ||
-              (prop.key.type === 'Literal' && prop.key.value === 'orderBy')),
+            (prop.key.type === 'Identifier' ? prop.key.name : prop.key.value) ===
+              'orderBy',
         );
 
         if (!hasOrderBy) {

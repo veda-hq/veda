@@ -414,6 +414,117 @@ describe('no-self-mock-sut', () => {
     });
   });
 
+  describe('reads names and specifiers exactly as written', () => {
+    ruleTester.run('no-self-mock-sut', rule as never, {
+      valid: [
+        {
+          // A test suffix in the middle of a name does not make a test file.
+          filename: `${SERVICES}/cache-service.test.ts.snap`,
+          code: "vi.mock('./cache-service.snap');",
+          options: QUALIFIERS,
+        },
+        {
+          // Nor does a source file mocking a path spelled like itself.
+          filename: `${SERVICES}/cache-service.snap`,
+          code: "vi.mock('./cache-service.snap');",
+          options: QUALIFIERS,
+        },
+        {
+          // A state matrix with no area pattern strips no `undefined` area.
+          filename: `${PAGES}/ProductsPage.states.undefined.test.tsx`,
+          code: "vi.mock('./ProductsPage');",
+          options: [{ qualifiers: [], stateMatrix: 'states' }],
+        },
+        {
+          // With no qualifier at all, a trailing dot stays in the subject.
+          filename: `${SERVICES}/cache-service..test.ts`,
+          code: "vi.mock('./cache-service');",
+          options: [{ qualifiers: [] }],
+        },
+        {
+          // Only an index test's subject is also its directory.
+          filename: CACHE_TEST,
+          code: "vi.mock('.');\nvi.mock('../services');",
+          options: QUALIFIERS,
+        },
+        {
+          // A bare name is a package, even one spelled like the subject.
+          filename: CACHE_TEST,
+          code: "vi.mock('cache-service');",
+          options: QUALIFIERS,
+        },
+        {
+          // A computed member names whatever `mock` holds.
+          filename: CACHE_TEST,
+          code: "vi[mock]('./cache-service');",
+          options: QUALIFIERS,
+        },
+      ],
+      invalid: [
+        {
+          // Only a trailing extension is resolved away, not one inside a name.
+          filename: `${SERVICES}/chart.js-adapter.test.ts`,
+          code: "vi.mock('./chart.js-adapter');",
+          options: QUALIFIERS,
+          errors: SELF,
+        },
+        {
+          // With no qualifier, the stem is used as it is, `null` and all.
+          filename: `${SERVICES}/nullable.test.ts`,
+          code: "vi.mock('./nullable');",
+          options: [{ qualifiers: [] }],
+          errors: SELF,
+        },
+        {
+          // Every trailing slash goes before the extension does.
+          filename: CACHE_TEST,
+          code: "vi.mock('./cache-service.ts//');",
+          options: QUALIFIERS,
+          errors: SELF,
+        },
+      ],
+    });
+  });
+
+  it('names the mocked specifier in its message', () => {
+    const messages = new Linter({ configType: 'flat' })
+      .verify(
+        "vi.mock('./foo.js');",
+        [
+          {
+            files: ['**/*.js'],
+            plugins: { shuddhi: { rules: { 'no-self-mock-sut': rule } } as never },
+            rules: { 'shuddhi/no-self-mock-sut': 'error' },
+          },
+        ],
+        { filename: 'foo.test.js' },
+      )
+      .map(message => message.message);
+    assert.deepEqual(messages, [
+      "This test mocks './foo.js' — its own subject. Every assertion below then checks the mock, not the module under test, so the suite passes whatever the subject does. Import the subject for real and mock its collaborators instead.",
+    ]);
+  });
+
+  it('refuses options of the wrong shape', () => {
+    const lint = (options: unknown) =>
+      new Linter({ configType: 'flat' }).verify(
+        "vi.mock('./foo');",
+        [
+          {
+            files: ['**/*.js'],
+            plugins: { shuddhi: { rules: { 'no-self-mock-sut': rule } } as never },
+            rules: { 'shuddhi/no-self-mock-sut': ['error', options] as never },
+          },
+        ],
+        { filename: 'foo.test.js' },
+      );
+    assert.throws(() => lint({ qualifiers: 'unit' }), /should be array/);
+    assert.throws(() => lint({ qualifiers: [''] }), /fewer than 1 characters|shorter than 1 characters/);
+    assert.throws(() => lint({ notQualifiers: [1] }), /should be string/);
+    assert.throws(() => lint({ stateMatrix: '' }), /fewer than 1 characters|shorter than 1 characters/);
+    assert.throws(() => lint({ stateMatrixArea: '' }), /fewer than 1 characters|shorter than 1 characters/);
+  });
+
   it('refuses an option it does not define, and accepts comment keys', () => {
     const lint = (options: unknown) =>
       new Linter({ configType: 'flat' }).verify(

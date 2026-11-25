@@ -1188,6 +1188,9 @@ describe('findSwitchReads on scripts, at the edges of what names the environment
     ["const { 'A_SKIP': skip } = process.env;", ['A_SKIP']],
     ['import proc from "node:process";\nif (other.env.A_SKIP) {}', []],
     ['settings = process.env;\nif (other.A_SKIP) {}', []],
+    ['cfg.settings = process.env;\nif (other.A_SKIP) {}', []],
+    // The checker's own `arguments` has no declaration.
+    ['function gate() { return process.env[arguments]; }', []],
     // A default that names the parameter itself holds nothing.
     ['function gate(env: Options = env) { return env.A_SKIP; }', []],
     ['function gate(env: Options = process.env) { return env.A_SKIP || env.B_SKIP; }', ['A_SKIP', 'B_SKIP']],
@@ -1255,6 +1258,8 @@ describe('findSwitchReads on shell, at the edges of control flow and quoting', (
     ['false &&\n   \nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', [4]],
     ['echo x |\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', [3]],
     ['false &&  \nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', [3]],
+    // A trailing `\` joins the next line to this command.
+    ['echo x \\\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', [3]],
     // An escaped character mid-line joins nothing; nor does a heredoc's delimiter.
     ['echo \\$x\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
     ['cat <<EOF\nx\nEOF\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
@@ -1302,6 +1307,8 @@ describe('findSwitchReads on Python, at the edges of a token', () => {
     ["x = '''a\\\n''' + os.environ[\"A_SKIP\"]", ['A_SKIP']],
     ['x = """a\\\\""" + os.environ[\'A_SKIP\']', ['A_SKIP']],
     ['x = """a\\\n""" + os.environ[\'A_SKIP\']', ['A_SKIP']],
+    // A triple-quoted string holds all its text, however it starts.
+    ['x = \'\'\'os.environ["A_SKIP"]\'\'\'', []],
     // A string left open ends at the line's end.
     ['x = \'os.environ["A_SKIP"]', []],
     ['x = "os.environ[\'A_SKIP\']', []],

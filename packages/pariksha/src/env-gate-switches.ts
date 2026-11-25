@@ -194,7 +194,7 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
   };
   const accessed = (node: TS.PropertyAccessExpression | TS.ElementAccessExpression): string | null => (ts.isPropertyAccessExpression(node) ? node.name.text : constantString(node.argumentExpression));
   /** Locals bound to the `process` module (`import proc from 'node:process'`). */
-  const processAliases = new Set<TS.Symbol>();
+  const processAliases = new Set<TS.Symbol | undefined>();
   /** The file declares something named `process`, which may shadow Node's. */
   let declaresProcess = false;
   /**
@@ -231,8 +231,7 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
         return namedIsGlobal(target, /\bprocess\b/i, isProcess);
       }
       if (processAliases.size === 0) return false;
-      const symbol = symbolOf(target);
-      return symbol !== undefined && processAliases.has(symbol);
+      return processAliases.has(symbolOf(target));
     }
     if (!(ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) || accessed(target) !== 'process') {
       return false;
@@ -245,7 +244,7 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
   // alias in one function says nothing about a same-named local in another.
   // A name `env` is always one (a parameter or a destructured `{ env }`).
   // The checker is built only for a file that aliases the environment.
-  const receivers = new Set<TS.Symbol>();
+  const receivers = new Set<TS.Symbol | undefined>();
   let checker: TS.TypeChecker | null = null;
   const symbolOf = (node: TS.Node): TS.Symbol | undefined => {
     checker ??= checkerOf(ts, tree);
@@ -254,8 +253,11 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
   };
   /** The first declaration of what `node` names; none for a name the checker makes itself, such as `undefined`. */
   const declarationOf = (node: TS.Node): TS.Declaration | undefined => symbolOf(node)?.declarations?.at(0);
-  /** Adds the binding `node` names to `set`; a name nothing declares adds nothing. */
-  const remember = (set: Set<TS.Symbol>, node: TS.Node): void => {
+  /**
+   * Adds the binding `node` names to `set`; a name nothing declares adds
+   * nothing, so asking either set about one finds nothing.
+   */
+  const remember = (set: Set<TS.Symbol | undefined>, node: TS.Node): void => {
     const symbol = symbolOf(node);
     if (symbol !== undefined) set.add(symbol);
   };
@@ -294,10 +296,7 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
     if (ts.isIdentifier(target)) {
       // A binding already shown to hold the environment is one, whatever
       // its name or annotation (`const env: Record<…> = process.env`).
-      if (receivers.size > 0) {
-        const symbol = symbolOf(target);
-        if (symbol !== undefined && receivers.has(symbol)) return true;
-      }
+      if (receivers.size > 0 && receivers.has(symbolOf(target))) return true;
       return target.text === 'env' && namedIsGlobal(target, /\bProcessEnv\b/, isEnv);
     }
     if ((ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) && accessed(target) === 'env') {
@@ -353,9 +352,8 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
     if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier) && PROCESS_MODULES.has(node.moduleSpecifier.text)) {
       aliasProcessModule(node.importClause);
     }
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer !== undefined && requiresProcess(node.initializer)) {
-      remember(processAliases, node.name);
-    }
+    // A pattern binds no one name, so it adds nothing.
+    if (ts.isVariableDeclaration(node) && node.initializer !== undefined && requiresProcess(node.initializer)) remember(processAliases, node.name);
     if (ts.isVariableDeclaration(node) && node.initializer !== undefined) initialised.push({ name: node.name, init: node.initializer });
     // Any name `process` (a parameter, a variable, a function, a member):
     // only then can a bare `process` be something other than Node's.

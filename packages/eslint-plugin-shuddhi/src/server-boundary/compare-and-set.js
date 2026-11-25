@@ -157,16 +157,16 @@ function whereKeys(where) {
               ? branch
               : new Set([...shared].filter(key => branch.has(key)));
         }
-        for (const key of shared ?? []) into.add(key);
+        // An empty OR (`OR: []`) has no branch, so constrains nothing.
+        if (shared !== null) for (const key of shared) into.add(key);
         continue;
       }
       into.add(name);
-      // Compound unique input: `where: { id_status: { id, status } }`.
+      // Compound unique input: `where: { id_status: { id, status } }`. A
+      // spread has no key, so it reads as null, which names no column.
       if (property.value.type === 'ObjectExpression' && name.includes('_')) {
         for (const inner of property.value.properties) {
-          const innerName =
-            inner.type === 'Property' ? keyName(inner.key) : null;
-          if (innerName) into.add(innerName);
+          into.add(keyName(inner.key));
         }
       }
     }
@@ -179,7 +179,7 @@ function whereKeys(where) {
 function wherePairs(where, out = new Map()) {
   if (!where || where.type !== 'ObjectExpression') return out;
   for (const property of where.properties) {
-    if (property.type !== 'Property') continue;
+    // A spread has no key, so reads as null too.
     const name = keyName(property.key);
     if (name === null) continue;
     if (name === 'AND') {
@@ -203,10 +203,10 @@ function wherePairs(where, out = new Map()) {
  */
 function targetsReadRow(read, variable, writeWhere, sourceCode) {
   // `row.id`, not `row.user_id`: only a unique key of the read row names it.
+  // Only an Identifier object has a `name`.
   const fromRead = value =>
     value.type === 'MemberExpression' &&
     !value.computed &&
-    value.object.type === 'Identifier' &&
     value.object.name === variable &&
     value.property.type === 'Identifier' &&
     ROW_KEYS.has(value.property.name);
@@ -235,11 +235,9 @@ function targetsReadRow(read, variable, writeWhere, sourceCode) {
 
 function objectProperty(object, name) {
   if (!object || object.type !== 'ObjectExpression') return null;
+  // A spread has no key, so matches no name.
   return (
-    object.properties.find(
-      property =>
-        property.type === 'Property' && keyName(property.key) === name,
-    ) ?? null
+    object.properties.find(property => keyName(property.key) === name) ?? null
   );
 }
 
@@ -253,17 +251,15 @@ function exits(statement) {
     return true;
   }
   if (statement.type === 'BlockStatement') return statement.body.some(exits);
-  if (statement.type === 'IfStatement') {
-    return exits(statement.consequent) || exits(statement.alternate);
-  }
-  return false;
+  // Of the statements, only an IfStatement has a consequent and alternate.
+  return exits(statement.consequent) || exits(statement.alternate);
 }
 
 /**
  * What an expression reads: `x.field` pairs and bare identifiers. Nested
  * functions are not entered — a callback's reads are not this expression's.
  */
-function references(node, out = { members: [], names: [] }) {
+function references(node, out = { members: new Set(), names: new Set() }) {
   if (
     node.type === 'FunctionExpression' ||
     node.type === 'ArrowFunctionExpression' ||
@@ -272,25 +268,23 @@ function references(node, out = { members: [], names: [] }) {
     return out;
   }
   if (node.type === 'Identifier') {
-    out.names.push(node.name);
+    out.names.add(node.name);
     return out;
   }
   if (node.type === 'MemberExpression') {
-    if (
-      !node.computed &&
-      node.object.type === 'Identifier' &&
-      node.property.type === 'Identifier'
-    ) {
+    // A non-Identifier object (`this.row.status`) has no `name`, so its
+    // pair names no read variable.
+    if (!node.computed && node.property.type === 'Identifier') {
       // `invoice.items.length` / `row.user_roles.some(...)` test a loaded
       // relation, not a column the write could compare on.
       // An Identifier property means `node` is the parent's object: as a
       // computed property `node` would itself be that (MemberExpression) key.
       const parent = node.parent;
       const collection =
-        parent?.type === 'MemberExpression' &&
+        parent.type === 'MemberExpression' &&
         parent.property.type === 'Identifier' &&
         COLLECTION_MEMBERS.has(parent.property.name);
-      if (!collection) out.members.push([node.object.name, node.property.name]);
+      if (!collection) out.members.add([node.object.name, node.property.name]);
     }
     references(node.object, out);
     if (node.computed) references(node.property, out);
@@ -316,26 +310,20 @@ function references(node, out = { members: [], names: [] }) {
 
 /** SET assignments of an `ON CONFLICT ... DO UPDATE SET` that can regress a cursor. */
 export function regressingCursorColumns(sql) {
-  const match = /ON\s+CONFLICT[\s\S]*?DO\s+UPDATE\s+SET\s+([\s\S]*)$/i.exec(
-    sql,
-  );
+  // The capture runs to the end and starts at the whitespace after SET,
+  // which the column's trim drops.
+  const match = /ON\s+CONFLICT[\s\S]*?DO\s+UPDATE\s+SET(\s[\s\S]*)/i.exec(sql);
   if (!match) return [];
-  let assignments = match[1];
-  /** The DO UPDATE's own WHERE clause, when it has one. */
-  let where = null;
-  const tail = /\b(WHERE|RETURNING)\b|;/i.exec(assignments);
-  if (tail) {
-    if (tail[1] && tail[1].toUpperCase() === 'WHERE') {
-      const rest = assignments.slice(tail.index + tail[0].length);
-      const end = /\bRETURNING\b|;/i.exec(rest);
-      where = { text: end ? rest.slice(0, end.index) : rest };
-    }
-    assignments = assignments.slice(0, tail.index);
-  }
+  // The DO UPDATE ends at RETURNING or `;`.
+  const [update] = match[1].split(/\bRETURNING\b|;/i);
+  /** Where the DO UPDATE's own WHERE clause starts, when it has one. */
+  const whereAt = /\bWHERE\b/i.exec(update);
+  const assignments = whereAt ? update.slice(0, whereAt.index) : update;
   const columns = [];
   for (const assignment of splitTopLevel(assignments)) {
     // Split at the first `=`: the column on the left, its new value right.
-    const parts = /^([^=]*)=([\s\S]*)$/.exec(assignment);
+    // Unanchored: the first match starts at 0 and runs to the end anyway.
+    const parts = /([^=]*)=([\s\S]*)/.exec(assignment);
     if (parts === null) continue;
     const column = parts[1].trim().replace(/^"|"$/g, '');
     const value = parts[2];
@@ -344,8 +332,11 @@ export function regressingCursorColumns(sql) {
     // MIN pick the smaller value, so they can move the cursor back.
     if (/\b(?:GREATEST|MAX)\s*\(/i.test(value)) continue;
     // A WHERE on the DO UPDATE only advances the cursor when it compares the
-    // column with the incoming value: `t.cursor < EXCLUDED.cursor`.
-    if (where !== null && advancesInWhere(where.text, column)) continue;
+    // column with the incoming value: `t.cursor < EXCLUDED.cursor`. The
+    // clause is read with its WHERE keyword, which names no cursor column.
+    if (whereAt && advancesInWhere(update.slice(whereAt.index), column)) {
+      continue;
+    }
     columns.push(column);
   }
   return columns;
@@ -368,14 +359,15 @@ function advancesInWhere(where, column) {
 }
 
 /** Split on commas outside parentheses: `a = f(x, y), b = 1` → two parts. */
-function splitTopLevel(text) {
+export function splitTopLevel(text) {
   const parts = [];
   let depth = 0;
   let start = 0;
   for (const { 0: char, index } of text.matchAll(/[(),]/g)) {
     if (char === '(') depth += 1;
     else if (char === ')') depth = Math.max(0, depth - 1);
-    else if (char === ',' && depth === 0) {
+    // What is left is a comma.
+    else if (depth === 0) {
       parts.push(text.slice(start, index));
       start = index + 1;
     }
@@ -414,7 +406,8 @@ const compareAndSet = {
     },
   },
   create(context) {
-    const immutableNames = new Set(context.options[0]?.immutableFields ?? []);
+    // `new Set(undefined)` is empty.
+    const immutableNames = new Set(context.options[0]?.immutableFields);
     const immutable = field =>
       IMMUTABLE_FIELD.test(field) || immutableNames.has(field);
     /** function → { reads: Map, guards: Map, writes: [], lockScopes: Set } */
@@ -459,7 +452,9 @@ const compareAndSet = {
      */
     const readFields = (unit, node) => {
       const { members, names } = references(node);
-      const pairs = members.filter(([variable]) => unit.reads.has(variable));
+      const pairs = [...members].filter(([variable]) =>
+        unit.reads.has(variable),
+      );
       for (const name of names) pairs.push(...(unit.derived.get(name) ?? []));
       return pairs;
     };
@@ -481,9 +476,8 @@ const compareAndSet = {
 
     function checkSql(node) {
       const text = sqlText(node);
-      if (!text) return;
       if (LOCK_SQL.test(text)) lock(node);
-      if (!/ON\s+CONFLICT/i.test(text)) return;
+      // Text with no ON CONFLICT upsert has no column to report.
       for (const column of regressingCursorColumns(text)) {
         context.report({ node, messageId: 'cursorRegress', data: { column } });
       }
@@ -509,21 +503,20 @@ const compareAndSet = {
           return;
         }
         // `const { status } = invoice` derives `status` from the read row.
-        if (
-          node.id.type === 'ObjectPattern' &&
-          init.type === 'Identifier' &&
-          unit.reads.has(init.name)
-        ) {
+        // Only an Identifier init has a `name` a read could be stored under.
+        if (node.id.type === 'ObjectPattern' && unit.reads.has(init.name)) {
           for (const property of node.id.properties) {
             if (property.type !== 'Property') continue;
             const field = keyName(property.key);
-            const local =
-              property.value.type === 'Identifier' ? property.value.name : null;
+            // A nested pattern or a default (`{ status = 'X' }`) has no
+            // `name`, so derives nothing.
+            const local = property.value.name;
             if (field && local) unit.derived.set(local, [[init.name, field]]);
           }
           return;
         }
-        if (node.id.type !== 'Identifier') return;
+        // A pattern has no `name`: what it derives is kept under undefined,
+        // which no identifier looks up.
         const pairs = readFields(unit, init);
         if (pairs.length > 0) unit.derived.set(node.id.name, pairs);
       },
@@ -541,7 +534,9 @@ const compareAndSet = {
                 callee.property.type === 'Identifier'
               ? callee.property.name
               : null;
-        if (calleeName !== null && LOCK_CALL.test(calleeName)) {
+        // A nameless callee tests as "null", which neither pattern below
+        // matches.
+        if (LOCK_CALL.test(calleeName)) {
           // `withInvoiceLock(id, async () => ...)` holds only its callback:
           // the other arguments run before the lock is taken.
           lock(node, node.arguments.find(isFunction));
@@ -554,7 +549,6 @@ const compareAndSet = {
             : node.parent;
         if (
           statement.type === 'ExpressionStatement' &&
-          calleeName !== null &&
           /^(?:assert|ensure|validate|check|require)/i.test(calleeName)
         ) {
           const unit = unitFor(node);
@@ -578,8 +572,9 @@ const compareAndSet = {
         if (!call || !GUARDED_WRITES.has(call.method)) return;
         const unit = unitFor(node);
         if (!unit) return;
+        // A write with no literal argument has no literal `where`, so its
+        // `keys` are null and Program:exit skips it.
         const argument = node.arguments[0];
-        if (!argument || argument.type !== 'ObjectExpression') return;
         const where = objectProperty(argument, 'where');
         const data = objectProperty(argument, 'data');
         unit.writes.push({
@@ -643,9 +638,9 @@ const compareAndSet = {
             if (reported || !TRANSITION_WRITES.has(write.method)) continue;
             if (!write.data || write.data.type !== 'ObjectExpression') continue;
             for (const property of write.data.properties) {
-              const field =
-                property.type === 'Property' ? keyName(property.key) : null;
-              if (field === null || !TRANSITION_COLUMNS.has(field)) continue;
+              // A spread has no key, so it reads as null: no transition column.
+              const field = keyName(property.key);
+              if (!TRANSITION_COLUMNS.has(field)) continue;
               if (write.keys.has(field)) continue;
               context.report({
                 node: write.node,

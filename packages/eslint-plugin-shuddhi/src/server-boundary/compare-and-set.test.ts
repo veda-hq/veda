@@ -4,7 +4,10 @@ import { after, describe, it } from 'node:test';
 import { RuleTester } from '@typescript-eslint/rule-tester';
 import { Linter } from 'eslint';
 
-import rule, { regressingCursorColumns } from './compare-and-set.js';
+import rule, {
+  regressingCursorColumns,
+  splitTopLevel,
+} from './compare-and-set.js';
 
 /**
  * RACE-02 `compare-and-set`. The catalogue
@@ -939,4 +942,405 @@ tester.run('compare-and-set (immutableFields)', rule, {
       errors: [{ messageId: 'staleGuard' }],
     },
   ],
+});
+
+// ---------------------------------------------------------------------------
+// Inputs on which the rule and a one-token change to it disagree.
+
+/** A lock taken by `sql`, then a read, a check and an id-only write. */
+const lockedByRaw = (sql: string): string => `async function f(id) {
+  await tx.$queryRaw\`${sql}\`;
+  const row = await prisma.invoice.findUnique({ where: { id } });
+  if (row.status !== 'OPEN') throw new ConflictException();
+  await ${NOTE_BY_ID};
+}`;
+
+/** A call to `helper` before a read, a check and an id-only write. */
+const lockedByCall = (helper: string): string => `async function f(id) {
+  await ${helper}(id);
+  const row = await prisma.invoice.findUnique({ where: { id } });
+  if (row.status !== 'OPEN') throw new ConflictException();
+  await ${NOTE_BY_ID};
+}`;
+
+/** A read, `{ status } = row`, a check that exits on `test`, then a write. */
+const derivedGuard = (test: string): string => `async function f(id, base) {
+  const row = await prisma.invoice.findUnique({ where: { id } });
+  const { status } = row;
+  if (${test}) throw new ConflictException();
+  await ${NOTE_BY_ID};
+}`;
+
+const STALE_STATUS = {
+  messageId: 'staleGuard',
+  data: { method: 'update', delegate: 'invoice', variable: 'row', field: 'status' },
+} as const;
+
+tester.run('compare-and-set (sweep)', rule, {
+  valid: [
+    // A root named neither as a client nor as prisma is no client.
+    {
+      code: "async function f(id) { await api.invoice.update({ where: { id }, data: { status: 'X' } }); }",
+    },
+    // `#private` names are not a client, a delegate or a method.
+    {
+      code: "class S { #prisma; async f(id) { await this.#prisma.invoice.update({ where: { id }, data: { status: 'X' } }); } }",
+    },
+    {
+      code: "class S { #invoice; async f(id) { await prisma.#invoice.update({ where: { id }, data: { status: 'X' } }); } }",
+    },
+    {
+      code: "class S { #update() {} async f(id) { await prisma.invoice.#update({ where: { id }, data: { status: 'X' } }); } }",
+    },
+    // FOR UPDATE and its NO KEY form take any run of whitespace, and an
+    // advisory lock need not be the transaction-scoped one.
+    { code: lockedByRaw('SELECT 1 FROM "Invoice" WHERE id = 1 FOR  UPDATE') },
+    { code: lockedByRaw('SELECT 1 FROM "Invoice" FOR NO  KEY UPDATE') },
+    { code: lockedByRaw('SELECT 1 FROM "Invoice" FOR NO KEY  UPDATE') },
+    { code: lockedByRaw('SELECT pg_advisory_lock(1)') },
+    // acquire...Lock takes any word between.
+    { code: lockedByCall('acquireRowLock') },
+    // An identity key needs no option, whatever comes before `Id`.
+    { code: ownershipCheck('ownerId') },
+    // A numeric key names no column: its value, though it holds the read
+    // row's id, neither keys the write nor addresses the read row.
+    {
+      code: readGuardWrite(
+        "prisma.invoice.update({ where: { 1: { id: row.id } }, data: { note: 'x' } })",
+      ),
+    },
+    // WHERE shapes that still name the read row and its status.
+    {
+      code: readGuardWrite(
+        "prisma.invoice.update({ where: { [me]: { not: row.id }, id, status: 'OPEN' }, data: { note: 'x' } })",
+      ),
+    },
+    {
+      code: readGuardWrite(
+        "prisma.invoice.update({ where: { AND: { id, status: 'OPEN' } }, data: { note: 'x' } })",
+      ),
+    },
+    {
+      code: readGuardWrite(
+        "prisma.invoice.update({ where: { AND: [base, { id, status: 'OPEN' }] }, data: { note: 'x' } })",
+      ),
+    },
+    {
+      code: readGuardWrite(
+        "prisma.invoice.update({ where: { AND: [, { id, status: 'OPEN' }] }, data: { note: 'x' } })",
+      ),
+    },
+    {
+      code: readGuardWrite(
+        "prisma.invoice.update({ where: { id, status: 'OPEN', OR: [base, { note: 'x' }] }, data: { note: 'y' } })",
+      ),
+    },
+    {
+      code: readGuardWrite(
+        "prisma.invoice.update({ where: { id, status: 'OPEN', OR: [, { note: 'x' }] }, data: { note: 'y' } })",
+      ),
+    },
+    {
+      code: readGuardWrite(
+        "prisma.invoice.update({ where: { id, status: 'OPEN', OR: [] }, data: { note: 'x' } })",
+      ),
+    },
+    // A computed member, or another object's id, names another row.
+    {
+      code: readGuardWrite(
+        "prisma.invoice.update({ where: { id: row[id] }, data: { note: 'x' } })",
+      ),
+    },
+    {
+      code: readGuardWrite(
+        "prisma.invoice.update({ where: { id: base.id }, data: { note: 'x' } })",
+      ),
+    },
+    // Module scope is no function: nothing there is judged.
+    {
+      code: `const row = await prisma.invoice.findUnique({ where: { id } });
+        if (row.status !== 'OPEN') throw new ConflictException();
+        await ${NOTE_BY_ID};`,
+    },
+    { code: 'await tx.$queryRaw`SELECT 1 FROM "Invoice" FOR UPDATE`;' },
+    { code: 'assertOpen(row.status);' },
+    // A declaration with no initialiser.
+    { code: 'async function f() { let x; }' },
+    // A rest element derives nothing.
+    {
+      code: `async function f(id) {
+        const row = await prisma.invoice.findUnique({ where: { id } });
+        const { ...rest } = row;
+        await ${NOTE_BY_ID};
+      }`,
+    },
+    // Only a name that starts with an assertion verb is one.
+    {
+      code: `async function f(id) {
+        const row = await prisma.invoice.findUnique({ where: { id } });
+        doValidate(row.status);
+        await ${NOTE_BY_ID};
+      }`,
+    },
+    // A read after the check is not a write.
+    {
+      code: readGuardWrite('prisma.invoice.findFirst({ where: { id } })'),
+    },
+    // A write with no WHERE, or with data built elsewhere, is not judged.
+    {
+      code: "async function f() { await prisma.invoice.update({ data: { status: 'X' } }); }",
+    },
+    {
+      code: 'async function f(id, data) { await prisma.invoice.update({ where: { id }, data }); }',
+    },
+    // A #private field of the read row is not a column.
+    {
+      code: `class S { #status; async f(id) {
+        const row = await prisma.invoice.findUnique({ where: { id } });
+        if (row.#status) throw new ConflictException();
+        await ${NOTE_BY_ID};
+      } }`,
+    },
+    // A same-named field of another object is not the derived local.
+    { code: derivedGuard("base.status !== 'OPEN'") },
+    // A #private field of the read row is not its key.
+    {
+      code: `class S { #id; async f(id) {
+        const row = await prisma.invoice.findUnique({ where: { id } });
+        if (row.status !== 'OPEN') throw new ConflictException();
+        await prisma.invoice.update({ where: { id: row.#id }, data: { note: 'x' } });
+      } }`,
+    },
+    // A destructured read row is not a read variable.
+    {
+      code: `async function f(id) {
+        const { note } = await prisma.invoice.findUnique({ where: { id } });
+        if (this.cfg.status !== 'OPEN') throw new ConflictException();
+        await ${NOTE_BY_ID};
+      }`,
+    },
+  ],
+  invalid: [
+    // Names that only end, or only start, like an identity key are not one.
+    {
+      code: ownershipCheck('paid'),
+      errors: [{ ...STALE_STATUS, data: { ...STALE_STATUS.data, field: 'paid' } }],
+    },
+    {
+      code: ownershipCheck('idle'),
+      errors: [{ ...STALE_STATUS, data: { ...STALE_STATUS.data, field: 'idle' } }],
+    },
+    // Lock helpers are named from their first word to their last.
+    { code: lockedByCall('unlockInvoice'), errors: [STALE_STATUS] },
+    { code: lockedByCall('withLockTimeout'), errors: [STALE_STATUS] },
+    {
+      code: `class S { #lockRow() {} async f(id) {
+        await this.#lockRow(id);
+        const row = await prisma.invoice.findUnique({ where: { id } });
+        if (row.status !== 'OPEN') throw new ConflictException();
+        await ${NOTE_BY_ID};
+      } }`,
+      errors: [STALE_STATUS],
+    },
+    // A regular expression is not SQL.
+    {
+      code: `async function f(id) {
+        const re = /FOR UPDATE/;
+        const row = await prisma.invoice.findUnique({ where: { id } });
+        if (row.status !== 'OPEN') throw new ConflictException();
+        await ${NOTE_BY_ID};
+      }`,
+      errors: [STALE_STATUS],
+    },
+    // An OR whose first branch lacks the column, and an AND written as an
+    // object, do not compare on it.
+    {
+      code: readGuardWrite(
+        "prisma.invoice.update({ where: { id, OR: [{ paid_by: null }, { status: 'OPEN' }] }, data: { note: 'x' } })",
+      ),
+      errors: [STALE_STATUS],
+    },
+    {
+      code: readGuardWrite(
+        "prisma.invoice.update({ where: { AND: { id, note: 'x' } }, data: { note: 'y' } })",
+      ),
+      errors: [STALE_STATUS],
+    },
+    // A compound key with a spread still names the read row.
+    {
+      code: readGuardWrite(
+        "prisma.invoice.update({ where: { id_note: { ...base, id: row.id } }, data: { note: 'x' } })",
+      ),
+      errors: [STALE_STATUS],
+    },
+    // A read whose arguments are built elsewhere, addressed by row.id.
+    {
+      code: readGuardWrite(
+        "prisma.invoice.update({ where: { id: row.id }, data: { note: 'x' } })",
+        { read: 'prisma.invoice.findUnique(args)' },
+      ),
+      errors: [STALE_STATUS],
+    },
+    // A block that exits after other statements is a guard.
+    {
+      code: `async function f(id) {
+        const row = await prisma.invoice.findUnique({ where: { id } });
+        if (row.status !== 'OPEN') { log(); throw new ConflictException(); }
+        await ${NOTE_BY_ID};
+      }`,
+      errors: [STALE_STATUS],
+    },
+    // A #private member of a relation does not make it a collection.
+    {
+      code: `class S { #length; async f(id) {
+        const row = await prisma.invoice.findUnique({ where: { id } });
+        if (row.items.#length) throw new ConflictException();
+        await ${NOTE_BY_ID};
+      } }`,
+      errors: [{ ...STALE_STATUS, data: { ...STALE_STATUS.data, field: 'items' } }],
+    },
+    // Serializable options hold the guard only on prisma's $transaction.
+    ...[
+      'prisma.run',
+      '$transaction',
+      'this.#$transaction',
+    ].map(callee => ({
+      code: `class S { #$transaction() {} async f(id) {
+        await ${callee}(async tx => {
+          const row = await tx.invoice.findUnique({ where: { id } });
+          if (row.status !== 'OPEN') throw new ConflictException();
+          await tx.invoice.update({ where: { id }, data: { note: 'x' } });
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      } }`,
+      errors: [STALE_STATUS],
+    })),
+    // A derived local read as a computed member, a computed key or a value.
+    { code: derivedGuard('MAP[status]'), errors: [STALE_STATUS] },
+    { code: derivedGuard('isBad({ [status]: true })'), errors: [STALE_STATUS] },
+    { code: derivedGuard('isBad({ s: status })'), errors: [STALE_STATUS] },
+  ],
+});
+
+describe('regressingCursorColumns (sweep)', () => {
+  const upsert = (set: string): string =>
+    `INSERT INTO c (k, cursor) VALUES ($1, $2) ON CONFLICT (k) DO UPDATE SET ${set}`;
+
+  it('reads only cursor-like names as cursors', () => {
+    for (const column of ['my_seqno', 'xseq', 'seqno']) {
+      assert.deepEqual(
+        regressingCursorColumns(upsert(`${column} = EXCLUDED.${column}`)),
+        [],
+      );
+    }
+    for (const column of ['my_seq', 'seq', 'sequence_no']) {
+      assert.deepEqual(
+        regressingCursorColumns(upsert(`${column} = EXCLUDED.${column}`)),
+        [column],
+      );
+    }
+  });
+
+  it('takes any run of whitespace between the upsert keywords', () => {
+    for (const sql of [
+      'INSERT INTO c VALUES (1) ON  CONFLICT (k) DO UPDATE SET cursor = EXCLUDED.cursor',
+      'INSERT INTO c VALUES (1) ON CONFLICT (k) DO  UPDATE SET cursor = EXCLUDED.cursor',
+      'INSERT INTO c VALUES (1) ON CONFLICT (k) DO UPDATE  SET cursor = EXCLUDED.cursor',
+      'INSERT INTO c VALUES (1) ON CONFLICT (k) DO UPDATE SET  cursor = EXCLUDED.cursor',
+    ]) {
+      assert.deepEqual(regressingCursorColumns(sql), ['cursor']);
+    }
+  });
+
+  it('reads the DO UPDATE WHERE apart from the SET and RETURNING', () => {
+    assert.deepEqual(
+      regressingCursorColumns(
+        upsert(
+          'cursor = CASE WHEN c.cursor <= EXCLUDED.cursor THEN EXCLUDED.cursor ELSE c.cursor END WHERE c.enabled',
+        ),
+      ),
+      ['cursor'],
+    );
+    assert.deepEqual(
+      regressingCursorColumns(
+        upsert(
+          'cursor = EXCLUDED.cursor WHERE c.enabled RETURNING c.cursor < EXCLUDED.cursor',
+        ),
+      ),
+      ['cursor'],
+    );
+    assert.deepEqual(
+      regressingCursorColumns(
+        upsert('cursor = EXCLUDED.cursor RETURNING GREATEST(c.cursor, 1)'),
+      ),
+      ['cursor'],
+    );
+    // A GREATEST in the WHERE is no part of the SET's value.
+    assert.deepEqual(
+      regressingCursorColumns(
+        upsert('cursor = EXCLUDED.cursor WHERE GREATEST(c.cursor, 1) > 0'),
+      ),
+      ['cursor'],
+    );
+  });
+
+  it('skips a SET part with no assignment', () => {
+    assert.deepEqual(
+      regressingCursorColumns(upsert('cursor = EXCLUDED.cursor, junk')),
+      ['cursor'],
+    );
+  });
+
+  it('strips only the quotes around a column', () => {
+    assert.deepEqual(
+      regressingCursorColumns(upsert('"my""cursor" = EXCLUDED."my""cursor"')),
+      ['my""cursor'],
+    );
+  });
+
+  it('reads GREATEST with a space before its parenthesis', () => {
+    assert.deepEqual(
+      regressingCursorColumns(
+        upsert('cursor = GREATEST (c.cursor, EXCLUDED.cursor)'),
+      ),
+      [],
+    );
+  });
+});
+
+describe('splitTopLevel', () => {
+  it('splits only on commas outside every parenthesis', () => {
+    assert.deepEqual(splitTopLevel('f(g(a), b), c'), ['f(g(a), b)', ' c']);
+  });
+
+  it('keeps one part when there is no comma', () => {
+    assert.deepEqual(splitTopLevel('a = 1'), ['a = 1']);
+  });
+
+  it('reads a stray closing parenthesis as depth zero', () => {
+    assert.deepEqual(splitTopLevel('a), b'), ['a)', ' b']);
+  });
+});
+
+describe('compare-and-set options', () => {
+  // A config without `files` applies to ESLint's default .js pattern.
+  const lint = (immutableFields: unknown) =>
+    new Linter({ cwd: '/repo' }).verify(
+      '',
+      {
+        plugins: { boundary: { rules: { 'compare-and-set': rule } } },
+        rules: { 'boundary/compare-and-set': ['error', { immutableFields }] },
+      },
+      '/repo/a.js',
+    );
+
+  it('takes a list of distinct non-empty names', () => {
+    assert.deepEqual(lint(['brand', 'store']), []);
+  });
+
+  it('refuses anything else', () => {
+    assert.throws(() => lint('brand'), /should be array/);
+    assert.throws(() => lint([7]), /should be string/);
+    assert.throws(() => lint(['']), /should NOT be shorter than 1 characters/);
+    assert.throws(() => lint(['brand', 'brand']), /duplicate items/);
+  });
 });

@@ -53,9 +53,9 @@ const noLocalApiContract = {
   },
   create(context) {
     const filename = context.filename.split('\\').join('/');
-    const allow = context.options[0]?.allow ?? [];
+    const allow = context.options[0]?.allow;
     const contracts = contractsLabel(context.options[0]);
-    if (allow.some(path => filename.endsWith(path))) return {};
+    if (allow?.some(path => filename.endsWith(path))) return {};
     const apiClient = API_CLIENT_FILE.test(filename);
     const boundary = apiClient || BOUNDARY_FILE.test(filename);
     if (!boundary) return {};

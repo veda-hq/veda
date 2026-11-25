@@ -117,6 +117,13 @@ tester.run('no-local-api-contract', rule, {
       options: [{ allow: ['src/auth/types/auth-request.type.ts'] }],
       errors: [{ messageId: 'namedContract' }],
     },
+    // An empty allow list allows no file.
+    {
+      code: 'interface AuthenticatedRequest { user: { sub: string } }',
+      filename: '/repo/server/src/admin/controllers/admin-stores.controller.ts',
+      options: [{ allow: [] }],
+      errors: [{ messageId: 'namedContract' }],
+    },
     // Interface DTOs declared in a service.
     {
       code: 'export interface CreateCampaignDto { name: string }',
@@ -164,8 +171,61 @@ tester.run('no-local-api-contract (branches)', rule, {
       code: 'export type SyncResponse = Paged<Order>;',
       filename: '/repo/server/src/x/x.service.ts',
     },
+    // A contract word that does not end the name is not a contract name.
+    {
+      code: 'interface ResponseCache { at: number }',
+      filename: '/repo/server/src/x/x.service.ts',
+    },
+    // An allowed path in a wire-facing module is still allowed.
+    {
+      code: 'export interface CreateCampaignDto { name: string }',
+      filename: '/repo/server/src/x/x.service.ts',
+      options: [{ allow: ['x/x.service.ts'] }],
+    },
+    // A folder named like a client module does not make its files clients.
+    {
+      code: 'interface OrderResponse { ok: boolean }',
+      filename: '/repo/web/src/api.ts/orders.ts',
+    },
   ],
-  invalid: [],
+  invalid: [
+    // Any module in an api/ folder is an API client.
+    {
+      code: 'interface CacheEntry { at: number }',
+      filename: '/repo/web/src/api/orders.ts',
+      errors: [{ messageId: 'clientContract' }],
+    },
+    // So is a module named *Api outside one.
+    {
+      code: 'interface CacheEntry { at: number }',
+      filename: '/repo/web/src/lib/recoApi.ts',
+      errors: [{ messageId: 'clientContract' }],
+    },
+    // A singular service/ folder faces the wire too.
+    {
+      code: 'export interface CreateCampaignDto { name: string }',
+      filename: '/repo/server/src/service/campaigns.ts',
+      errors: [{ messageId: 'namedContract' }],
+    },
+  ],
+});
+
+describe('no-local-api-contract allow list', () => {
+  it('refuses an allow option that is not an array of strings', () => {
+    // A config without `files` applies to ESLint's default .js pattern.
+    const linter = new Linter({ cwd: '/repo' });
+    const lint = (allow: unknown) =>
+      linter.verify(
+        '',
+        {
+          plugins: { boundary: { rules: { 'no-local-api-contract': rule } } },
+          rules: { 'boundary/no-local-api-contract': ['error', { allow }] },
+        },
+        '/repo/a.js',
+      );
+    assert.throws(() => lint('x.service.ts'), /should be array/);
+    assert.throws(() => lint([7]), /should be string/);
+  });
 });
 
 describe('no-local-api-contract on a Windows path', () => {

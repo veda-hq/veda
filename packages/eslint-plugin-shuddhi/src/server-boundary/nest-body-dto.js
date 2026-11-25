@@ -55,28 +55,31 @@ const SYMBOL_METHOD = 8192;
 const SYMBOL_TYPE_ALIAS = 524288;
 const SYMBOL_ALIAS = 2097152;
 
-/** The decorator name of a TypeScript (not ESTree) decorator node. */
+/**
+ * The decorator name of a TypeScript (not ESTree) decorator node. A decorator
+ * always has an expression: `X`, `X()`, `ns.X` or `ns.X()`.
+ */
 function tsDecoratorName(decorator) {
   let expression = decorator.expression;
-  if (expression && expression.arguments !== undefined) {
-    expression = expression.expression;
-  }
-  if (expression && expression.name !== undefined) expression = expression.name;
+  if (expression.arguments !== undefined) expression = expression.expression;
+  if (expression.name !== undefined) expression = expression.name;
   // `text` is the name as written; `escapedText` differs only for `__` names.
-  return expression?.text ?? null;
+  return expression.text ?? null;
 }
 
 /**
  * Does a TypeScript declaration carry at least one validating decorator?
  * Decorators sit in `modifiers` since TS 5; a decorator is the modifier that
- * has an `expression`.
+ * has an `expression`. A declaration with no modifier has no `modifiers`.
  */
 function tsDeclarationValidated(declaration) {
-  return (declaration.modifiers ?? []).some(modifier => {
-    if (modifier.expression === undefined) return false;
-    const name = tsDecoratorName(modifier);
-    return name !== null && !NON_VALIDATING_DECORATORS.has(name);
-  });
+  return (
+    declaration.modifiers?.some(modifier => {
+      if (modifier.expression === undefined) return false;
+      const name = tsDecoratorName(modifier);
+      return name !== null && !NON_VALIDATING_DECORATORS.has(name);
+    }) ?? false
+  );
 }
 
 /**
@@ -99,8 +102,9 @@ function classValidatedLocally(classNode, classes, seen = new Set()) {
   // A class with no properties plus `forbidNonWhitelisted` rejects any field:
   // an empty body DTO is validated, by construction.
   if (base === null) return properties.length === 0;
-  // A base declared in this file is judged the same way.
-  const local = base.type === 'Identifier' ? classes.get(base.name) : undefined;
+  // A base declared in this file is judged the same way. Only an Identifier
+  // base has a `name`; any other (`ns.Base`, `PartialType(X)`) finds nothing.
+  const local = classes.get(base.name);
   if (local?.type === 'ClassDeclaration') {
     return !seen.has(local) && classValidatedLocally(local, classes, seen);
   }
@@ -130,8 +134,9 @@ const nestBodyDto = {
     },
   },
   create(context) {
+    // ESLint hands every rule a `parserServices` object, empty without types.
     const services = context.sourceCode.parserServices;
-    const program = services?.program ?? null;
+    const program = services.program ?? null;
     const checker = program ? program.getTypeChecker() : null;
 
     const typeOnlyImports = new Set();
@@ -146,9 +151,11 @@ const nestBodyDto = {
           : [];
       // A pipe handed to the decorator (`@Body(new ParseArrayPipe(...))`,
       // `@Body('ids', ParseUUIDPipe)`) is the validation this rule asks for.
+      // A string argument is a field name: of the expressions, only a string
+      // Literal has a string `value`.
       const piped = args.some(
         arg =>
-          !(arg.type === 'Literal' && typeof arg.value === 'string') &&
+          typeof arg.value !== 'string' &&
           /Pipe\b/.test(context.sourceCode.getText(arg)),
       );
       if (piped) return null;
@@ -217,8 +224,9 @@ const nestBodyDto = {
         .getPropertiesOfType(instance)
         .filter(property => !(property.flags & SYMBOL_METHOD));
       if (properties.length === 0) return null;
+      // A mapped type's property (`Record<'a', string>`) has no declarations.
       const validated = properties.some(property =>
-        (property.declarations ?? []).some(tsDeclarationValidated),
+        property.declarations?.some(tsDeclarationValidated),
       );
       return validated
         ? null

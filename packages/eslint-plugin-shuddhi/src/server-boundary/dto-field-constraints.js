@@ -88,10 +88,8 @@ export function zodChain(node, zodNames) {
       return null;
     }
     const name = callee.property.name;
-    if (
-      callee.object.type === 'Identifier' &&
-      zodNames.has(callee.object.name)
-    ) {
+    // Only an Identifier object has a `name` a zod import could bind.
+    if (zodNames.has(callee.object.name)) {
       return { base: name, methods, root: current };
     }
     methods.add(name);
@@ -102,39 +100,37 @@ export function zodChain(node, zodNames) {
 
 /** Does a function body throw, or call BigInt, outside a try that catches? */
 function unguardedThrow(fn) {
-  let found = null;
-  const visit = (node, guarded) => {
-    if (!node || typeof node.type !== 'string' || found) return;
-    if (node.type === 'TryStatement') {
+  /** Does `value`, when it is a node, throw outside a guarding try? */
+  const visit = (value, guarded) => {
+    // Every field is walked, so most values are not nodes: skip those.
+    if (!value || typeof value.type !== 'string') return false;
+    if (value.type === 'TryStatement') {
       // try/finally without a catch lets the exception out.
-      visit(node.block, guarded || node.handler !== null);
-      visit(node.handler, guarded);
-      visit(node.finalizer, guarded);
-      return;
+      return (
+        visit(value.block, guarded || value.handler !== null) ||
+        visit(value.handler, guarded) ||
+        visit(value.finalizer, guarded)
+      );
     }
-    if (!guarded && node.type === 'ThrowStatement') {
-      found = node;
-      return;
-    }
+    if (!guarded && value.type === 'ThrowStatement') return true;
+    // Only an Identifier callee has a `name`.
     if (
       !guarded &&
-      node.type === 'CallExpression' &&
-      node.callee.type === 'Identifier' &&
-      node.callee.name === 'BigInt'
+      value.type === 'CallExpression' &&
+      value.callee.name === 'BigInt'
     ) {
-      found = node;
-      return;
+      return true;
     }
     // Every field but the back-link to the parent, which would walk upward.
-    for (const child of Object.values(node).filter(
-      value => value !== node.parent,
-    )) {
-      if (Array.isArray(child)) child.forEach(item => visit(item, guarded));
-      else if (child && typeof child.type === 'string') visit(child, guarded);
-    }
+    return Object.entries(value).some(
+      ([key, child]) =>
+        key !== 'parent' &&
+        (Array.isArray(child)
+          ? child.some(item => visit(item, guarded))
+          : visit(child, guarded)),
+    );
   };
-  visit(fn.body, false);
-  return found;
+  return visit(fn.body, false);
 }
 
 const dtoFieldConstraints = {
@@ -185,8 +181,8 @@ const dtoFieldConstraints = {
     const from = instantModule ? ` from ${instantModule}` : '';
 
     function checkProperty(node) {
+      // An undecorated property passes every check below.
       const names = decoratorNames(node);
-      if (names.size === 0) return;
       const field = keyName(node.key);
       if (field === null) return;
       const report = messageId =>
@@ -231,6 +227,7 @@ const dtoFieldConstraints = {
           data: { field, validator: `@${date}()`, from },
         });
       }
+      // A parser without TypeScript (espree) leaves `decorators` unset.
       for (const decorator of node.decorators ?? []) {
         if (decoratorName(decorator) !== 'Transform') continue;
         if (decorator.expression.type !== 'CallExpression') continue;
@@ -287,11 +284,11 @@ const dtoFieldConstraints = {
       },
       PropertyDefinition: checkProperty,
       CallExpression(node) {
-        if (zodNames.size === 0) return;
         const callee = node.callee;
+        // Only an Identifier object has a `name` a zod import could bind.
+        // A `#private` property has a name too, but is no zod method.
         if (
           callee.type !== 'MemberExpression' ||
-          callee.object.type !== 'Identifier' ||
           !zodNames.has(callee.object.name) ||
           callee.property.type !== 'Identifier' ||
           !['object', 'strictObject', 'looseObject'].includes(
@@ -302,9 +299,8 @@ const dtoFieldConstraints = {
         }
         const [shape] = node.arguments;
         if (!shape || shape.type !== 'ObjectExpression') return;
-        for (const property of shape.properties) {
-          if (property.type === 'Property') checkZodProperty(property);
-        }
+        // A spread has no key, so checkZodProperty skips it.
+        for (const property of shape.properties) checkZodProperty(property);
       },
     };
   },

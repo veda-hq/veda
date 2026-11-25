@@ -60,7 +60,8 @@ const noCapabilityLiteral = {
   },
   create(context) {
     const options = context.options[0];
-    const tokens = new Set(options?.capabilities ?? []);
+    // `new Set(undefined)` is empty.
+    const tokens = new Set(options?.capabilities);
     const remedy = {
       vocabulary: options?.vocabulary ?? 'Capability',
       routeMap: options?.routeMap
@@ -68,8 +69,10 @@ const noCapabilityLiteral = {
         : '',
       contracts: contractsLabel(options),
     };
+    // Every token is a string (the schema's `items`), so a value of any
+    // other type is never one.
     function check(node, value) {
-      if (typeof value !== 'string' || !tokens.has(value)) return;
+      if (!tokens.has(value)) return;
       context.report({
         node,
         messageId: 'capabilityLiteral',
@@ -78,12 +81,13 @@ const noCapabilityLiteral = {
     }
     return {
       Literal(node) {
-        if (node.parent?.type === 'ImportDeclaration') return;
+        if (node.parent.type === 'ImportDeclaration') return;
         check(node, node.value);
       },
       TemplateLiteral(node) {
         if (node.expressions.length > 0) return;
-        check(node, node.quasis[0]?.value.cooked);
+        // With no expression a template has exactly one quasi.
+        check(node, node.quasis[0].value.cooked);
       },
     };
   },

@@ -164,6 +164,13 @@ describe('readCapabilityVocabulary', () => {
     assert.equal(tokens.length, 4);
   });
 
+  it('reads only indented, capitalised entries that end their line', () => {
+    const tokens: string[] = readCapabilityVocabulary(
+      join(FIXTURES, 'capability-near-misses.ts'),
+    );
+    assert.deepEqual(tokens, ['KEPT']);
+  });
+
   it('refuses a file with no tokens rather than disabling the rule', () => {
     assert.throws(
       () => readCapabilityVocabulary(join(FIXTURES, 'file.ts')),
@@ -177,6 +184,13 @@ jsxTester.run('no-capability-literal (branches)', rule, {
     // An import source is a module path, not a capability.
     {
       code: "import x from 'USER_VIEW';",
+      filename: WEB_APP,
+      options: CAPABILITY_OPTIONS,
+    },
+    // A template with an expression is not a token, even when its first
+    // quasi spells one.
+    {
+      code: 'const t = `USER_VIEW${x}`;',
       filename: WEB_APP,
       options: CAPABILITY_OPTIONS,
     },
@@ -240,6 +254,26 @@ describe('no-capability-literal meta', () => {
       () => lint('', { capabilities: [], extra: true }),
       /additional properties/,
     );
+  });
+
+  it('reports nothing when no option names a capability', () => {
+    const messages = linter.verify(
+      "const b = 'USER_VIEW';",
+      {
+        plugins: { boundary: { rules: { 'no-capability-literal': rule } } },
+        rules: { 'boundary/no-capability-literal': 'error' },
+      },
+      '/repo/a.js',
+    );
+    assert.deepEqual(messages, []);
+  });
+
+  it('refuses capabilities that are not an array of strings', () => {
+    assert.throws(
+      () => lint('', { capabilities: 'USER_VIEW' }),
+      /should be array/,
+    );
+    assert.throws(() => lint('', { capabilities: [7] }), /should be string/);
   });
 
   it('refuses a vocabulary or route map that is not an identifier path', () => {

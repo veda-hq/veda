@@ -370,8 +370,27 @@ tester.run('nest-body-dto (branches)', rule, {
       code: `class Dto { @IsString() a!: string }
         @Controller() class C { constructor(@Body() private readonly b: Dto) {} }`,
     },
+    // A class with methods but no property is an empty body: validated.
+    { code: bodyOf('Dto', 'class Dto { handle() {} static { init(); } }') },
+    // An anonymous default-exported class declares no name to look up.
+    {
+      code: bodyOf(
+        'Dto',
+        'export default class {}\nclass Dto { @IsString() a!: string }',
+      ),
+    },
   ],
   invalid: [
+    // A bare (uncalled) @Body passes no argument, so no pipe.
+    {
+      code: '@Controller() class C { @Post() m(@Body b: { a: string }) {} }',
+      errors: [
+        {
+          messageId: 'notClass',
+          data: { method: 'm', kind: 'an inline type literal' },
+        },
+      ],
+    },
     // A non-pipe, non-string argument validates nothing.
     {
       code: bodyOf('{ a: string }').replace('@Body()', '@Body(options)'),
@@ -469,8 +488,83 @@ typedTester.run('nest-body-dto (typed, branches)', rule, {
       ),
       filename: FILE,
     },
+    // A namespaced decorator validates too.
+    {
+      code: typedInline(
+        'declare const cv: { IsString(): PropertyDecorator };\nclass NsDto { @cv.IsString() name!: string }',
+        'NsDto',
+      ),
+      filename: FILE,
+    },
+    // A class with no property, or only methods, is an empty body.
+    { code: typedInline('class EmptyDto {}', 'EmptyDto'), filename: FILE },
+    {
+      code: typedInline(
+        'class MethodsDto { handle(): void {} }',
+        'MethodsDto',
+      ),
+      filename: FILE,
+    },
+    // A validating decorator beside a keyword modifier validates.
+    {
+      code: typedInline(
+        'declare const IsString: () => PropertyDecorator;\nclass ReadonlyDto { @IsString() readonly name!: string }',
+        'ReadonlyDto',
+      ),
+      filename: FILE,
+    },
+    // One validated declaration of a merged property validates it.
+    {
+      code: typedInline(
+        'declare const IsString: () => PropertyDecorator;\ninterface MergedDto { name: string }\nclass MergedDto { @IsString() name!: string }',
+        'MergedDto',
+      ),
+      filename: FILE,
+    },
   ],
   invalid: [
+    // A decorator with no name (a call of a call) validates nothing.
+    {
+      code: typedInline(
+        'declare const factory: () => () => PropertyDecorator;\nclass CurriedDto { @factory()() name!: string }',
+        'CurriedDto',
+      ),
+      filename: FILE,
+      errors: [
+        {
+          messageId: 'undecorated',
+          data: { method: 'create', name: 'CurriedDto' },
+        },
+      ],
+    },
+    // A Swagger-only decorator before a keyword modifier validates nothing.
+    {
+      code: typedInline(
+        'declare const ApiProperty: () => PropertyDecorator;\nclass SwaggerDto { @ApiProperty() readonly name!: string }',
+        'SwaggerDto',
+      ),
+      filename: FILE,
+      errors: [
+        {
+          messageId: 'undecorated',
+          data: { method: 'create', name: 'SwaggerDto' },
+        },
+      ],
+    },
+    // A property a mapped type supplies has no declaration to decorate.
+    {
+      code: typedInline(
+        "declare const Base: new () => Record<'name', string>;\nclass MappedDto extends Base {}",
+        'MappedDto',
+      ),
+      filename: FILE,
+      errors: [
+        {
+          messageId: 'undecorated',
+          data: { method: 'create', name: 'MappedDto' },
+        },
+      ],
+    },
     // A keyword modifier is not a decorator.
     {
       code: typedInline(
@@ -513,6 +607,83 @@ const MESSAGES: Record<string, string> = {
   undecorated: 'Decorate its fields',
   typeOnly: 'Import it as a value',
 };
+
+describe('nest-body-dto on a parser that leaves `decorators` unset', () => {
+  it('skips a parameter with no decorators', () => {
+    const reports: unknown[] = [];
+    const handlers = rule.create({
+      sourceCode: { parserServices: {} },
+      report: (report: unknown) => reports.push(report),
+    }) as Record<string, (node?: object) => void>;
+    const controller = {
+      decorators: [
+        {
+          expression: {
+            type: 'CallExpression',
+            callee: { type: 'Identifier', name: 'Controller' },
+          },
+        },
+      ],
+    };
+    handlers.MethodDefinition({
+      parent: { parent: controller },
+      key: { type: 'Identifier', name: 'create' },
+      value: { params: [{ type: 'Identifier', name: 'body' }] },
+    });
+    handlers['Program:exit']();
+    assert.deepEqual(reports, []);
+  });
+
+  it('cannot judge a type the checker finds no symbol for', () => {
+    const reports: unknown[] = [];
+    const annotation = {
+      type: 'TSTypeReference',
+      typeName: { type: 'Identifier', name: 'Dto' },
+    };
+    const handlers = rule.create({
+      sourceCode: {
+        getText: () => 'Dto',
+        parserServices: {
+          program: {
+            getTypeChecker: () => ({ getSymbolAtLocation: () => undefined }),
+          },
+          esTreeNodeToTSNodeMap: new Map([[annotation, { typeName: {} }]]),
+        },
+      },
+      report: (report: unknown) => reports.push(report),
+    }) as Record<string, (node?: object) => void>;
+    handlers.MethodDefinition({
+      parent: {
+        parent: {
+          decorators: [
+            { expression: { type: 'Identifier', name: 'Controller' } },
+          ],
+        },
+      },
+      key: { type: 'Identifier', name: 'create' },
+      value: {
+        params: [
+          {
+            type: 'Identifier',
+            name: 'body',
+            decorators: [
+              {
+                expression: {
+                  type: 'CallExpression',
+                  callee: { type: 'Identifier', name: 'Body' },
+                  arguments: [],
+                },
+              },
+            ],
+            typeAnnotation: { typeAnnotation: annotation },
+          },
+        ],
+      },
+    });
+    handlers['Program:exit']();
+    assert.deepEqual(reports, []);
+  });
+});
 
 describe('nest-body-dto meta', () => {
   const { meta } = rule as RuleMeta;

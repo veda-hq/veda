@@ -120,8 +120,9 @@ export const loadVitestExclude = (root: string, config: string, loader: string |
   const file = join(root, config);
   const args = [...(loader === undefined ? [] : ['--import', importArg(root, loader)]), LOADER_SCRIPT, file];
   const r = spawnSync(process.execPath, args, { cwd: dirname(file), encoding: 'utf8', timeout, maxBuffer: 1 << 26, stdio: ['ignore', 'pipe', 'pipe', 'pipe'] });
-  // A run spawnSync cut short (a timeout, a full buffer) has no status. fd 3 is a pipe, so a run that exited 0 has its text.
-  const answer = r.status === 0 ? (r.output[3] as string) : '';
+  // A child can exit 0 and still time out, while a process it started holds its pipes open.
+  // fd 3 is a pipe, so a run that exited 0 in time has its text.
+  const answer = r.status === 0 && r.error === undefined ? (r.output[3] as string) : '';
   if (answer === '') return { ok: false, error: r.error?.message ?? failureOf(r.stderr, r.status) };
   try {
     return { ok: true, exclude: JSON.parse(answer) as unknown };
@@ -131,11 +132,12 @@ export const loadVitestExclude = (root: string, config: string, loader: string |
 };
 
 /** Whether the loader itself loads, from the root; a missing one would otherwise be blamed on every config. */
-export const loaderFailure = (root: string, loader: string | undefined): string | undefined => {
+export const loaderFailure = (root: string, loader: string | undefined, timeout = 120_000): string | undefined => {
   if (loader === undefined) return undefined;
   // With no script node runs its standard input, which spawnSync leaves empty: only the loader runs.
-  const r = spawnSync(process.execPath, ['--import', importArg(root, loader)], { cwd: root, encoding: 'utf8', timeout: 120_000 });
-  return r.status === 0 ? undefined : `loader ${loader} does not load: ${r.error?.message ?? failureOf(r.stderr, r.status)}`;
+  const r = spawnSync(process.execPath, ['--import', importArg(root, loader)], { cwd: root, encoding: 'utf8', timeout });
+  // A node that exits 0 and still times out left a process holding its pipes.
+  return r.status === 0 && r.error === undefined ? undefined : `loader ${loader} does not load: ${r.error?.message ?? failureOf(r.stderr, r.status)}`;
 };
 
 export interface Violation {

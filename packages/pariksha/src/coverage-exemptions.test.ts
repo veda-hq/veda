@@ -122,8 +122,6 @@ describe('readExclude and loadVitestExclude', () => {
     'fn.mjs': 'export default { test: { coverage: { exclude: () => [] } } };',
     'wrote-then-failed.mjs': 'import { writeSync } from "node:fs"; writeSync(3, \'["x"]\'); process.exit(1);',
     'garbage.mjs': 'import { writeSync } from "node:fs"; writeSync(3, "oops"); export default {};',
-    'long.mjs': `import { writeSync } from "node:fs"; writeSync(3, "${'y'.repeat(100)}"); export default {};`,
-    'nodefault.mjs': 'export const x = 1;',
     'throws.mjs': 'throw new Error("config exploded");',
     'throws-text.mjs': 'throw "a string";',
     'hang.mjs': 'setInterval(() => {}, 1000); await new Promise(() => {});',
@@ -139,7 +137,31 @@ describe('readExclude and loadVitestExclude', () => {
     assert.deepEqual(await readExclude(join(root, 'factory.mjs')), ['f']);
     assert.deepEqual(await readExclude(join(root, 'async.mjs')), ['async']);
     assert.equal(await readExclude(join(root, 'none.mjs')), undefined);
-    assert.equal(await readExclude(join(root, 'nodefault.mjs')), undefined);
+  });
+
+  it('reads a config with no default export as having no exclusions', async () => {
+    const own = tree({ 'nodefault.mjs': 'export const x = 1;' });
+    assert.equal(await readExclude(join(own, 'nodefault.mjs')), undefined);
+  });
+
+  // A process the module starts keeps the child's pipes open past the timeout, though the child itself exits 0.
+  const holder = (fds: number): string =>
+    `import { spawn } from 'node:child_process'; spawn(process.execPath, ['-e', 'setTimeout(() => {}, 4000)'], { detached: true, stdio: ['ignore', ...Array(${fds}).fill('inherit')] }).unref();`;
+
+  it('refuses an answer from a child that exited 0 but timed out', () => {
+    const own = tree({ 'holds.mjs': `${holder(3)} export default { test: { coverage: { exclude: ['h'] } } };` });
+    const held = loadVitestExclude(own, 'holds.mjs', undefined, 1_000);
+    assert.match(held.ok ? '' : held.error, /ETIMEDOUT/);
+  });
+
+  it('names a loader whose node exited 0 but timed out', () => {
+    const own = tree({ 'holds.mjs': holder(2) });
+    assert.match(loaderFailure(own, './holds.mjs', 1_000) ?? '', /^loader \.\/holds\.mjs does not load: .*ETIMEDOUT/);
+  });
+
+  it('quotes at most 80 characters of an answer that is not data', () => {
+    const own = tree({ 'long.mjs': `import { writeSync } from "node:fs"; writeSync(3, "${'y'.repeat(100)}"); export default {};` });
+    assert.deepEqual(loadVitestExclude(own, 'long.mjs', undefined), { ok: false, error: `the config's coverage.exclude is not data: ${'y'.repeat(80)}` });
   });
 
   it('loads each config in its own process; nothing it prints is the answer', () => {
@@ -167,9 +189,7 @@ describe('readExclude and loadVitestExclude', () => {
     assert.deepEqual(loadVitestExclude(root, 'throws-text.mjs', undefined), { ok: false, error: 'a string' });
     assert.deepEqual(loadVitestExclude(root, 'wrote-then-failed.mjs', undefined), { ok: false, error: 'exit 1' });
     const garbage = loadVitestExclude(root, 'garbage.mjs', undefined);
-    assert.match(garbage.ok ? '' : garbage.error, /^the config's coverage\.exclude is not data: oops/);
-    assert.deepEqual(loadVitestExclude(root, 'long.mjs', undefined), { ok: false, error: `the config's coverage.exclude is not data: ${'y'.repeat(80)}` });
-    const hang = loadVitestExclude(root, 'hang.mjs', undefined, 1_000);
+    assert.match(garbage.ok ? '' : garbage.error, /^the config's coverage\.exclude is not data: oops/);    const hang = loadVitestExclude(root, 'hang.mjs', undefined, 1_000);
     assert.match(hang.ok ? '' : hang.error, /ETIMEDOUT/);
     const noLoader = loadVitestExclude(root, 'object.mjs', 'no-such-loader-pariksha');
     assert.match(noLoader.ok ? '' : noLoader.error, /no-such-loader-pariksha/);
@@ -240,18 +260,23 @@ describe('checkBuild', () => {
     'bad.json': '{ "include": ["src/**", "src/__mocks__/**", "**/*.test.ts"] }',
     'broken.json': '{ "include": [ }',
     'wrong.json': '{ "include": "src" }',
-    'numbers.json': '{ "include": [1] }',
   });
 
   it('reads an absent include as bringing nothing in, whatever is forbidden', () => {
+    const own = tree({ 'none.json': '{ "compilerOptions": {} }' });
     const anyE = parseConfig(JSON.stringify({ build: { configs: ['none.json'], forbiddenIncludes: ['e'] } }));
-    assert.deepEqual(checkBuild(ts, anyE, root, ['none.json']), []);
+    assert.deepEqual(checkBuild(ts, anyE, own, ['none.json']), []);
+  });
+
+  it('throws on an include that holds anything but strings', () => {
+    const own = tree({ 'numbers.json': '{ "include": [1] }' });
+    assert.throws(() => checkBuild(ts, CONFIG, own, ['numbers.json']), /numbers\.json: "include" is not a list of strings/);
   });
 
   it('names every line of a chained diagnostic', () => {
     const chained = { messageText: 'outer', category: 1, code: 1, next: [{ messageText: 'inner', category: 1, code: 2 }] };
     const fake = { ...ts, readConfigFile: () => ({ config: {}, error: { category: 1, code: 1, file: undefined, start: undefined, length: undefined, messageText: chained } }) } as unknown as Ts;
-    assert.throws(() => checkBuild(fake, CONFIG, root, ['x.json']), { message: 'x.json: outer\n  inner' });
+    assert.throws(() => checkBuild(fake, CONFIG, tree({}), ['x.json']), { message: 'x.json: outer\n  inner' });
   });
 
   it('passes an include with no test pattern, or none at all, reading JSON with comments', () => {
@@ -266,9 +291,7 @@ describe('checkBuild', () => {
   });
 
   it('throws on a config it cannot read, rather than skip it', () => {
-    assert.throws(() => checkBuild(ts, CONFIG, root, ['wrong.json']), /wrong\.json: "include" is not a list of strings/);
-    assert.throws(() => checkBuild(ts, CONFIG, root, ['numbers.json']), /numbers\.json: "include" is not a list of strings/);
-    assert.throws(() => checkBuild(ts, CONFIG, root, ['missing.json']), /missing\.json: /);
+    assert.throws(() => checkBuild(ts, CONFIG, root, ['wrong.json']), /wrong\.json: "include" is not a list of strings/);    assert.throws(() => checkBuild(ts, CONFIG, root, ['missing.json']), /missing\.json: /);
     assert.throws(() => checkBuild(ts, CONFIG, root, ['broken.json']), /broken\.json: Expression or comma expected/);
   });
 });

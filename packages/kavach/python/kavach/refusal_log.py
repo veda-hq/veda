@@ -6,8 +6,10 @@ event's ``cwd`` belongs to, shared by all of its worktrees. Each row holds the
 time, the guard, the tool, the first line of the reason and the start of the
 command or path. A rule on trial also writes a row each time it only warns,
 and names itself in both kinds of row (``rule``, ``mode``: "warn" or
-"refuse"), so its trial can be read for wrong fires before it refuses.
-Commands can hold secrets typed on a command line, so the log
+"refuse"), so its trial can be read for wrong fires before it refuses. A
+rule whose check could not read what it needs, and so judged without it, may
+say so in a row of its own (``mode`` "scan-failed", rule
+other-sessions-worktree's failed record scan). Commands can hold secrets typed on a command line, so the log
 stays inside the repository's git directory, never in the working tree.
 
 Best effort: logging never changes a verdict. Any failure (no git, no

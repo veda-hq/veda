@@ -352,7 +352,8 @@ describe('the default vocabulary', () => {
   it('reads each category by its folder, singular or plural, to the end of the path', () => {
     const cases: ReadonlyArray<readonly [string, string | undefined]> = [
       ['a/domain/d.ts', 'service'],
-      // Only the plural: `repository/` is no category.
+      // `repositories?` makes only the last `s` optional: it reads `repositorie/`, never `repository/`.
+      ['a/repositorie/r.ts', 'repository'],
       ['a/repository/r.ts', undefined],
       ['a/component/C.tsx', 'component'],
       ['a/screen/S.tsx', 'screen'],

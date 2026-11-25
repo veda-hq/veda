@@ -34,7 +34,7 @@ const KINDS_AT = (dirs: readonly string[], suffixes: readonly string[]): string[
 export const DEFAULT_CONFIG: Config = {
   categories: [
     ['service', /\/(services|domain)\/.+\.(ts|tsx)$/],
-    ['repository', /\/repositories\/.+\.(ts|tsx)$/],
+    ['repository', /\/repositories?\/.+\.(ts|tsx)$/],
     ['component', /\/components?\/.+\.(tsx)$/],
     ['screen', /\/screens?\/.+\.(tsx)$/],
     ['hook', /\/hooks?\/use[A-Z].+\.(ts|tsx)$/],

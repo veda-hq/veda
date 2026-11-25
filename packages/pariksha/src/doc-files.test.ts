@@ -6,6 +6,14 @@ import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { DEFAULT_INCLUDE, isFileAt, linesOf, parseDocConfig, readDoc, selectDocs } from './doc-files.ts';
 
+// git here reads no user or system config. A config can start a process on
+// every git command (a trace2 event target, as git-ai's daemon is), and one
+// that writes into a fixture's .git after git returns races the removal
+// below: under load it failed this file in agnipariksha's retry pass.
+// Each suite runs in its own process, so this reaches no other suite.
+process.env['GIT_CONFIG_GLOBAL'] = '/dev/null';
+process.env['GIT_CONFIG_NOSYSTEM'] = '1';
+
 const temps: string[] = [];
 after(() => {
   for (const dir of temps) rmSync(dir, { recursive: true, force: true });

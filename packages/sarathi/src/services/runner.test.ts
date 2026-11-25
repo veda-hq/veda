@@ -3,10 +3,10 @@
 import { execFileSync } from 'node:child_process';
 import { fstatSync, realpathSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
-import { createServer, type Server } from 'node:net';
+import { createServer, Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, test } from 'node:test';
+import { after, afterEach, beforeEach, describe, mock, test } from 'node:test';
 
 import { expect, vi } from '../test/expect.test.ts';
 import type { ServicesFile } from './file.ts';
@@ -35,6 +35,19 @@ import {
 } from './runner.ts';
 import { LABEL, PREFIX, sample, sampleRaw } from './sample.test.ts';
 import { parseServicesFile } from './file.ts';
+
+// Every server a case starts, the runner's port probe included. A case that
+// fails while one still listens would keep this file from ending, so the
+// file closes them all when its cases are done.
+const listening = new Set<Server>();
+const serverListen = Server.prototype.listen;
+mock.method(Server.prototype, 'listen', function (this: Server, ...args: unknown[]) {
+  listening.add(this);
+  return Reflect.apply(serverListen, this, args) as Server;
+});
+after(() => {
+  for (const server of listening) server.close();
+});
 
 const PASSWORD = 'a'.repeat(48);
 const BAND: readonly [number, number] = [20000, 29999];
@@ -97,9 +110,11 @@ interface Call {
 
 /**
  * Longest a suite here may take, so a waiting mutant fails instead of
- * hanging. node:test bounds a describe block as a whole, not each case.
+ * hanging. node:test bounds a describe block as a whole, not each case. The
+ * slowest block takes about 10 s; the bound stays under Stryker's own limit
+ * for this file (about 105 s), so a mutant that waits fails as Killed.
  */
-const BOUND_MS = 300_000;
+const BOUND_MS = 60_000;
 
 let root: string;
 let log: string;
@@ -129,7 +144,8 @@ const project = (): { file: ServicesFile; name: string } => ({ file, name: 'acme
 const run = (action: string, command: string[] = []): Promise<number> => services(root, action, command, project(), io);
 
 async function listen(port = 0): Promise<Server> {
-  const server = createServer();
+  // Unref'd: a case that fails while holding it still lets the file end.
+  const server = createServer().unref();
   await new Promise<void>(done => server.listen(port, '127.0.0.1', done));
   return server;
 }
@@ -243,6 +259,8 @@ describe('server port', { timeout: BOUND_MS }, () => {
     } finally {
       await close(server);
     }
+    expect(await loopbackPortFree(port)).toBe(true);
+    // The probe released the port it bound, so the next check finds it free too.
     expect(await loopbackPortFree(port)).toBe(true);
   });
 });

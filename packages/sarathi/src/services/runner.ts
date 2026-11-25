@@ -19,6 +19,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { randomBytes, randomInt } from 'node:crypto';
 import { once } from 'node:events';
+import { promisify } from 'node:util';
 import { mkdir, readFile, realpath, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
@@ -95,17 +96,22 @@ export function validConfig(value: unknown, root: string, prefix: string): value
   );
 }
 
-/** Listen on `host:port`, then close; rejects with the bind error. */
+/**
+ * Listen on `host:port`, then close; rejects with the bind error. The waits
+ * are callbacks, not event names, so a changed one fails at once instead of
+ * waiting forever on a server that stays open.
+ */
 async function bindAndRelease(port: number, host: string): Promise<void> {
   const listener = createServer();
-  const listening = once(listener, 'listening');
-  listener.listen(port, host);
   try {
-    await listening;
+    await new Promise<void>((done, fail) => {
+      listener.once('error', fail);
+      listener.listen(port, host, done);
+    });
   } finally {
-    listener.close();
+    // A bind that failed left nothing listening, and close would refuse it.
+    if (listener.listening) await promisify(listener.close.bind(listener))();
   }
-  await once(listener, 'close');
 }
 
 /**
@@ -128,7 +134,8 @@ export async function loopbackPortFree(port: number, bind: (port: number, host: 
 
 /** The first free candidate of 20. */
 export async function applicationPort(candidate: () => number, isFree: (port: number) => Promise<boolean> = loopbackPortFree): Promise<number> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  // Twenty tries, counted by the array rather than a condition, so no changed bound can loop forever.
+  for (const _ of Array(20).keys()) {
     const next = candidate();
     if (await isFree(next)) return next;
   }

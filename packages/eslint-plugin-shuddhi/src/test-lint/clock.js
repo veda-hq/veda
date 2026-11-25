@@ -77,9 +77,9 @@ const pollUnderFakeTimers = {
       const test = enclosingTest(poll, context);
       // The fake, real and poll calls written before the poll, in source order.
       const before = calls.slice(0, calls.indexOf(poll));
-      // The ones between `fake` and the poll: none when the fake comes later.
-      const since = () =>
-        before.includes(fake) ? before.slice(before.indexOf(fake) + 1) : [];
+      // The ones between `fake` and the poll: none when the fake comes later,
+      // since the slice then starts past its end.
+      const since = () => calls.slice(calls.indexOf(fake) + 1, calls.indexOf(poll));
       // Does a `vi.useRealTimers()` in `list` run first, inside the poll's
       // test when it has one?
       const restores = list =>

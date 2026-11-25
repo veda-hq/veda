@@ -1262,6 +1262,7 @@ describe('findSwitchReads on shell, at the edges of control flow and quoting', (
     ['echo x \\\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', [3]],
     // An escaped character mid-line joins nothing; nor does a heredoc's delimiter.
     ['echo \\$x\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
+    ['echo \\$\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
     ['cat <<EOF\nx\nEOF\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
     // A self-default reads on its own line, and leaves the later read a read.
     ['X_SKIP="${X_SKIP:-0}"\n[ "$X_SKIP" = 1 ] && exit 0', [1, 2]],

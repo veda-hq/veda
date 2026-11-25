@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, test } from 'node:test';
+import { afterEach, beforeEach, describe, mock, test } from 'node:test';
 
 import { main } from '../cli.ts';
 import { expect } from '../test/expect.test.ts';
@@ -82,10 +82,36 @@ afterEach(() => {
 });
 
 describe('sarathi services', () => {
-  test('names its usage without an action, or with a flag for one', async () => {
-    expect(await servicesMain([], io(root))).toBe(1);
-    expect(await servicesMain(['--up'], io(root))).toBe(1);
-    expect(err).toContain('usage: sarathi services up|down|status|web|server|<action> [args]');
+  test('names only its usage, and runs nothing, without an action or with a flag for one', async () => {
+    const usage = [
+      'usage: sarathi services up|down|status|web|server|<action> [args]',
+      '       sarathi services run -- <command>',
+      '       sarathi services reap',
+      '       sarathi services prune install|run|run-now|status|uninstall [--dry-run] [--docker <path>] [--settings <file>]',
+      '',
+    ].join('\n');
+    for (const args of [[], ['--up'], ['-x']]) {
+      err = '';
+      expect(await servicesMain(args, io(root))).toBe(1);
+      expect(err).toBe(usage);
+    }
+    expect(calls()).toEqual([]);
+  });
+
+  test('runs an action the services file configures', async () => {
+    expect(await servicesMain(['database-init'], io(root))).toBe(0);
+    expect(err).toBe('');
+    expect(calls().filter(line => line.startsWith('pnpm'))).toEqual([
+      `pnpm init database ${projectName(PREFIX, root)}-postgres-1 --force|${root}`,
+      `pnpm migrate deploy|${root}`,
+    ]);
+  });
+
+  test('asks git for the checkout with the given environment', async () => {
+    env.GIT_DIR = join(root, 'missing');
+    expect(await servicesMain(['status'], io(root))).toBe(1);
+    expect(err).toBe(`sarathi services: ${root} is not in a git checkout\n`);
+    expect(calls()).toEqual([]);
   });
 
   test('names the actions when given another', async () => {
@@ -114,10 +140,14 @@ describe('sarathi services', () => {
 
   test('outside a git checkout, or without a services file, it says so', async () => {
     const outside = realpathSync(mkdtempSync(join(tmpdir(), 'sarathi-services-none-')));
+    // git's own complaint stays off the terminal: the one line is sarathi's.
+    const write = mock.method(process.stderr, 'write');
     try {
       expect(await servicesMain(['up'], io(outside))).toBe(1);
       expect(err).toBe(`sarathi services: ${outside} is not in a git checkout\n`);
+      expect(write.mock.calls.map(call => String(call.arguments[0])).filter(text => text.includes('not a git repository'))).toEqual([]);
     } finally {
+      write.mock.restore();
       rmSync(outside, { recursive: true, force: true });
     }
     err = '';

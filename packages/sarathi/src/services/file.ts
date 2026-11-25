@@ -63,7 +63,6 @@ export interface ServicesFile {
 
 export class ServicesError extends Error {
   override readonly name = 'ServicesError';
-  readonly code = 'SERVICES';
 }
 
 /** The actions sarathi runs itself; a configured action may not take these names. */
@@ -78,7 +77,8 @@ const ACTION = /^[a-z][a-z0-9-]*$/;
 const PLACEHOLDER = /\{([^{}]*)\}/g;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
-const isPort = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value > 0 && value < 65536;
+// Number.isInteger is false for every non-number.
+const isPort = (value: unknown): value is number => Number.isInteger(value) && (value as number) > 0 && (value as number) < 65536;
 
 function only(value: Record<string, unknown>, keys: readonly string[], where: string): void {
   const extra = Object.keys(value).filter(key => !keys.includes(key));
@@ -87,7 +87,8 @@ function only(value: Record<string, unknown>, keys: readonly string[], where: st
 
 /** The placeholders a template names, in order. */
 export function placeholders(template: string): string[] {
-  return [...template.matchAll(PLACEHOLDER)].map(match => match[1] ?? '');
+  // The one group takes part in every match.
+  return [...template.matchAll(PLACEHOLDER)].map(match => match[1] as string);
 }
 
 function checkTemplate(template: string, published: ReadonlySet<string>, where: string): void {
@@ -242,7 +243,8 @@ export function parseServicesFile(raw: unknown, path: string): ServicesFile {
 export function loadServicesFile(path: string): ServicesFile {
   let text: string;
   try {
-    text = readFileSync(path, 'utf8');
+    // A Buffer's text is utf8.
+    text = String(readFileSync(path));
   } catch {
     throw new ServicesError(`cannot read the services file ${path}; install the project's dependencies, or set SARATHI_PACKAGES for a package path`);
   }

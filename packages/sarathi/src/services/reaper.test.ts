@@ -239,6 +239,16 @@ describe('serviceProjects', () => {
     );
   });
 
+  test('an empty working directory or label is never a root, even under its own hash', async () => {
+    const empty = projectName('acme-wt', '');
+    const { docker } = fakeDocker([
+      // Strips to the empty candidate.
+      { id: 'e1', project: empty, workingDir: '/.tmp/services' },
+      { id: 'e2', project: empty, workingDir: '' },
+    ]);
+    expect(await serviceProjects(docker, { project: 'acme-wt', rootLabel: 'acme.worktree-services.root' })).toEqual([]);
+  });
+
   test('still lists container projects when a label listing fails', async () => {
     const fake = fakeDocker([service('b1', GONE)], { volumes: { [name(LIVE)]: ['live_data'] }, labels: { [name(LIVE)]: LIVE } });
     const flaky: Docker = async args => {
@@ -282,6 +292,31 @@ describe('reapProject', () => {
       ['volume', 'ls', '--quiet', ...filter],
       ['volume', 'rm', '--force', `${project}_postgres_data`],
       ['network', 'ls', '--quiet', ...filter],
+    ]);
+  });
+
+  test('skips the volume removal when the project has none', async () => {
+    const project = projectName('acme-wt', '/worktrees/archived');
+    const fake = fakeDocker([{ id: 'b1', project, workingDir: '/worktrees/archived/.tmp/services' }]);
+    await reapProject(fake.docker, 'acme-wt', project);
+    const filter = ['--filter', `label=com.docker.compose.project=${project}`];
+    expect(fake.calls).toEqual([
+      ['ps', '--all', '--quiet', ...filter],
+      ['rm', '--force', '--volumes', 'b1'],
+      ['volume', 'ls', '--quiet', ...filter],
+      ['network', 'ls', '--quiet', ...filter],
+      ['network', 'rm', `${project}_default`],
+    ]);
+  });
+
+  test('a prefix with a regex metacharacter still names its own projects', async () => {
+    const project = projectName('a.b', '/worktrees/archived');
+    const fake = fakeDocker([]);
+    await reapProject(fake.docker, 'a.b', project);
+    expect(fake.calls).toEqual([
+      ['ps', '--all', '--quiet', '--filter', `label=com.docker.compose.project=${project}`],
+      ['volume', 'ls', '--quiet', '--filter', `label=com.docker.compose.project=${project}`],
+      ['network', 'ls', '--quiet', '--filter', `label=com.docker.compose.project=${project}`],
     ]);
   });
 
@@ -583,5 +618,10 @@ describe('the Docker CLI', () => {
       expect(await host.docker(['version'])).toBe('27.0.1');
     });
     expect(nodeSweepHost(() => undefined).appendFileSync).toBeDefined();
+  });
+
+  test('the node host runs a synchronous command with its options and the given environment', () => {
+    const host = nodeSweepHost(() => undefined, { ...process.env, ACME_MARK: 'marked' });
+    expect(host.execFileSync('sh', ['-c', 'printf %s "$ACME_MARK"'], { encoding: 'utf8' })).toBe('marked');
   });
 });

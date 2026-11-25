@@ -18,6 +18,7 @@ import {
   composeVariables,
   dockerFailure,
   environmentFor,
+  fill,
   LOCK_ATTEMPTS,
   LOCK_PAUSE_MS,
   loopbackPortFree,
@@ -271,6 +272,39 @@ describe('configuration', { timeout: BOUND_MS }, () => {
     expect(validConfig('config', root, PREFIX)).toBe(false);
   });
 
+  test('a password is exactly 48 hex as a string, nothing around it', () => {
+    const base = { project: projectName('acme-wt', root), serverPort: 23456, webPort: 41000 };
+    expect(validConfig({ ...base, password: 'a'.repeat(48) }, root, 'acme-wt')).toBe(true);
+    for (const password of [`x${'a'.repeat(48)}`, `${'a'.repeat(48)}x`, ['a'.repeat(48)]]) {
+      expect(validConfig({ ...base, password }, root, 'acme-wt')).toBe(false);
+    }
+  });
+
+  test('an upgraded config is rewritten private', async () => {
+    const directory = join(root, '.tmp', 'services');
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, 'config.json'), JSON.stringify({ project: projectName('acme-wt', root), password: 'a'.repeat(48), serverPort: 0, webPort: 0 }), { mode: 0o644 });
+    await serviceConfig(root, file, async () => 24000);
+    expect((await stat(join(directory, 'config.json'))).mode & 0o777).toBe(0o600);
+  });
+
+  test('a first config that cannot be written for a reason other than a peer’s is an error', async () => {
+    const directory = join(root, '.tmp', 'services');
+    await mkdir(directory, { recursive: true });
+    await chmod(directory, 0o500);
+    try {
+      // Root writes through a read-only folder, so the refusal shows only for another user, as for the prepared environment below.
+      if (process.getuid?.() !== 0) await expect(serviceConfig(root, file, async () => 21000, { upgrade: false })).rejects.toThrow(/EACCES/);
+    } finally {
+      await chmod(directory, 0o700);
+    }
+  });
+
+  test('a command is filled as it is, not URL-encoded, then given the extra arguments', () => {
+    const values = { password: 'p@ss/w', serverPort: 1, webPort: 2, project: 'acme-wt-x', published: {} };
+    expect(fill(['tool', '{password}', '{container:postgres}'], values, ['--extra'])).toEqual(['tool', 'p@ss/w', 'acme-wt-x-postgres-1', '--extra']);
+  });
+
   test('the first start writes a private config that later starts reuse', async () => {
     const created = await serviceConfig(root, file, async () => 21000);
     expect(created).toEqual({ project: projectName(PREFIX, root), password: expect.stringMatching(/^[a-f0-9]{48}$/), serverPort: 21000, webPort: file.webPort });
@@ -359,6 +393,12 @@ describe('prepared environment', () => {
     expect(preparedEnvironment(root, file, { ...prepared({ root, owner: 42 }), REDIS_URL: undefined }, alive)).toBeUndefined();
     expect(preparedEnvironment(root, file, {}, alive)).toBeUndefined();
     expect(preparedEnvironment(root, file, { [PREPARED_CONTEXT]: '{' }, alive)).toBeUndefined();
+  });
+
+  test('an unreadable or missing context is no parent, even with every variable set', () => {
+    const full = environmentFor(file, config(), { postgres: 41001, redis: 41002 });
+    expect(preparedEnvironment(root, file, { ...full, SARATHI_SERVICES_CONTEXT: '{' }, () => true)).toBeUndefined();
+    expect(preparedEnvironment(root, file, full, () => true)).toBeUndefined();
   });
 
   test('this process counts as a live owner, an unused pid does not', () => {
@@ -527,6 +567,17 @@ describe('setup lock', { timeout: BOUND_MS }, () => {
   test('a lock that cannot be created is not waited on', async () => {
     await expect(withLock(join(root, 'missing', 'lock'), async () => 'ran')).rejects.toThrow(/ENOENT/);
   });
+
+  // Last, and bounded: the real pause against a holder that never lets go,
+  // so a mutant that never counts down fails the bounded tests above first.
+  test('the default pause waits a quarter second before polling again', { timeout: 15_000 }, async () => {
+    const lock = join(root, 'lock');
+    await mkdir(lock);
+    await writeFile(join(lock, 'owner'), String(process.pid));
+    const started = Date.now();
+    await expect(withLock(lock, async () => 'ran', { attempts: 1 })).rejects.toThrow(`Service setup is locked at ${lock} by process ${process.pid};`);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(200);
+  });
 });
 
 describe('compose', { timeout: BOUND_MS }, () => {
@@ -559,6 +610,18 @@ describe('compose', { timeout: BOUND_MS }, () => {
       `Command failed: docker compose -f ${join(root, 'compose.yaml')} up (exit 3): first line / application not healthy after 4m0s`,
     );
     expect(errors).toContain('pulling\n');
+  });
+
+  test('docker’s stdin is the null device, not a pipe left open', async () => {
+    const probe = join(root, 'probe');
+    await mkdir(probe);
+    await writeFile(
+      join(probe, 'docker'),
+      `#!${process.execPath}\nconst fs = require('node:fs');\nconst stdin = fs.fstatSync(0);\nprocess.stdout.write(String(stdin.isCharacterDevice() && stdin.rdev === fs.statSync('/dev/null').rdev));\n`,
+    );
+    await chmod(join(probe, 'docker'), 0o755);
+    const probing = { env: { ...env, PATH: `${probe}:${process.env.PATH ?? ''}` }, err: () => undefined };
+    expect(await composeFor(root, file, 'a'.repeat(48), probing)(['ps'])).toBe('true');
   });
 
   test('a missing docker CLI rejects', async () => {
@@ -634,6 +697,24 @@ describe('services', { timeout: BOUND_MS }, () => {
   test('an endpoint that is not on loopback is refused', async () => {
     env.STUB_PG = '0.0.0.0:41001';
     await expect(run('up')).rejects.toThrow('Unexpected published endpoint for postgres: 0.0.0.0:41001');
+  });
+
+  test('an endpoint with anything around the loopback address and port is refused', async () => {
+    io = { ...io, sweep: async () => ({ reaped: [], skipped: [], failed: [], warnings: [] }) };
+    for (const endpoint of ['x127.0.0.1:41001', '127.0.0.1:41001x']) {
+      env.STUB_PG = endpoint;
+      await expect(run('up')).rejects.toThrow(`Unexpected published endpoint for postgres: ${endpoint}`);
+    }
+  });
+
+  test('a file without a server command still runs a command with the services', async () => {
+    const raw = sampleRaw(file.webPort);
+    delete raw.server;
+    file = parseServicesFile(raw, 'services.json');
+    io = { ...io, sweep: async () => ({ reaped: [], skipped: [], failed: [], warnings: [] }) };
+    await writeConfig(config());
+    expect(await run('run', ['pnpm', 'exec', 'tool'])).toBe(0);
+    expect((await calls()).filter(call => call.bin === 'pnpm').map(call => call.args)).toEqual([['exec', 'tool']]);
   });
 
   test('a failed start keeps the config and releases the lock', async () => {
@@ -818,6 +899,15 @@ describe('services', { timeout: BOUND_MS }, () => {
     git('-C', root, 'commit', '-q', '--allow-empty', '-m', 'x');
     git('-C', root, 'worktree', 'add', '-q', linked);
     await expect(services(linked, 'database-snapshot', [], project(), io)).rejects.toThrow('database-snapshot runs only in the main checkout');
+  });
+
+  test('a main-checkout-only action reads the checkout through the given environment', async () => {
+    git('init', '-q', root);
+    git('-C', root, 'commit', '-q', '--allow-empty', '-m', 'x');
+    git('-C', root, 'worktree', 'add', '-q', join(root, 'linked'));
+    // From the main checkout, but GIT_DIR names the linked worktree's git directory.
+    env.GIT_DIR = join(root, '.git', 'worktrees', 'linked');
+    await expect(run('database-snapshot')).rejects.toThrow('database-snapshot runs only in the main checkout');
   });
 
   test('a main-checkout-only action runs in the main checkout, even with a server on the web port', async () => {

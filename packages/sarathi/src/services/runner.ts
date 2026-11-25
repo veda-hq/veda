@@ -73,7 +73,8 @@ function hasCode(error: unknown, code: string): boolean {
 }
 
 function validPort(port: unknown): boolean {
-  return typeof port === 'number' && Number.isInteger(port) && port > 0 && port < 65536;
+  // Number.isInteger is false for every non-number.
+  return Number.isInteger(port) && (port as number) > 0 && (port as number) < 65536;
 }
 
 /**
@@ -180,10 +181,11 @@ export async function serviceConfig(
   if (!upgrade) return current();
   // A config from before the server port was allocated at creation, or from
   // another web port. Read and upgraded under a lock, so two starts that find
-  // it agree on one port.
+  // it agree on one port. An unallocated config's web port is 0, which no
+  // parsed file's is, so a matching web port means an allocated server port.
   return withLock(join(directory, 'config-lock'), async () => {
     const stored = await current();
-    if (stored.serverPort !== 0 && stored.webPort === file.webPort) return stored;
+    if (stored.webPort === file.webPort) return stored;
     const upgraded: ServiceConfig = { ...stored, serverPort: stored.serverPort === 0 ? await allocate() : stored.serverPort, webPort: file.webPort };
     await writeAtomically(path, upgraded);
     return upgraded;
@@ -198,10 +200,13 @@ const valuesFor = (config: ServiceConfig, file: ServicesFile, published: Readonl
   published,
 });
 
+/** The variables `names` of the services file's `environment`, filled with `values`; a parsed file's `web.environment` names only its own keys. */
+const filledEnvironment = (file: ServicesFile, values: Values, names: readonly string[]): Record<string, string> =>
+  Object.fromEntries(names.map(name => [name, expand(file.environment[name] as string, values, true)]));
+
 /** The services file's `environment`, filled for this worktree and the ports Docker published. */
 export function environmentFor(file: ServicesFile, config: ServiceConfig, published: Readonly<Record<string, number>>): Record<string, string> {
-  const values = valuesFor(config, file, published);
-  return Object.fromEntries(Object.entries(file.environment).map(([name, template]) => [name, expand(template, values, true)]));
+  return filledEnvironment(file, valuesFor(config, file, published), Object.keys(file.environment));
 }
 
 function pidAlive(pid: number): boolean {
@@ -421,8 +426,10 @@ async function runWith(root: string, command: readonly string[], environment: Re
   process.on('SIGINT', interrupt);
   process.on('SIGTERM', terminate);
   try {
-    const [code, signal] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
-    return code ?? (signal === null ? 0 : 1);
+    // Node gives the exit code, or else the signal that ended the command:
+    // never neither. A signal ends it with 1.
+    const [code] = (await once(child, 'exit')) as [number | null];
+    return code ?? 1;
   } finally {
     process.off('SIGINT', interrupt);
     process.off('SIGTERM', terminate);
@@ -438,13 +445,12 @@ async function runSteps(root: string, steps: readonly (readonly string[])[], env
 }
 
 function assertMainCheckout(root: string, action: string, env: Env): void {
-  const [gitDir, commonDir] = ['--git-dir', '--git-common-dir'].map(option =>
-    execFileSync('git', ['rev-parse', '--path-format=absolute', option], { cwd: root, encoding: 'utf8', env: { ...env } }).trim(),
-  );
-  if (gitDir !== commonDir) throw new Error(`${action} runs only in the main checkout, where the data it acts on lives.`);
+  const revParse = (option: string): string => execFileSync('git', ['rev-parse', '--path-format=absolute', option], { cwd: root, encoding: 'utf8', env: { ...env } });
+  if (revParse('--git-dir').trim() !== revParse('--git-common-dir').trim()) throw new Error(`${action} runs only in the main checkout, where the data it acts on lives.`);
 }
 
-const fill = (command: readonly string[], values: Values, extra: readonly string[] = []): string[] => [...command.map(part => expand(part, values, false)), ...extra];
+/** A command filled with `values`, as it is (no URL encoding), then `extra`. */
+export const fill = (command: readonly string[], values: Values, extra: readonly string[] = []): string[] => [...command.map(part => expand(part, values, false)), ...extra];
 
 /**
  * One action for the worktree at `rootPath`; resolves the exit code: a
@@ -460,7 +466,6 @@ export async function services(rootPath: string, action: string, command: readon
       text => JSON.parse(String(text)) as unknown,
       () => {
         // fail-open: no readable config means no services were started here.
-        return undefined;
       },
     );
     if (!validConfig(stored, root, file.project)) {
@@ -494,11 +499,15 @@ export async function services(rootPath: string, action: string, command: readon
   if (action === 'web') {
     if (file.web === undefined) throw new Error(`${file.path} has no "web" command`);
     // The web command needs only what it names, not the containers.
-    const environment = prepared ?? Object.fromEntries(file.web.environment.map(name => [name, expand(file.environment[name] ?? '', values, true)]));
+    const environment = prepared ?? filledEnvironment(file, values, file.web.environment);
     await assertPortFree(file.webPort, file);
     return runWith(root, fill(file.web.command, values, command), environment, io.env);
   }
-  if (action === 'server' && file.server === undefined) throw new Error(`${file.path} has no "server" command`);
+  let server: ServicesFile['server'];
+  if (action === 'server') {
+    if (file.server === undefined) throw new Error(`${file.path} has no "server" command`);
+    server = file.server;
+  }
   const environment = prepared ?? (await startServices(root, project, config, composeFor(root, file, config.password, io), io));
   if (action === 'up') return 0;
   if (custom !== undefined) {
@@ -506,11 +515,11 @@ export async function services(rootPath: string, action: string, command: readon
     await runSteps(root, steps, environment, io.env, step => `${action} failed at ${step}; the steps after it did not run.`);
     return 0;
   }
-  if (action === 'server' && file.server !== undefined) {
+  if (server !== undefined) {
     await assertPortFree(config.serverPort, file);
-    const before = file.server.before.map(step => fill(step, values));
+    const before = server.before.map(step => fill(step, values));
     await runSteps(root, before, environment, io.env, step => `${step} failed, so the server was not started. Fix the error above and retry; the services' data is kept.`);
-    return runWith(root, fill(file.server.command, values, command), environment, io.env);
+    return runWith(root, fill(server.command, values, command), environment, io.env);
   }
   return runWith(root, command, environment, io.env);
 }

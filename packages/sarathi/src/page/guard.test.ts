@@ -22,6 +22,7 @@ import {
   main,
   readInput,
   readText,
+  start,
   transcriptEvents,
   writeErr,
   type GuardEnv,
@@ -443,5 +444,75 @@ describe('main', () => {
     const unwritable = { PUBLISH_GUARD_MODE: 'read', PUBLISH_GUARD_LOG: dir };
     expect(main(call('publish'), unwritable, () => '', err)).toBe(2);
     expect(err.mock.lastCall?.[0]).toMatch(/^publish guard: log not written/);
+  });
+});
+
+describe('the guard, call by call', () => {
+  it('reads a transcript’s JSON lines and nothing else', () => {
+    expect(transcriptEvents('')).toEqual([]);
+    expect(transcriptEvents('  \n{"a":1}\nnot json\n\n7\n')).toEqual([{ a: 1 }, 7]);
+  });
+
+  it('refuses a publish with no tool input as aimed at no page', () => {
+    const update: GuardEnv = { mode: 'update', url: PAGE, version: '2', once: join(scratch(), 'published') };
+    const never = (): string => {
+      throw new Error('not read');
+    };
+    expect(decide({ tool_name: 'Artifact', tool_input: null, transcript_path: 't' }, update, never)).toBe(
+      `this session may only change ${PAGE}, not undefined; publish refused`,
+    );
+    expect(decide({ tool_name: 'Artifact', transcript_path: 't' }, update, never)).toBe(
+      `this session may only change ${PAGE}, not undefined; publish refused`,
+    );
+  });
+
+  it('needs the mode and every one of the URL, version and claim path for an update', () => {
+    const all = { PUBLISH_GUARD_MODE: 'update', PUBLISH_GUARD_URL: PAGE, PUBLISH_GUARD_VERSION: '3', PUBLISH_GUARD_ONCE: '/s/once' };
+    expect(envFrom(all)).toEqual({ mode: 'update', url: PAGE, version: '3', once: '/s/once' });
+    for (const name of ['PUBLISH_GUARD_URL', 'PUBLISH_GUARD_VERSION', 'PUBLISH_GUARD_ONCE']) {
+      expect(() => envFrom({ ...all, [name]: undefined }), name).toThrow('guard misconfigured (mode update)');
+      expect(() => envFrom({ ...all, [name]: '' }), name).toThrow('guard misconfigured (mode update)');
+    }
+    expect(() => envFrom({ ...all, PUBLISH_GUARD_MODE: 'publish' })).toThrow('guard misconfigured (mode publish)');
+  });
+
+  it('logs and allows a call with no tool input, and says nothing on stderr when it allows', () => {
+    const dir = scratch();
+    const log = join(dir, 'guard.log');
+    const err = vi.fn<(text: string) => void>();
+    expect(main(JSON.stringify({ tool_name: 'Bash', tool_input: null }), { PUBLISH_GUARD_MODE: 'read', PUBLISH_GUARD_LOG: log }, () => '', err)).toBe(0);
+    expect(main(JSON.stringify({ tool_name: 'Bash' }), { PUBLISH_GUARD_MODE: 'read', PUBLISH_GUARD_LOG: log }, () => '', err)).toBe(0);
+    expect(main(JSON.stringify({ tool_name: 'Artifact', tool_input: { action: 'read' } }), { PUBLISH_GUARD_MODE: 'read' }, () => '', err)).toBe(0);
+    expect(err).not.toHaveBeenCalled();
+    expect(readFileSync(log, 'utf8')).toBe('undefined: allowed\nundefined: allowed\n');
+  });
+
+  it('hands on input whole, a character split across chunks included', async () => {
+    const stream = new PassThrough();
+    const text = new Promise<string>(settle => {
+      readInput(stream, settle);
+    });
+    const bytes = Buffer.from('{"é":1}');
+    stream.write(bytes.subarray(0, 3));
+    stream.end(bytes.subarray(3));
+    expect(await text).toBe('{"é":1}');
+  });
+
+  it('is not the entry for a missing or empty script path', () => {
+    const self = new URL('./guard.ts', import.meta.url).href;
+    expect(isEntry(undefined, self)).toBe(false);
+    expect(isEntry('', self)).toBe(false);
+    expect(isEntry(fileURLToPath(self), self)).toBe(true);
+  });
+
+  it('starts only as the script node was asked to run, reading the stream it is given', async () => {
+    const self = new URL('./guard.ts', import.meta.url).href;
+    const seen: string[] = [];
+    start(fileURLToPath(import.meta.url), self, Readable.from(['not run']), text => seen.push(text));
+    const read = new Promise<string>(settle => {
+      start(fileURLToPath(self), self, Readable.from(['{"tool', '_name":1}']), settle);
+    });
+    expect(await read).toBe('{"tool_name":1}');
+    expect(seen).toEqual([]);
   });
 });

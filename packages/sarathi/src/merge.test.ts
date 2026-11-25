@@ -175,3 +175,116 @@ describe('merge', () => {
     assert.deepEqual(json(answer.stdout), { hookSpecificOutput: { updatedInput: { command: 'a' }, hookEventName: 'PreToolUse' } });
   });
 });
+
+describe('merge, answer by answer', () => {
+  it('reads an answer only when the whole output is one JSON object, whitespace around it allowed', () => {
+    const plain = (stdout: string): Outcome => ({ label: 'h', code: 0, stdout, stderr: '', timedOut: false, failClosed: false });
+    // Not records: each stays plain text.
+    assert.deepEqual(merge('SessionStart', [plain('7'), plain('null'), plain('[1]'), plain('"x"'), plain('{"no')]), {
+      code: 0,
+      stdout: '7\n\nnull\n\n[1]\n\n"x"\n\n{"no\n',
+      stderr: '',
+    });
+    // Two answers behind a no-break space and a newline still merge as JSON.
+    assert.deepEqual(merge('PreToolUse', [plain(' {"systemMessage":"a"}\n'), plain(' {"systemMessage":"b"}')]), {
+      code: 0,
+      stdout: '{"systemMessage":"a\\n\\nb"}\n',
+      stderr: '',
+    });
+  });
+
+  it('keeps only non-blank strings when it joins texts', () => {
+    const answer = (value: unknown): Outcome => ({ label: 'h', code: 0, stdout: JSON.stringify({ systemMessage: value }), stderr: '', timedOut: false, failClosed: false });
+    assert.deepEqual(merge('Stop', [answer(''), answer('  '), answer(7), answer('kept'), answer('Stryker was here!')]), {
+      code: 0,
+      stdout: '{"systemMessage":"kept\\n\\nStryker was here!"}\n',
+      stderr: '',
+    });
+    assert.deepEqual(merge('Stop', [answer(''), answer('  ')]), { code: 0, stdout: '{}\n', stderr: '' });
+  });
+
+  it('lets a fail-closed handler that exits 0 pass', () => {
+    const guard: Outcome = { label: 'guard', code: 0, stdout: '', stderr: '', timedOut: false, failClosed: true };
+    assert.deepEqual(merge('PreToolUse', [guard]), { code: 0, stdout: '', stderr: '' });
+  });
+
+  it('says a handler that did not finish did not finish, and trims what it printed', () => {
+    const gone: Outcome = { label: 'gone', code: null, stdout: '', stderr: '', timedOut: false, failClosed: false };
+    assert.deepEqual(merge('PostToolUse', [gone]), { code: 1, stdout: '', stderr: 'gone did not finish\n' });
+    const noisy: Outcome = { label: 'fmt', code: 1, stdout: '', stderr: '  disk full\n', timedOut: false, failClosed: false };
+    const blank: Outcome = { label: 'quiet', code: 4, stdout: '', stderr: '\n', timedOut: false, failClosed: false };
+    const answered: Outcome = { label: 'h', code: 0, stdout: '{"continue":true}', stderr: '', timedOut: false, failClosed: false };
+    assert.deepEqual(merge('PostToolUse', [noisy, blank, answered]), {
+      code: 0,
+      stdout: '{"systemMessage":"fmt exited 1: disk full\\n\\nquiet exited 4"}\n',
+      stderr: '',
+    });
+  });
+
+  it('ignores what a failed handler printed on stdout', () => {
+    const failed: Outcome = { label: 'x', code: 1, stdout: '{"systemMessage":"from a failed handler"}', stderr: '', timedOut: false, failClosed: false };
+    assert.deepEqual(merge('PostToolUse', [failed]), { code: 1, stdout: '', stderr: 'x exited 1\n' });
+    const text: Outcome = { ...failed, stdout: 'plain' };
+    assert.deepEqual(merge('SessionStart', [text]), { code: 1, stdout: '', stderr: 'x exited 1\n' });
+  });
+
+  it('prints nothing for output that is only blank lines', () => {
+    const blank: Outcome = { label: 'h', code: 0, stdout: '\n\n', stderr: '', timedOut: false, failClosed: false };
+    assert.deepEqual(merge('SessionStart', [blank]), { code: 0, stdout: '', stderr: '' });
+  });
+
+  it('keeps plain output as context on UserPromptSubmit, as on SessionStart, when another handler failed', () => {
+    const said: Outcome = { label: 'h', code: 0, stdout: 'remember this\n', stderr: '', timedOut: false, failClosed: false };
+    const failed: Outcome = { label: 'reap', code: 1, stdout: '', stderr: '', timedOut: false, failClosed: false };
+    for (const event of ['SessionStart', 'UserPromptSubmit']) {
+      assert.deepEqual(merge(event, [said, failed]), {
+        code: 0,
+        stdout: `{"systemMessage":"reap exited 1","hookSpecificOutput":{"additionalContext":"remember this","hookEventName":"${event}"}}\n`,
+        stderr: '',
+      });
+    }
+    // Elsewhere plain output is not context, so the failure is all there is to say.
+    assert.deepEqual(merge('Stop', [said, failed]), { code: 1, stdout: '', stderr: 'reap exited 1\n' });
+  });
+
+  it('passes through the fields it does not manage, the first answer’s winning, and only those', () => {
+    const answer = (fields: Record<string, unknown>): Outcome => ({ label: 'h', code: 0, stdout: JSON.stringify(fields), stderr: '', timedOut: false, failClosed: false });
+    const merged = merge('PreToolUse', [
+      answer({ continue: true, stopReason: 's', suppressOutput: false, decision: 'approve', reason: 'r', systemMessage: '  ', hookSpecificOutput: 'x', other: 1 }),
+      answer({ other: 2, more: 'm' }),
+    ]);
+    assert.deepEqual(merged, { code: 0, stdout: '{"other":1,"more":"m"}\n', stderr: '' });
+    // The merged fields follow the passed-through ones, wherever the answer put them.
+    const first = answer({ systemMessage: 'a', hookSpecificOutput: { additionalContext: 'c' }, other: 1 });
+    assert.deepEqual(merge('PreToolUse', [first]), {
+      code: 0,
+      stdout: '{"other":1,"systemMessage":"a","hookSpecificOutput":{"additionalContext":"c","hookEventName":"PreToolUse"}}\n',
+      stderr: '',
+    });
+  });
+
+  it('reads hook-specific output only from an object', () => {
+    const answer = (specific: unknown): Outcome => ({ label: 'h', code: 0, stdout: JSON.stringify({ hookSpecificOutput: specific }), stderr: '', timedOut: false, failClosed: false });
+    assert.deepEqual(merge('PreToolUse', [answer('ab'), answer(null), answer(['a']), answer({ additionalContext: 'c' })]), {
+      code: 0,
+      stdout: '{"hookSpecificOutput":{"additionalContext":"c","hookEventName":"PreToolUse"}}\n',
+      stderr: '',
+    });
+    const blocked: Outcome = { label: 'b', code: 2, stdout: '', stderr: 'no\n', timedOut: false, failClosed: false };
+    assert.deepEqual(merge('Stop', [blocked, answer('ab'), answer(null), answer(['a'])]), { code: 2, stdout: '', stderr: 'no\n' });
+  });
+
+  it('picks allow over a decision it does not know, and keeps a non-string decision as given', () => {
+    const answer = (specific: Record<string, unknown>): Outcome => ({ label: 'h', code: 0, stdout: JSON.stringify({ hookSpecificOutput: specific }), stderr: '', timedOut: false, failClosed: false });
+    assert.deepEqual(merge('PreToolUse', [answer({ permissionDecision: 'defer', permissionDecisionReason: 'later' }), answer({ permissionDecision: 'allow', permissionDecisionReason: 'fine' })]), {
+      code: 0,
+      stdout: '{"hookSpecificOutput":{"permissionDecision":"allow","permissionDecisionReason":"fine","hookEventName":"PreToolUse"}}\n',
+      stderr: '',
+    });
+    assert.deepEqual(merge('PreToolUse', [answer({ permissionDecision: 5, permissionDecisionReason: 'a' }), answer({ permissionDecision: 5, permissionDecisionReason: 'b' })]), {
+      code: 0,
+      stdout: '{"hookSpecificOutput":{"permissionDecision":5,"permissionDecisionReason":"a","hookEventName":"PreToolUse"}}\n',
+      stderr: '',
+    });
+  });
+});

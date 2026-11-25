@@ -35,15 +35,15 @@ function isRecord(value: unknown): value is Json {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** The object a handler printed, or undefined for any other output: a record is the only answer. */
 function parseJson(text: string): Json | undefined {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith('{')) return undefined;
   try {
-    const value: unknown = JSON.parse(trimmed);
+    const value: unknown = JSON.parse(text.trim());
     return isRecord(value) ? value : undefined;
   } catch {
-    return undefined;
+    // Output that is not JSON is no record: the function falls through to undefined.
   }
+  return undefined;
 }
 
 function strings(values: readonly unknown[]): string[] {
@@ -89,9 +89,8 @@ function mergeSpecific(event: string, answers: readonly Json[], extraContext: re
   const winner = PERMISSION_ORDER.find(decision => decisions.includes(decision)) ?? decisions[0];
   if (winner !== undefined) {
     merged.permissionDecision = winner;
-    const reason = joined(specifics.filter(specific => specific.permissionDecision === winner).map(specific => specific.permissionDecisionReason));
-    if (reason === undefined) delete merged.permissionDecisionReason;
-    else merged.permissionDecisionReason = reason;
+    // Only the winners' reasons: with none, undefined leaves out the one another decision gave.
+    merged.permissionDecisionReason = joined(specifics.filter(specific => specific.permissionDecision === winner).map(specific => specific.permissionDecisionReason));
   }
   const context = joined([...specifics.map(specific => specific.additionalContext), ...extraContext]);
   if (context === undefined) delete merged.additionalContext;
@@ -103,6 +102,7 @@ function mergeSpecific(event: string, answers: readonly Json[], extraContext: re
 
 const MANAGED = new Set(['continue', 'stopReason', 'suppressOutput', 'decision', 'reason', 'systemMessage', 'hookSpecificOutput']);
 
+/** The merged answer. A managed field left undefined is left out of the JSON it becomes. */
 function mergeJson(event: string, answers: readonly Json[], extraContext: readonly string[], notes: readonly string[]): Json {
   const merged: Json = {};
   for (const answer of answers) {
@@ -112,20 +112,16 @@ function mergeJson(event: string, answers: readonly Json[], extraContext: readon
   }
   if (answers.some(answer => answer.continue === false)) {
     merged.continue = false;
-    const stop = joined(answers.map(answer => answer.stopReason));
-    if (stop !== undefined) merged.stopReason = stop;
+    merged.stopReason = joined(answers.map(answer => answer.stopReason));
   }
   if (answers.some(answer => answer.suppressOutput === true)) merged.suppressOutput = true;
   const blockers = answers.filter(answer => answer.decision === 'block');
   if (blockers.length > 0) {
     merged.decision = 'block';
-    const reason = joined(blockers.map(answer => answer.reason));
-    if (reason !== undefined) merged.reason = reason;
+    merged.reason = joined(blockers.map(answer => answer.reason));
   }
-  const message = joined([...answers.map(answer => answer.systemMessage), ...notes]);
-  if (message !== undefined) merged.systemMessage = message;
-  const specific = mergeSpecific(event, answers, extraContext);
-  if (specific !== undefined) merged.hookSpecificOutput = specific;
+  merged.systemMessage = joined([...answers.map(answer => answer.systemMessage), ...notes]);
+  merged.hookSpecificOutput = mergeSpecific(event, answers, extraContext);
   return merged;
 }
 
@@ -153,7 +149,8 @@ export function merge(event: string, outcomes: readonly Outcome[]): Answer {
   const blockers = outcomes.filter(blocks);
   if (blockers.length > 0) {
     const reasons = blockers.map(blockReason).join('');
-    const others = TEXTS_ON_BLOCK.has(event) ? othersTexts(outcomes.filter(outcome => !blocks(outcome))) : [];
+    // othersTexts reads only exit-0 answers, and no blocker exits 0.
+    const others = TEXTS_ON_BLOCK.has(event) ? othersTexts(outcomes) : [];
     if (others.length === 0) return { code: 2, stdout: '', stderr: reasons };
     const texts = [reasons.trimEnd(), ...others].filter(text => text !== '');
     return { code: 2, stdout: '', stderr: `${texts.join('\n\n')}\n` };

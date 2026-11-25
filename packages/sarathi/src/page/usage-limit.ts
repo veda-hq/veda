@@ -6,24 +6,24 @@
 
 const NO_LIMIT_MESSAGE = 'the claude account is at its usage limit';
 
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
+/** A field of a parsed line: undefined for a line with none, null and other non-objects included. */
+const field = (value: unknown, key: string): unknown => (value as Record<string, unknown> | null | undefined)?.[key];
 
 /**
  * The event `claude -p` ends on at the limit, as the stream-json `result`
  * line or the whole `--output-format json` answer (both measured 2026-10-28).
  */
-const isLimitEvent = (event: Record<string, unknown>): boolean =>
-  event.type === 'result' && event.api_error === 'usage_limit_reached';
+const isLimitEvent = (event: unknown): boolean =>
+  field(event, 'type') === 'result' && field(event, 'api_error') === 'usage_limit_reached';
 
 /** A turn's content, when the event is a turn. */
-function turnContent(event: Record<string, unknown>): unknown[] | undefined {
-  if (event.type !== 'assistant' || !isObject(event.message)) return undefined;
-  const { content } = event.message;
+function turnContent(event: unknown): unknown[] | undefined {
+  if (field(event, 'type') !== 'assistant') return undefined;
+  const content = field(field(event, 'message'), 'content');
   return Array.isArray(content) ? content : undefined;
 }
 
-const isToolUse = (item: unknown): boolean => isObject(item) && item.type === 'tool_use';
+const isToolUse = (item: unknown): boolean => field(item, 'type') === 'tool_use';
 
 /**
  * The message of a session that hit the usage limit and ran no tool, the
@@ -38,10 +38,8 @@ export function usageLimit(stdout: string): string | undefined {
       event = JSON.parse(line);
     } catch {
       // fail-open: a line that is not JSON is another failure's output, which
-      // the exit status reports.
-      continue;
+      // the exit status reports; left undefined, it is no event.
     }
-    if (!isObject(event)) continue;
     const content = turnContent(event);
     if (content !== undefined) {
       // A tool anywhere in the session voids the limit, whatever the order: a
@@ -49,7 +47,8 @@ export function usageLimit(stdout: string): string | undefined {
       // change that, so the rest of the stream goes unread.
       if (content.some(isToolUse)) return undefined;
     } else if (isLimitEvent(event)) {
-      message = typeof event.result === 'string' && event.result.trim() !== '' ? event.result : NO_LIMIT_MESSAGE;
+      const result = field(event, 'result');
+      message = typeof result === 'string' && result.trim() !== '' ? result : NO_LIMIT_MESSAGE;
     }
   }
   return message;

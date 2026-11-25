@@ -4,10 +4,10 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { Module } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { after, test } from 'node:test';
+import { after, mock, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { loadPrettier, minimalEdit, respond, sessionRoot, type Edit } from './format-before-write.ts';
+import { loadPrettier, minimalEdit, respond, sessionRoot, start, updatedInput, type Edit, type Prettier } from './format-before-write.ts';
 
 /** Re-reads NODE_PATH into the folders require searches last; Node's own, untyped. */
 function initPaths(): void {
@@ -257,4 +257,184 @@ test('the handler over stdin: formats, and never blocks on malformed input', () 
   const bad = spawnSync('node', [HOOK], { input: 'not json', encoding: 'utf8', env });
   assert.equal(bad.status, 0);
   assert.equal(bad.stdout, '');
+});
+
+/** A checkout of its own for one test: a real folder, removed when the file ends. */
+function checkout(): string {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'format-before-write-own-')));
+  ownRoots.push(root);
+  return root;
+}
+const ownRoots: string[] = [];
+after(() => {
+  for (const root of ownRoots) rmSync(root, { recursive: true, force: true });
+});
+
+/** A prettier that formats every file it is shown by appending `;` to the text, and records what it was asked. */
+function recordingPrettier(over: Partial<Prettier> = {}): Prettier & { readonly calls: unknown[][] } {
+  const calls: unknown[][] = [];
+  return {
+    calls,
+    getFileInfo: (path, options) => {
+      calls.push(['getFileInfo', path, options]);
+      return Promise.resolve({ ignored: false, inferredParser: 'babel' });
+    },
+    resolveConfig: path => {
+      calls.push(['resolveConfig', path]);
+      return Promise.resolve(null);
+    },
+    format: (text, options) => {
+      calls.push(['format', text, options]);
+      if (typeof text !== 'string') throw new TypeError('text must be a string');
+      return Promise.resolve(`${text};`);
+    },
+    ...over,
+  };
+}
+
+test('updatedInput: formats each type prettier formats here, and only those', async () => {
+  const root = checkout();
+  for (const extension of ['.ts', '.tsx', '.js', '.jsx', '.json', '.md', '.yml', '.yaml', '.css']) {
+    const file_path = join(root, `x${extension}`);
+    assert.deepEqual(await updatedInput({ tool_name: 'Write', tool_input: { file_path, content: 'a' } }, recordingPrettier(), root), { file_path, content: 'a;' }, extension);
+  }
+  for (const extension of ['.mjs', '.html', '.py', '']) {
+    const file_path = join(root, `x${extension}`);
+    assert.equal(await updatedInput({ tool_name: 'Write', tool_input: { file_path, content: 'a' } }, recordingPrettier(), root), null, extension);
+  }
+});
+
+test('updatedInput: leaves scratch alone, at the start of a relative path too', async () => {
+  const root = checkout();
+  mkdirSync(join(root, '.tmp'));
+  mkdirSync(join(root, '.local'));
+  const write = (file_path: string) => updatedInput({ tool_name: 'Write', tool_input: { file_path, content: 'a' } }, recordingPrettier(), root);
+  assert.equal(await write(join(root, '.tmp', 'x.ts')), null);
+  assert.equal(await write(join(root, '.local', 'x.ts')), null);
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    assert.equal(await write('.tmp/x.ts'), null);
+    assert.equal(await write('.local/x.ts'), null);
+    assert.deepEqual(await write('x.ts'), { file_path: 'x.ts', content: 'a;' });
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
+test('updatedInput: lets the tool run as asked on every doubt, never throwing', async () => {
+  const root = checkout();
+  const outside = checkout();
+  writeFileSync(join(root, 'a.ts'), 'aa = 1\n');
+  writeFileSync(join(outside, 'o.ts'), 'o = 1\n');
+  const edit = (tool_input: Record<string, unknown>, tool_name = 'Edit', prettier: Prettier | null = recordingPrettier()) => updatedInput({ tool_name, tool_input }, prettier, root);
+  const path = join(root, 'a.ts');
+  // In a folder that does not exist, a file that does not exist, a file outside the checkout.
+  assert.equal(await edit({ file_path: join(root, 'missing', 'a.ts'), old_string: 'a', new_string: 'b' }), null);
+  assert.equal(await edit({ file_path: join(root, 'missing.ts'), old_string: 'a', new_string: 'b' }), null);
+  assert.equal(await edit({ file_path: join(outside, 'o.ts'), old_string: 'o', new_string: 'p' }), null);
+  // What the Edit tool itself refuses: a match that is not unique, strings that are not strings, an empty one.
+  assert.equal(await edit({ file_path: path, old_string: 'a', new_string: 'b' }), null);
+  assert.equal(await edit({ file_path: path, old_string: 1, new_string: 'b' }), null);
+  assert.equal(await edit({ file_path: path, old_string: 'aa', new_string: 2 }), null);
+  assert.equal(await edit({ file_path: path, old_string: '', new_string: 'b', replace_all: true }), null);
+  // No prettier, or one that ignores the file.
+  assert.equal(await edit({ file_path: path, old_string: 'aa', new_string: 'bb' }, 'Edit', null), null);
+  const ignoring = recordingPrettier({ getFileInfo: () => Promise.resolve({ ignored: true, inferredParser: 'babel' }) });
+  assert.equal(await edit({ file_path: path, old_string: 'aa', new_string: 'bb' }, 'Edit', ignoring), null);
+  // Only Edit and Write are rewritten.
+  assert.equal(await edit({ file_path: path, old_string: 'aa', new_string: 'bb' }, 'NotebookEdit'), null);
+  // A path that is not a string, and content that is not a string.
+  assert.equal(await edit({ file_path: 5, content: 'a' }, 'Write'), null);
+  assert.equal(await edit({ file_path: join(root, 'w.ts'), content: 5 }, 'Write'), null);
+  assert.equal(await edit({ file_path: join(root, 'w.ts'), content: 'a' }, 'Write', null), null);
+  assert.equal(await updatedInput({ tool_name: 'Write' }, recordingPrettier(), root), null);
+});
+
+test('updatedInput: an Edit comes back as the smallest unique replacement, with what prettier was asked', async () => {
+  const root = checkout();
+  const path = join(root, 'a.ts');
+  writeFileSync(path, 'x = 1\ny = 2\n');
+  const prettier = recordingPrettier({ resolveConfig: () => Promise.resolve({ semi: false }) });
+  const out = await updatedInput({ tool_name: 'Edit', tool_input: { file_path: path, old_string: 'y = 2', new_string: 'y = 3' } }, prettier, root);
+  assert.deepEqual(out, { file_path: path, old_string: '2\n', new_string: '3\n;', replace_all: false });
+  assert.deepEqual(prettier.calls, [
+    ['getFileInfo', path, { ignorePath: join(root, '.prettierignore') }],
+    ['format', 'x = 1\ny = 3\n', { semi: false, filepath: path }],
+  ]);
+});
+
+test('respond: prints nothing when there is nothing to change', async () => {
+  const root = checkout();
+  assert.equal(await respond(JSON.stringify({ tool_name: 'Read', tool_input: { file_path: join(root, 'a.ts') } }), { CLAUDE_PROJECT_DIR: root }), '');
+});
+
+test('sessionRoot: an empty or non-string cwd falls back to the project, quietly', () => {
+  const root = checkout();
+  const repo = checkout();
+  execFileSync('git', ['init', '-q', repo]);
+  const write = mock.method(process.stderr, 'write', () => true);
+  try {
+    assert.equal(sessionRoot({ cwd: '' }, { CLAUDE_PROJECT_DIR: root }), root);
+    assert.equal(sessionRoot({ cwd: [repo] }, { CLAUDE_PROJECT_DIR: root }), root);
+    assert.equal(sessionRoot({ cwd: root }, { CLAUDE_PROJECT_DIR: root }), root);
+    assert.equal(sessionRoot({ cwd: repo }, { CLAUDE_PROJECT_DIR: root }), repo);
+    assert.equal(write.mock.callCount(), 0);
+  } finally {
+    write.mock.restore();
+  }
+});
+
+test('loadPrettier: the session checkout’s, then the project’s, and none from an empty path', () => {
+  const root = checkout();
+  mkdirSync(join(root, 'node_modules', 'prettier'), { recursive: true });
+  writeFileSync(join(root, 'node_modules', 'prettier', 'package.json'), '{"name":"prettier","main":"index.js"}\n');
+  writeFileSync(join(root, 'node_modules', 'prettier', 'index.js'), 'exports.which = "own";\n');
+  const nodePath = process.env.NODE_PATH;
+  delete process.env.NODE_PATH;
+  initPaths();
+  try {
+    assert.equal((loadPrettier(root, {}) as unknown as { which: string } | null)?.which, 'own');
+    assert.equal((loadPrettier('', { CLAUDE_PROJECT_DIR: root }) as unknown as { which: string } | null)?.which, 'own');
+    assert.equal(loadPrettier('', { CLAUDE_PROJECT_DIR: '' }), null);
+  } finally {
+    if (nodePath !== undefined) process.env.NODE_PATH = nodePath;
+    initPaths();
+  }
+});
+
+test('minimalEdit: each case keeps old_string unique and as short as the line rule gives', () => {
+  for (const [before, after, old_string, new_string] of [
+    ['a\n', 'aa\n', 'a\n', 'aa\n'],
+    ['\na', '\naa', 'a', 'aa'],
+    ['ab', 'aba', 'ab', 'aba'],
+    ['a\nb', 'a\nba', 'b', 'ba'],
+    ['ab', 'bab', 'ab', 'bab'],
+    ['a\n', 'ba\n', 'a', 'ba'],
+    ['aa\n', 'ba\n', 'aa', 'ba'],
+  ] as const) {
+    assert.deepEqual(minimalEdit(before, after), { old_string, new_string }, JSON.stringify([before, after]));
+  }
+});
+
+test('start: runs only as the script node was given, reading the stream it is handed', async () => {
+  const seen: string[] = [];
+  await start(undefined, import.meta.url, ['{}'], text => seen.push(`undefined: ${text}`));
+  await start('', import.meta.url, ['{}'], text => seen.push(`empty: ${text}`));
+  await start(fileURLToPath(import.meta.url), new URL('./format-before-write.ts', import.meta.url).href, ['{}'], text => seen.push(`other: ${text}`));
+  const self = new URL('./format-before-write.ts', import.meta.url);
+  await start(fileURLToPath(self), self.href, ['not', ' json'], text => seen.push(`self: ${text}`));
+  assert.deepEqual(seen, ['self: ']);
+  const root = checkout();
+  mkdirSync(join(root, 'node_modules', 'prettier'), { recursive: true });
+  writeFileSync(join(root, 'node_modules', 'prettier', 'package.json'), '{"name":"prettier","main":"index.js"}\n');
+  writeFileSync(
+    join(root, 'node_modules', 'prettier', 'index.js'),
+    'exports.getFileInfo = async () => ({ ignored: false, inferredParser: "babel" });\nexports.resolveConfig = async () => null;\nexports.format = async text => `${text};`;\n',
+  );
+  const file_path = join(root, 'a.ts');
+  const event = JSON.stringify({ tool_name: 'Write', cwd: root, tool_input: { file_path, content: 'a' } });
+  const answered: string[] = [];
+  await start(fileURLToPath(self), self.href, [event.slice(0, 9), event.slice(9)], text => answered.push(text), { CLAUDE_PROJECT_DIR: root });
+  assert.deepEqual(answered, [JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: { file_path, content: 'a;' } } })]);
 });

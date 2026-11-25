@@ -1883,3 +1883,168 @@ describe('the guard file', () => {
     );
   });
 });
+
+describe('the page tool, rule by rule', () => {
+  const ISSUE = 'https://github.com/o/r/issues/1';
+
+  it('reads the box at the very end of a page with no section heading, and only before a heading at its second character', () => {
+    expect(actionBoxGaps(`<div data-action-box><p data-if-silent>s</p><a data-action-link href="${ISSUE}">`)).toEqual([]);
+    expect(actionBoxGaps(` <h2>D</h2><div data-action-box><a data-action-link href="${ISSUE}">a</a><p data-if-silent>s</p></div>`)).toEqual([BOX_GAP, LINK_GAP, SILENT_GAP]);
+  });
+
+  it('reads attributes however many spaces part them', () => {
+    expect(actionBoxGaps(`<div  data-action-box><a  data-action-link  href="${ISSUE}">a</a><p  data-if-silent>s</p></div>`)).toEqual([]);
+  });
+
+  it('takes a part only from an opening tag inside the box', () => {
+    expect(actionBoxGaps(`<div data-action-box><a data-action-link href="${ISSUE}">a</a></p data-if-silent></div>`)).toEqual([SILENT_GAP]);
+    expect(actionBoxGaps(`<a data-action-link href="${ISSUE}">a</a><div data-action-box><p data-if-silent>s</p>`)).toEqual([LINK_GAP]);
+    expect(actionBoxGaps(`<div data-action-box/><a data-action-link href="${ISSUE}">a</a><p data-if-silent>s</p>`)).toEqual([LINK_GAP, SILENT_GAP]);
+  });
+
+  it('takes an item only for a whole number or new', () => {
+    expect(opensList('https://github.com/o/r/issues/12x')).toBe(true);
+    expect(opensList('https://github.com/o/r/issues/x12')).toBe(true);
+    expect(opensList('https://github.com/o/r/issues/newx')).toBe(true);
+    expect(opensList('https://github.com/o/r/issues/12')).toBe(false);
+    expect(opensList('https://github.com/o/r')).toBe(false);
+  });
+
+  it('reads the HTML only between tag lines, and quotes at most 500 characters of a failed read', () => {
+    const header = '[Artifact a (version 3) — raw HTML follows]';
+    expect(() => readPage(`${header}\nsee <artifact-html>\nbody\n</artifact-html>`)).toThrow('no page HTML and version');
+    expect(() => readPage(`${header}\n<artifact-html>\nbody\n</artifact-html> and more`)).toThrow('no page HTML and version');
+    expect(() => readPage(header)).toThrow('no page HTML and version');
+    expect(readPage(`${header}\n<artifact-html>\nbody\n</artifact-html>`)).toEqual({ html: 'body', version: '3' });
+    const long = 'x'.repeat(600);
+    expect(() => readPage(long)).toThrow(`the read returned no page HTML and version:\n${'x'.repeat(500)}`);
+    let message = '';
+    try {
+      readPage(long);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toBe(`the read returned no page HTML and version:\n${'x'.repeat(500)}`);
+  });
+
+  it('refuses a record that is not an object of the strings --read writes', () => {
+    const record = { url: URL, page: '/x/p.html', version: '1', readAt: '2026-09-30T05:00:00.000Z' };
+    for (const text of [
+      '"x"',
+      '7',
+      JSON.stringify({ ...record, url: [URL] }),
+      JSON.stringify({ ...record, page: ['/x/p.html'] }),
+      JSON.stringify({ ...record, version: ['1'] }),
+      JSON.stringify({ ...record, readAt: [record.readAt] }),
+      JSON.stringify({ ...record, url: `x${URL}` }),
+      JSON.stringify({ ...record, url: `${URL}/more` }),
+      JSON.stringify({ ...record, readAt: `x${record.readAt}` }),
+      JSON.stringify({ ...record, readAt: `${record.readAt}x` }),
+    ]) {
+      let message = '';
+      try {
+        parseRecord(text, 'r.json');
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message, text).toBe('r.json is not a live-page record');
+    }
+  });
+
+  it('keeps the tools of the first system init event that lists them', () => {
+    const lines = [
+      { type: 'other', subtype: 'init', tools: ['X'] },
+      { type: 'system', subtype: 'start', tools: ['Y'] },
+      { type: 'system', subtype: 'init', tools: 'Z' },
+      { type: 'system', subtype: 'init', tools: ['Artifact', 5] },
+      { type: 'system', subtype: 'init', tools: ['Late'] },
+      { type: 'result', result: 'done' },
+    ].map(line => JSON.stringify(line));
+    expect(parseStream([...lines.slice(0, 3), '  ', ...lines.slice(3)].join('\n'))).toEqual({ result: 'done', calls: [], tools: ['Artifact'] });
+  });
+
+  it('counts only the named tool’s call for the comments', () => {
+    const comments = jobOf(['--comments', URL]);
+    expect(() => outcome(comments, { result: 'r', calls: [call('Artifact', 'read', 'x')] })).toThrow('the comments were not read:\nr');
+  });
+
+  it('reads the reply status from the trimmed last line, and only a whole status', () => {
+    const reply = jobOf(['--reply', URL, '--thread', 't', '--text-file', 'reply.md']);
+    const replied = [call('ArtifactComments', 'reply')];
+    expect(outcome(reply, { result: 'done\n  REPLY: posted', calls: replied })).toBe('done\n  REPLY: posted');
+    expect(outcome(reply, { result: 'REPLY:posted', calls: replied })).toBe('REPLY:posted');
+    expect(() => outcome(reply, { result: 'not REPLY: posted', calls: replied })).toThrow('the reply was not posted:\nnot REPLY: posted');
+  });
+
+  it('checks a version only for an update', () => {
+    const publish = jobOf(['p.html']);
+    const calls = [call('Artifact', 'read', '[Artifact a (version 3)]', true, {}), call('Artifact', 'publish', `Published ${URL}`)];
+    expect(outcome(publish, { result: 'done', calls })).toBe(URL);
+  });
+
+  it('refuses a read session that called any other tool, or read nothing', () => {
+    const read = jobOf(['--read', URL]);
+    expect(() => outcome(read, { result: 'r', calls: [call('ArtifactComments', 'read'), call('Artifact', 'read', 'page')] })).toThrow(
+      `the read session also called ArtifactComments read; check ${URL} for changes`,
+    );
+    let message = '';
+    try {
+      outcome(read, { result: 'r', calls: [] });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toBe('the page was not read:\nr');
+  });
+
+  it('refuses a guarded job whose guard file is missing, before any session, and runs a new page without one', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sarathi-page-guard-'));
+    try {
+      const missing = join(root, 'missing-guard.js');
+      const spawn = vi.fn<Spawn>(() => ({ status: 0, stdout: stream([{ name: 'Artifact', action: 'publish', output: `Published ${URL}` }], 'done'), stderr: '', error: undefined }));
+      expect(() => run(['--read', URL, '--out', join(root, 'p.html')], spawn, root, () => new Date('2026-09-30T05:00:00Z'), missing)).toThrow(
+        `the publish guard ${missing} is missing; nothing was sent`,
+      );
+      expect(spawn).not.toHaveBeenCalled();
+      const page = join(root, 'page.html');
+      writeFileSync(page, BOXED);
+      expect(run([page], spawn, root, () => new Date('2026-09-30T05:00:00Z'), missing)).toBe(URL);
+      expect(spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('hands the session the guard file it was given', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sarathi-page-guard-'));
+    try {
+      const guard = join(root, 'guard.js');
+      writeFileSync(guard, '');
+      const scripts: unknown[] = [];
+      const spawn = vi.fn<Spawn>((_command, _args, options) => {
+        scripts.push(options.env.PUBLISH_GUARD_SCRIPT);
+        return { status: 0, stdout: stream([{ name: 'Artifact', action: 'read', input: { url: URL }, output: readOutput('7', '<p>7</p>') }], 'READ: done'), stderr: '', error: undefined };
+      });
+      run(['--read', URL, '--out', join(root, 'p.html')], spawn, root, () => new Date('2026-09-30T05:00:00Z'), guard);
+      expect(scripts).toEqual([guard]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('numbers backups upward past every one already there', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sarathi-page-backup-'));
+    try {
+      const out = join(root, 'p.html');
+      const at = () => new Date('2026-09-30T05:00:00Z');
+      const spawn = vi.fn<Spawn>(() => ({ status: 0, stdout: stream([{ name: 'Artifact', action: 'read', input: { url: URL }, output: readOutput('7', '<p>7</p>') }], 'READ: done'), stderr: '', error: undefined }));
+      const stem = `${out}.2026-09-30T05-00-00-000Z`;
+      writeFileSync(out, 'draft');
+      writeFileSync(`${stem}.bak`, 'first');
+      writeFileSync(`${stem}-2.bak`, 'second');
+      expect(run(['--read', URL, '--out', out], spawn, root, at)).toBe(`saved ${out} (version 7); the file that was there is now ${stem}-3.bak`);
+      expect(readFileSync(`${stem}-3.bak`, 'utf8')).toBe('draft');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

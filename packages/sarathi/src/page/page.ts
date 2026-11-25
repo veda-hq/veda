@@ -206,11 +206,10 @@ export function opensList(href: string): boolean {
   if (words.includes('projects')) return true;
   if (words.length === 1) return ROOT_LISTS.has(words[0] as string);
   const [, , kind, item] = words;
-  if (kind === undefined) return false;
-  // String(undefined) is "undefined", which names no item: a bare list.
+  // String(undefined) is "undefined": no list kind, and no item, so a bare list.
   return (
-    REPO_LISTS.has(kind) ||
-    (ITEM_LISTS.has(kind) && !ONE_ITEM.test(String(item)))
+    REPO_LISTS.has(String(kind)) ||
+    (ITEM_LISTS.has(String(kind)) && !ONE_ITEM.test(String(item)))
   );
 }
 
@@ -262,9 +261,8 @@ function boxParts(top: string): BoxParts | null {
   );
   if (at === -1) return null;
   const box = tags[at] as Tag;
-  if (box.selfClosing || VOID_ELEMENTS.has(box.name)) {
-    return { link: false, silent: false, lists: [] };
-  }
+  // A box that holds nothing has the parts of no tags.
+  if (box.selfClosing || VOID_ELEMENTS.has(box.name)) return partsIn([]);
   let depth = 1;
   for (let next = at + 1; next < tags.length; next++) {
     const tag = tags[next] as Tag;
@@ -518,8 +516,8 @@ export function parseArgs(argv: readonly string[]): Request {
 /** The file the job copies into the scratch directory, if any. */
 export function stagedFile(job: Request): string | undefined {
   if (job.kind === 'publish' || job.kind === 'update') return job.file;
-  if (job.kind === 'reply') return job.textFile;
-  return undefined;
+  // Of the rest, only a reply carries a text file.
+  return (job as { textFile?: string }).textFile;
 }
 
 export function buildPrompt(job: Job): string {
@@ -624,13 +622,13 @@ export function parseStream(stdout: string): {
   calls: ToolCall[];
   tools?: string[];
 } {
-  const events: unknown[] = [];
+  const events = stdout
+    .split('\n')
+    .filter(line => line.trim() !== '')
+    .map((line): unknown => JSON.parse(line));
   let result: string | undefined;
   let tools: string[] | undefined;
-  for (const line of stdout.split('\n')) {
-    if (line.trim() === '') continue;
-    const event: unknown = JSON.parse(line);
-    events.push(event);
+  for (const event of events) {
     const {
       type,
       subtype,
@@ -899,14 +897,14 @@ function blocked(job: Request, message: string): string {
 }
 
 /** One job in a one-off session; returns what `outcome` accepted. */
-function session(job: Job, spawn: Spawn, scratchRoot: string): string {
+function session(job: Job, spawn: Spawn, scratchRoot: string, guardScript: string): string {
   // Outside the repository, so the one-off session loads no project settings.
   const cwd = mkdtempSync(join(scratchRoot, 'sarathi-page-'));
   try {
     const file = stagedFile(job);
     if (file !== undefined) copyFileSync(file, join(cwd, basename(file)));
     const guard = guardEnv(job);
-    if (guard !== undefined) requireGuard();
+    if (guard !== undefined) requireGuard(guardScript);
     const args = claudeArgs(buildPrompt(job), jobTools(job));
     if (guard !== undefined) {
       const settings = join(cwd, 'guard-settings.json');
@@ -929,7 +927,7 @@ function session(job: Job, spawn: Spawn, scratchRoot: string): string {
         CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
         ...(guard && {
           ...guard,
-          PUBLISH_GUARD_SCRIPT: GUARD,
+          PUBLISH_GUARD_SCRIPT: guardScript,
           // Created by the guard on the session's one allowed publish.
           PUBLISH_GUARD_ONCE: join(cwd, 'guard-published'),
         }),
@@ -958,9 +956,10 @@ function runJob(
   spawn: Spawn,
   scratchRoot: string,
   now: () => Date,
+  guardScript: string,
 ): string {
   if (job.kind === 'read') {
-    const { html, version } = readPage(session(job, spawn, scratchRoot));
+    const { html, version } = readPage(session(job, spawn, scratchRoot, guardScript));
     mkdirSync(dirname(job.out), { recursive: true });
     // The old record goes first: a write that fails part-way leaves a page
     // with no record, which no update accepts, never one with a wrong record.
@@ -987,7 +986,7 @@ function runJob(
     return `saved ${job.out} (version ${version})${kept}`;
   }
   if (job.kind !== 'update') {
-    return session(job, spawn, scratchRoot);
+    return session(job, spawn, scratchRoot, guardScript);
   }
   const path = recordPath(job.file);
   const fresh = `Read the page again with --read ${job.url} --out <file>, edit that file, then publish it.`;
@@ -1006,7 +1005,7 @@ function runJob(
   // uncertain may still have changed the page, so every retry reads afresh.
   rmSync(path);
   try {
-    return session({ ...job, expectVersion: base.version }, spawn, scratchRoot);
+    return session({ ...job, expectVersion: base.version }, spawn, scratchRoot, guardScript);
   } catch (error) {
     // The limit stops the session before its first turn, so no tool ran and
     // the record still describes the live page.
@@ -1029,13 +1028,15 @@ export function run(
   spawn: Spawn = spawnSync,
   scratchRoot: string = tmpdir(),
   now: () => Date = () => new Date(),
+  /** The publish guard the hook runs; a test names a missing one. */
+  guardScript: string = GUARD,
 ): string {
   const job = parseArgs(argv);
   if (job.kind === 'publish' || job.kind === 'update') {
     requireActionBox(job.file, pageText(job.file));
   }
   try {
-    return runJob(job, spawn, scratchRoot, now);
+    return runJob(job, spawn, scratchRoot, now, guardScript);
   } catch (error) {
     // fail-open: the limit is answered by blocked(), which prints the page's
     // file URL or throws; every other error is rethrown.

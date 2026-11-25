@@ -81,9 +81,9 @@ who moved the issue, where a bare claim gives them nothing to check.
 // founder decision: gate blocks on surviving mutants (ADR-9999)
 ```
 
-The ✅ forms below need no pragma: each passes once its citation resolves in the
-repository that holds it. The SHA, issue and ADR here are illustrations and do
-not resolve in this repository.
+The ✅ forms below need no pragma: the SHA and the ADR pass once they resolve in
+the repository that holds them, and the issue id passes by its shape. The SHA,
+issue and ADR here are illustrations and do not resolve in this repository.
 
 ```ts
 // ✅ GOOD — the owner's own commit, which a reviewer can look up.
@@ -107,7 +107,8 @@ permission, so the authority word list (`owner`, `founder`, `CTO`, `CEO`,
   point. If there is no artifact, the decision has not been made yet.
 - Authors pay one lookup per claim: find the SHA, ADR, or issue id.
 - Fabricated authority stops being free: a claim must point at something a
-  reviewer can look up, and a pointer to nothing is refused.
+  reviewer can look up. A SHA or ADR that points at nothing is refused; an issue
+  or PR id that names nothing passes, since only its shape is checked.
 - Two citation tiers are honest about their strength — SHA and ADR are resolved
   (the commit or file exists), Linear and GitHub ids are shape-checked because a
   git hook has no network. Neither tier proves who made the artifact.

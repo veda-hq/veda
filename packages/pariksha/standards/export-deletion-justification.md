@@ -20,8 +20,9 @@ applies_to: ['apps', 'packages', 'scripts']
 When a branch removes an exported declaration (`export` then `const`, `let`,
 `var`, `function`, `class`, `interface`, `type`, `enum`, `const enum` or
 `namespace`, with `default`, `declare`, `async` or `abstract` allowed between)
-and its name appears **nowhere in the post-change tree**, the removal MUST be
-declared with a trailer in any commit body on the branch:
+and its name appears in **no source file of the post-change tree** (build
+output, vendored code, docs and comment lines do not count), the removal MUST
+be declared with a trailer in any commit body on the branch:
 
 ```
 Removes-Export: clearGiftSelection — superseded by resetCart(); no

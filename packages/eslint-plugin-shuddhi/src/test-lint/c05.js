@@ -55,9 +55,9 @@ export function c05Rules({
     const callee = unwrap(node.callee);
     if (callee.type === 'Identifier')
       return /^(expect|assert)/.test(callee.name);
+    // Only an Identifier has a `name`.
     if (
       callee.type === 'MemberExpression' &&
-      callee.object.type === 'Identifier' &&
       callee.object.name === 'expect'
     ) {
       return true;
@@ -67,10 +67,10 @@ export function c05Rules({
 
   /** `expect.hasAssertions()` / `expect.assertions(n)`: a return without one fails. */
   function isAssertionCount(node) {
+    // Only an Identifier has a `name`.
     return (
       node.type === 'CallExpression' &&
       node.callee.type === 'MemberExpression' &&
-      node.callee.object.type === 'Identifier' &&
       node.callee.object.name === 'expect' &&
       ['hasAssertions', 'assertions'].includes(propertyName(node.callee))
     );
@@ -80,20 +80,21 @@ export function c05Rules({
   function isConsoleCall(node) {
     if (node.type !== 'CallExpression') return false;
     const callee = unwrap(node.callee);
+    // Only an Identifier has a `name`.
     return (
-      callee.type === 'MemberExpression' &&
-      callee.object.type === 'Identifier' &&
-      callee.object.name === 'console'
+      callee.type === 'MemberExpression' && callee.object.name === 'console'
     );
   }
 
   /** `return;`, `return undefined;` or `return void x;`. */
   function isBareReturn(statement) {
     const argument = statement.argument ? unwrap(statement.argument) : null;
+    // Only an Identifier has a `name`, and only a UnaryExpression's
+    // `operator` can be `void`.
     return (
       argument === null ||
-      (argument.type === 'Identifier' && argument.name === 'undefined') ||
-      (argument.type === 'UnaryExpression' && argument.operator === 'void')
+      argument.name === 'undefined' ||
+      argument.operator === 'void'
     );
   }
 
@@ -185,18 +186,16 @@ export function c05Rules({
     const name = propertyName(callee);
     if (!name || !REMOVERS.has(name)) return null;
     let object = unwrap(callee.object);
-    if (
-      object.type === 'MemberExpression' &&
-      propertyName(object) === 'promises'
-    )
-      object = unwrap(object.object);
-    if (object.type !== 'Identifier') return null;
+    // propertyName is null for anything but a member expression.
+    if (propertyName(object) === 'promises') object = unwrap(object.object);
+    // Only an Identifier has a `name`, so no other object is an fs binding
+    // or named `fs`.
     return isFsBinding(object, context) || ['fs', 'fsp'].includes(object.name)
       ? name
       : null;
   }
 
-  /** An options literal with `recursive: true`. */
+  /** An options literal with `recursive: true`; only a Literal has a `value`. */
   function isRecursive(options) {
     const value = unwrap(options);
     return (
@@ -206,7 +205,6 @@ export function c05Rules({
           property.type === 'Property' &&
           !property.computed &&
           (property.key.name ?? property.key.value) === 'recursive' &&
-          property.value.type === 'Literal' &&
           property.value.value === true,
       )
     );
@@ -232,13 +230,13 @@ export function c05Rules({
     const [first, ...rest] = value.arguments;
     if (name === 'realpathSync' || name === 'realpath')
       return isOwnedRoot(first, context, owned, depth + 1);
-    // `join(root, 'sub')` stays inside root; `..` or a computed segment may not.
+    // `join(root, 'sub')` stays inside root; `..` or a computed segment may
+    // not. Only a Literal has a `value`.
     if (name === 'join') {
       return (
         isOwnedRoot(first, context, owned, depth + 1) &&
         rest.every(
           part =>
-            part.type === 'Literal' &&
             typeof part.value === 'string' &&
             !part.value.split(/[\\/]/).some(segment => segment === '..'),
         )
@@ -247,9 +245,12 @@ export function c05Rules({
     return false;
   }
 
+  /**
+   * The option `ownedRootCalls` (further calls whose result is a directory
+   * the test owns) has no default: without it only {@link OWNED_ROOT_CALLS}
+   * count.
+   */
   const OWNED_REMOVAL_DEFAULTS = {
-    /** Further calls whose result is a directory the test owns. */
-    ownedRootCalls: [],
     /** The guarded removal helper the message points to. */
     removeHelper: 'removeFixtureRoot',
     /** Where it lives, named in the message. */
@@ -281,8 +282,10 @@ export function c05Rules({
       },
     },
     create(context) {
-      const options = { ...OWNED_REMOVAL_DEFAULTS, ...context.options[0] };
-      const owned = new Set([...OWNED_ROOT_CALLS, ...options.ownedRootCalls]);
+      // ESLint merges `meta.defaultOptions` under what the config passes.
+      const [options] = context.options;
+      const owned = new Set(options.ownedRootCalls);
+      for (const call of OWNED_ROOT_CALLS) owned.add(call);
       const from = options.removeHelperModule
         ? ` from ${options.removeHelperModule}`
         : '';
@@ -301,9 +304,13 @@ export function c05Rules({
     },
   };
 
-  /** SQL statement shapes worth calling an oracle when copied. */
+  /**
+   * SQL statement shapes worth calling an oracle when copied. It is matched
+   * against {@link normalizeSql}'s output only, which is lowercase with
+   * single spaces, so it spells a space as one and has no `i` flag.
+   */
   const SQL_SHAPE =
-    /\b(select\b[\s\S]+\bfrom|insert\s+(or\s+\w+\s+)?into|update\b[\s\S]+\bset|delete\s+from|create\s+(virtual\s+)?(table|index|trigger)|\bmatch\s+\?)/i;
+    /\b(select\b[\s\S]+\bfrom|insert (or \w+ )?into|update\b[\s\S]+\bset|delete from|create (virtual )?(table|index|trigger)|match \?)/;
   const COPY_WINDOW = 48;
   const COPY_STRIDE = 24;
   const SOURCE_EXTENSIONS = ['', '.ts', '.tsx', '.mts', '.js', '.mjs'];
@@ -313,22 +320,19 @@ export function c05Rules({
   /** Normalized module text, re-read when the file's mtime moves (editor sessions). */
   const moduleTexts = new Map();
 
-  function moduleText(path) {
-    let stat;
-    try {
-      stat = statSync(path);
-    } catch {
-      // fail-open: an unreadable module has no SQL to compare; the rule skips it.
-      return null;
-    }
+  /** The normalized text of a module {@link resolveRelativeImport} found. */
+  function moduleText({ path, mtimeMs }) {
     const cached = moduleTexts.get(path);
-    if (cached && cached.mtimeMs === stat.mtimeMs) return cached.text;
+    if (cached && cached.mtimeMs === mtimeMs) return cached.text;
     const text = normalizeSql(readFileSync(path, 'utf8'));
-    moduleTexts.set(path, { mtimeMs: stat.mtimeMs, text });
+    moduleTexts.set(path, { mtimeMs, text });
     return text;
   }
 
-  /** `./x` from `fromFile` → an existing non-test source file, or null. */
+  /**
+   * `./x` from `fromFile` → an existing non-test source file, as its path and
+   * mtime, or null.
+   */
   function resolveRelativeImport(fromFile, specifier) {
     if (!specifier.startsWith('.')) return null;
     const base = resolve(dirname(fromFile), specifier.replace(/\.js$/, ''));
@@ -339,7 +343,8 @@ export function c05Rules({
     for (const candidate of candidates) {
       if (/\.(test|spec)\.[cm]?[jt]sx?$/.test(candidate)) continue;
       try {
-        if (statSync(candidate).isFile()) return candidate;
+        const stat = statSync(candidate);
+        if (stat.isFile()) return { path: candidate, mtimeMs: stat.mtimeMs };
       } catch {
         // fail-open: no file with this extension; try the next one.
       }
@@ -379,7 +384,6 @@ export function c05Rules({
       const filename = context.filename;
       const modules = [];
       const check = (node, text) => {
-        if (modules.length === 0) return;
         const sql = normalizeSql(text);
         if (sql.length < COPY_WINDOW || !SQL_SHAPE.test(sql)) return;
         const source = modules.find(module => copiedInto(sql, module.text));
@@ -392,17 +396,18 @@ export function c05Rules({
       };
       return {
         ImportDeclaration(node) {
+          // An import's source is always a string Literal.
           const specifier = node.source.value;
-          if (typeof specifier !== 'string') return;
-          const path = resolveRelativeImport(filename, specifier);
-          const text = path ? moduleText(path) : null;
+          const found = resolveRelativeImport(filename, specifier);
+          const text = found ? moduleText(found) : null;
           if (text) modules.push({ specifier, text });
         },
         // Raw text on both sides: the module is compared as written, so an
         // escaped `'\\'` in either file must stay escaped to match.
         Literal(node) {
           if (typeof node.value !== 'string') return;
-          if (node.parent?.type === 'ImportDeclaration') return;
+          // A Literal always has a parent.
+          if (node.parent.type === 'ImportDeclaration') return;
           check(node, node.raw.slice(1, -1));
         },
         TemplateLiteral(node) {

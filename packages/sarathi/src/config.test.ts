@@ -54,6 +54,8 @@ describe('parseConfig', () => {
     assert.throws(() => parseConfig('{', 'f.json', ROOT), /f\.json is not JSON/);
     refuses([], /must hold an object/);
     refuses({ hooks: {}, extra: 1 }, /unknown key "extra"/);
+    // `worktree` and `where` belong to their own readers, which check them.
+    assert.deepEqual(parse({ hooks: {}, worktree: {}, where: { config: 'w.cjs' } }).hooks, {});
     refuses({ kavach: [], hooks: {} }, /"kavach" must be an object/);
     refuses({ kavach: { other: 1 }, hooks: {} }, /unknown key "other"/);
     refuses({ kavach: { config: 1 }, hooks: {} }, /kavach\.config/);

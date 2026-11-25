@@ -19,6 +19,9 @@
  * `sarathi services`: the worktree's local services (`services/main.ts`), and
  * `sarathi services reap`, the sweep of deleted worktrees' services, and
  * `sarathi services prune`, the hourly Docker sweep (`services/prune.ts`).
+ *
+ * `sarathi where`: what a module sits next to and what depends on it, from
+ * the project's own dependency-cruiser (`where/where.ts`).
  */
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -35,6 +38,7 @@ import { lifecycleMain } from './worktree/lifecycle.ts';
 import { pickMain } from './worktree/pick.ts';
 import { parseSettings } from './worktree/settings.ts';
 import { VERSION } from './version.ts';
+import { parseWhereSettings, whereMain } from './where/where.ts';
 
 // Kept for code that imports dist/cli.js for it, as before version.ts.
 export { VERSION };
@@ -71,6 +75,7 @@ const USAGE = `usage: sarathi hook <Event> [--config <file>]
        sarathi services run -- <command>
        sarathi services reap
        sarathi services prune install|run|run-now|status|uninstall [--dry-run] [--docker <path>] [--settings <file>]
+       sarathi where <regex> [--reaches | --depth N] | --affected [rev] [--scope DIR]... [--max N] [--config <file>]
        sarathi --version
 `;
 
@@ -274,10 +279,12 @@ function check(io: Io, options: Options): number {
   let config: Config;
   try {
     config = loadConfig(configPath(io, options), projectRoot(io));
-    // The worktree settings share the file; a malformed one would only show at the next lifecycle call.
-    parseSettings((JSON.parse(readFileSync(config.path, 'utf8')) as { worktree?: unknown }).worktree, config.path, config.root);
+    // The worktree and where settings share the file; a malformed one would only show at the next call that reads it.
+    const raw = JSON.parse(readFileSync(config.path, 'utf8')) as { worktree?: unknown; where?: unknown };
+    parseSettings(raw.worktree, config.path, config.root);
+    parseWhereSettings(raw.where, config.path, config.root);
   } catch (error) {
-    // loadConfig throws a ConfigError and parseSettings a SettingsError, each with a message that names the file.
+    // loadConfig throws a ConfigError, parseSettings a SettingsError and parseWhereSettings a WhereError, each with a message that names the file.
     io.err(`sarathi: ${(error as Error).message}\n`);
     return 1;
   }
@@ -331,6 +338,7 @@ export async function main(io: Io): Promise<number> {
     return lifecycleMain(after, io);
   }
   if (first === 'services') return servicesMain(after, io);
+  if (first === 'where') return whereMain(after, io);
   const options = parseOptions(io.argv);
   if (typeof options === 'string') {
     io.err(`sarathi: ${options}\n${USAGE}`);

@@ -52,8 +52,9 @@ export interface Config {
 export const DEFAULT_TIMEOUT_SECONDS = 60;
 
 const ENTRY_KEYS = new Set(['matcher', 'command', 'guard', 'timeout', 'failClosed']);
-// `worktree` holds `sarathi worktree`'s settings, read and checked by worktree/settings.ts.
-const TOP_KEYS = new Set(['$schema', 'kavach', 'hooks', 'forbidEnv', 'worktree']);
+// `worktree` holds `sarathi worktree`'s settings, read and checked by worktree/settings.ts;
+// `where` holds `sarathi where`'s, read and checked by where/where.ts.
+const TOP_KEYS = new Set(['$schema', 'kavach', 'hooks', 'forbidEnv', 'worktree', 'where']);
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const KAVACH_KEYS = new Set(['config', 'python']);
 const PLAIN = /^[\w|-]+$/;

@@ -13,6 +13,7 @@ import { VERSION } from './version.ts';
 import { USAGE as CLEANUP_USAGE } from './worktree/cleanup.ts';
 import { USAGE as LIFECYCLE_USAGE } from './worktree/lifecycle.ts';
 import { PICK_USAGE, SHELL_HELP } from './worktree/pick.ts';
+import { HELP as WHERE_HELP } from './where/where.ts';
 
 interface Result {
   readonly code: number;
@@ -291,6 +292,16 @@ describe('sarathi check', () => {
     assert.match(result.err, /worktree: "name" must be/);
   });
 
+  it('validates the where settings beside the hook list', async () => {
+    assert.equal((await run(['check'], { dir: project(hooks, { where: { config: 'scripts/where.cjs' } }) })).code, 0);
+    const dir = project(hooks, { where: { config: '' } });
+    assert.deepEqual(await run(['check'], { dir }), {
+      code: 1,
+      out: '',
+      err: `sarathi: ${join(dir, '.claude', 'sarathi.json')} where: "config" must be a path from the project root\n`,
+    });
+  });
+
   it('accepts settings that let every handler fire in time', async () => {
     const dir = project(hooks);
     const file = settingsFile(dir, { hooks: { PreToolUse: [entry('Bash|Edit|Read', 'PreToolUse', 130)], Stop: [entry(undefined, 'Stop', 60)] } });
@@ -494,6 +505,15 @@ describe('worktree and services', () => {
 
   it('hands services its words', async () => {
     assert.deepEqual(await run(['services', '--bogus']), { code: 1, out: '', err: SERVICES_USAGE });
+  });
+
+  it('hands where its words, before sarathi reads --config or --max as its own', async () => {
+    assert.deepEqual(await run(['where', '--help']), { code: 0, out: WHERE_HELP, err: '' });
+    assert.deepEqual(await run(['where', 'x', '--max', '0', '--config', 'c.cjs']), {
+      code: 2,
+      out: '',
+      err: `sarathi where: --max needs a positive whole number, not "0"\n\n${WHERE_HELP}`,
+    });
   });
 });
 

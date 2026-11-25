@@ -34,27 +34,29 @@ const PRISMA_NULLS = new Set(['JsonNull', 'DbNull', 'AnyNull']);
 const BINDING_DEPTH = 3;
 
 /**
- * The sentinel's name when `node` is one: `Prisma.JsonNull`, a named import
- * of it from `@prisma/client` (or a subpath), or a `const { JsonNull } =
- * Prisma` binding; otherwise null.
+ * The sentinel's name when the member expression `node` is one
+ * (`Prisma.JsonNull`, `Prisma['DbNull']`); otherwise null.
  */
-function prismaNullName(node, context) {
-  if (node.type === 'MemberExpression') {
-    const name = propertyName(node);
-    const object = unwrap(node.object);
-    return object.type === 'Identifier' &&
-      object.name === 'Prisma' &&
-      PRISMA_NULLS.has(name)
-      ? name
-      : null;
-  }
-  if (node.type !== 'Identifier') return null;
-  const variable = variableOf(node, context);
+function memberSentinel(node) {
+  const name = propertyName(node);
+  // Only an Identifier has a `name`.
+  return unwrap(node.object).name === 'Prisma' && PRISMA_NULLS.has(name)
+    ? name
+    : null;
+}
+
+/**
+ * The sentinel's name when `identifier` is bound to one: a named import of it
+ * from `@prisma/client` (or a subpath), or a `const { JsonNull } = Prisma`
+ * binding; otherwise null.
+ */
+function boundSentinel(identifier, context) {
+  const variable = variableOf(identifier, context);
   if (!variable || variable.defs.length !== 1) return null;
   const [def] = variable.defs;
   if (def.type === 'ImportBinding') {
-    const imported =
-      def.node.type === 'ImportSpecifier' ? def.node.imported : null;
+    // A default or namespace import has no `imported`.
+    const imported = def.node.imported;
     const name = imported?.name ?? imported?.value;
     return /^@prisma\/client(\/|$)/.test(def.parent.source.value) &&
       PRISMA_NULLS.has(name)
@@ -62,7 +64,8 @@ function prismaNullName(node, context) {
       : null;
   }
   // `const { JsonNull } = Prisma`, or renamed: `const { DbNull: dbNull } = Prisma`.
-  const init = def.type === 'Variable' ? unwrap(def.node.init) : null;
+  // Only a variable's declarator has an `init`.
+  const init = unwrap(def.node.init);
   if (
     init?.type !== 'Identifier' ||
     init.name !== 'Prisma' ||
@@ -70,8 +73,9 @@ function prismaNullName(node, context) {
   ) {
     return null;
   }
+  // A rest element has no `value`.
   const property = def.node.id.properties.find(
-    entry => entry.type === 'Property' && unwrap(entry.value) === def.name,
+    entry => unwrap(entry.value) === def.name,
   );
   const key = property && !property.computed ? property.key.name : null;
   return PRISMA_NULLS.has(key) ? key : null;
@@ -102,6 +106,13 @@ const jsonnullInMatcher = {
   create(context) {
     const reported = new Set();
 
+    /** Report `node` once, as the sentinel `name` when it is one. */
+    function report(node, name, matcher) {
+      if (name === null || reported.has(node)) return;
+      reported.add(node);
+      context.report({ node, messageId: matcher, data: { name } });
+    }
+
     /** Report every sentinel reached from `node`, the argument of `matcher`. */
     function visit(node, matcher, depth) {
       const value = unwrap(node);
@@ -122,18 +133,16 @@ const jsonnullInMatcher = {
         case 'SpreadElement':
           visit(value.argument, matcher, depth);
           return;
-        default:
-          break;
-      }
-      const name = prismaNullName(value, context);
-      if (name !== null) {
-        if (reported.has(value)) return;
-        reported.add(value);
-        context.report({ node: value, messageId: matcher, data: { name } });
-        return;
-      }
-      if (value.type === 'Identifier' && depth < BINDING_DEPTH) {
-        visit(constInit(value, context), matcher, depth + 1);
+        case 'MemberExpression':
+          report(value, memberSentinel(value), matcher);
+          return;
+        case 'Identifier': {
+          const name = boundSentinel(value, context);
+          if (name !== null) report(value, name, matcher);
+          else if (depth < BINDING_DEPTH) {
+            visit(constInit(value, context), matcher, depth + 1);
+          }
+        }
       }
     }
 

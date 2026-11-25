@@ -34,9 +34,8 @@ function propertyName(member) {
   if (!member.computed) {
     return property.type === 'Identifier' ? property.name : null;
   }
-  return property.type === 'Literal' && typeof property.value === 'string'
-    ? property.value
-    : null;
+  // Only a Literal key has a `value`.
+  return typeof property.value === 'string' ? property.value : null;
 }
 
 /** `x.method(...)` → `'method'`; anything that is not a call → null. */
@@ -58,14 +57,9 @@ const CHAIN_FACTORIES = new Set(['each', 'for', 'skipIf', 'runIf']);
  * registration and returns null.
  */
 function registration(call, context) {
-  if (call.type !== 'CallExpression') return null;
+  if (call?.type !== 'CallExpression') return null;
   const direct = call.callee;
-  if (
-    direct.type === 'MemberExpression' &&
-    CHAIN_FACTORIES.has(propertyName(direct))
-  ) {
-    return null;
-  }
+  if (CHAIN_FACTORIES.has(propertyName(direct))) return null;
   let callee = direct;
   let table = null;
   let condition = null;
@@ -89,13 +83,14 @@ function registration(call, context) {
     }
     break;
   }
-  if (callee.type !== 'Identifier' || !isTestApi(callee, context)) return null;
+  // Only an Identifier has a `name`: any other root registers nothing.
   let kind;
   if (TEST_ROOTS.has(callee.name)) kind = 'test';
   else if (SUITE_ROOTS.has(callee.name)) kind = 'suite';
   else if (HOOKS.has(callee.name) && direct.type === 'Identifier')
     kind = 'hook';
   else return null;
+  if (!isTestApi(callee, context)) return null;
   const callback = [...call.arguments].reverse().find(isFunction) ?? null;
   return {
     kind,
@@ -127,10 +122,9 @@ function isTestApi(identifier, context) {
 
 /** The registration whose callback `fn` is, or null. */
 function ownerOf(fn, context) {
-  const parent = fn.parent;
-  if (!parent || parent.type !== 'CallExpression') return null;
-  if (!parent.arguments.includes(fn)) return null;
-  const owner = registration(parent, context);
+  // registration is null for a parent that is no call, or none (the Program).
+  // The callback is one of the call's arguments, so a callee `fn` owns none.
+  const owner = registration(fn.parent, context);
   return owner && owner.callback === fn ? owner : null;
 }
 
@@ -162,31 +156,22 @@ const MODIFIERS = new Set(['not', 'resolves', 'rejects']);
  * a custom harness) is ordinary code, not the runner's (isTestApi).
  */
 function assertion(call, context) {
-  if (!call || call.type !== 'CallExpression') return null;
+  if (call?.type !== 'CallExpression') return null;
   const callee = call.callee;
-  if (callee.type !== 'MemberExpression') return null;
+  // propertyName is null for anything but a member expression.
   const matcher = propertyName(callee);
   if (!matcher || MODIFIERS.has(matcher)) return null;
   let object = callee.object;
   let negated = false;
-  while (
-    object.type === 'MemberExpression' &&
-    MODIFIERS.has(propertyName(object))
-  ) {
+  while (MODIFIERS.has(propertyName(object))) {
     if (propertyName(object) === 'not') negated = !negated;
     object = object.object;
   }
   if (object.type !== 'CallExpression') return null;
   const fn = object.callee;
-  const expectId =
-    fn.type === 'MemberExpression' && propertyName(fn) === 'soft'
-      ? fn.object
-      : fn;
-  if (
-    expectId.type !== 'Identifier' ||
-    expectId.name !== 'expect' ||
-    !isTestApi(expectId, context)
-  ) {
+  const expectId = propertyName(fn) === 'soft' ? fn.object : fn;
+  // Only an Identifier has a `name`.
+  if (expectId.name !== 'expect' || !isTestApi(expectId, context)) {
     return null;
   }
   return {
@@ -215,7 +200,7 @@ function constInit(identifier, context) {
   const def = variable.defs[0];
   if (
     def.type !== 'Variable' ||
-    def.parent?.kind !== 'const' ||
+    def.parent.kind !== 'const' ||
     def.node.id.type !== 'Identifier' ||
     !def.node.init
   ) {
@@ -248,12 +233,16 @@ const COMPARISONS = new Set([
   'in',
 ]);
 
+/**
+ * Is `node` the number `n`, written as a literal or a negated one? Only a
+ * Literal has a `value`: any other operand of `-` negates to NaN, which is
+ * no number.
+ */
 const isNumber = (node, n) =>
   node?.type === 'Literal' && node.value === n
     ? true
     : node?.type === 'UnaryExpression' &&
       node.operator === '-' &&
-      node.argument.type === 'Literal' &&
       -node.argument.value === n;
 
 const INDEX_METHODS = new Set([
@@ -263,23 +252,19 @@ const INDEX_METHODS = new Set([
   'search',
 ]);
 
+/** `expect(x).toBeTruthy()` or `.toBe(true)`; only a Literal has a `value`. */
 const isTrueMatcher = found =>
   !found.negated &&
   (found.matcher === 'toBeTruthy' ||
     (['toBe', 'toEqual', 'toStrictEqual'].includes(found.matcher) &&
-      found.args[0]?.type === 'Literal' &&
-      found.args[0].value === true));
+      found.args[0]?.value === true));
 
 /** Is `node` inside the `finally` block of a try statement? */
 function inFinally(node) {
   let current = node;
   while (current.parent && !isFunction(current.parent)) {
-    if (
-      current.parent.type === 'TryStatement' &&
-      current.parent.finalizer === current
-    ) {
-      return true;
-    }
+    // Only a TryStatement has a `finalizer`.
+    if (current.parent.finalizer === current) return true;
     current = current.parent;
   }
   return false;
@@ -292,8 +277,8 @@ function isTeardownCallback({ fn, owner }) {
   return (
     (owner?.kind === 'hook' &&
       (owner.name === 'afterEach' || owner.name === 'afterAll')) ||
-    (fn.parent?.type === 'CallExpression' &&
-      fn.parent.callee.type === 'Identifier' &&
+    // A function always has a parent; only an Identifier callee has a `name`.
+    (fn.parent.type === 'CallExpression' &&
       TEARDOWN_CALLS.has(fn.parent.callee.name))
   );
 }

@@ -96,16 +96,15 @@ const noHandRolledArgv = {
      * Judge one use of an argv-valued expression. Returns the `.slice()` call
      * when the use is a slice (the caller then judges the slice's own use).
      */
-    const judgeUse = (expression, { allowEntryIndex }) => {
+    const judgeUse = (expression, allowEntryIndex) => {
       const outer = climb(expression);
       const parent = outer.parent;
       if (parent.type === 'MemberExpression' && parent.object === outer) {
         if (parent.computed) {
+          // Of the nodes an index can be, only a Literal carries a `value`.
           const index = parent.property;
           const entryIndex =
-            allowEntryIndex &&
-            index.type === 'Literal' &&
-            (index.value === 0 || index.value === 1);
+            allowEntryIndex && (index.value === 0 || index.value === 1);
           if (!entryIndex) report(parent, 'index');
           return null;
         }
@@ -120,9 +119,9 @@ const noHandRolledArgv = {
         if (name === 'length' || ARGV_SCANS.has(name)) report(parent, 'scan');
         return null;
       }
+      // An expression under a declarator is its initialiser, never its id.
       if (
         parent.type === 'VariableDeclarator' &&
-        parent.init === outer &&
         parent.id.type === 'ArrayPattern'
       ) {
         report(parent.id, 'index');
@@ -141,9 +140,7 @@ const noHandRolledArgv = {
     /** Follow a binding holding argv tokens to every place it is read. */
     const judgeBinding = variable => {
       for (const reference of readsOf(variable)) {
-        const slice = judgeUse(reference.identifier, {
-          allowEntryIndex: false,
-        });
+        const slice = judgeUse(reference.identifier, false);
         if (slice) judgeSlice(slice);
       }
     };
@@ -151,37 +148,37 @@ const noHandRolledArgv = {
     const judgeSlice = sliceCall => {
       const outer = climb(sliceCall);
       const parent = outer.parent;
+      // The slice is the initialiser, and an Identifier id declares one variable.
       if (
         parent.type === 'VariableDeclarator' &&
-        parent.init === outer &&
         parent.id.type === 'Identifier'
       ) {
-        const [variable] = context.sourceCode.getDeclaredVariables(parent);
-        if (variable) judgeBinding(variable);
+        judgeBinding(context.sourceCode.getDeclaredVariables(parent)[0]);
         return;
       }
-      const nested = judgeUse(sliceCall, { allowEntryIndex: false });
+      const nested = judgeUse(sliceCall, false);
       if (nested) judgeSlice(nested);
     };
 
+    /**
+     * The id of a function a declaration names, or null: a FunctionDeclaration
+     * (an anonymous default export has none) or a VariableDeclarator holding
+     * a function. A destructuring pattern id carries no `name`, and
+     * ARGV_HELPER matches no "undefined".
+     */
     const helperName = node => {
-      if (node.type === 'FunctionDeclaration' && node.id) return node.id;
-      if (
-        node.type === 'VariableDeclarator' &&
-        node.id.type === 'Identifier' &&
-        node.init &&
-        (node.init.type === 'ArrowFunctionExpression' ||
-          node.init.type === 'FunctionExpression')
-      ) {
-        return node.id;
-      }
-      return null;
+      if (node.type === 'FunctionDeclaration') return node.id;
+      const init = node.init;
+      return init?.type === 'ArrowFunctionExpression' ||
+        init?.type === 'FunctionExpression'
+        ? node.id
+        : null;
     };
 
     return {
       MemberExpression(node) {
         if (!isProcessMember(node, 'argv')) return;
-        const slice = judgeUse(node, { allowEntryIndex: true });
+        const slice = judgeUse(node, true);
         if (slice) judgeSlice(slice);
       },
       'FunctionDeclaration, VariableDeclarator'(node) {

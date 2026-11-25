@@ -106,6 +106,45 @@ ruleTester.run('google-auth-error-message', rules['google-auth-error-message']!,
       this.logger.warn(error['message']);
       this.logger['warn'](error.message);`)}`,
     },
+    // Not a sink: a call whose callee has no name, a log method reached by a
+    // computed name held in a variable.
+    {
+      filename: FILE,
+      code: verifying(`makeLogger()(error.message);
+      this.logger[warn](error.message);`),
+    },
+    // Only `JSON.stringify` passes the text on: a bare `stringify`, another
+    // object's `stringify`, and another `JSON` method classify it.
+    {
+      filename: FILE,
+      code: verifying(`reply.send(stringify(error));
+      reply.send(YAML.stringify(error));
+      reply.send(JSON.parse(error));`),
+    },
+    // Read, not passed on: a method's result, a key, a comparison, a
+    // statement inside a callback, a call or construction of the value.
+    {
+      filename: FILE,
+      code: verifying(`this.logger.warn(error.message.startsWith('Token used too late'));
+      this.logger.warn(new error.toString());
+      this.logger.warn(error[message]);
+      this.logger.warn(error.message === 'expired');
+      this.logger.warn(() => { error.message; });
+      (error as Logger)('rejected');
+      new error();`),
+    },
+    // A `var` redeclaring the caught name writes the caught binding; the
+    // function's own `error` it declares holds no caught value.
+    {
+      filename: FILE,
+      code: `async function f() { try { await client.verifyIdToken({ idToken }); } catch (error) { var error = 'REJECTED'; } log(error); }`,
+    },
+    // A destructured const is not followed.
+    {
+      filename: FILE,
+      code: verifying(`const { message } = error;
+      this.logger.warn(message);`),
+    },
   ],
   invalid: [
     // The lesson: the library's message, carrying the token, logged as a field.
@@ -180,6 +219,37 @@ ruleTester.run('google-auth-error-message', rules['google-auth-error-message']!,
         leaks('e.message', 'a `log` call'),
         leaks('e.stack', 'a `warn` call'),
       ],
+    },
+    // Through an angle-bracket assertion, a `satisfies` and an optional chain.
+    {
+      filename: FILE,
+      code: verifying(`this.logger.warn(<Error>error);
+      this.logger.warn(error satisfies unknown);
+      this.logger.warn(error?.message);`),
+      errors: [
+        leaks('error', 'a `warn` call'),
+        leaks('error', 'a `warn` call'),
+        leaks('error?.message', 'a `warn` call'),
+      ],
+    },
+    // A hole in the try block's code before the verification.
+    {
+      filename: FILE,
+      code: `try { const [, second] = pair; await client.verifyIdToken({ idToken: second }); } catch (e) { warn(e.message); }`,
+      errors: [leaks('e.message', 'a `warn` call')],
+    },
+    // The first read that reaches a sink names it: here `log`, three
+    // consts deep, before `warn`.
+    {
+      filename: FILE,
+      code: `try { await client.verifyIdToken({ idToken }); } catch (e) { const a = e.message; const b = a; const c = b; log(c); warn(a); }`,
+      errors: [leaks('e.message', 'a `log` call')],
+    },
+    // A const's first read lands nowhere; a later one is a sink.
+    {
+      filename: FILE,
+      code: `try { await client.verifyIdToken({ idToken }); } catch (e) { const reason = e.message; lastError = reason; warn(reason); }`,
+      errors: [leaks('e.message', 'a `warn` call')],
     },
   ],
 });

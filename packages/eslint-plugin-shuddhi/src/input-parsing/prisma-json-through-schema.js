@@ -34,8 +34,9 @@ function isJsonType(type) {
 function isHonestTarget(annotation) {
   if (annotation.type === 'TSUnknownKeyword') return true;
   if (annotation.type !== 'TSTypeReference') return false;
-  const last = typeNameTail(annotation.typeName);
-  return last !== null && /Json/.test(last);
+  // A type reference's name is an Identifier or a qualified name, so it
+  // always has a tail.
+  return /Json/.test(typeNameTail(annotation.typeName));
 }
 
 const CAST_TYPES = new Set([

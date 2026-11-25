@@ -101,6 +101,27 @@ ruleTester.run('no-hand-rolled-argv', rule as never, {
       code: 'const x = argv[2];',
       languageOptions: { globals: { argv: 'readonly' } },
     },
+    // Near-miss: a helper name inside a longer one, an argv name inside a
+    // longer one.
+    { code: 'function forgetArg() { return 1; }' },
+    { code: 'function f(myargv) { return myargv[2]; }' },
+    { code: 'function g(argvList) { return argvList[2]; }' },
+    // Near-miss: argv as a `with` object (sloppy-mode scripts only).
+    {
+      code: 'with (process.argv) { use(length); }',
+      languageOptions: { parserOptions: { sourceType: 'script' } },
+    },
+    // Near-miss: a `slice` that is constructed, or handed on uncalled.
+    { code: 'const a = new process.argv.slice(2); a[0];' },
+    { code: 'const r = use(process.argv.slice); r[0];' },
+    // Near-miss: an array method that is no scan, argv bound whole, argv as
+    // a loop's target.
+    { code: 'process.argv.concat(extra);' },
+    { code: 'const all = process.argv;' },
+    { code: 'for (process.argv of lists) break;' },
+    // Near-miss: a helper-shaped name with no value, or destructured.
+    { code: 'let getArg;' },
+    { code: 'const [getArg] = function () {};' },
   ],
   invalid: [
     ...ARGV_SCAN_METHODS.map(method => ({
@@ -204,6 +225,17 @@ ruleTester.run('no-hand-rolled-argv', rule as never, {
       code: 'const t = globalThis.process.argv[3];',
       errors: [{ messageId: 'index' }],
     },
+    // A slice of a slice, indexed.
+    {
+      code: 'const x = process.argv.slice(2).slice(1)[0];',
+      errors: [{ messageId: 'index' }],
+    },
+    // A binding named argv is reached twice (through the slice and by its
+    // name) and reported once.
+    {
+      code: 'const argv = process.argv.slice(2); const first = argv[0];',
+      errors: [{ messageId: 'index', line: 1, column: 51 }],
+    },
     // A caller's hint replaces the default for that message only.
     {
       code: 'const target = process.argv[2]; function getFlag() {}',
@@ -283,6 +315,13 @@ describe('no-hand-rolled-argv meta', () => {
         'Scanning argv (`indexOf`, `includes`, `find`, a loop...) is a hand-rolled parser: unknown, duplicate, empty and flag-shaped values all pass. Pass `process.argv.slice(2)` to `parseCliArgsWithUsage` (lib/cli-args.ts).',
         '`getArg` is an ad-hoc argv helper — the `argValue` shape that takes the next flag as a value. Declare the options once and use `parseCliArgsWithUsage` (lib/cli-args.ts).',
       ],
+    );
+  });
+
+  it('refuses an option other than hints', () => {
+    assert.throws(
+      () => messagesOf('x;', [{ strict: true }]),
+      /should NOT have additional properties/,
     );
   });
 

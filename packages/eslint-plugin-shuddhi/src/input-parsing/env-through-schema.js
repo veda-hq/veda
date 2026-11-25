@@ -96,26 +96,18 @@ const envThroughSchema = {
         report(node, 'coerced');
         return;
       }
-      if (
-        parent.type === 'UnaryExpression' &&
-        parent.operator === '+' &&
-        parent.argument === outer
-      ) {
+      // A unary's one operand is the read itself.
+      if (parent.type === 'UnaryExpression' && parent.operator === '+') {
         report(node, 'coerced');
         return;
       }
-      if (
-        parent.type === 'LogicalExpression' &&
-        parent.operator === '??' &&
-        parent.left === outer
-      ) {
+      // Only a LogicalExpression has `??`, and only a BinaryExpression the
+      // equality operators.
+      if (parent.operator === '??' && parent.left === outer) {
         report(node, 'fallback');
         return;
       }
-      if (
-        parent.type === 'BinaryExpression' &&
-        ['===', '!==', '==', '!='].includes(parent.operator)
-      ) {
+      if (['===', '!==', '==', '!='].includes(parent.operator)) {
         const other = parent.left === outer ? parent.right : parent.left;
         if (isNullishOrEmpty(other)) {
           report(node, 'presence');
@@ -133,9 +125,8 @@ const envThroughSchema = {
         if (parent.type === 'AssignmentExpression' && parent.left === node) {
           return;
         }
-        if (parent.type === 'UnaryExpression' && parent.operator === 'delete') {
-          return;
-        }
+        // Only a UnaryExpression has `delete`.
+        if (parent.operator === 'delete') return;
         if (parent.type === 'UpdateExpression') return;
         judge(node, climb(node));
       },
@@ -155,7 +146,7 @@ const envThroughSchema = {
         ) {
           return;
         }
-        const typeArgument = node.typeArguments?.params?.[0];
+        const typeArgument = node.typeArguments?.params[0];
         if (
           typeArgument?.type === 'TSNumberKeyword' ||
           typeArgument?.type === 'TSBooleanKeyword'

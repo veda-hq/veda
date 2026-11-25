@@ -91,6 +91,27 @@ ruleTester.run('no-regex-structured-parse', rule as never, {
       code: 'with (/[a-z]+/) { use(lastIndex); }',
       languageOptions: { parserOptions: { sourceType: 'script' } },
     },
+    // Near-miss: one dash is no frontmatter fence; a key line that is not
+    // at the pattern's start.
+    { code: 'const m = /^-(\\w+)/.exec(s);' },
+    { code: 'const m = /\\s^(\\w+):/m.exec(s);' },
+    // Near-miss: a marker with no space after the colon still gives a reason.
+    {
+      code: `
+        // regex-parse-ok:our own SVG
+        const id = /id="([^"]*)"/.exec(svg);`,
+    },
+    // Near-miss: a class with more around it, a `test` read by a computed
+    // key, a class returned by an arrow whose parameter is `.test`ed.
+    { code: 'const ok = /[a-z]+x/.test(s);' },
+    { code: 'const ok = /x[a-z]+/.test(s);' },
+    { code: 'const ok = /[a-z]+/[test](s);' },
+    { code: 'const f = (word, ok = word.test(s)) => /[a-z]+/;' },
+    // Near-miss: a RegExp with no source, or a source that is no literal.
+    { code: 'const re = new RegExp();' },
+    { code: 'const re = new RegExp(source);' },
+    // Near-miss: a template with nothing interpolated.
+    { code: 'const body = `{"a": 1}`;' },
   ],
   invalid: [
     {
@@ -167,6 +188,94 @@ ruleTester.run('no-regex-structured-parse', rule as never, {
     {
       code: 'const body = `[{"id": ${id}}]`;',
       errors: [{ messageId: 'jsonTemplate' }],
+    },
+    // Space after the closing brace, before a key's colon.
+    {
+      code: 'const body = `{"a": ${x}} `;',
+      errors: [{ messageId: 'jsonTemplate' }],
+    },
+    {
+      code: 'const body = `{"a" : ${x}}`;',
+      errors: [{ messageId: 'jsonTemplate' }],
+    },
+    // Key lines with an indent quantifier and a named group.
+    {
+      code: 'const m = /^\\s*(\\w+):\\s*(.*)/.exec(line);',
+      errors: [{ messageId: 'yaml' }],
+    },
+    {
+      code: 'const m = /^\\s{2}(\\w+):/.exec(line);',
+      errors: [{ messageId: 'yaml' }],
+    },
+    {
+      code: 'const m = /^\\s{10,12}(\\w+):/.exec(line);',
+      errors: [{ messageId: 'yaml' }],
+    },
+    {
+      code: 'const m = /^(?<key>\\w+):/.exec(line);',
+      errors: [{ messageId: 'yaml' }],
+    },
+    // Space before the colon; a key from a class.
+    {
+      code: 'const m = /^(\\w+)\\s*:/.exec(line);',
+      errors: [{ messageId: 'yaml' }],
+    },
+    {
+      code: 'const m = /^([\\w-]+):/.exec(line);',
+      errors: [{ messageId: 'yaml' }],
+    },
+    // Attributes: a long name, a `\\w+` name, a class name; a bare tag.
+    {
+      code: 'const m = /href="([^"]*)"/.exec(html);',
+      errors: [{ messageId: 'markup' }],
+    },
+    {
+      code: 'const m = /\\w+="([^"]*)"/.exec(html);',
+      errors: [{ messageId: 'markup' }],
+    },
+    {
+      code: 'const m = /[\\w-]+="([^"]*)"/.exec(html);',
+      errors: [{ messageId: 'markup' }],
+    },
+    {
+      code: 'const open = /<div\\s/.exec(html);',
+      errors: [{ messageId: 'markup' }],
+    },
+    // A URL captured from the pattern's first character, by a named group.
+    {
+      code: 'const m = /(https:\\/\\/[^/]+)/.exec(u);',
+      errors: [{ messageId: 'url' }],
+    },
+    {
+      code: 'const m = /^(?<host>https?:\\/\\/[^/]+)/.exec(u);',
+      errors: [{ messageId: 'url' }],
+    },
+    // Greedy spans written `[\\S\\s]*` and `.*`.
+    {
+      code: 'const block = /<!-- BEGIN -->([\\S\\s]*)<!-- END -->/.exec(text);',
+      errors: [{ messageId: 'marker' }],
+    },
+    {
+      code: 'const block = /<!-- BEGIN -->(.*)<!-- END -->/.exec(text);',
+      errors: [{ messageId: 'marker' }],
+    },
+    // Bare classes with counted quantifiers.
+    {
+      code: 'const ok = /[a-z]{3}/.test(s);',
+      errors: [{ messageId: 'unanchored' }],
+    },
+    {
+      code: 'const ok = /[a-z]{12,}/.test(s);',
+      errors: [{ messageId: 'unanchored' }],
+    },
+    {
+      code: 'const ok = /[a-z]{2,4}/.test(s);',
+      errors: [{ messageId: 'unanchored' }],
+    },
+    // One of two destructured names `.test`ed is enough.
+    {
+      code: 'const { source, flags } = /[a-z]+/; source.test(s); use(flags);',
+      errors: [{ messageId: 'unanchored' }],
     },
   ],
 });

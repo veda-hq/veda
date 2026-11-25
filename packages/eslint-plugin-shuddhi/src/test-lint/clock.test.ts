@@ -243,4 +243,117 @@ describe('clock rule metadata', () => {
     });
     assert.equal(rules['expect-on-wall-clock']?.meta.type, 'suggestion');
   });
+
+  it('each clock rule describes itself in its docs', () => {
+    assert.deepEqual(rules['poll-under-fake-timers']?.meta.docs, {
+      description: 'expect.poll and vi.waitFor advance fake timers on every retry',
+    });
+    assert.deepEqual(rules['expect-on-wall-clock']?.meta.docs, {
+      description:
+        'An expected value read off the wall clock, in a file that never freezes it',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The edges each rule decides on: in each case one fake decides the outcome
+// ---------------------------------------------------------------------------
+
+ruleTester.run('poll-under-fake-timers at its edges', rules['poll-under-fake-timers']!, {
+  valid: [
+    // Fakes at the top of the file written after the poll.
+    {
+      filename: TEST_FILE,
+      code: `it('a', async () => { await vi.waitFor(f); });
+      vi.useFakeTimers();`,
+    },
+    // A top-level poll after the real timers come back.
+    {
+      filename: TEST_FILE,
+      code: `vi.useFakeTimers(); vi.useRealTimers(); await vi.waitFor(f);`,
+    },
+    // A helper inside a describe body is not read.
+    {
+      filename: TEST_FILE,
+      code: `describe('a', () => {
+        function arm() { vi.useFakeTimers(); }
+        it('b', async () => { await vi.waitFor(f); });
+      });`,
+    },
+  ],
+  invalid: [
+    // Real timers before the fake ones restore nothing.
+    {
+      filename: TEST_FILE,
+      code: `it('a', async () => { vi.useRealTimers(); vi.useFakeTimers(); await vi.waitFor(f); });`,
+      errors: [poll('vi.waitFor')],
+    },
+    // A beforeAll written after a top-level poll still runs first, and real
+    // timers before the poll come before that hook too.
+    {
+      filename: TEST_FILE,
+      code: `vi.useRealTimers(); await vi.waitFor(f);
+      beforeAll(() => { vi.useFakeTimers(); });`,
+      errors: [poll('vi.waitFor')],
+    },
+    // Each poll is held back on its own; an earlier poll restores nothing.
+    {
+      filename: TEST_FILE,
+      code: `it('a', async () => { vi.useFakeTimers(); await vi.waitFor(f); await expect.poll(g).toBe(1); });`,
+      errors: [poll('vi.waitFor'), poll('expect.poll')],
+    },
+    // Real timers after the poll come too late.
+    {
+      filename: TEST_FILE,
+      code: `it('a', async () => { vi.useFakeTimers(); await vi.waitFor(f); vi.useRealTimers(); });`,
+      errors: [poll('vi.waitFor')],
+    },
+    // Real timers in another test restore nothing in this one.
+    {
+      filename: TEST_FILE,
+      code: `vi.useFakeTimers();
+      it('other', () => { vi.useRealTimers(); });
+      it('polls', async () => { await vi.waitFor(f); });`,
+      errors: [poll('vi.waitFor')],
+    },
+    // A describe body alone fakes them.
+    {
+      filename: TEST_FILE,
+      code: `describe('a', () => { vi.useFakeTimers(); it('b', async () => { await vi.waitFor(f); }); });`,
+      errors: [poll('vi.waitFor')],
+    },
+    // One fake of two covers the poll.
+    {
+      filename: TEST_FILE,
+      code: `it('a', () => { vi.useFakeTimers(); });
+      it('b', async () => { vi.useFakeTimers(); await vi.waitFor(f); });`,
+      errors: [poll('vi.waitFor')],
+    },
+  ],
+});
+
+ruleTester.run('expect-on-wall-clock at its edges', rules['expect-on-wall-clock']!, {
+  valid: [
+    // Another constructor, another Date method, another object's now().
+    {
+      filename: TEST_FILE,
+      code: `expect(a).toEqual(new Foo());
+      expect(b).toBe(Date.parse(s));
+      expect(c).toBe(clock.now());
+      expect(d).toBe(now());`,
+    },
+    // A type is not read.
+    {
+      filename: TEST_FILE,
+      code: `expect(a).toBe(b as { [Date.now()]: number });`,
+    },
+  ],
+  invalid: [
+    // A hole in an array is walked past.
+    {
+      filename: TEST_FILE,
+      code: `expect(span()).toEqual([, Date.now()]);`,
+      errors: [wall],
+    },
+  ],
 });

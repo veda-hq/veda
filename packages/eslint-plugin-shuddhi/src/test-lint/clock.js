@@ -34,10 +34,8 @@ import {
 function viMethod(call) {
   const callee = unwrap(call.callee);
   if (callee.type !== 'MemberExpression') return null;
-  const object = unwrap(callee.object);
-  return object.type === 'Identifier' && object.name === 'vi'
-    ? propertyName(callee)
-    : null;
+  // Only an Identifier has a `name`.
+  return unwrap(callee.object).name === 'vi' ? propertyName(callee) : null;
 }
 
 /** `expect.poll(...)` or `vi.waitFor(...)`: its name, or null. */
@@ -45,9 +43,8 @@ function pollOf(call) {
   if (viMethod(call) === 'waitFor') return 'vi.waitFor';
   const callee = unwrap(call.callee);
   if (callee.type !== 'MemberExpression') return null;
-  const object = unwrap(callee.object);
-  return object.type === 'Identifier' &&
-    object.name === 'expect' &&
+  // Only an Identifier has a `name`.
+  return unwrap(callee.object).name === 'expect' &&
     propertyName(callee) === 'poll'
     ? 'expect.poll'
     : null;
@@ -76,33 +73,35 @@ const pollUnderFakeTimers = {
      * covers, wherever it is written; code outside any test or hook (the
      * file's top, a `describe` body) runs at collection, before every test.
      */
-    function covers(fake, poll) {
-      const at = poll.range[0];
+    function covers(fake, poll, calls) {
       const test = enclosingTest(poll, context);
-      const restoredAfter = start =>
-        reals.some(
-          real =>
-            real.range[0] > start &&
-            real.range[0] < at &&
-            (!test || within(real, test)),
-        );
+      // The fake, real and poll calls written before the poll, in source order.
+      const before = calls.slice(0, calls.indexOf(poll));
+      // The ones between `fake` and the poll: none when the fake comes later,
+      // since the slice then starts past its end.
+      const since = () => calls.slice(calls.indexOf(fake) + 1, calls.indexOf(poll));
+      // Does a `vi.useRealTimers()` in `list` run first, inside the poll's
+      // test when it has one?
+      const restores = list =>
+        list.some(real => reals.includes(real) && (!test || within(real, test)));
       const chain = enclosingFunctions(fake, context);
       const ownTest = chain.find(entry => entry.owner?.kind === 'test');
       if (ownTest) {
-        return (
-          ownTest.fn === test && fake.range[0] < at && !restoredAfter(fake.range[0])
-        );
+        return ownTest.fn === test && before.includes(fake) && !restores(since());
       }
       const hook = chain.find(entry => entry.owner?.kind === 'hook');
       if (hook) {
+        // A hook's name is one of beforeEach, beforeAll, afterEach and afterAll.
+        // Inside a test, every real before the poll is in the test, so after
+        // the hook has run.
         return (
-          /^before(All|Each)$/.test(hook.owner.name) &&
+          hook.owner.name.startsWith('before') &&
           within(poll, registeringBlock(hook.fn)) &&
-          !restoredAfter(test ? test.range[0] : fake.range[0])
+          !restores(test ? before : since())
         );
       }
       if (chain.some(entry => entry.owner?.kind !== 'suite')) return false;
-      return fake.range[0] < at && !restoredAfter(fake.range[0]);
+      return before.includes(fake) && !restores(since());
     }
 
     return {
@@ -114,8 +113,11 @@ const pollUnderFakeTimers = {
         if (name) polls.push({ node, name });
       },
       'Program:exit'() {
+        const calls = [...fakes, ...reals, ...polls.map(poll => poll.node)].sort(
+          (a, b) => a.range[0] - b.range[0],
+        );
         for (const poll of polls) {
-          if (fakes.some(fake => covers(fake, poll.node))) {
+          if (fakes.some(fake => covers(fake, poll.node, calls))) {
             context.report({
               node: poll.node,
               messageId: 'poll',
@@ -130,25 +132,24 @@ const pollUnderFakeTimers = {
 
 /** `Date.now()` or `new Date()` with no arguments. */
 function readsWallClock(node) {
+  // Only an Identifier has a `name`.
   if (node.type === 'NewExpression') {
-    return (
-      node.callee.type === 'Identifier' &&
-      node.callee.name === 'Date' &&
-      node.arguments.length === 0
-    );
+    return node.callee.name === 'Date' && node.arguments.length === 0;
   }
-  if (node.type !== 'CallExpression') return false;
+  // Past `new`, only a call has a callee. propertyName is null for anything
+  // but a member expression (an absent callee too), so the callee has an
+  // object once it names `now`.
   const callee = unwrap(node.callee);
   return (
-    callee.type === 'MemberExpression' &&
-    unwrap(callee.object).type === 'Identifier' &&
-    unwrap(callee.object).name === 'Date' &&
-    propertyName(callee) === 'now'
+    propertyName(callee) === 'now' && unwrap(callee.object).name === 'Date'
   );
 }
 
-/** Keys of a node that hold no expression this rule descends into. */
-const SKIPPED_KEYS = new Set(['parent', 'range', 'loc', 'typeAnnotation']);
+/**
+ * Keys of a node that hold no expression this rule descends into: the
+ * back-link to its parent, and types. `range` and `loc` hold no node.
+ */
+const SKIPPED_KEYS = new Set(['parent', 'typeAnnotation']);
 
 
 const expectOnWallClock = {
@@ -172,11 +173,11 @@ const expectOnWallClock = {
      * Collect every wall-clock read written in `node`. A binding is not
      * followed: a `const now = new Date()` handed to a mock and asserted back
      * compares one value with itself (measured on a product monorepo, where following
-     * bindings gave 96 hits, nearly all of that shape).
+     * bindings gave 96 hits, nearly all of that shape). With `parent`
+     * skipped the walk only goes down, so it ends; a read found twice (an
+     * assertion inside another's argument) is reported once, at exit.
      */
-    function visit(node, seen) {
-      if (!node || typeof node.type !== 'string' || seen.has(node)) return;
-      seen.add(node);
+    function visit(node) {
       if (readsWallClock(node)) {
         found.push(node);
         return;
@@ -185,10 +186,10 @@ const expectOnWallClock = {
       if (/Function/.test(node.type)) return;
       for (const [key, value] of Object.entries(node)) {
         if (SKIPPED_KEYS.has(key)) continue;
-        if (Array.isArray(value)) {
-          for (const child of value) visit(child, seen);
-        } else if (value && typeof value === 'object') {
-          visit(value, seen);
+        // Only a node has a string `type`: array holes, `range` numbers and
+        // `loc` objects are not walked.
+        for (const child of [value].flat()) {
+          if (typeof child?.type === 'string') visit(child);
         }
       }
     }
@@ -200,7 +201,7 @@ const expectOnWallClock = {
           frozen = true;
         }
         if (!assertion(node, context)) return;
-        for (const argument of node.arguments) visit(argument, new Set());
+        for (const argument of node.arguments) visit(argument);
       },
       'Program:exit'() {
         if (frozen) return;

@@ -877,6 +877,17 @@ describe('these rules say what they found and how to fix it', () => {
     assert.match(meta.docs.description, / \((oracle|fixture) family\)$/);
   });
 
+  it('owned-fixture-removal publishes its option defaults', () => {
+    const meta = (
+      rules['owned-fixture-removal'] as unknown as {
+        meta: { defaultOptions: unknown[] };
+      }
+    ).meta;
+    assert.deepEqual(meta.defaultOptions, [
+      { ownedRootCalls: [], removeHelper: 'removeFixtureRoot', removeHelperModule: '' },
+    ]);
+  });
+
   each([
     [
       'no-silent-early-return',
@@ -931,5 +942,232 @@ describe('these rules say what they found and how to fix it', () => {
       '.js',
       '.mjs',
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The edges each rule decides on, one case per edge
+// ---------------------------------------------------------------------------
+
+ruleTester.run('no-silent-early-return at its edges', rules['no-silent-early-return']!, {
+  valid: [
+    // A test with no callback, or with an expression body, has no statements.
+    { filename: TEST_FILE, code: `it('a');` },
+    { filename: TEST_FILE, code: `it('a', () => expect(run()).toBe(1));` },
+    // A hook or a suite body is not a test.
+    {
+      filename: TEST_FILE,
+      code: `beforeEach(() => { if (!row) return; expect(row.id).toBe(1); });`,
+    },
+    {
+      filename: TEST_FILE,
+      code: `describe('a', () => { if (!row) return; expect(row.id).toBe(1); });`,
+    },
+    // A branch that ends without returning, or is empty, skips nothing.
+    {
+      filename: TEST_FILE,
+      code: `it('a', () => { if (!row) { prepare(); } expect(row.id).toBe(1); });`,
+    },
+    { filename: TEST_FILE, code: `it('a', () => { if (!row) {} expect(row.id).toBe(1); });` },
+    // A logged return with only assertions before it skips nothing.
+    {
+      filename: TEST_FILE,
+      code: `it('a', () => { expect(load()).toBe(1); if (!row) { console.log('x'); return; } cleanup(); });`,
+    },
+  ],
+  invalid: [],
+});
+
+ruleTester.run('owned-fixture-removal at its edges', rules['owned-fixture-removal']!, {
+  valid: [
+    // `recursive: false` removes no tree.
+    {
+      filename: TEST_FILE,
+      code: `import { rmSync } from 'node:fs'; rmSync(dir, { recursive: false });`,
+    },
+    // A member mkdtemp is an owned root too.
+    {
+      filename: TEST_FILE,
+      code: `import { rmSync } from 'node:fs';
+        const root = fs.mkdtempSync('x-');
+        afterAll(() => rmSync(root, { recursive: true }));`,
+    },
+    // A remover on an object that is not fs.
+    { filename: TEST_FILE, code: `cache.rm(dir, { recursive: true });` },
+    { filename: TEST_FILE, code: `this.rm(dir, { recursive: true });` },
+  ],
+  invalid: [
+    // join with no root proves nothing.
+    {
+      filename: TEST_FILE,
+      code: `import { rmSync } from 'node:fs'; rmSync(join(), { recursive: true });`,
+      errors: [unowned('rmSync')],
+    },
+    // One `..` among plain segments, or inside one, leaves the root.
+    {
+      filename: TEST_FILE,
+      code: `import { mkdtempSync, rmSync } from 'node:fs';
+        const root = mkdtempSync('x-');
+        rmSync(join(root, 'a', '..'), { recursive: true });`,
+      errors: [unowned('rmSync')],
+    },
+    {
+      filename: TEST_FILE,
+      code: `import { mkdtempSync, rmSync } from 'node:fs';
+        const root = mkdtempSync('x-');
+        rmSync(join(root, 'a/..'), { recursive: true });`,
+      errors: [unowned('rmSync')],
+    },
+  ],
+});
+
+describe('someNode', () => {
+  it('searches a function root itself, but not the functions inside it', () => {
+    const hit = {
+      type: 'CallExpression',
+      callee: { type: 'Identifier', name: 'hit' },
+      arguments: [],
+    };
+    const deep = {
+      type: 'CallExpression',
+      callee: { type: 'Identifier', name: 'deep' },
+      arguments: [],
+    };
+    const outer = {
+      type: 'FunctionDeclaration',
+      params: [],
+      body: {
+        type: 'BlockStatement',
+        body: [
+          { type: 'ExpressionStatement', expression: hit },
+          {
+            type: 'ExpressionStatement',
+            expression: { type: 'ArrowFunctionExpression', params: [], body: deep },
+          },
+        ],
+      },
+    };
+    const calls =
+      (name: string) =>
+      (node: { type: string; callee?: { name?: string } }): boolean =>
+        node.type === 'CallExpression' && node.callee?.name === name;
+    assert.equal(c05.someNode(outer, calls('hit')), true);
+    assert.equal(c05.someNode(outer, calls('deep')), false);
+  });
+});
+
+describe('owned-fixture-removal refuses options outside its schema', () => {
+  each([
+    ['an unknown option', { removeHelpers: 'dropFixture' }],
+    ['ownedRootCalls that is not a list', { ownedRootCalls: 'createFixtureRoot' }],
+    ['ownedRootCalls holding a non-string', { ownedRootCalls: [1] }],
+    ['a removeHelper that is not a string', { removeHelper: 1 }],
+    ['a removeHelperModule that is not a string', { removeHelperModule: 1 }],
+  ] as const)('%s', (_name, option) => {
+    assert.throws(
+      () => lint('owned-fixture-removal', 'run();', TEST_FILE, undefined, [option]),
+      /Key "shuddhi\/owned-fixture-removal"/,
+    );
+  });
+
+  it('accepts every option it names', () => {
+    const messages = lint(
+      'owned-fixture-removal',
+      `import { rmSync } from 'node:fs'; rmSync(dir, { recursive: true });`,
+      TEST_FILE,
+      undefined,
+      [{ ownedRootCalls: ['makeRoot'], removeHelper: 'dropFixture', removeHelperModule: 'test/fixtures.ts' }],
+    );
+    assert.deepEqual(
+      messages.map(m => m.messageId),
+      ['unowned'],
+    );
+  });
+});
+
+describe('no-copied-production-sql compares SQL-shaped text only', () => {
+  each([
+    ['select … from', 'select sku, name, price from product where deleted_at is null', true],
+    ['insert into', 'insert into product (sku, name, price) values (?, ?, ?) returning sku', true],
+    ['insert or replace into', 'insert or replace into product (sku, name, price) values (?, ?, ?)', true],
+    ['update … set', 'update product set name = ?, price = ? where sku = ? and deleted_at is null', true],
+    ['delete from', 'delete from product where sku = ? and deleted_at is not null returning sku', true],
+    ['create table', 'create table product (sku text primary key, name text not null, price real)', true],
+    ['create virtual table', 'create virtual table product_fts using fts5(sku, name, tokenize = porter)', true],
+    ['create index', 'create index product_by_name on product (name, price, deleted_at, sku)', true],
+    ['create trigger', 'create trigger product_touch after update of name on product begin end', true],
+    ['match ?', 'rowid in (the fts rows of product_fts where product_fts match ? order by rank)', true],
+    ['prose', 'the product name and price shown on the cart page for each row', false],
+  ] as const)('%s', (_name, sql, copied) => {
+    const files = { 'q.ts': `export const Q = \`${sql}\`;\n` };
+    const ids = lintBeside(files, `import { Q } from './q'; const C = '${sql}';`).map(
+      m => m.messageId,
+    );
+    assert.deepEqual(ids, copied ? ['copied'] : []);
+  });
+
+  it('reads a copy past its case and the spaces around it', () => {
+    const sql = 'select sku, name, price from product where deleted_at is null';
+    const files = { 'q.ts': `export const Q = \`${sql}\`;\n` };
+    const upper = sql.toUpperCase();
+    assert.deepEqual(
+      lintBeside(files, `import { Q } from './q'; const C = '${upper}';`).map(m => m.messageId),
+      ['copied'],
+    );
+    assert.deepEqual(
+      lintBeside(files, `import { Q } from './q'; const C = '  ${sql}  ';`).map(m => m.messageId),
+      ['copied'],
+    );
+  });
+
+  it('never reads a regex literal as SQL', () => {
+    const sql = 'select sku, name, price from product where deleted_at is null';
+    const files = { 'q.ts': `export const Q = \`${sql}\`;\n` };
+    assert.deepEqual(lintBeside(files, `import { Q } from './q'; const R = /${sql}/;`), []);
+    // Control: the same text as a string literal is a copy.
+    assert.deepEqual(
+      lintBeside(files, `import { Q } from './q'; const R = '${sql}';`).map(m => m.messageId),
+      ['copied'],
+    );
+  });
+});
+
+describe('no-copied-production-sql reads the files an import may name', () => {
+  each([
+    // A specifier ending in `.jsx` keeps it; only a final `.js` is dropped.
+    ['./m.jsx', 'm.jsx', ['copied']],
+    // A JSON file named like a test is no test source.
+    ['./m.test.json', 'm.test.json', ['copied']],
+    // Test sources are never compared.
+    ['./m.test', 'm.test.ts', []],
+    ['./m.spec', 'm.spec.mts', []],
+    ['./m.test.jsx', 'm.test.jsx', []],
+  ] as const)('%s → %s', (specifier, file, expected) => {
+    const messages = lintBeside(
+      { [file]: `export const SQL = \`${COPIED_FTS}\`;\n` },
+      `import { SQL } from '${specifier}'; const FTS = '${COPIED_FTS}';`,
+    );
+    assert.deepEqual(
+      messages.map(m => m.messageId),
+      expected,
+    );
+  });
+
+  it('keeps the text it read while the module mtime stays put', () => {
+    const code = `import { SEARCH_FTS_SQL } from './product-sql.mjs'; const FTS = '${COPIED_FTS}';`;
+    const root = mkdtempSync(join(tmpdir(), 'copied-sql-mtime-'));
+    try {
+      const module = join(root, 'product-sql.mjs');
+      const probe = join(root, 'probe.test.ts');
+      writeFileSync(module, `export const SEARCH_FTS_SQL = \`${COPIED_FTS}\`;`);
+      utimesSync(module, 1, 1);
+      assert.deepEqual(messageIds('no-copied-production-sql', code, probe, root), ['copied']);
+      // New bytes under the same mtime: the cached copy still answers.
+      writeFileSync(module, 'export const SEARCH_FTS_SQL = `SELECT 1`;');
+      utimesSync(module, 1, 1);
+      assert.deepEqual(messageIds('no-copied-production-sql', code, probe, root), ['copied']);
+    } finally {
+      removeRoot(root);
+    }
   });
 });

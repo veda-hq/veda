@@ -45,7 +45,8 @@ function nonIdMatcher(node, context, depth = 0) {
   const name = propertyName(callee);
   if (name === null) return null;
   const receiver = unwrap(callee.object);
-  if (receiver.type === 'Identifier' && receiver.name === 'by') {
+  // Only an Identifier has a `name`.
+  if (receiver.name === 'by') {
     return name === 'id' ? null : `by.${name}`;
   }
   if (name === 'and') {
@@ -74,7 +75,8 @@ function detoxElement(node, context, depth = 0) {
   }
   if (target?.type !== 'CallExpression') return null;
   const callee = unwrap(target.callee);
-  if (callee.type === 'Identifier' && callee.name === 'element') {
+  // Only an Identifier has a `name`.
+  if (callee.name === 'element') {
     return { matcher: target.arguments[0], indexed: false };
   }
   if (propertyName(callee) !== 'atIndex') return null;

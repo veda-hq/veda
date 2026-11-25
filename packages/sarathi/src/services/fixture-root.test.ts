@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { test } from 'node:test';
@@ -122,5 +122,92 @@ test('processAlive treats a real zombie as dead', async () => {
     expect(processAlive(parent.pid ?? 0)).toBe(true);
   } finally {
     parent.kill('SIGKILL');
+  }
+});
+
+test('processStatus asks ps for exactly one PID’s state, trimmed, and an empty answer is no state', () => {
+  const asked: unknown[][] = [];
+  const ps =
+    (answer: string) =>
+    (file: string, args: string[], options: object): string => {
+      asked.push([file, args, options]);
+      if (file !== 'ps' || args.join(' ') !== '-o stat= -p 4242') throw new Error(`unexpected ${file} ${args.join(' ')}`);
+      return answer;
+    };
+  expect(processStatus(4242, ps('Z+\n'))).toBe('Z+');
+  expect(processStatus(4242, ps(' \n'))).toBeUndefined();
+  expect(processStatus(4242, ps(''))).toBeUndefined();
+  expect(processStatus(4243, ps('S\n'))).toBeUndefined();
+  const options = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 };
+  expect(asked).toEqual([
+    ['ps', ['-o', 'stat=', '-p', '4242'], options],
+    ['ps', ['-o', 'stat=', '-p', '4242'], options],
+    ['ps', ['-o', 'stat=', '-p', '4242'], options],
+    ['ps', ['-o', 'stat=', '-p', '4243'], options],
+  ]);
+  // The real ps: this process has a state, with nothing around it.
+  expect(processStatus(process.pid)).toMatch(/^[A-Z][A-Za-z+<>]*$/);
+});
+
+test('temporaryDirectory matches this process’s TMPDIR both as spelled and resolved', () => {
+  const holder = mkdtempSync(join(tmpdir(), 'acme-tmpdir-'));
+  try {
+    const real = join(holder, 'real');
+    const link = join(holder, 'link');
+    mkdirSync(real);
+    symlinkSync(real, link);
+    vi.stubEnv('TMPDIR', link);
+    try {
+      expect(temporaryDirectory(link)).toBe(true);
+      expect(temporaryDirectory(realpathSync(real))).toBe(true);
+      expect(temporaryDirectory(join(holder, 'other'))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  } finally {
+    rmSync(holder, { recursive: true, force: true });
+  }
+  // The system directories match only whole, from the filesystem root.
+  for (const path of ['/acme/tmp', '/acme/private/tmp', '/acme/var/folders/kk/0p2br98975g1tpwnn8381f580000gn/T']) {
+    expect(temporaryDirectory(path)).toBe(false);
+  }
+});
+
+test('a fixture root is abandoned only once strictly older than an hour', () => {
+  const holder = mkdtempSync(join(tmpdir(), 'acme-age-'));
+  try {
+    const root = join(holder, 'acme-service-test-AbC123');
+    mkdirSync(root);
+    writeFileSync(join(root, 'fixture-owner.json'), JSON.stringify({ pid: 7, createdAt: 1_800_000_000_000 }));
+    expect(fixtureAbandoned(root, 'acme', 1_800_003_600_000, pid => pid === 7)).toBe(false);
+    expect(fixtureAbandoned(root, 'acme', 1_800_003_600_001, pid => pid === 7)).toBe(true);
+  } finally {
+    rmSync(holder, { recursive: true, force: true });
+  }
+  // Without an owner, directly in the system temporary directory: by its last change.
+  const bare = mkdtempSync(join(tmpdir(), 'acme-service-test-'));
+  try {
+    utimesSync(bare, 1_800_000_000, 1_800_000_000);
+    expect(fixtureAbandoned(bare, 'acme', 1_800_003_600_000, () => true)).toBe(false);
+    expect(fixtureAbandoned(bare, 'acme', 1_800_003_600_001, () => true)).toBe(true);
+  } finally {
+    rmSync(bare, { recursive: true, force: true });
+  }
+});
+
+test('a project name is matched literally in its fixture roots', () => {
+  const holder = mkdtempSync(join(tmpdir(), 'acme-literal-'));
+  try {
+    for (const [directory, abandoned] of [
+      ['a.b-service-test-AbC123', true],
+      ['axb-service-test-AbC123', false],
+    ] as const) {
+      const root = join(holder, directory);
+      mkdirSync(root);
+      writeFileSync(join(root, 'fixture-owner.json'), JSON.stringify({ pid: 8, createdAt: 1_800_000_000_000 }));
+      expect(fixtureAbandoned(root, 'a.b', 1_800_000_000_000, () => false)).toBe(abandoned);
+    }
+  } finally {
+    rmSync(holder, { recursive: true, force: true });
   }
 });

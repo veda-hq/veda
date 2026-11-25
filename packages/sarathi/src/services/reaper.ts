@@ -83,7 +83,8 @@ export function worktreeState(path: string): WorktreeState {
  */
 export function serviceRootState(path: string, name: string): WorktreeState {
   const state = worktreeState(path);
-  return state === 'present' && fixtureAbandoned(path, name) ? 'gone' : state;
+  if (state !== 'present') return state;
+  return fixtureAbandoned(path, name) ? 'gone' : 'present';
 }
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -102,9 +103,9 @@ export async function serviceProjects(docker: Docker, settings: Pick<ReapSetting
       // was created for exactly this directory, and every resource of the
       // project therefore names the same root, which is why the listings may
       // record their projects in any order. A candidate that is not the root
-      // cannot match that hash.
+      // cannot match that hash, so the project is the name the root hashes to.
       const root = rootsOf(label).find(candidate => candidate !== '' && projectName(settings.project, candidate) === project);
-      if (root !== undefined && project !== undefined) roots.set(project, root);
+      if (root !== undefined) roots.set(projectName(settings.project, root), root);
     }
   };
   await Promise.all([
@@ -248,8 +249,8 @@ async function dockerRunning(host: SweepHost): Promise<boolean> {
     return true;
   } catch {
     // fail-open: an engine that does not answer is not running, and the sweep waits for the next start.
-    return false;
   }
+  return false;
 }
 
 function record(host: SweepHost, settings: ReapSettings, cwd: string, entry: Record<string, unknown>): void {

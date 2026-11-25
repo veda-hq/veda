@@ -6,7 +6,7 @@
  * A fixture root is named `<name>-service-test-XXXXXX`, `<name>` being the
  * project's `worktree.name`, so each project's reaper judges only its own.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from 'node:child_process';
 import { mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -40,15 +40,18 @@ export function createFixtureRoot(name: string): string {
   return root;
 }
 
+/** Runs a command and resolves its stdout; `execFileSync`, replaced in tests. */
+export type RunSync = (file: string, args: string[], options: ExecFileSyncOptionsWithStringEncoding) => string;
+
 /** A PID's `ps` state (`S`, `R`, `Z`…), or undefined when `ps` cannot say. */
-export function processStatus(pid: number): string | undefined {
+export function processStatus(pid: number, run: RunSync = execFileSync): string | undefined {
   try {
-    const state = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000 }).trim();
-    return state === '' ? undefined : state;
+    const state = run('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000 }).trim();
+    if (state !== '') return state;
   } catch {
     // fail-open: `ps` exits non-zero for a PID that does not exist; the caller keeps the owner alive.
-    return undefined;
   }
+  return undefined;
 }
 
 /**
@@ -85,10 +88,11 @@ export function temporaryDirectory(path: string): boolean {
 
 function fixtureOwner(root: string): FixtureOwner | undefined {
   try {
-    const value: unknown = JSON.parse(readFileSync(join(root, FIXTURE_OWNER_FILE), 'utf8'));
-    if (typeof value !== 'object' || value === null) return undefined;
+    const value: unknown = JSON.parse(String(readFileSync(join(root, FIXTURE_OWNER_FILE))));
+    // A non-object has no such fields, and null throws here, caught below.
     const { pid, createdAt } = value as { pid?: unknown; createdAt?: unknown };
-    if (typeof pid === 'number' && Number.isInteger(pid) && pid > 0 && typeof createdAt === 'number' && Number.isFinite(createdAt)) return { pid, createdAt };
+    // Number.isInteger and Number.isFinite are false for every non-number.
+    if (Number.isInteger(pid) && (pid as number) > 0 && Number.isFinite(createdAt)) return { pid: pid as number, createdAt: createdAt as number };
   } catch {
     // fail-open: missing or half-written, so the root's own age decides.
   }

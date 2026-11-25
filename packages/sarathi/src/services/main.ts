@@ -42,7 +42,7 @@ function pruneEnv(io: Io): PruneEnv {
 
 function toplevel(io: Io): string {
   try {
-    return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: io.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...io.env } }).trim();
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: io.cwd, encoding: 'utf8', stdio: 'pipe', env: { ...io.env } }).trim();
   } catch {
     throw new ServicesError(`${io.cwd} is not in a git checkout`);
   }

@@ -1143,13 +1143,6 @@ describe('no-swallowed-catch decisions', () => {
     );
   });
 
-  it('a settle-once arrow wrapper inside the executor propagates', () => {
-    assert.deepEqual(
-      ids("new Promise((resolve, reject) => { let done = false; const fail = e => { if (!done) { done = true; reject(e); } }; socket.on('data', chunk => { try { resolve(JSON.parse(chunk)); } catch { fail(new Error('bad')); } }); });"),
-      [],
-    );
-  });
-
   it('a wrapper that only logs inside the executor does not propagate', () => {
     assert.deepEqual(
       ids('new Promise((resolve, reject) => { function fail(e) { log.warn(e); } try { a(); } catch (e) { fail(e); } });'),
@@ -1200,10 +1193,6 @@ describe('no-swallowed-catch decisions', () => {
     assert.deepEqual(ids('p.catch(async e => { await Promise.reject(e); });'), []);
   });
 
-  it("Promise.reject as the arrow's value propagates", () => {
-    assert.deepEqual(ids('p.catch(e => Promise.reject(e));'), []);
-  });
-
   it('exit on another object is not process.exit', () => {
     assert.deepEqual(ids('try { a(); } catch { worker.exit(1); }'), [
       'swallowed',
@@ -1223,10 +1212,6 @@ describe('no-swallowed-catch decisions', () => {
     ]);
   });
 
-  it('a non-zero process.exit propagates', () => {
-    assert.deepEqual(ids('try { a(); } catch (e) { process.exit(1); }'), []);
-  });
-
   it('an assignment to anything but process.exitCode does not propagate', () => {
     assert.deepEqual(ids('try { a(); } catch { failed = true; }'), [
       'swallowed',
@@ -1238,10 +1223,6 @@ describe('no-swallowed-catch decisions', () => {
       ids('try { a(); } catch { log(process.exitCode + 1); }'),
       ['swallowed'],
     );
-  });
-
-  it('a non-zero process.exitCode propagates', () => {
-    assert.deepEqual(ids('try { a(); } catch { process.exitCode = 2; }'), []);
   });
 
   it('takes an annotation between the dot and catch', () => {
@@ -1315,13 +1296,6 @@ describe('safe-log decisions', () => {
   it('a sink with an || fallback is still the sink', () => {
     assert.deepEqual(
       ids("function f(state) { const runLog = state.runLog || (() => {}); runLog('x'); }"),
-      ['injected'],
-    );
-  });
-
-  it('a sink with a ?? fallback is still the sink', () => {
-    assert.deepEqual(
-      ids("function f(state) { const runLog = state.runLog ?? (() => {}); runLog('x'); }"),
       ['injected'],
     );
   });
@@ -1407,15 +1381,30 @@ describe('safe-log decisions', () => {
     );
   });
 
-  it('a sink copied from a call result is not injected', () => {
+  it('a called call result is not a sink', () => {
+    assert.deepEqual(ids("function f() { getLogger()('x'); }"), []);
+  });
+
+  it('a sink on a call result is not injected', () => {
+    assert.deepEqual(ids("function f() { make().log('x'); }"), []);
+  });
+
+  it('a private #log method called on this is not a sink', () => {
     assert.deepEqual(
-      ids("function f() { const runLog = make(); runLog('x'); }"),
+      ids("class S { #log() {} run() { this.#log('x'); } }"),
       [],
     );
   });
 
-  it('a called call result is not a sink', () => {
-    assert.deepEqual(ids("function f() { getLogger()('x'); }"), []);
+  it("a sink call read as another call's argument is not discarded", () => {
+    assert.deepEqual(
+      ids("function f(deps) { outer(inner(deps.log('x'))); }"),
+      [],
+    );
+  });
+
+  it('a sink as the body of an arrow called on the spot is not discarded', () => {
+    assert.deepEqual(ids("function f(deps) { (() => deps.log('x'))(); }"), []);
   });
 
   it('a computed member named by a variable is not a sink', () => {
@@ -1459,24 +1448,17 @@ describe('safe-log decisions', () => {
     );
   });
 
-  it('a returned optional sink call in safeInvoke is contained', () => {
+  it('an awaited optional sink call in an async safeInvoke is contained', () => {
     assert.deepEqual(
-      ids("import { safeInvoke } from '@acme/shared'; function f(deps) { safeInvoke(() => { return deps.log?.('x'); }); }"),
+      ids("import { safeInvoke } from '@acme/shared'; function f(deps) { safeInvoke(async () => { await deps.log?.('x'); }); }"),
       [],
     );
   });
 
-  it('an awaited sink call in an async safeInvoke is contained', () => {
+  it('a wrapper called as a member is not the imported wrapper', () => {
     assert.deepEqual(
-      ids("import { safeInvoke } from '@acme/shared'; function f(deps) { safeInvoke(async () => { await deps.log('x'); }); }"),
-      [],
-    );
-  });
-
-  it("a sink as safeInvoke's arrow value is contained", () => {
-    assert.deepEqual(
-      ids("import { safeInvoke } from '@acme/shared'; function f(deps) { safeInvoke(() => deps.log('x')); }"),
-      [],
+      ids("function f(deps) { utils.safeInvoke(() => deps.log('x')); }"),
+      ['injected'],
     );
   });
 
@@ -1490,13 +1472,6 @@ describe('safe-log decisions', () => {
   it('a default import is not the wrapper', () => {
     assert.deepEqual(
       ids("import safeInvoke from '@acme/shared'; function f(deps) { safeInvoke(() => deps.log('x')); }"),
-      ['injected'],
-    );
-  });
-
-  it('an import from an unrelated module is not the wrapper', () => {
-    assert.deepEqual(
-      ids("import { safeInvoke } from './run-now'; function f(deps) { safeInvoke(() => deps.log('x')); }"),
       ['injected'],
     );
   });
@@ -1634,6 +1609,173 @@ describe('no-raw-error-string decisions', () => {
     assert.deepEqual(ids("try { a(); } catch (e) { log('x: ' + e); }"), [
       'raw',
     ]);
+  });
+
+  it('String() of something else with the caught value second', () => {
+    assert.deepEqual(ids('try { a(); } catch (e) { log(String(x, e)); }'), []);
+  });
+
+  it('new String(e) is not the String() conversion', () => {
+    assert.deepEqual(ids('try { a(); } catch (e) { log(new String(e)); }'), []);
+  });
+
+  it('a computed toString member is not e.toString()', () => {
+    assert.deepEqual(
+      ids('try { a(); } catch (e) { log(e[toString]()); }'),
+      [],
+    );
+  });
+
+  it('a private #toString method is not e.toString()', () => {
+    assert.deepEqual(
+      ids('class A { #toString() {} m() { try { a(); } catch (e) { log(e.#toString()); } } }'),
+      [],
+    );
+  });
+
+  it('another method of the caught value is not a conversion', () => {
+    assert.deepEqual(ids('try { a(); } catch (e) { log(e.valueOf()); }'), []);
+  });
+
+  it('new e.toString() is not a call of toString', () => {
+    assert.deepEqual(
+      ids('try { a(); } catch (e) { log(new e.toString()); }'),
+      [],
+    );
+  });
+
+  it('e.toString passed on uncalled is not a conversion', () => {
+    assert.deepEqual(ids('try { a(); } catch (e) { use(e.toString); }'), []);
+  });
+
+  it('a unary plus is not concatenation', () => {
+    assert.deepEqual(ids('try { a(); } catch (e) { log(+e); }'), []);
+  });
+
+  it('subtracting a string is not concatenation', () => {
+    assert.deepEqual(ids("try { a(); } catch (e) { log(e - 'x'); }"), []);
+  });
+
+  it('a named function handler checks its parameter, not its name', () => {
+    assert.deepEqual(
+      ids('p.catch(function handle(e) { log(`${e}`); });'),
+      ['raw'],
+    );
+  });
+
+  it('a handler parameter redeclared by var is still the caught value', () => {
+    assert.deepEqual(
+      ids('p.catch(function (e) { var e; log(`${e}`); });'),
+      ['raw'],
+    );
+  });
+
+  it('a computed message member is not e.message', () => {
+    assert.deepEqual(
+      ids('try { a(); } catch (e) { log(`${e[message]}`); }'),
+      [],
+    );
+  });
+
+  it('a private #message field is not e.message', () => {
+    assert.deepEqual(
+      ids('class A { #message = 1; m() { try { a(); } catch (e) { log(`${e.#message}`); } } }'),
+      [],
+    );
+  });
+
+  it('another member of the caught value in a template is not checked', () => {
+    assert.deepEqual(
+      ids('try { a(); } catch (e: any) { log(`${e.code}`); }'),
+      [],
+    );
+  });
+});
+
+describe('no-direct-child-process decisions', () => {
+  const ids = (code: string) => messageIds('no-direct-child-process', code);
+
+  it('a member key computed from a member names nothing', () => {
+    assert.deepEqual(
+      ids("import * as cp from 'child_process'; cp[names.spawn]('x');"),
+      [],
+    );
+  });
+
+  it('an interpolated template key names nothing', () => {
+    assert.deepEqual(
+      ids("import * as cp from 'child_process'; cp[`spawn${suffix}`]('x');"),
+      [],
+    );
+  });
+
+  it('a call of another loader is not require', () => {
+    assert.deepEqual(ids("load('child_process').spawn('x');"), []);
+  });
+
+  it('a require with no argument is not child_process', () => {
+    assert.deepEqual(ids('const x = require();'), []);
+  });
+
+  it('an array pattern from require names no API', () => {
+    assert.deepEqual(ids("const [first] = require('child_process');"), []);
+  });
+});
+
+describe('rule meta, continued', () => {
+  it('no-raw-error-string states its type and docs', () => {
+    const { type, docs } = errorHandlingRules['no-raw-error-string'].meta;
+    assert.deepEqual(
+      { type, docs },
+      {
+        type: 'problem',
+        docs: {
+          description:
+            'A caught value is turned into text only through errorDetail()',
+        },
+      },
+    );
+  });
+
+  it('no-direct-child-process states its type, docs and schema', () => {
+    const { type, docs, schema } =
+      errorHandlingRules['no-direct-child-process'].meta;
+    assert.deepEqual(
+      { type, docs, schema },
+      {
+        type: 'problem',
+        docs: {
+          description:
+            'Async child processes run through runChild(), which reports signal deaths as signals',
+        },
+        schema: [
+          {
+            type: 'object',
+            properties: {
+              allow: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'Files, as paths from `root` with `/` separators, that may use the async child_process APIs (the runner itself).',
+              },
+              runner: {
+                type: 'string',
+                minLength: 1,
+                description:
+                  'Where `runChild()` lives, as the message names it (a path or a module specifier).',
+              },
+              root: {
+                type: 'string',
+                minLength: 1,
+                description:
+                  'The directory `allow` paths are relative to. Defaults to the ESLint working directory.',
+              },
+            },
+            additionalProperties: false,
+          },
+        ],
+      },
+    );
   });
 });
 

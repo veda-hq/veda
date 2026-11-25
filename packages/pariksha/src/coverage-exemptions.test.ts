@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -96,6 +96,12 @@ describe('checkPackage and ownedBy', () => {
     for (const dir of ['', '.', '..', '../x', '/tmp', 'apps/server/', 'apps//server', 'apps/nowhere', 'file.txt', 'APPS/Server']) {
       assert.match(checkPackage(root, dir) ?? '', /is not/, dir);
     }
+  });
+
+  it('refuses a folder reached through a symlink, on any disk', () => {
+    const own = tree({ 'apps/server/x': '' });
+    symlinkSync('server', join(own, 'apps/link'));
+    assert.equal(checkPackage(own, 'apps/link'), '"apps/link" is not spelled as the folder on disk is');
   });
 
   it('keeps the configs under the folder, or all', () => {

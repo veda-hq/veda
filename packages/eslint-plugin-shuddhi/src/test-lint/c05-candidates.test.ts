@@ -1911,6 +1911,20 @@ describe('mock-state-reset edges', () => {
       assert.deepEqual(ids('mock-state-reset', code), ['implementationLeaks'], code);
     }
   });
+
+  it('reads a hook only from a statement that is a call, not from `export =`', () => {
+    // TypeScript's `export =` carries an expression too, but registers nothing.
+    assert.deepEqual(
+      ids(
+        'mock-state-reset',
+        partial(
+          'mockModel.mockReturnValue(1)',
+          'export = afterEach(() => { mockModel.mockRestore(); });',
+        ),
+      ),
+      ['implementationLeaks'],
+    );
+  });
 });
 
 describe('mock-export-parity edges', () => {

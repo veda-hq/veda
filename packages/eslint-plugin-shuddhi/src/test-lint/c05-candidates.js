@@ -85,6 +85,14 @@ export function c05CandidateRules({
     return null;
   }
 
+  /**
+   * Is `node` a call of the bare name `name` (`setTimeout(...)`)? A member
+   * callee (`obj.setTimeout`) has no `name` of its own.
+   */
+  function callsNamed(node, name) {
+    return node.type === 'CallExpression' && unwrap(node.callee).name === name;
+  }
+
   /** `callee(...)` → `'callee'`, `a.b(...)` → `'b'`. */
   function calleeName(call) {
     const callee = unwrap(call.callee);
@@ -95,13 +103,14 @@ export function c05CandidateRules({
   function staticNumber(node, context, depth = 0) {
     const value = unwrap(node);
     if (!value || depth > 3) return null;
-    if (value.type === 'Literal' && typeof value.value === 'number')
-      return value.value;
+    // Of the expressions, only a Literal holds its value as a number.
+    if (typeof value.value === 'number') return value.value;
     if (value.type === 'Identifier') {
       const init = constInit(value, context);
       return init ? staticNumber(init, context, depth + 1) : null;
     }
-    if (value.type === 'BinaryExpression' && value.operator === '*') {
+    // Only a BinaryExpression has the operator `*`.
+    if (value.operator === '*') {
       const left = staticNumber(value.left, context, depth + 1);
       const right = staticNumber(value.right, context, depth + 1);
       return left === null || right === null ? null : left * right;
@@ -122,23 +131,21 @@ export function c05CandidateRules({
 
   /** The delay of `new Promise(r => setTimeout(r, N))` or `sleep(N)`, or null. */
   function sleepDelay(node, context) {
+    // An await always has an argument, so `value` is a node.
     const value = unwrap(node);
-    if (value?.type === 'NewExpression') {
-      if (value.callee.type !== 'Identifier' || value.callee.name !== 'Promise')
-        return null;
+    if (value.type === 'NewExpression') {
+      // A member callee (`new a.Promise`) has no `name`.
+      if (value.callee.name !== 'Promise') return null;
       const executor = value.arguments[0];
       if (!isFunction(executor)) return null;
-      const timer = nodesIn(executor.body).find(
-        inner =>
-          inner.type === 'CallExpression' &&
-          unwrap(inner.callee).type === 'Identifier' &&
-          unwrap(inner.callee).name === 'setTimeout',
+      const timer = nodesIn(executor.body).find(inner =>
+        callsNamed(inner, 'setTimeout'),
       );
       return timer ? staticNumber(timer.arguments[1], context) : null;
     }
-    if (value?.type !== 'CallExpression') return null;
-    const callee = unwrap(value.callee);
-    const name = callee.type === 'Identifier' ? callee.name : null;
+    if (value.type !== 'CallExpression') return null;
+    // A member callee (`obj.sleep`) has no `name`, so it is no sleep.
+    const name = unwrap(value.callee).name;
     // `sleep()` has no delay: staticNumber(undefined) is null.
     if (SLEEP_NAMES.has(name)) return staticNumber(value.arguments[0], context);
     // `await setTimeout(ms)` from node:timers/promises takes the delay first.
@@ -151,28 +158,17 @@ export function c05CandidateRules({
   /** Inside a loop, or a function that calls itself: a polling interval. */
   function isPolling(node) {
     const fn = functionOf(node);
-    for (
-      let current = node.parent;
-      current && current !== fn;
-      current = current.parent
-    ) {
+    // At module scope `fn` is null, and the walk ends past the Program.
+    for (let current = node.parent; current !== fn; current = current.parent) {
       if (LOOPS.has(current.type)) return true;
     }
     if (!fn) return false;
+    // A function's own name, or its `const`'s: a pattern has no `name`.
     const name =
       fn.id?.name ??
-      (fn.parent?.type === 'VariableDeclarator' &&
-      fn.parent.id.type === 'Identifier'
-        ? fn.parent.id.name
-        : null);
+      (fn.parent.type === 'VariableDeclarator' ? fn.parent.id.name : null);
     return (
-      Boolean(name) &&
-      nodesIn(fn.body).some(
-        inner =>
-          inner.type === 'CallExpression' &&
-          unwrap(inner.callee).type === 'Identifier' &&
-          unwrap(inner.callee).name === name,
-      )
+      Boolean(name) && nodesIn(fn.body).some(inner => callsNamed(inner, name))
     );
   }
 
@@ -196,7 +192,9 @@ export function c05CandidateRules({
       return {
         AwaitExpression(node) {
           const ms = sleepDelay(node.argument, context);
-          if (ms === null || ms <= 0) return;
+          // A tick (zero) is no wait, and no fixed delay (null) is too:
+          // `null <= 0` holds. A NaN delay (`0 * 1e999`) is still reported.
+          if (ms <= 0) return;
           if (ms < POLL_CEILING_MS && isPolling(node)) return;
           context.report({
             node,
@@ -227,19 +225,17 @@ export function c05CandidateRules({
 
   /** `x.length` → `x`; else null. */
   function lengthOf(node) {
+    // propertyName names only a member, and nothing for a missing subject.
     const value = unwrap(node);
-    return value?.type === 'MemberExpression' &&
-      propertyName(value) === 'length'
-      ? value.object
-      : null;
+    return propertyName(value) === 'length' ? value.object : null;
   }
 
   /** Is `node` a number literal in the 2xx range? */
   function isSuccessStatus(node) {
+    // Of the expressions, only a Literal holds its value as a number.
     const value = unwrap(node);
     return (
-      value?.type === 'Literal' &&
-      typeof value.value === 'number' &&
+      typeof value?.value === 'number' &&
       value.value >= 200 &&
       value.value < 300
     );
@@ -313,8 +309,8 @@ export function c05CandidateRules({
           const pinned =
             fn !== null &&
             nodesIn(fn.body).some(inner => {
-              if (inner === node || inner.type !== 'CallExpression')
-                return false;
+              if (inner === node) return false;
+              // assertion() reads only a call: any other node is null.
               const other = assertion(inner, context);
               if (!other?.subject) return false;
               const otherText = joinedText(other.subject, context);
@@ -441,16 +437,13 @@ export function c05CandidateRules({
           const subject = found.subject;
           if (subject.type === 'Literal') return;
           const text = textOf(subject, context);
-          const expected = found.args[0];
-          if (!expected) return;
           // `expect(xs).toEqual(xs.map(f))`: an empty `xs` satisfies it. A
           // scalar invariance check (`expect(id).toBe(id.trim())`) is not
-          // vacuous and is left alone.
-          const derived = nodesIn(expected).some(
+          // vacuous and is left alone. A matcher with no expected value has
+          // no nodes to read; calledMethod names only a member call.
+          const derived = nodesIn(found.args[0]).some(
             inner =>
-              inner.type === 'CallExpression' &&
-              unwrap(inner.callee).type === 'MemberExpression' &&
-              COLLECTION_METHODS.has(propertyName(unwrap(inner.callee))) &&
+              COLLECTION_METHODS.has(calledMethod(inner)) &&
               textOf(unwrap(inner.callee).object, context) === text,
           );
           if (derived) {
@@ -471,15 +464,6 @@ export function c05CandidateRules({
   const CREATE_SCHEMA_FIXED = /\bcreate\s+schema\s+(?!if\s)"?([^\s";(]+)/i;
   const DROP_SCHEMA = /\bdrop\s+schema\b/i;
 
-  /** A literal's SQL text, with each `${...}` kept as a placeholder. */
-  function sqlText(node) {
-    if (node.type === 'Literal' && typeof node.value === 'string')
-      return node.value;
-    if (node.type === 'TemplateLiteral') {
-      return node.quasis.map(quasi => quasi.value.cooked).join('${}');
-    }
-    return null;
-  }
 
   const ownedDbSchema = {
     meta: {
@@ -499,9 +483,8 @@ export function c05CandidateRules({
     create(context) {
       const creates = [];
       let drops = false;
-      const visit = node => {
-        const text = sqlText(node);
-        if (text === null) return;
+      /** Reads `text`, the SQL of `node`. */
+      const visit = (node, text) => {
         if (DROP_SCHEMA.test(text)) drops = true;
         if (CREATE_SCHEMA_ADOPT.test(text)) {
           creates.push({ node, kind: 'adopted' });
@@ -512,8 +495,13 @@ export function c05CandidateRules({
           creates.push({ node, kind: 'fixedName' });
       };
       return {
-        Literal: visit,
-        TemplateLiteral: visit,
+        Literal(node) {
+          if (typeof node.value === 'string') visit(node, node.value);
+        },
+        // Each `${...}` is kept as a placeholder.
+        TemplateLiteral(node) {
+          visit(node, node.quasis.map(quasi => quasi.value.cooked).join('${}'));
+        },
         'Program:exit'() {
           for (const { node, kind } of creates) {
             if (kind === 'adopted' && !drops) continue;
@@ -561,6 +549,7 @@ export function c05CandidateRules({
 
   /** `release()` / `child.kill()` on a resource the function owns → that call. */
   function ownedCleanup(statement, fn, context) {
+    // TypeScript's `export =` carries an expression too, but is no cleanup.
     let expression =
       statement.type === 'ExpressionStatement' ? statement.expression : null;
     if (expression?.type === 'AwaitExpression')
@@ -574,10 +563,10 @@ export function c05CandidateRules({
         ? call
         : null;
     }
-    const object = unwrap(callee.object);
+    // A receiver that is not a binding (`this.child`, `make()`) has no name,
+    // so no variable is declared for it.
     return CLEANUP_METHODS.has(propertyName(callee)) &&
-      object?.type === 'Identifier' &&
-      declaredIn(object, fn, context)
+      declaredIn(unwrap(callee.object), fn, context)
       ? call
       : null;
   }
@@ -628,7 +617,7 @@ export function c05CandidateRules({
         const fn = functionOf(node);
         const statements = node.body;
         statements.forEach((statement, index) => {
-          if (fn && node.parent?.type !== 'TryStatement') {
+          if (fn && node.parent.type !== 'TryStatement') {
             const cleanup = ownedCleanup(statement, fn, context);
             if (
               cleanup &&
@@ -637,18 +626,15 @@ export function c05CandidateRules({
               context.report({ node: cleanup, messageId: 'afterFailure' });
             }
           }
-          // Only a `try` has a `finalizer`; one without a `finally` is skipped.
-          if (!statement.finalizer) return;
+          // Only a `try` has a `finalizer`. Any other statement, and a `try`
+          // without a `finally`, reads no names, so no declaration matches.
           const used = namesIn(statement.finalizer);
           const reported = new Set();
           for (const [d, declaration] of statements.slice(0, index).entries()) {
             if (declaration.type !== 'VariableDeclaration') continue;
             for (const declarator of declaration.declarations) {
-              if (
-                declarator.id.type !== 'Identifier' ||
-                !used.has(declarator.id.name)
-              )
-                continue;
+              // A pattern (`const { a } = ...`) has no name to read.
+              if (!used.has(declarator.id.name)) continue;
               const name = declarator.id.name;
               if (declarator.init) {
                 // A resource comes from a call (`spawn`, `createServer`,
@@ -674,10 +660,10 @@ export function c05CandidateRules({
                 }
               } else if (
                 declaration.kind === 'let' &&
+                // A member target (`a.b = ...`) has no name.
                 nodesIn(statement.block).some(
                   inner =>
                     inner.type === 'AssignmentExpression' &&
-                    inner.left.type === 'Identifier' &&
                     inner.left.name === name,
                 )
               ) {
@@ -701,7 +687,8 @@ export function c05CandidateRules({
   function cleanupSteps(body) {
     let steps = 0;
     const visit = (node, caught) => {
-      if (!node || typeof node.type !== 'string') return;
+      // childNodes yields nodes only; a try's missing handler or finally is null.
+      if (!node) return;
       if (isFunction(node)) return;
       if (node.type === 'TryStatement') {
         visit(node.block, caught || Boolean(node.handler));
@@ -715,7 +702,7 @@ export function c05CandidateRules({
             ? node.expression.argument
             : node.expression,
         );
-        if (expression?.type === 'CallExpression') steps += 1;
+        if (expression.type === 'CallExpression') steps += 1;
       }
       childNodes(node).forEach(child => visit(child, caught));
     };
@@ -725,6 +712,17 @@ export function c05CandidateRules({
     return steps;
   }
 
+  /**
+   * Is `fn` handed to a bare `onTestFinished(...)` or `onTestFailed(...)`?
+   * Every function has a parent, and a member callee has no `name`.
+   */
+  function handedToTeardownCall(fn) {
+    return (
+      fn.parent.type === 'CallExpression' &&
+      TEARDOWN_CALLS.has(unwrap(fn.parent.callee).name)
+    );
+  }
+
   /** Is `node` inside teardown: a `finally`, an after-hook or `onTestFinished`? */
   function inTeardown(node, context) {
     if (inFinally(node)) return true;
@@ -732,9 +730,7 @@ export function c05CandidateRules({
       ({ fn, owner }) =>
         (owner?.kind === 'hook' &&
           ['afterEach', 'afterAll'].includes(owner.name)) ||
-        (fn.parent?.type === 'CallExpression' &&
-          unwrap(fn.parent.callee).type === 'Identifier' &&
-          TEARDOWN_CALLS.has(unwrap(fn.parent.callee).name)),
+        handedToTeardownCall(fn),
     );
   }
 
@@ -769,13 +765,14 @@ export function c05CandidateRules({
           const fn = node.arguments[0];
           if (!isFunction(fn)) return;
           if (method === 'map') {
-            // Only under Promise.all: allSettled is the fix.
-            const outer = node.parent;
+            // Only under Promise.all: allSettled is the fix. A receiver that
+            // is not a binding (`this.Promise`) has no name.
             const callee =
-              outer?.type === 'CallExpression' ? unwrap(outer.callee) : null;
+              node.parent.type === 'CallExpression'
+                ? unwrap(node.parent.callee)
+                : null;
             if (
               callee?.type !== 'MemberExpression' ||
-              unwrap(callee.object)?.type !== 'Identifier' ||
               unwrap(callee.object).name !== 'Promise' ||
               propertyName(callee) !== 'all'
             ) {
@@ -816,11 +813,9 @@ export function c05CandidateRules({
   /** Does the path argument name a YAML/JSON file, literally or by a filtered list? */
   function namesStructuredFile(node, context) {
     for (const inner of nodesIn(node)) {
-      if (
-        inner.type === 'Literal' &&
-        typeof inner.value === 'string' &&
-        STRUCTURED_FILE.test(inner.value)
-      ) {
+      // A literal that is not a string (a number, a regex) reads as text that
+      // ends in no file extension.
+      if (inner.type === 'Literal' && STRUCTURED_FILE.test(inner.value)) {
         return true;
       }
       if (inner.type !== 'Identifier') continue;
@@ -828,13 +823,14 @@ export function c05CandidateRules({
       const variable = variableOf(inner, context);
       const def = variable?.defs[0];
       if (def?.type !== 'Parameter') continue;
-      const fn = def.node;
-      const call = fn.parent;
-      if (call?.type !== 'CallExpression' || calledMethod(call) === null)
-        continue;
+      // The parameter's function, handed to a method call: calledMethod names
+      // only a call on a member, so `receiver` starts as that member's object
+      // and moves on only past another member callee.
+      const call = def.node.parent;
+      if (calledMethod(call) === null) continue;
       for (
         let receiver = unwrap(call.callee).object;
-        receiver?.type === 'CallExpression';
+        receiver.type === 'CallExpression';
         receiver = unwrap(receiver.callee).object
       ) {
         if (
@@ -847,10 +843,9 @@ export function c05CandidateRules({
             isFunction(arg) &&
             nodesIn(arg.body).some(
               // `\.ya?ml$`, `\.yml$`, `\.json$` as written in a filter regex.
+              // Only a regex literal has a `regex`.
               part =>
-                part.type === 'Literal' &&
-                part.regex &&
-                /y(a\??)?ml|json|toml/.test(part.regex.pattern),
+                part.regex && /y(a\??)?ml|json|toml/.test(part.regex.pattern),
             ),
         );
         if (filtered) return true;
@@ -904,14 +899,13 @@ export function c05CandidateRules({
           if (!namesStructuredFile(node.arguments[0], context)) return;
           let uses = [textUse(node, context)];
           const parent = node.parent;
-          if (
-            parent?.type === 'VariableDeclarator' &&
-            parent.id.type === 'Identifier'
-          ) {
+          if (parent.type === 'VariableDeclarator') {
+            // A pattern (`const { length } = ...`) names no one variable, so
+            // no use is read. The declaration's own write reads as no use.
             const variable = variableOf(parent.id, context);
-            uses = (variable?.references ?? [])
-              .filter(reference => reference.identifier !== parent.id)
-              .map(reference => textUse(reference.identifier, context));
+            uses = (variable?.references ?? []).map(reference =>
+              textUse(reference.identifier, context),
+            );
           }
           if (uses.includes('matched') && !uses.includes('parsed')) {
             context.report({ node, messageId: 'textMatched' });
@@ -932,8 +926,11 @@ export function c05CandidateRules({
 
   const RESET_ALL = new Set(['resetAllMocks', 'restoreAllMocks']);
 
-  /** The hooks that run around the test registered by `call`: its suites' and the file's. */
-  function hooksAround(call, context) {
+  /**
+   * The hooks named in `names` that run around the test registered by
+   * `call`: its suites' and the file's.
+   */
+  function hooksAround(call, names, context) {
     const hooks = [];
     for (let current = call.parent; current; current = current.parent) {
       let body = null;
@@ -949,7 +946,8 @@ export function c05CandidateRules({
       for (const statement of body) {
         if (statement.type !== 'ExpressionStatement') continue;
         const owner = registration(statement.expression, context);
-        if (owner?.kind === 'hook' && owner.callback) hooks.push(owner);
+        if (owner?.kind === 'hook' && names.has(owner.name) && owner.callback)
+          hooks.push(owner);
       }
     }
     return hooks;
@@ -971,28 +969,34 @@ export function c05CandidateRules({
   function withLocalHelpers(body, context, depth = 0) {
     const found = nodesIn(body);
     if (depth >= 2) return found;
-    const extra = [];
-    for (const inner of found) {
-      if (inner.type !== 'CallExpression') continue;
-      const callee = unwrap(inner.callee);
-      if (callee.type !== 'Identifier') continue;
-      const def = variableOf(callee, context)?.defs[0];
-      let helper = null;
-      if (def?.type === 'FunctionName') helper = def.node;
-      else if (def?.type === 'Variable' && isFunction(unwrap(def.node.init)))
-        helper = unwrap(def.node.init);
-      if (helper && helper.body !== body) {
-        extra.push(...withLocalHelpers(helper.body, context, depth + 1));
-      }
-    }
-    return [...found, ...extra];
+    // Each call of a helper is followed by the helper's own nodes. The depth
+    // bounds a helper that calls itself, which only adds nodes again.
+    return found.flatMap(inner => {
+      const helper = localHelper(inner, context);
+      return helper
+        ? [inner, ...withLocalHelpers(helper.body, context, depth + 1)]
+        : [inner];
+    });
   }
 
-  /** What the named hooks undo: every mock (`resetAll`), or the mocks they re-set or restore. */
-  function hookEffects(hooks, names, context) {
+  /**
+   * The same-file function `inner` calls, or null: a declared function or a
+   * variable holding one. A member callee (`vi.fn()`) has no name, so no
+   * variable, and a global (`resetStore()`) has no definition.
+   */
+  function localHelper(inner, context) {
+    if (inner.type !== 'CallExpression') return null;
+    const def = variableOf(unwrap(inner.callee), context)?.defs[0];
+    if (def?.type === 'FunctionName') return def.node;
+    if (def?.type === 'Variable' && isFunction(unwrap(def.node.init)))
+      return unwrap(def.node.init);
+    return null;
+  }
+
+  /** What the hooks undo: every mock (`resetAll`), or the mocks they re-set or restore. */
+  function hookEffects(hooks, context) {
     const effects = { resetAll: false, mocks: new Set(), restores: false };
     for (const hook of hooks) {
-      if (!names.has(hook.name)) continue;
       for (const inner of withLocalHelpers(hook.callback.body, context)) {
         if (inner.type !== 'CallExpression') continue;
         const name = calleeName(inner);
@@ -1034,11 +1038,8 @@ export function c05CandidateRules({
   function inOwnTeardown(inner, context) {
     return (
       inFinally(inner) ||
-      enclosingFunctions(inner, context).some(
-        ({ fn }) =>
-          fn.parent?.type === 'CallExpression' &&
-          unwrap(fn.parent.callee).type === 'Identifier' &&
-          TEARDOWN_CALLS.has(unwrap(fn.parent.callee).name),
+      enclosingFunctions(inner, context).some(({ fn }) =>
+        handedToTeardownCall(fn),
       )
     );
   }
@@ -1061,20 +1062,13 @@ export function c05CandidateRules({
     create(context) {
       let tests = null;
       /** Every test registration in the file with the mocks its `beforeEach` hooks re-set. */
-      const testsOf = node => {
-        if (!tests) {
-          let program = node;
-          while (program.parent) program = program.parent;
-          tests = nodesIn(program)
-            .filter(
-              inner =>
-                inner.type === 'CallExpression' &&
-                registration(inner, context)?.kind === 'test',
-            )
-            .map(call =>
-              hookEffects(hooksAround(call, context), BEFORE_EACH, context),
-            );
-        }
+      const testsOf = () => {
+        // Read once per file; registration() reads only a call.
+        tests ??= nodesIn(context.sourceCode.ast)
+          .filter(inner => registration(inner, context)?.kind === 'test')
+          .map(call =>
+            hookEffects(hooksAround(call, BEFORE_EACH, context), context),
+          );
         return tests;
       };
       return {
@@ -1096,8 +1090,7 @@ export function c05CandidateRules({
             if (rebuiltPerTest(root, context)) return;
             const key = textOf(mock, context);
             const after = hookEffects(
-              hooksAround(testCall, context),
-              AFTER_EACH,
+              hooksAround(testCall, AFTER_EACH, context),
               context,
             );
             if (after.resetAll || after.mocks.has(key)) return;
@@ -1115,7 +1108,7 @@ export function c05CandidateRules({
             // Only a mock the file gives a default (some `beforeEach` re-sets it)
             // is relied on in its default state; the leak reaches the tests
             // that default does not cover.
-            const before = testsOf(node);
+            const before = testsOf();
             if (!before.some(effects => effects.mocks.has(key))) return;
             const covered = before.every(
               effects => effects.resetAll || effects.mocks.has(key),
@@ -1128,17 +1121,18 @@ export function c05CandidateRules({
             });
             return;
           }
+          // `vi.spyOn` or `jest.spyOn`; a receiver that is not a binding has
+          // no name.
           const callee = unwrap(node.callee);
           if (
             name !== 'spyOn' ||
             callee.type !== 'MemberExpression' ||
-            unwrap(callee.object).type !== 'Identifier' ||
             !['vi', 'jest'].includes(unwrap(callee.object).name)
           ) {
             return;
           }
           if (
-            hookEffects(hooksAround(testCall, context), AFTER_EACH, context)
+            hookEffects(hooksAround(testCall, AFTER_EACH, context), context)
               .restores
           )
             return;
@@ -1192,7 +1186,8 @@ export function c05CandidateRules({
    * disk otherwise.
    */
   function sourceReader(context) {
-    const custom = context.settings?.shuddhi?.readSource;
+    // ESLint always hands a rule a settings object, if an empty one.
+    const custom = context.settings.shuddhi?.readSource;
     return typeof custom === 'function' ? custom : diskRead;
   }
 
@@ -1225,11 +1220,10 @@ export function c05CandidateRules({
     }
     for (const match of text.matchAll(/^\s*export\s*\{([^}]*)\}/gm)) {
       for (const part of match[1].split(',')) {
-        const name = part
-          .trim()
-          .split(/\s+as\s+/)
-          .at(-1)
-          ?.trim();
+        // Trimmed first, so a binding named `as` (`export { as }`) is not
+        // split. Only the last name counts, and the greedy space after `as`
+        // leaves it with none around it: it needs no trim of its own.
+        const name = part.trim().split(/\sas\s+/).at(-1);
         if (name && !name.startsWith('type ')) names.add(name);
       }
     }
@@ -1271,21 +1265,18 @@ export function c05CandidateRules({
       const read = sourceReader(context);
       return {
         CallExpression(node) {
+          // `vi.mock(...)`; a receiver that is not a binding has no name.
           const callee = unwrap(node.callee);
           if (
             callee.type !== 'MemberExpression' ||
-            unwrap(callee.object).type !== 'Identifier' ||
             unwrap(callee.object).name !== 'vi' ||
             propertyName(callee) !== 'mock'
           ) {
             return;
           }
+          // Of the arguments, only a string Literal has a string value.
           const [specifier, factory] = node.arguments;
-          if (
-            specifier?.type !== 'Literal' ||
-            typeof specifier.value !== 'string'
-          )
-            return;
+          if (typeof specifier?.value !== 'string') return;
           const object = factoryObject(factory);
           if (!object) return;
           const module = readRelativeModule(
@@ -1343,7 +1334,7 @@ export function c05CandidateRules({
         ExpressionStatement(node) {
           const call = unwrap(node.expression);
           if (
-            call?.type === 'CallExpression' &&
+            call.type === 'CallExpression' &&
             calleeName(call) === 'spawnSync'
           ) {
             context.report({ node, messageId: 'discarded' });
@@ -1372,19 +1363,20 @@ export function c05CandidateRules({
         CallExpression(node) {
           const name = calleeName(node);
           const [command] = node.arguments;
+          // Of the arguments, only a Literal has a `value`.
           if (SPAWNERS.has(name)) {
-            if (command?.type === 'Literal' && command.value === 'npx')
+            if (command?.value === 'npx')
               context.report({ node, messageId: 'npx' });
             return;
           }
           if (!SHELL_SPAWNERS.has(name)) return;
           const text =
-            command?.type === 'Literal'
-              ? command.value
-              : command?.type === 'TemplateLiteral'
-                ? command.quasis[0].value.cooked
-                : null;
-          if (typeof text === 'string' && /^npx\s/.test(text))
+            command?.type === 'TemplateLiteral'
+              ? command.quasis[0].value.cooked
+              : command?.value;
+          // String(): a missing command, a number or a regex literal never
+          // reads as `npx ` at the start.
+          if (/^npx\s/.test(String(text)))
             context.report({ node, messageId: 'npx' });
         },
       };
@@ -1419,14 +1411,15 @@ export function c05CandidateRules({
       },
     },
     create(context) {
-      const { ownedRootCalls } = { ownedRootCalls: [], ...context.options[0] };
+      // ESLint merges meta.defaultOptions in, so the list is always there.
+      const { ownedRootCalls } = context.options[0];
       const owned = new Set([...OWNED_ROOT_CALLS, ...ownedRootCalls]);
       return {
         AssignmentExpression(node) {
           if (node.operator !== '=' || node.left.type !== 'Identifier') return;
           let value = unwrap(node.right);
-          if (value?.type === 'AwaitExpression') value = unwrap(value.argument);
-          if (value?.type !== 'CallExpression') return;
+          if (value.type === 'AwaitExpression') value = unwrap(value.argument);
+          if (value.type !== 'CallExpression') return;
           if (!owned.has(calleeName(value))) return;
           const fn = functionOf(node);
           if (!fn) return;

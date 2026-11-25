@@ -39,7 +39,9 @@ const SCRIPT_EXTENSION = /\.[cm]?[jt]sx?$/;
 
 /** The names the module under test may have, from the test file's path. */
 function subjectNames(filename) {
-  const base = filename.split(/[\\/]/).pop() ?? '';
+  // `split` yields one part at least, so `pop` always has one to give. The
+  // `^` holds the stem to the start: `.` stops at a line break.
+  const base = filename.split(/[\\/]/).pop();
   const match = /^(.*)\.(test|spec)\.[cm]?[jt]sx?$/.exec(base);
   if (!match) return new Set();
   const stem = match[1];
@@ -52,9 +54,11 @@ function subjectNames(filename) {
 /** The file name an import source names, less its extension; null when not relative. */
 function sourceName(source) {
   if (!source.startsWith('.')) return null;
+  // The first part starts with `.`, so it is never empty and never `index`:
+  // there is always a part to pop, and one left before an `index`.
   const parts = source.split('/').filter(part => part !== '');
-  let last = (parts.pop() ?? '').replace(SCRIPT_EXTENSION, '');
-  if (last === 'index') last = parts.pop() ?? '';
+  let last = parts.pop().replace(SCRIPT_EXTENSION, '');
+  if (last === 'index') last = parts.pop();
   return last === '.' || last === '..' ? null : last;
 }
 
@@ -77,10 +81,10 @@ function isAsymmetric(node) {
   const callee = unwrap(node.callee);
   if (callee.type !== 'MemberExpression') return false;
   let object = unwrap(callee.object);
-  if (object.type === 'MemberExpression' && propertyName(object) === 'not') {
-    object = unwrap(object.object);
-  }
-  return object.type === 'Identifier' && object.name === 'expect';
+  // propertyName names only a member, so `not` here is `<object>.not`.
+  if (propertyName(object) === 'not') object = unwrap(object.object);
+  // Of the nodes that can stand here, only an Identifier has a `name`.
+  return object.name === 'expect';
 }
 
 const assertImportedConstant = {
@@ -97,8 +101,8 @@ const assertImportedConstant = {
     },
   },
   create(context) {
-    const subjects = subjectNames(context.filename ?? context.getFilename());
-    if (subjects.size === 0) return {};
+    // A file that is not a test names no subject, so nothing in it matches.
+    const subjects = subjectNames(context.filename);
 
     function visit(node) {
       const value = unwrap(node);
@@ -129,8 +133,7 @@ const assertImportedConstant = {
           }
           return;
         }
-        default:
-          return;
+        // Any other value is not read.
       }
     }
 

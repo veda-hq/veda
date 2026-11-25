@@ -172,7 +172,14 @@ describe('subjectNames', () => {
     assert.deepEqual(subjectNames('C:\\repo\\src\\widget.test.cjs'), new Set(['widget']));
   });
 
+  it('keeps a stem that starts with a dot whole', () => {
+    assert.deepEqual(subjectNames('src/.widget.test.ts'), new Set(['.widget']));
+  });
+
   it('names nothing for a file that is not a test', () => {
+    assert.deepEqual(subjectNames('src/widget.test.tsv'), new Set());
+    // The stem runs from the start of the name, and stops at a line break.
+    assert.deepEqual(subjectNames('src/a\nwidget.test.ts'), new Set());
     assert.deepEqual(subjectNames('src/widget.ts'), new Set());
     assert.deepEqual(subjectNames('src/widget.test.md'), new Set());
     assert.deepEqual(subjectNames(''), new Set());
@@ -187,6 +194,13 @@ describe('sourceName', () => {
     assert.equal(sourceName('./widget/index.js'), 'widget');
     assert.equal(sourceName('./widget/'), 'widget');
     assert.equal(sourceName('./widget.integration.ts'), 'widget.integration');
+    assert.equal(sourceName('./widget.mjs'), 'widget');
+    assert.equal(sourceName('./widget.cts'), 'widget');
+  });
+
+  it('strips only a script extension that ends the name', () => {
+    assert.equal(sourceName('./widget.json'), 'widget.json');
+    assert.equal(sourceName('./widget.js.map'), 'widget.js.map');
   });
 
   it('names nothing for a package, the folder itself or its index', () => {
@@ -219,6 +233,63 @@ function messageIds(code: string): string[] {
     )
     .map(message => message.messageId ?? message.message);
 }
+
+/** The names each finding reports, linting `code` as `filename`. */
+function reported(
+  code: string,
+  filename: string,
+  globals: Record<string, 'readonly'> = {},
+): string[] {
+  return new Linter({ configType: 'flat' })
+    .verify(
+      code,
+      [
+        {
+          files: ['**/*.ts'],
+          languageOptions: { parser: tseslint.parser, globals },
+          plugins: { shuddhi: plugin },
+          rules: { 'shuddhi/assert-imported-constant': 'error' },
+        },
+      ],
+      filename,
+    )
+    .map(message => message.message.split('`')[1] ?? message.message);
+}
+
+describe('assert-imported-constant edges', () => {
+  it('reads no matcher that takes a class or an error, and reads the rest', () => {
+    const code = `import { MAX, PREFIX } from './widget.js';
+      expect(f).toBeInstanceOf(MAX);
+      expect(f).toThrow(PREFIX);
+      expect(f).toThrowErrorMatchingSnapshot(PREFIX);
+      expect(f).toThrowErrorMatchingInlineSnapshot(PREFIX);
+      expect(f).toEqual(MAX);`;
+    assert.deepEqual(reported(code, 'src/widget.test.ts'), ['MAX']);
+  });
+
+  it('leaves a constant with no import alone: a declared global or none at all', () => {
+    const code = `expect(a).toBe(UNDECLARED); expect(b).toBe(MAX_GLOBAL);`;
+    assert.deepEqual(
+      reported(code, 'src/widget.test.ts', { MAX_GLOBAL: 'readonly' }),
+      [],
+    );
+  });
+
+  it('reads only matchers on expect itself, or on expect.not', () => {
+    const code = `import { MAX, MIN } from './widget.js';
+      expect(a).toEqual(other.stringContaining(MAX));
+      expect(b).toEqual(expect.foo.stringContaining(MAX));
+      expect(c).toEqual(make().stringContaining(MAX));
+      expect(d).toEqual(expect.not.arrayContaining([MIN]));`;
+    assert.deepEqual(reported(code, 'src/widget.test.ts'), ['MIN']);
+  });
+
+  it('names no subject outside a test file, whatever it imports', () => {
+    const code = `import { MAX } from './widget.js'; expect(a).toBe(MAX);`;
+    assert.deepEqual(reported(code, 'src/widget.ts'), []);
+    assert.deepEqual(reported(code, 'src/widget.test.ts'), ['MAX']);
+  });
+});
 
 describe('guard removal flips each corrected case', () => {
   it('assert-imported-constant/imported', () => {

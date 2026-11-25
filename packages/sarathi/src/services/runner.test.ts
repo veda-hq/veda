@@ -5,6 +5,7 @@ import { fstatSync, realpathSync, rmdirSync, rmSync, unlinkSync, writeFileSync }
 import { chmod, mkdir, mkdtemp, readFile, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { createServer, Server } from 'node:net';
 import { tmpdir } from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
 import { after, afterEach, beforeEach, describe, mock, test } from 'node:test';
 
@@ -123,6 +124,8 @@ let errors: string;
 let env: Record<string, string | undefined>;
 let file: ServicesFile;
 let io: ServicesIo & { sweep?: () => Promise<SweepResult> };
+/** The pauses a case's lock waits took, through `io.lock`. */
+let paused: number[];
 
 const NO_SWEEP: SweepResult = { reaped: [], skipped: [], failed: [], warnings: [] };
 
@@ -186,6 +189,7 @@ beforeEach(async () => {
   file = sample(await freeWebPort());
   output = '';
   errors = '';
+  paused = [];
   io = {
     env,
     out: text => {
@@ -193,6 +197,14 @@ beforeEach(async () => {
     },
     err: text => {
       errors += text;
+    },
+    // Half a second at most: a lock left held fails a case in that time, not in a whole start's.
+    lock: {
+      pause: ms => {
+        paused.push(ms);
+        return delay(5);
+      },
+      attempts: 100,
     },
   };
 });
@@ -302,7 +314,7 @@ describe('configuration', { timeout: BOUND_MS }, () => {
     const directory = join(root, '.tmp', 'services');
     await mkdir(directory, { recursive: true });
     await writeFile(join(directory, 'config.json'), JSON.stringify({ project: projectName('acme-wt', root), password: 'a'.repeat(48), serverPort: 0, webPort: 0 }), { mode: 0o644 });
-    await serviceConfig(root, file, async () => 24000);
+    await serviceConfig(root, file, async () => 24000, { lock: io.lock });
     expect((await stat(join(directory, 'config.json'))).mode & 0o777).toBe(0o600);
   });
 
@@ -312,7 +324,7 @@ describe('configuration', { timeout: BOUND_MS }, () => {
     await chmod(directory, 0o500);
     try {
       // Root writes through a read-only folder, so the refusal shows only for another user, as for the prepared environment below.
-      if (process.getuid?.() !== 0) await expect(serviceConfig(root, file, async () => 21000, { upgrade: false })).rejects.toThrow(/EACCES/);
+      if (process.getuid?.() !== 0) await expect(serviceConfig(root, file, async () => 21000, { upgrade: false, lock: io.lock })).rejects.toThrow(/EACCES/);
     } finally {
       await chmod(directory, 0o700);
     }
@@ -324,40 +336,40 @@ describe('configuration', { timeout: BOUND_MS }, () => {
   });
 
   test('the first start writes a private config that later starts reuse', async () => {
-    const created = await serviceConfig(root, file, async () => 21000);
+    const created = await serviceConfig(root, file, async () => 21000, { lock: io.lock });
     expect(created).toEqual({ project: projectName(PREFIX, root), password: expect.stringMatching(/^[a-f0-9]{48}$/), serverPort: 21000, webPort: file.webPort });
     const path = join(root, '.tmp', 'services', 'config.json');
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     const written = (await stat(path)).ino;
     const allocate = vi.fn(async () => 22000);
-    expect(await serviceConfig(root, file, allocate)).toEqual(created);
+    expect(await serviceConfig(root, file, allocate, { lock: io.lock })).toEqual(created);
     expect(allocate).not.toHaveBeenCalled();
     expect((await stat(path)).ino).toBe(written);
   });
 
   test('without an allocator, the first start draws its port from the band', async () => {
-    const created = await serviceConfig(root, file);
+    const created = await serviceConfig(root, file, undefined, { lock: io.lock });
     expect(created.serverPort).toBeGreaterThanOrEqual(BAND[0]);
     expect(created.serverPort).toBeLessThanOrEqual(BAND[1]);
   });
 
   test('two first starts agree on one config', async () => {
-    const [a, b] = await Promise.all([serviceConfig(root, file, async () => 21000), serviceConfig(root, file, async () => 21001)]);
+    const [a, b] = await Promise.all([serviceConfig(root, file, async () => 21000, { lock: io.lock }), serviceConfig(root, file, async () => 21001, { lock: io.lock })]);
     expect(a).toEqual(b);
   });
 
   test('a config from before allocation-at-creation gets its server port, once', async () => {
     await writeConfig({ ...config(0), webPort: 0 });
-    expect(await serviceConfig(root, file, async () => 24000)).toEqual(config(24000));
+    expect(await serviceConfig(root, file, async () => 24000, { lock: io.lock })).toEqual(config(24000));
     expect(JSON.parse(await readFile(join(root, '.tmp', 'services', 'config.json'), 'utf8'))).toEqual(config(24000));
     // A web port other than the file's moves to the file's.
     await writeConfig({ ...config(25000), webPort: 41000 });
-    expect(await serviceConfig(root, file, async () => 1)).toEqual(config(25000));
+    expect(await serviceConfig(root, file, async () => 1, { lock: io.lock })).toEqual(config(25000));
   });
 
   test('two starts upgrading one old config agree on its server port', async () => {
     await writeConfig({ ...config(0), webPort: 0 });
-    const [a, b] = await Promise.all([serviceConfig(root, file, async () => 24000), serviceConfig(root, file, async () => 24001)]);
+    const [a, b] = await Promise.all([serviceConfig(root, file, async () => 24000, { lock: io.lock }), serviceConfig(root, file, async () => 24001, { lock: io.lock })]);
     expect(a).toEqual(b);
     expect(JSON.parse(await readFile(join(root, '.tmp', 'services', 'config.json'), 'utf8'))).toEqual(a);
     await expect(stat(join(root, '.tmp', 'services', 'config-lock'))).rejects.toThrow(/ENOENT/);
@@ -365,20 +377,20 @@ describe('configuration', { timeout: BOUND_MS }, () => {
 
   test('a copied or corrupt config is refused and kept', async () => {
     await writeConfig({ ...config(), project: projectName(PREFIX, '/elsewhere') });
-    await expect(serviceConfig(root, file)).rejects.toThrow(/Invalid or copied service configuration at .*config\.json/);
+    await expect(serviceConfig(root, file, undefined, { lock: io.lock })).rejects.toThrow(/Invalid or copied service configuration at .*config\.json/);
     await writeFile(join(root, '.tmp', 'services', 'config.json'), '{');
-    await expect(serviceConfig(root, file)).rejects.toThrow(SyntaxError);
+    await expect(serviceConfig(root, file, undefined, { lock: io.lock })).rejects.toThrow(SyntaxError);
   });
 
   test('a config that cannot be read for another reason than absence is an error', async () => {
     await mkdir(join(root, '.tmp', 'services', 'config.json'), { recursive: true });
-    await expect(serviceConfig(root, file)).rejects.toThrow(/EISDIR/);
+    await expect(serviceConfig(root, file, undefined, { lock: io.lock })).rejects.toThrow(/EISDIR/);
   });
 
   test('a config that cannot be created is an error', async () => {
     await mkdir(join(root, '.tmp'), { recursive: true });
     await writeFile(join(root, '.tmp', 'services'), '');
-    await expect(serviceConfig(root, file, async () => 21000)).rejects.toThrow(/EEXIST|ENOTDIR/);
+    await expect(serviceConfig(root, file, async () => 21000, { lock: io.lock })).rejects.toThrow(/EEXIST|ENOTDIR/);
   });
 
   test('child commands get the file’s environment, filled with the published endpoints', () => {
@@ -439,10 +451,15 @@ describe('setup lock', { timeout: BOUND_MS }, () => {
     const lock = join(root, 'lock');
     const order: string[] = [];
     let release = (): void => undefined;
-    const first = withLock(lock, async () => {
-      order.push('first');
-      await new Promise<void>(done => (release = done));
-    });
+    // A holder acquires at once; one attempt keeps a holder that cannot from polling on after the case.
+    const first = withLock(
+      lock,
+      async () => {
+        order.push('first');
+        await new Promise<void>(done => (release = done));
+      },
+      { attempts: 1 },
+    );
     const pause = vi.fn(async () => {
       release();
       await first;
@@ -463,7 +480,7 @@ describe('setup lock', { timeout: BOUND_MS }, () => {
     expect(LOCK_ATTEMPTS * LOCK_PAUSE_MS).toBe((STARTUP_SECONDS + 60) * 1000);
     const lock = join(root, 'lock');
     let release = (): void => undefined;
-    const first = withLock(lock, () => new Promise<void>(done => (release = done)));
+    const first = withLock(lock, () => new Promise<void>(done => (release = done)), { attempts: 1 });
     await vi.waitFor(() => stat(join(lock, 'owner')));
     // The default pause: one real wait, then the holder lets go.
     const second = withLock(lock, async () => 'ran');
@@ -551,11 +568,15 @@ describe('setup lock', { timeout: BOUND_MS }, () => {
   test('a lock the body lost to a peer is released without error', async () => {
     const lock = join(root, 'lock');
     expect(
-      await withLock(lock, async () => {
-        await unlink(join(lock, 'owner'));
-        await rmdir(lock);
-        return 'ran';
-      }),
+      await withLock(
+        lock,
+        async () => {
+          await unlink(join(lock, 'owner'));
+          await rmdir(lock);
+          return 'ran';
+        },
+        { attempts: 1 },
+      ),
     ).toBe('ran');
   });
 
@@ -575,15 +596,19 @@ describe('setup lock', { timeout: BOUND_MS }, () => {
     await expect(withLock(lock, async () => 'ran', { pause: boundedPause(), attempts: 0 })).rejects.toThrow(`locked at ${lock} by process unknown;`);
     rmSync(lock, { recursive: true, force: true });
     await expect(
-      withLock(lock, async () => {
-        throw new Error('body failed');
-      }),
+      withLock(
+        lock,
+        async () => {
+          throw new Error('body failed');
+        },
+        { attempts: 1 },
+      ),
     ).rejects.toThrow('body failed');
     await expect(stat(lock)).rejects.toThrow(/ENOENT/);
   });
 
   test('a lock that cannot be created is not waited on', async () => {
-    await expect(withLock(join(root, 'missing', 'lock'), async () => 'ran')).rejects.toThrow(/ENOENT/);
+    await expect(withLock(join(root, 'missing', 'lock'), async () => 'ran', { attempts: 1 })).rejects.toThrow(/ENOENT/);
   });
 
   // Last, and bounded: the real pause against a holder that never lets go,
@@ -649,6 +674,46 @@ describe('compose', { timeout: BOUND_MS }, () => {
 });
 
 describe('services', { timeout: BOUND_MS }, () => {
+  test('up, a config upgrade and down each wait on a lock another holds through the io’s wait', async () => {
+    const services = join(root, '.tmp', 'services');
+    // Held by this live process until the waiter's first pause lets it go.
+    let held = '';
+    let fallback: NodeJS.Timeout | undefined;
+    const letGo = (): void => {
+      clearTimeout(fallback);
+      rmSync(held, { recursive: true, force: true });
+    };
+    io = {
+      ...io,
+      lock: {
+        pause: ms => {
+          paused.push(ms);
+          letGo();
+          return delay(5);
+        },
+        attempts: 100,
+      },
+    };
+    const holdBriefly = async (name: string): Promise<void> => {
+      held = join(services, name);
+      await mkdir(held, { recursive: true });
+      await writeFile(join(held, 'owner'), String(process.pid));
+      // Let go after a second anyway: a wait that never reaches the io's pause then ends with none recorded.
+      fallback = setTimeout(letGo, 1000);
+    };
+    await holdBriefly('lock');
+    expect(await run('up')).toBe(0);
+    expect(paused[0]).toBe(250);
+    paused = [];
+    await holdBriefly('config-lock');
+    expect(await run('up')).toBe(0);
+    expect(paused[0]).toBe(250);
+    paused = [];
+    await holdBriefly('lock');
+    expect(await run('down')).toBe(0);
+    expect(paused[0]).toBe(250);
+  });
+
   test('up starts the project, reads its ports and records the environment', async () => {
     expect(await run('up')).toBe(0);
     // The default sweep ran first, against the same docker, and found nothing.

@@ -49,6 +49,15 @@ export interface ServicesIo {
   readonly err: (text: string) => void;
   /** The deleted-worktree sweep a start runs first; replaced in tests. */
   readonly sweep?: () => Promise<SweepResult>;
+  /** How a start waits on a setup lock another holds; the default waits out a whole start. Shortened in tests. */
+  readonly lock?: LockOptions;
+}
+
+/** How `withLock` waits: whether a holder lives, the pause between polls, and how many polls before it names the holder. */
+export interface LockOptions {
+  readonly alive?: (pid: number) => boolean;
+  readonly pause?: (ms: number) => Promise<unknown>;
+  readonly attempts?: number;
 }
 
 /** A project's services: its file, and `worktree.name` for the reaper. */
@@ -165,7 +174,7 @@ export async function serviceConfig(
   root: string,
   file: ServicesFile,
   allocate: () => Promise<number> = () => applicationPort(() => apiPortCandidate(file.apiPorts)),
-  { upgrade = true }: { upgrade?: boolean } = {},
+  { upgrade = true, lock }: { upgrade?: boolean; lock?: LockOptions | undefined } = {},
 ): Promise<ServiceConfig> {
   const directory = join(root, '.tmp', 'services');
   const path = join(directory, 'config.json');
@@ -196,7 +205,7 @@ export async function serviceConfig(
     const upgraded: ServiceConfig = { ...stored, serverPort: stored.serverPort === 0 ? await allocate() : stored.serverPort, webPort: file.webPort };
     await writeAtomically(path, upgraded);
     return upgraded;
-  });
+  }, lock);
 }
 
 const valuesFor = (config: ServiceConfig, file: ServicesFile, published: Readonly<Record<string, number>>): Values => ({
@@ -285,11 +294,7 @@ async function removeDeadLock(lock: string, owner: string, holder: string): Prom
 export async function withLock<T>(
   lock: string,
   body: () => Promise<T>,
-  {
-    alive = pidAlive,
-    pause = (ms: number) => delay(ms),
-    attempts = LOCK_ATTEMPTS,
-  }: { alive?: (pid: number) => boolean; pause?: (ms: number) => Promise<unknown>; attempts?: number } = {},
+  { alive = pidAlive, pause = (ms: number) => delay(ms), attempts = LOCK_ATTEMPTS }: LockOptions = {},
 ): Promise<T> {
   const owner = join(lock, 'owner');
   const acquire = async (attempt: number): Promise<void> => {
@@ -396,7 +401,7 @@ export async function startServices(root: string, project: Project, config: Serv
   const directory = join(root, '.tmp', 'services');
   // An archived worktree's services outlive its directory.
   await reportSweep(io, io.sweep ?? (() => reapOrphanedServices(dockerCli(io.env), reapSettings(project))));
-  await withLock(join(directory, 'lock'), () => compose(['up', '-d', '--wait', '--wait-timeout', String(STARTUP_SECONDS)]));
+  await withLock(join(directory, 'lock'), () => compose(['up', '-d', '--wait', '--wait-timeout', String(STARTUP_SECONDS)]), io.lock);
   const published: Record<string, number> = {};
   for (const [name, { service, port }] of Object.entries(file.published)) {
     const output = await compose(['port', service, String(port)]);
@@ -488,7 +493,7 @@ export async function services(rootPath: string, action: string, command: readon
     await withLock(join(root, '.tmp', 'services', 'lock'), async () => {
       await compose(['down']);
       await rm(join(root, '.tmp', 'services', 'environment.json'), { force: true });
-    });
+    }, io.lock);
     return 0;
   }
   const prepared = preparedEnvironment(root, file, io.env);
@@ -500,7 +505,7 @@ export async function services(rootPath: string, action: string, command: readon
         `Persisted server port ${file.webPort} conflicts with the web port; stop this worktree's server and set serverPort in .tmp/services/config.json to an unused port other than ${file.webPort}, preserving all other settings`,
       );
     }
-    config = await serviceConfig(root, file);
+    config = await serviceConfig(root, file, undefined, { lock: io.lock });
   }
   const values = valuesFor(config, file, {});
   if (action === 'web') {

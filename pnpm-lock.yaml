@@ -191,8 +191,8 @@ importers:
         specifier: 0.2.0
         version: 0.2.0(eslint@9.39.1(jiti@2.6.1)(supports-color@7.2.0))(typescript@5.9.3)
       '@veda-hq/niyam':
-        specifier: 0.7.5
-        version: 0.7.5
+        specifier: 0.7.20
+        version: 0.7.20
       '@veda-hq/pariksha':
         specifier: 0.7.10
         version: 0.7.10(eslint@9.39.1(jiti@2.6.1)(supports-color@7.2.0))(typescript@5.9.3)
@@ -1062,8 +1062,8 @@ packages:
     engines: {node: '>=24.15'}
     hasBin: true
 
-  '@veda-hq/niyam@0.7.5':
-    resolution: {integrity: sha512-5ZKGdOte6gU4E4e0omgl2f18IjKlHJ5D/cvIGMiJzMS/XZJ/uFEX8OK3QCMvoRoULhCZ4szTEtXU/k3O8GSPYA==}
+  '@veda-hq/niyam@0.7.20':
+    resolution: {integrity: sha512-OiH+R7gAlRKnb/Gk7mwVEHhKP3A+BrUiWxhYuldTr3jSWSIfX+mMlzPR07dRusUE4TRWCPFywRc3XBGvyckAXA==}
     engines: {node: '>=24.15'}
     hasBin: true
 
@@ -2829,7 +2829,7 @@ snapshots:
 
   '@veda-hq/kavach@0.8.9': {}
 
-  '@veda-hq/niyam@0.7.5':
+  '@veda-hq/niyam@0.7.20':
     dependencies:
       '@clack/prompts': 1.9.0
       libsodium-wrappers: 0.8.4

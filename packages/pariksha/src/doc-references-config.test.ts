@@ -89,6 +89,14 @@ describe('parseConfig accepts the fixture config', () => {
     assert.equal(parseConfig(replaced(['scripts', 'mutating'], {})).scripts.mutating.size, 0);
   });
 
+  it('reads the html, code and codeExclude lists under their own names', () => {
+    const config = parseConfig(source({ files: { html: ['h'], code: ['c'], codeExclude: ['e'] } }));
+    assert.deepEqual(
+      [config.files.html, config.files.code, config.files.codeExclude].map((list) => list.map((p) => p.source)),
+      [['h'], ['c'], ['e']],
+    );
+  });
+
   it('reads an absent optional list as empty', () => {
     const config = parseConfig(without(['paths', 'layouts']));
     assert.deepEqual(config.paths.layouts, []);
@@ -192,6 +200,7 @@ describe('parseConfig refuses a bad shape', () => {
       [['identifiers', 'routes'], 'identifiers: "routes" is required (null opts its check out)'],
       [['identifiers', 'routes', 'prefixes'], 'identifiers.routes: "prefixes" must be a non-empty regular expression'],
       [['identifiers', 'jobs'], 'identifiers: "jobs" is required (null opts its check out)'],
+      [['identifiers', 'jobs', 'workflows'], 'identifiers.jobs: "workflows" must be a non-empty regular expression'],
       [['identifiers', 'packages'], 'identifiers: "packages" is required (null opts its check out)'],
       [['identifiers', 'packages', 'manifests'], 'identifiers.packages: "manifests" must be a non-empty regular expression'],
       [['identifiers', 'packages', 'lockfile'], 'identifiers.packages: "lockfile" is required (null opts its check out)'],
@@ -211,6 +220,7 @@ describe('parseConfig refuses a bad shape', () => {
       [{ paths: { layouts: [{ pattern: 'x', except: '(' }] } }, /^paths: layouts\[0\]: "except": "\(" is not a regular expression: /],
       [{ paths: { examples: { pattern: 'x', flags: 'g' } } }, /^paths: examples\.flags must be some of i, m, s, u$/],
       [{ scripts: { verification: { pattern: 'x', flags: 3 } } }, /^scripts: verification\.flags must be some of i, m, s, u$/],
+      [{ scripts: { verification: { pattern: 'x', flags: ['i'] } } }, /^scripts: verification\.flags must be some of i, m, s, u$/],
       [{ identifiers: { searchExclude: ['('] } }, /^identifiers: searchExclude\[0\]: /],
     ] as const) {
       it(String(message), () => refuses(source(over), message));
@@ -224,6 +234,7 @@ describe('parseConfig refuses a bad shape', () => {
       [{ paths: { extensions: [] } }, 'paths: "extensions" is empty, so nothing would match'],
       [{ paths: { extensions: ['.ts'] } }, 'paths: extensions[0]: ".ts" must be lowercase letters and digits, no dot'],
       [{ paths: { extensions: ['TS'] } }, 'paths: extensions[0]: "TS" must be lowercase letters and digits, no dot'],
+      [{ paths: { extensions: ['tsX'] } }, 'paths: extensions[0]: "tsX" must be lowercase letters and digits, no dot'],
       [{ paths: { extensions: [''] } }, 'paths: extensions[0] must be a non-empty string'],
       [{ paths: { extensions: [3] } }, 'paths: extensions[0] must be a non-empty string'],
       [{ paths: { untracked: ['.tmp'] } }, 'paths: untracked[0]: ".tmp" must be a root-relative folder ending in /'],
@@ -233,6 +244,7 @@ describe('parseConfig refuses a bad shape', () => {
       [{ scripts: { manifests: [] } }, 'scripts: "manifests" is empty, so nothing would match'],
       [{ scripts: { manifests: ['apps/web/manifest.json'] } }, 'scripts: manifests[0]: "apps/web/manifest.json" must be a root-relative package.json'],
       [{ scripts: { manifests: ['../package.json'] } }, 'scripts: manifests[0]: "../package.json" must be a root-relative package.json'],
+      [{ scripts: { manifests: ['apps/web/package.json.bak'] } }, 'scripts: manifests[0]: "apps/web/package.json.bak" must be a root-relative package.json'],
       [{ scripts: { mutating: { lint: 3 } } }, 'scripts: mutating.lint must name the script to use instead'],
       [{ scripts: { mutating: { lint: '' } } }, 'scripts: mutating.lint must name the script to use instead'],
       [{ commands: { typescriptRunner: ' ' } }, 'commands: "typescriptRunner" must be a non-empty string'],
@@ -243,6 +255,9 @@ describe('parseConfig refuses a bad shape', () => {
       [{ identifiers: { packages: { ownScopes: ['@acme'] } } }, 'identifiers.packages: ownScopes[0]: "@acme" must be a scope ending in / (@acme/)'],
       [{ identifiers: { packages: { ownScopes: ['acme/'] } } }, 'identifiers.packages: ownScopes[0]: "acme/" must be a scope ending in / (@acme/)'],
       [{ identifiers: { packages: { ownScopes: ['@Acme/'] } } }, 'identifiers.packages: ownScopes[0]: "@Acme/" must be a scope ending in / (@acme/)'],
+      [{ identifiers: { packages: { ownScopes: ['@acme/core'] } } }, 'identifiers.packages: ownScopes[0]: "@acme/core" must be a scope ending in / (@acme/)'],
+      [{ identifiers: { packages: { ownScopes: ['x@acme/'] } } }, 'identifiers.packages: ownScopes[0]: "x@acme/" must be a scope ending in / (@acme/)'],
+      [{ links: 5 }, '"links" must be an object'],
       [{ identifiers: { prisma: 3 } }, 'identifiers: "prisma" must be an object'],
       [{ baseline: 'docs/../b.json' }, '"baseline": "docs/../b.json" is not a normalized root-relative path'],
     ] as const) {

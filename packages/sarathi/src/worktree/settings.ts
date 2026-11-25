@@ -69,9 +69,9 @@ export function cleanupOf(settings: WorktreeSettings): CleanupSettings {
   return settings.cleanup ?? DEFAULT_CLEANUP;
 }
 
+/** A settings file sarathi cannot use; the lifecycle answers it as a refusal. */
 export class SettingsError extends Error {
   override readonly name = 'SettingsError';
-  readonly code = 'SETTINGS';
 }
 
 export const DEFAULT_SETTINGS: WorktreeSettings = { name: 'sarathi', owner: 'the owner' };
@@ -95,7 +95,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
  * default case-insensitive volume).
  */
 const insidePath = (value: unknown): value is string =>
-  typeof value === 'string' && !isAbsolute(value) && value.split('/').every(part => part !== '' && part !== '.' && part !== '..') && value.split('/')[0]?.toLowerCase() !== '.git';
+  // split always gives a first part, if only ''.
+  typeof value === 'string' && !isAbsolute(value) && value.split('/').every(part => part !== '' && part !== '.' && part !== '..') && (value.split('/')[0] as string).toLowerCase() !== '.git';
 
 /** Refuses keys outside `keys`, naming them. */
 function refuseExtra(value: Record<string, unknown>, keys: Set<string>, where: string): void {
@@ -125,11 +126,11 @@ function parseMachine(value: unknown, where: string): MachineSettings {
 function compiles(source: string): boolean {
   try {
     new RegExp(source);
-    return true;
   } catch {
     // fail-open: an invalid pattern is reported by the caller as a settings error.
     return false;
   }
+  return true;
 }
 
 function parseCleanup(value: unknown, path: string): CleanupSettings | undefined {
@@ -145,7 +146,8 @@ function parseCleanup(value: unknown, path: string): CleanupSettings | undefined
     throw new SettingsError(`${where}: "nestedCopies" must be a regular expression`);
   }
   return {
-    primaryBuilt: Array.isArray(primaryBuilt) ? primaryBuilt.filter(insidePath) : [],
+    // Every entry was checked above.
+    primaryBuilt: Array.isArray(primaryBuilt) ? (primaryBuilt as string[]) : [],
     ...(typeof nestedCopies === 'string' ? { nestedCopies } : {}),
     machine: parseMachine(value.machine, where),
   };
@@ -180,7 +182,7 @@ export function readSettings(root: string): WorktreeSettings {
   const path = join(root, '.claude', 'sarathi.json');
   let text: string;
   try {
-    text = readFileSync(path, 'utf8');
+    text = String(readFileSync(path));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return DEFAULT_SETTINGS;
     throw new SettingsError(`cannot read ${path}`);

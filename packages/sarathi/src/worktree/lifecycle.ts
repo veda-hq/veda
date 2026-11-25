@@ -22,7 +22,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
-import { DEFAULT_SETTINGS, readSettings, type WorktreeSettings } from './settings.ts';
+import { DEFAULT_SETTINGS, readSettings, SettingsError, type WorktreeSettings } from './settings.ts';
 
 /** A safety precondition could not be established. */
 export class Blocked extends Error {
@@ -686,7 +686,8 @@ export function lifecycleMain(args: readonly string[], io: Io): number {
       });
     }
   } catch (error) {
-    if (!(error instanceof Blocked) && !(error instanceof Error && 'code' in error)) throw error;
+    // A refusal, settings sarathi cannot use, or a system error (it carries a code) is answered; anything else is a bug.
+    if (!(error instanceof Blocked) && !(error instanceof SettingsError) && !(error instanceof Error && 'code' in error)) throw error;
     result = { blocked: error.message };
     code = 2;
   }

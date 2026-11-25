@@ -27,6 +27,15 @@
         "reason": "it writes nothing locally (niyam 0.7.1 audited); it reads open decisions and their comments from GitHub's REST API, for the weekly review routine"
       }
     ],
+    "reviewedCLIs": [
+      {
+        "program": "niyam",
+        "subcommands": {
+          "state": {}
+        },
+        "reason": "state takes one slice and one --title, reads no path and writes nothing locally (niyam 0.7.20 audited); it files a State issue on GitHub and attaches it under the slice (veda-hq/niyam#654)"
+      }
+    ],
     "ownCheckout": {
       "env": { "CLAUDE_CODE_REMOTE": ["true"] },
       "reason": "a Claude cloud session clones the repository for itself, with no worktree; Claude Code sets CLAUDE_CODE_REMOTE there and leaves it unset on the desktop (checked 2026-11-15)",

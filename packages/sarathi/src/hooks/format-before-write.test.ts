@@ -365,6 +365,11 @@ test('updatedInput: an Edit comes back as the smallest unique replacement, with 
 test('respond: prints nothing when there is nothing to change', async () => {
   const root = checkout();
   assert.equal(await respond(JSON.stringify({ tool_name: 'Read', tool_input: { file_path: join(root, 'a.ts') } }), { CLAUDE_PROJECT_DIR: root }), '');
+  // With a prettier found, an event it would not change still prints nothing.
+  mkdirSync(join(root, 'node_modules', 'prettier'), { recursive: true });
+  writeFileSync(join(root, 'node_modules', 'prettier', 'package.json'), '{"name":"prettier","main":"index.js"}\n');
+  writeFileSync(join(root, 'node_modules', 'prettier', 'index.js'), 'exports.getFileInfo = async () => ({ ignored: false, inferredParser: "babel" });\nexports.resolveConfig = async () => null;\nexports.format = async text => text;\n');
+  assert.equal(await respond(JSON.stringify({ tool_name: 'Read', tool_input: { file_path: join(root, 'a.ts') } }), { CLAUDE_PROJECT_DIR: root }), '');
 });
 
 test('sessionRoot: an empty or non-string cwd falls back to the project, quietly', () => {

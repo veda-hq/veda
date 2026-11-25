@@ -622,38 +622,26 @@ export function parseStream(stdout: string): {
   calls: ToolCall[];
   tools?: string[];
 } {
-  const events: unknown[] = [];
   let result: string | undefined;
   let tools: string[] | undefined;
-  // One line at a time: an error result throws before a later line is read.
-  for (const line of stdout.split('\n')) {
-    if (line.trim() === '') continue;
-    const event: unknown = JSON.parse(line);
-    events.push(event);
-    const {
-      type,
-      subtype,
-      tools: started,
-      result: text,
-      is_error,
-    } = (event ?? {}) as StreamEvent;
-    // The first init names the tools the session started with; keep it.
-    if (
-      tools === undefined &&
-      type === 'system' &&
-      subtype === 'init' &&
-      Array.isArray(started)
-    ) {
-      tools = started.filter(t => typeof t === 'string');
-    }
-    if (type === 'result') {
-      if (typeof text !== 'string') {
-        throw new Error('claude -p returned no result text');
+  // One line at a time, in order: an error result throws before a later line is read.
+  const events = stdout
+    .split('\n')
+    .filter(line => line.trim() !== '')
+    .map(line => {
+      const event: unknown = JSON.parse(line);
+      const { type, subtype, tools: started, result: text, is_error } = (event ?? {}) as StreamEvent;
+      // The first init names the tools the session started with; keep it.
+      if (tools === undefined && type === 'system' && subtype === 'init' && Array.isArray(started)) {
+        tools = started.filter(t => typeof t === 'string');
       }
-      if (is_error === true) throw new Error(text);
-      result = text;
-    }
-  }
+      if (type === 'result') {
+        if (typeof text !== 'string') throw new Error('claude -p returned no result text');
+        if (is_error === true) throw new Error(text);
+        result = text;
+      }
+      return event;
+    });
   if (result === undefined) throw new Error('claude -p returned no result');
   return { result, calls: toolCalls(events), ...(tools && { tools }) };
 }

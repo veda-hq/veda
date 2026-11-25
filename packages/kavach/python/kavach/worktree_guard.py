@@ -1451,7 +1451,7 @@ def other_sessions_worktree(
     if scan.owners is None:
         problem = f"failed ({scan.failure}), so it found no owner"
     elif scan.skipped:
-        records = "record, which names" if scan.skipped == 1 else "records, which name"
+        records = {1: "record, which names"}.get(scan.skipped, "records, which name")
         problem = f"could not read {scan.skipped} session {records} no owner"
     if not scan.owners:
         return OtherSessionsFinding(None, problem)
@@ -1483,17 +1483,22 @@ def judge_other_sessions_worktree(
     broken scan never refuses (#335's lockout) and never hides (veda#588)."""
 
     mode, refuses_from = rules.mode_of(loaded, OTHER_SESSIONS_WORKTREE)
-    try:
-        message, scan = other_sessions_worktree(data.get("session_id"), root, loaded, environ)
-        if scan is not None:
-            outcome = "this rule refused the call" if message is not None and mode == "refuse" else "this rule let the call through"
+    scan: str | None = None
+
+    def note_scan(outcome: str) -> None:
+        # The row says only what this rule decided: a later check in the
+        # guard can still refuse the call.
+        if scan:
             refusal_log.record(
                 "worktree",
                 json.dumps(data),
-                f"WARNING: the {OTHER_SESSIONS_WORKTREE} record scan {scan}; {outcome}.",
+                f"WARNING: the {OTHER_SESSIONS_WORKTREE} record scan {scan}; this rule {outcome}.",
                 rule=OTHER_SESSIONS_WORKTREE,
                 mode=SCAN_FAILED,
             )
+
+    try:
+        message, scan = other_sessions_worktree(data.get("session_id"), root, loaded, environ)
     except Exception as error:
         if mode == "refuse":
             raise
@@ -1507,12 +1512,15 @@ def judge_other_sessions_worktree(
             mode=mode,
         )
     if message is None:
+        note_scan("let the call through")
         return None
     fire = rules.Fire(OTHER_SESSIONS_WORKTREE, mode, message, refuses_from)
     if mode == "refuse":
+        note_scan("refused the call")
         refusal_log.label(OTHER_SESSIONS_WORKTREE, mode)
         print(rules.refusal([fire]), file=sys.stderr)
         raise SystemExit(2)
+    note_scan("let the call through")
     refusal_log.record("worktree", json.dumps(data), f"WARNING: {message}", rule=OTHER_SESSIONS_WORKTREE, mode=mode)
     return rules.answer([rules.context(fire)])
 

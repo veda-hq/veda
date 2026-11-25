@@ -3063,6 +3063,78 @@ class OtherSessionsWorktreeTest(GuardFixture):
         with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
             self.assertEqual(MODULE.worktree_owners(self.theirs, HOST), MODULE.OwnerScan((STARTER,)))
 
+    EARLY = "local_11111111-1111-4111-8111-111111111111"
+
+    def test_each_record_check_skips_only_its_record(self) -> None:
+        # Each record sorts before the live owner's, so a check that stopped
+        # the scan instead of skipping one record would lose that owner.
+        early = self.records / "local_1111.json"
+        pad = "x" * (2 * MODULE.RECORD_HEAD)
+        theirs, live = str(self.theirs), MODULE.OwnerScan((STARTER,))
+        cases: list[tuple[str, object, object]] = [
+            ("not an object", [theirs], live),
+            ("a malformed session id", {"sessionId": "x", "cwd": theirs}, live),
+            ("archived", {"sessionId": self.EARLY, "cwd": theirs, "isArchived": True}, live),
+            ("a relative cwd past the head", {"padding": pad, "sessionId": self.EARLY, "cwd": "relative/their-task"}, live),
+            ("a cwd that is no string", {"padding": pad, "sessionId": self.EARLY, "cwd": 3, "note": "their-task"}, live),
+            ("another worktree past the head", {"padding": pad, "sessionId": self.EARLY, "cwd": str(self.made), "note": "their-task"}, live),
+            ("a later name past the head", {"padding": pad, "sessionId": self.EARLY, "cwd": str(self.theirs.parent / "zz-later"), "note": "their-task"}, live),
+            # Only `isArchived` true archives a record: 1 or none does not.
+            ("isArchived 1", {"sessionId": self.EARLY, "cwd": theirs, "isArchived": 1}, MODULE.OwnerScan((self.EARLY, STARTER))),
+            ("no isArchived", {"sessionId": self.EARLY, "cwd": theirs}, MODULE.OwnerScan((self.EARLY, STARTER))),
+        ]
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            for name, record, found in cases:
+                with self.subTest(name):
+                    early.write_text(json.dumps(record), encoding="utf-8")
+                    self.assertEqual(MODULE.worktree_owners(self.theirs, HOST), found)
+            early.unlink()
+            # A record exactly at the limit is read.
+            size = (self.records / f"{STARTER}.json").stat().st_size
+            with mock.patch.object(MODULE, "RECORD_LIMIT", size):
+                self.assertEqual(MODULE.worktree_owners(self.theirs, HOST), live)
+
+    def test_the_scan_is_said_in_the_finding(self) -> None:
+        own = mock.patch.object(ADAPTER.boundary, "session_worktree", return_value=self.mine)
+        for scan, said in (
+            (ADAPTER.boundary.OwnerScan(()), None),
+            (ADAPTER.boundary.OwnerScan((), 1), "could not read 1 session record, which names no owner"),
+            (ADAPTER.boundary.OwnerScan((), 2), "could not read 2 session records, which name no owner"),
+            (ADAPTER.boundary.OwnerScan(None, failure="OSError"), "failed (OSError), so it found no owner"),
+        ):
+            with self.subTest(said=said), own, mock.patch.object(ADAPTER.boundary, "worktree_owners", return_value=scan):
+                self.assertEqual(
+                    ADAPTER.other_sessions_worktree(SESSION, self.theirs, ADAPTER.config.parse({}), {}),
+                    ADAPTER.OtherSessionsFinding(None, said),
+                )
+
+    def test_the_scan_row_says_what_this_rule_decided(self) -> None:
+        data = {"session_id": SESSION, "cwd": str(self.theirs), "tool_name": "Bash", "tool_input": {}}
+        cases = (
+            ("warn", "fires", "let the call through", {}),
+            ("refuse", "fires", "refused the call", self.REFUSE),
+            ("refuse", None, "let the call through", self.REFUSE),
+        )
+        for mode, message, outcome, settings in cases:
+            for scan in ("skipped x", None):
+                found = ADAPTER.OtherSessionsFinding(message, scan)
+                with self.subTest(mode=mode, message=message, scan=scan):
+                    with mock.patch.object(ADAPTER, "other_sessions_worktree", return_value=found), mock.patch.object(
+                        ADAPTER.refusal_log, "record"
+                    ) as record, contextlib.redirect_stderr(io.StringIO()):
+                        try:
+                            ADAPTER.judge_other_sessions_worktree(data, self.theirs, ADAPTER.config.parse(settings), {})
+                        except SystemExit as exit:
+                            self.assertEqual((mode, exit.code), ("refuse", 2))
+                    rows = [call for call in record.call_args_list if call.kwargs.get("mode") == "scan-failed"]
+                    if scan is None:
+                        self.assertEqual(rows, [])
+                    else:
+                        self.assertEqual(len(rows), 1)
+                        self.assertEqual(
+                            rows[0].args[2], f"WARNING: the other-sessions-worktree record scan skipped x; this rule {outcome}."
+                        )
+
     def rows(self) -> list[dict[str, str]]:
         if not self.log.exists():
             return []

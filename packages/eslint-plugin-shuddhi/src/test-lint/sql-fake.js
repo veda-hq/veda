@@ -30,9 +30,9 @@ const QUERY_PARAM = /^(query|queryText|text|q)$/i;
 function implementationOf(node) {
   const value = unwrap(node);
   if (isFunction(value)) return value;
+  // Only a member callee has an `object`, and only an Identifier a `name`.
   if (
     value?.type === 'CallExpression' &&
-    value.callee.type === 'MemberExpression' &&
     ['vi', 'jest'].includes(value.callee.object?.name) &&
     propertyName(value.callee) === 'fn' &&
     isFunction(unwrap(value.arguments[0]))
@@ -42,12 +42,13 @@ function implementationOf(node) {
   return null;
 }
 
+/**
+ * The first parameter's name (`sql`, or `sql = ''`), or undefined: of the
+ * parameter shapes, only an Identifier has a `name`.
+ */
 function firstParamName(fn) {
   const [param] = fn.params;
-  if (param?.type === 'Identifier') return param.name;
-  if (param?.type === 'AssignmentPattern' && param.left.type === 'Identifier')
-    return param.left.name;
-  return null;
+  return (param?.type === 'AssignmentPattern' ? param.left : param)?.name;
 }
 
 /** Calls that only record or inspect the SQL text, never execute it. */
@@ -103,8 +104,8 @@ function forwardsSql(fn, param, context) {
 
 function isSqlFake(method, fn, context) {
   if (!fn || !method) return false;
+  // A missing name tests as 'undefined', which neither pattern matches.
   const param = firstParamName(fn);
-  if (!param) return false;
   const named = SQL_PARAM.test(param)
     ? SQL_METHODS.has(method) || GENERIC_SQL_METHODS.has(method)
     : QUERY_PARAM.test(param) && SQL_METHODS.has(method);
@@ -155,16 +156,13 @@ const noSqlFake = {
         const name = calledMethod(node);
         if (!['mockImplementation', 'mockImplementationOnce'].includes(name))
           return;
+        // calledMethod named a method, so the callee is a member with an
+        // object; propertyName and calledMethod are null for any other node.
         const target = unwrap(unwrap(node.callee).object);
-        let method = null;
-        if (target?.type === 'MemberExpression') method = propertyName(target);
-        if (
-          target?.type === 'CallExpression' &&
-          calledMethod(target) === 'spyOn' &&
-          target.arguments[1]?.type === 'Literal'
-        ) {
-          method = target.arguments[1].value;
-        }
+        let method = propertyName(target);
+        // spyOn's second argument names the method; only a Literal has a
+        // `value`.
+        if (calledMethod(target) === 'spyOn') method = target.arguments[1]?.value;
         const fn = implementationOf(node.arguments[0]);
         if (isSqlFake(method, fn, context)) report(node, method);
       },

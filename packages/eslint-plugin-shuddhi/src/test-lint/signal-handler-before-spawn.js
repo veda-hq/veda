@@ -26,10 +26,13 @@ const LISTENERS = new Set([
 ]);
 const SPAWNS = new Set(['spawn', 'fork']);
 
-/** The function (or the Program) whose body holds `node`. */
+/**
+ * The function (or the Program) whose body holds `node`. Every node lies in
+ * the Program, so the walk always ends on one or the other.
+ */
 function ownBody(node) {
   let current = node.parent;
-  while (current && !isFunction(current) && current.type !== 'Program') {
+  while (!isFunction(current) && current.type !== 'Program') {
     current = current.parent;
   }
   return current;
@@ -39,8 +42,8 @@ function ownBody(node) {
 function handledSignal(call) {
   const callee = unwrap(call.callee);
   if (callee.type !== 'MemberExpression') return null;
-  const object = unwrap(callee.object);
-  if (object.type !== 'Identifier' || object.name !== 'process') return null;
+  // Of the objects a member can have, only an Identifier has a `name`.
+  if (unwrap(callee.object).name !== 'process') return null;
   if (!LISTENERS.has(calledMethod(call))) return null;
   const [signal] = call.arguments;
   return signal?.type === 'Literal' && SIGNALS.has(signal.value)

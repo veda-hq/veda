@@ -1998,3 +1998,362 @@ ruleTester.run('git-spawn-env (the last env wins)', rules['git-spawn-env']!, {
     },
   ],
 });
+
+// ---------------------------------------------------------------------------
+// Published options, and the near misses each rule's reading turns on
+// ---------------------------------------------------------------------------
+
+describe('process hygiene options as published', () => {
+  it('states each rule option schema and its defaults verbatim', () => {
+    const published = (name: string) => {
+      const { schema, defaultOptions } = (
+        rules[name] as unknown as {
+          meta: { schema: unknown; defaultOptions: unknown };
+        }
+      ).meta;
+      return { schema, defaultOptions };
+    };
+    const strings = (...names: string[]) => [
+      {
+        type: 'object',
+        properties: Object.fromEntries(
+          names.map(name => [name, { type: 'string' }]),
+        ),
+        additionalProperties: false,
+      },
+    ];
+    assert.deepEqual(published('cli-entry-helper'), {
+      schema: strings('helper', 'helperModule', 'helperFilePattern'),
+      defaultOptions: [
+        {
+          helper: 'isCliEntry',
+          helperModule: '',
+          helperFilePattern: String.raw`(^|[\\/])cli-entry(\.[\w-]+)*\.(ts|mjs)$`,
+        },
+      ],
+    });
+    assert.deepEqual(published('git-spawn-env'), {
+      schema: strings('envHelper', 'envHelperModule'),
+      defaultOptions: [
+        {
+          envHelper: 'hermeticGitEnv',
+          envHelperModule: '@veda-hq/eslint-plugin-shuddhi/hermetic-git',
+        },
+      ],
+    });
+    assert.deepEqual(published('git-fixture-env'), {
+      schema: strings('envHelper', 'maskHelper'),
+      defaultOptions: [
+        { envHelper: 'hermeticGitEnv', maskHelper: 'maskProcessGitEnv' },
+      ],
+    });
+    assert.deepEqual(published('no-partial-git-mask'), {
+      schema: strings('maskConstant', 'envHelper', 'maskHelper'),
+      defaultOptions: [
+        {
+          maskConstant: 'HERMETIC_GIT_VARIABLES',
+          envHelper: 'hermeticGitEnv',
+          maskHelper: 'maskProcessGitEnv',
+        },
+      ],
+    });
+    assert.deepEqual(published('env-via-stub'), {
+      schema: strings('maskHelper'),
+      defaultOptions: [{ maskHelper: 'maskProcessGitEnv' }],
+    });
+    assert.deepEqual(published('spawn-timeout'), {
+      schema: strings('testBudget'),
+      defaultOptions: [{ testBudget: '' }],
+    });
+    for (const name of ['no-raw-group-kill', 'detached-teardown']) {
+      assert.deepEqual(
+        published(name),
+        {
+          schema: strings('trackHelper', 'killHelper', 'groupHelperModule'),
+          defaultOptions: [
+            {
+              trackHelper: 'trackGroup',
+              killHelper: 'killGroup',
+              groupHelperModule: '',
+            },
+          ],
+        },
+        name,
+      );
+    }
+  });
+
+  it('refuses an option that is no string', () => {
+    assert.throws(
+      () =>
+        lint('cli-entry-helper', `main();`, 'scripts/x.ts', [{ helper: 1 }]),
+      /should be string|must be string/,
+    );
+  });
+});
+
+ruleTester.run('no-process-exit: other process methods', rules['no-process-exit']!, {
+  valid: [{ filename: 'scripts/x.ts', code: `process.abort(1);` }],
+  invalid: [],
+});
+
+ruleTester.run('cli-entry-helper: near misses', rules['cli-entry-helper']!, {
+  valid: [
+    // `.at()` with no index reads no slot.
+    {
+      filename: 'scripts/x.ts',
+      code: `if (process.argv.at() === self) main();`,
+    },
+    // A pattern with no second element, and the other elements of one that
+    // has it, are not the entry.
+    {
+      filename: 'scripts/x.ts',
+      code: `const [node] = process.argv; if (node === self) main();`,
+    },
+    {
+      filename: 'scripts/x.ts',
+      code: `const [node, entry] = process.argv; if (node === self) main();`,
+    },
+    // A call that is no path function ends the walk.
+    {
+      filename: 'scripts/x.ts',
+      code: `if (lookup(process.argv[1]) === self) main();`,
+    },
+    // A path test read but never called compares nothing.
+    {
+      filename: 'scripts/x.ts',
+      code: `const includes = process.argv[1].includes;`,
+    },
+    // A nullish comparison written the other way round.
+    {
+      filename: 'scripts/x.ts',
+      code: `if (undefined === process.argv[1]) usage();`,
+    },
+  ],
+  invalid: [
+    // Two reads of the entry in one comparison: one finding.
+    {
+      filename: 'scripts/x.ts',
+      code: `if (resolve(process.argv[1]) === realpathSync(process.argv[1])) main();`,
+      errors: [{ messageId: 'handRolled' }],
+    },
+  ],
+});
+
+ruleTester.run('git-spawn-env: near misses', rules['git-spawn-env']!, {
+  valid: [
+    // Only `git` itself, not a command that starts with it.
+    { filename: TEST_FILE, code: `spawnSync('gitleaks', ['detect'], { cwd });` },
+    // A spawner given nothing, a shell spawner given nothing or a command
+    // built elsewhere, and a call that spawns nothing.
+    { filename: TEST_FILE, code: `spawnSync();` },
+    { filename: TEST_FILE, code: `execSync();\nexecSync(command);` },
+    { filename: TEST_FILE, code: `log('git status');` },
+    // A command line that runs git later, not first.
+    { filename: TEST_FILE, code: `execSync('echo git', { timeout: 1 });` },
+    // Options built by a call are not provable here.
+    {
+      filename: TEST_FILE,
+      code: `spawnSync('git', ['status'], makeOptions());`,
+    },
+    // A hole in the arguments array.
+    {
+      filename: TEST_FILE,
+      code: `spawnSync('git', [, 'init'], { env: hermeticGitEnv() });`,
+    },
+  ],
+  invalid: [
+    // A spawner reached as a module member.
+    {
+      filename: TEST_FILE,
+      code: `cp.execFileSync('git', ['status'], { cwd });`,
+      errors: [{ messageId: 'inheritsEnv' }],
+    },
+    // git with no arguments array, and a bare git command line.
+    {
+      filename: TEST_FILE,
+      code: `spawnSync('git');\nexecSync('git');`,
+      errors: [{ messageId: 'inheritsEnv' }, { messageId: 'inheritsEnv' }],
+    },
+  ],
+});
+
+ruleTester.run('git-fixture-env: near misses', rules['git-fixture-env']!, {
+  valid: [
+    // `init` given to a command that is not git makes no repository.
+    {
+      filename: TEST_FILE,
+      code: `${CP}spawnSync('gitleaks', ['init'], { timeout: 1 });`,
+    },
+    // A command that starts like a shell's name is not a shell.
+    {
+      filename: TEST_FILE,
+      code: `${CP}execFileSync('git', ['status'], { env: hermeticGitEnv() });\nspawnSync('shellcheck', [file], { timeout: 1 });`,
+    },
+    // git given its options and no arguments array.
+    {
+      filename: TEST_FILE,
+      code: `${CP}spawnSync('git', { cwd, env: hermeticGitEnv() });`,
+    },
+  ],
+  invalid: [],
+});
+
+ruleTester.run('no-global-patch: near misses', rules['no-global-patch']!, {
+  valid: [
+    { filename: TEST_FILE, code: `count = 1;` },
+    { filename: TEST_FILE, code: `process.stdout.columns = 80;` },
+  ],
+  invalid: [],
+});
+
+ruleTester.run('no-partial-git-mask: near misses', rules['no-partial-git-mask']!, {
+  valid: [
+    // Only `Object.assign`, not another assign.
+    {
+      filename: TEST_FILE,
+      code: `assign(process.env, HERMETIC_GIT_VARIABLES);\n_.assign(target, HERMETIC_GIT_VARIABLES);`,
+    },
+    // The masks as the target are not copied into an env.
+    {
+      filename: TEST_FILE,
+      code: `Object.assign(HERMETIC_GIT_VARIABLES, extra);`,
+    },
+    // A key other than `env`.
+    {
+      filename: TEST_FILE,
+      code: `const config = { vars: { ...HERMETIC_GIT_VARIABLES } };`,
+    },
+  ],
+  invalid: [
+    // The masks among other sources.
+    {
+      filename: TEST_FILE,
+      code: `Object.assign(process.env, HERMETIC_GIT_VARIABLES, { CI: '1' });`,
+      errors: [{ messageId: 'partial' }],
+    },
+  ],
+});
+
+ruleTester.run('env-via-stub: near misses', rules['env-via-stub']!, {
+  valid: [
+    // A local, a read of an env var, and an Object.assign given nothing.
+    {
+      filename: TEST_FILE,
+      code: `count = 1;\nif (!process.env.CI) skip();\nObject.assign();`,
+    },
+    // onTestFinished given a timeout after its restore.
+    {
+      filename: TEST_FILE,
+      code: `it('a', () => { const prior = process.exitCode; onTestFinished(() => { process.exitCode = prior; }, 1_000); process.exitCode = 1; });`,
+    },
+  ],
+  invalid: [
+    // A write in the registering call's own arguments runs before the
+    // teardown is registered.
+    {
+      filename: TEST_FILE,
+      code: `it('a', () => { onTestFinished(() => { process.exitCode = prior; }, (process.exitCode = 1)); });`,
+      errors: [{ messageId: 'exitCode' }],
+    },
+    // A statement before the write that registers nothing.
+    {
+      filename: TEST_FILE,
+      code: `it('a', () => { count += 1; process.exitCode = 1; });`,
+      errors: [{ messageId: 'exitCode' }],
+    },
+    // Only an after hook covers its block: a restore registered from a
+    // beforeEach is not read as one.
+    {
+      filename: TEST_FILE,
+      code: `beforeEach(() => { onTestFinished(() => { process.exitCode = undefined; }); });\nit('a', () => { process.exitCode = 1; });`,
+      errors: [{ messageId: 'exitCode', line: 2 }],
+    },
+  ],
+});
+
+ruleTester.run('spawn-timeout: near misses', rules['spawn-timeout']!, {
+  valid: [
+    // Options built by a call are not provable here.
+    { filename: TEST_FILE, code: `${CP}spawnSync('x', [], makeOptions());` },
+    // A default import is the module, not one of its functions.
+    {
+      filename: TEST_FILE,
+      code: `import cp from 'node:child_process';\ncp('x', []);`,
+    },
+  ],
+  invalid: [],
+});
+
+ruleTester.run('spawn-timeout-sigkill: near misses', rules['spawn-timeout-sigkill']!, {
+  valid: [
+    // A timeout only a spread this file cannot read may set.
+    {
+      filename: TEST_FILE,
+      code: `${CP}spawnSync('x', [], { ...options, killSignal: 'SIGTERM' });`,
+    },
+  ],
+  invalid: [
+    // A trappable signal behind a cast is still that signal.
+    {
+      filename: TEST_FILE,
+      code: `${CP}execFileSync('x', [], { timeout: 1, killSignal: 'SIGTERM' as const });`,
+      output: null,
+      errors: [sigkill('execFileSync')],
+    },
+    // A timeout a readable spread sets after the options' own: no property
+    // here holds it, so there is nothing to fix after.
+    {
+      filename: TEST_FILE,
+      code: `${CP}spawnSync('x', [], { timeout: 1, ...{ timeout: 2 } });`,
+      output: null,
+      errors: [sigkill('spawnSync')],
+    },
+  ],
+});
+
+ruleTester.run('no-raw-group-kill: near misses', rules['no-raw-group-kill']!, {
+  valid: [
+    // No target, and a subtraction, are no negated pid.
+    { filename: TEST_FILE, code: `process.kill();` },
+    { filename: TEST_FILE, code: `process.kill(base - 1, 'SIGTERM');` },
+  ],
+  invalid: [],
+});
+
+ruleTester.run('detached-teardown: near misses', rules['detached-teardown']!, {
+  valid: [
+    // A kill given no group, a group from a call that tracks nothing, or a
+    // tracker given no child, cannot be traced: it counts.
+    {
+      filename: TEST_FILE,
+      code: `it('a', () => { const child = spawn('a', [], { detached: true }); onTestFinished(() => { killGroup(); }); });`,
+    },
+    {
+      filename: TEST_FILE,
+      code: `it('a', () => { const child = spawn('a', [], { detached: true }); const other = start(); onTestFinished(() => { killGroup(lookup(other)); }); });`,
+    },
+    {
+      filename: TEST_FILE,
+      code: `it('a', () => { const child = spawn('a', [], { detached: true }); onTestFinished(() => { killGroup(trackGroup()); }); });`,
+    },
+    // A child this file does not bind to one name cannot be compared with
+    // the tracked one: a destructured spawn, a spawn an arrow returns.
+    {
+      filename: TEST_FILE,
+      code: `it('a', () => { const { pid } = spawn('a', [], { detached: true }); const other = start(); const group = trackGroup(other); onTestFinished(() => { killGroup(group); }); });`,
+    },
+    {
+      filename: TEST_FILE,
+      code: `it('a', () => { const start = (dir) => spawn('x', [dir], { detached: true }); const other = start(root); const group = trackGroup(other); onTestFinished(() => { killGroup(group); }); });`,
+    },
+  ],
+  invalid: [
+    // A spawner reached as a module member.
+    {
+      filename: TEST_FILE,
+      code: `it('a', () => { cp.spawn('x', [], { detached: true }); });`,
+      errors: [{ messageId: 'noTeardown' }],
+    },
+  ],
+});

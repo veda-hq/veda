@@ -77,9 +77,9 @@ const GROUP_DEFAULTS = {
 // SHELL-09 (+ TEST-STRUCT-11) — script and self-test process hygiene
 // ---------------------------------------------------------------------------
 
+/** `process.<name>`; of a member's objects, only an Identifier has a `name`. */
 const isProcessMember = (node, name) =>
   node.type === 'MemberExpression' &&
-  node.object.type === 'Identifier' &&
   node.object.name === 'process' &&
   propertyName(node) === name;
 
@@ -108,22 +108,18 @@ const noProcessExit = {
 
 /**
  * `process.argv[1]` / `process.argv.at(1)`. `node` is never null; a Literal
- * property is always computed (`a[1]`).
+ * property is always computed (`a[1]`), and only a Literal has a `value`.
+ * calledMethod is null for anything but a call.
  */
 function isArgvEntry(node) {
   const value = unwrap(node);
-  if (
-    value.type === 'MemberExpression' &&
-    value.property.type === 'Literal' &&
-    value.property.value === 1
-  ) {
+  if (value.type === 'MemberExpression' && value.property.value === 1) {
     return isProcessMember(unwrap(value.object), 'argv');
   }
-  if (value.type === 'CallExpression' && calledMethod(value) === 'at') {
+  if (calledMethod(value) === 'at') {
     const [index] = value.arguments;
     return (
-      index?.type === 'Literal' &&
-      index.value === 1 &&
+      index?.value === 1 &&
       isProcessMember(unwrap(unwrap(value.callee).object), 'argv')
     );
   }
@@ -148,12 +144,13 @@ const PATH_TESTS = new Set([
 ]);
 const EQUALITY = new Set(['===', '!==', '==', '!=']);
 
+/**
+ * `null` or `undefined`. `node` is a comparison's operand, never absent; only
+ * a Literal has a `value`, and only an Identifier a `name`.
+ */
 const isNullish = node => {
   const value = unwrap(node);
-  return (
-    (value?.type === 'Literal' && value.value === null) ||
-    (value?.type === 'Identifier' && value.name === 'undefined')
-  );
+  return value.value === null || value.name === 'undefined';
 };
 
 const CLI_ENTRY_DEFAULTS = {
@@ -238,9 +235,10 @@ const cliEntryHelper = {
         };
         for (const candidate of candidates) {
           let current = candidate;
+          // The walk climbs only through calls, members, wrappers, templates
+          // and `??`, so it stops below the Program and always has a parent.
           for (;;) {
             const parent = current.parent;
-            if (!parent) break;
             if (
               parent.type === 'CallExpression' &&
               parent.arguments.includes(current)
@@ -262,12 +260,13 @@ const cliEntryHelper = {
               break;
             }
             // `current.x`: of the nodes with an `object`, a `with` statement
-            // has no property name, so it ends the walk as before.
+            // has no property name, so it ends the walk as before. A member
+            // always has a parent.
             if (parent.object === current) {
               const name = propertyName(parent);
               if (
                 PATH_TESTS.has(name) &&
-                parent.parent?.type === 'CallExpression'
+                parent.parent.type === 'CallExpression'
               ) {
                 report(parent.parent);
                 break;
@@ -278,10 +277,9 @@ const cliEntryHelper = {
               }
               break;
             }
-            if (
-              parent.type === 'BinaryExpression' &&
-              EQUALITY.has(parent.operator)
-            ) {
+            // Only a BinaryExpression has an equality operator, and only a
+            // LogicalExpression has `??` (an assignment's is `??=`).
+            if (EQUALITY.has(parent.operator)) {
               const other =
                 parent.left === current ? parent.right : parent.left;
               if (!isNullish(other)) report(parent);
@@ -290,7 +288,7 @@ const cliEntryHelper = {
             if (
               WRAPPERS.has(parent.type) ||
               parent.type === 'TemplateLiteral' ||
-              (parent.type === 'LogicalExpression' && parent.operator === '??')
+              parent.operator === '??'
             ) {
               current = parent;
               continue;
@@ -313,15 +311,10 @@ const SPAWNERS = new Set([
 ]);
 const SHELL_SPAWNERS = new Set(['exec', 'execSync']);
 
-/** `process.env`. */
+/** `process.env`; `node` may be absent (a property's missing `argument`). */
 function isProcessEnv(node) {
   const value = unwrap(node);
-  return (
-    value?.type === 'MemberExpression' &&
-    value.object.type === 'Identifier' &&
-    value.object.name === 'process' &&
-    propertyName(value) === 'env'
-  );
+  return value?.type === 'MemberExpression' && isProcessMember(value, 'env');
 }
 
 /**
@@ -337,11 +330,11 @@ function spreadsAmbientEnv(node, context, depth = 0) {
   }
   if (isProcessEnv(value)) return true;
   if (value.type !== 'ObjectExpression') return false;
+  // Only a SpreadElement has an `argument`: a Property's reads as absent.
   return value.properties.some(
     property =>
-      property.type === 'SpreadElement' &&
-      (isProcessEnv(property.argument) ||
-        spreadsAmbientEnv(property.argument, context, depth + 1)),
+      isProcessEnv(property.argument) ||
+      spreadsAmbientEnv(property.argument, context, depth + 1),
   );
 }
 
@@ -396,20 +389,22 @@ function gitCallOf(node, maskHelper) {
   const name =
     callee.type === 'Identifier' ? callee.name : propertyName(callee);
   const [command] = node.arguments;
+  // The literal arguments git is given, or null when they are not written
+  // here; an array's hole reads as an absent argument.
   const args =
     name === 'git'
       ? node.arguments
       : SPAWNERS.has(name) &&
           unwrap(node.arguments[1])?.type === 'ArrayExpression'
         ? unwrap(node.arguments[1]).elements
-        : [];
+        : null;
   const call = {
     kind: name === 'git' ? 'wrapper' : null,
     options: null,
     mask: name === maskHelper,
     init:
       (name === 'git' || /(^|\/)git$/.test(command?.value)) &&
-      args.some(argument => argument?.value === 'init'),
+      args?.some(argument => argument?.value === 'init'),
   };
   if (SPAWNERS.has(name)) {
     call.options =
@@ -435,7 +430,9 @@ function gitCallOf(node, maskHelper) {
         : command?.type === 'TemplateLiteral'
           ? command.quasis[0].value.cooked
           : null;
-    if (typeof text === 'string' && /^git(\s|$)/.test(text)) {
+    // A value that is no string (null, a number, a regex) reads as text
+    // that does not start with `git`.
+    if (/^git(\s|$)/.test(text)) {
       call.kind = 'git';
       call.options = node.arguments[1] ?? null;
     }
@@ -528,7 +525,9 @@ const gitFixtureEnv = {
     const calls = [];
     return {
       CallExpression(node) {
-        if (node.callee.type === 'Identifier') calls.push(node);
+        // Every call: one that names no helper of this file runs no code here
+        // (calledCode is null).
+        calls.push(node);
         const call = gitCallOf(node, options.maskHelper);
         if (call.mask) masks.push(node);
         if (call.init) inits.push(node);
@@ -577,10 +576,13 @@ function calledCode(call, context) {
     : constInit(call.callee, context);
 }
 
-/** The statements of `block` after the one that holds `node`. */
+/**
+ * The statements of `block` after the one that holds `node`, or undefined
+ * for a function whose body is an expression: nothing follows it there.
+ */
 function statementsAfter(node, block) {
-  const body = block.type === 'Program' ? block.body : (block.body.body ?? []);
-  return body.slice(body.findIndex(statement => within(node, statement)) + 1);
+  const body = block.type === 'Program' ? block.body : block.body.body;
+  return body?.slice(body.findIndex(statement => within(node, statement)) + 1);
 }
 
 /**
@@ -602,13 +604,15 @@ function maskCovers(mask, init, calls, context) {
   }
   const hook = chain[0]?.owner;
   const after = statementsAfter(mask, own);
+  // A hook is one of the four Vitest hooks: `beforeAll` and `beforeEach` are
+  // the two that run before a test.
   const covered =
-    hook?.kind === 'hook' && /^before(All|Each)$/.test(hook.name)
+    hook?.kind === 'hook' && hook.name.startsWith('before')
       ? node => within(node, registeringBlock(own))
-      : node => after.some(statement => within(node, statement));
+      : node => after?.some(statement => within(node, statement));
   if (covered(init)) return true;
   return calls.some(
-    call => covered(call) && within(init, calledCode(call, context)),
+    call => within(init, calledCode(call, context)) && covered(call),
   );
 }
 
@@ -631,8 +635,8 @@ const noGlobalPatch = {
         const left = unwrap(node.left);
         if (left.type !== 'MemberExpression') return;
         const object = unwrap(left.object);
-        const isConsole =
-          object.type === 'Identifier' && object.name === 'console';
+        // Of a member's objects, only an Identifier has a `name`.
+        const isConsole = object.name === 'console';
         const isStream =
           propertyName(left) === 'write' &&
           (isProcessMember(object, 'stdout') ||
@@ -679,21 +683,20 @@ function optionsSet(object, key, context, depth = 0) {
   });
 }
 
-/** The mask constant `NAME` or `x.NAME`. */
+/**
+ * The mask constant `NAME` or `x.NAME`. `node` is always there (an argument,
+ * a spread's argument); only an Identifier has a `name`.
+ */
 function isGitMaskConstant(node, name) {
   const value = unwrap(node);
-  return (
-    (value?.type === 'Identifier' && value.name === name) ||
-    propertyName(value) === name
-  );
+  return value.name === name || propertyName(value) === name;
 }
 
-/** `Object.assign(...)`. */
+/** `Object.assign(...)`; of a member's objects, only an Identifier has a `name`. */
 function isObjectAssign(call) {
   const callee = unwrap(call.callee);
   return (
     callee.type === 'MemberExpression' &&
-    callee.object.type === 'Identifier' &&
     callee.object.name === 'Object' &&
     propertyName(callee) === 'assign'
   );
@@ -755,13 +758,14 @@ const noPartialGitMask = {
   },
 };
 
-/** `process.env` itself, or one of its variables. */
+/**
+ * `process.env` itself, or one of its variables. `node` (an assignment's
+ * target, a `delete`'s operand) is always there; only a member has an
+ * `object`, absent for anything else.
+ */
 function isProcessEnvTarget(node) {
   const value = unwrap(node);
-  return (
-    isProcessEnv(value) ||
-    (value?.type === 'MemberExpression' && isProcessEnv(value.object))
-  );
+  return isProcessEnv(value) || isProcessEnv(value.object);
 }
 
 /**
@@ -771,12 +775,12 @@ function isProcessEnvTarget(node) {
  */
 function registersTeardownBefore(fn, node, restorers) {
   if (fn.body.type !== 'BlockStatement') return false;
+  // Only an Identifier callee has a `name`.
   return fn.body.body.some(
     statement =>
       statement.range[1] <= node.range[0] &&
       statement.type === 'ExpressionStatement' &&
       statement.expression.type === 'CallExpression' &&
-      statement.expression.callee.type === 'Identifier' &&
       TEARDOWN_CALLS.has(statement.expression.callee.name) &&
       statement.expression.arguments.some(argument => restorers.has(argument)),
   );
@@ -803,10 +807,11 @@ const envViaStub = {
       maskHelper: optionsOf(context, GIT_MASK_DEFAULTS).maskHelper,
     };
     const exitCodes = [];
-    // The blocks an afterEach/afterAll restore covers: the describe callback
-    // that registers the hook, or the whole file for a top-level one. A
-    // restore in one describe says nothing about a test in another.
-    const restoredBlocks = [];
+    // The afterEach/afterAll callbacks that restore it. One covers the block
+    // that registers it (registeringBlock): the describe callback, or the
+    // whole file for a top-level hook. A restore in one describe says nothing
+    // about a test in another.
+    const restoringHooks = [];
     // Teardown callbacks that write `process.exitCode`, seen before any
     // write they guard: source order is visit order.
     const restorers = new Set();
@@ -817,7 +822,6 @@ const envViaStub = {
           context.report({ node, messageId: 'envWrite', data });
           return;
         }
-        if (left.type !== 'MemberExpression') return;
         if (!isProcessMember(left, 'exitCode')) return;
         const chain = enclosingFunctions(node, context);
         const teardown = chain.find(isTeardownCallback);
@@ -829,13 +833,12 @@ const envViaStub = {
               (entry.owner.name === 'afterEach' ||
                 entry.owner.name === 'afterAll'),
           );
-          if (hook) restoredBlocks.push(registeringBlock(hook.fn));
+          if (hook) restoringHooks.push(hook.fn);
           return;
         }
-        // A restore: the value read back from a const that saved it.
-        const right = unwrap(node.right);
-        const saved =
-          right.type === 'Identifier' ? constInit(right, context) : null;
+        // A restore: the value read back from a const that saved it
+        // (constInit is null for anything but a const's name).
+        const saved = constInit(unwrap(node.right), context);
         if (saved && isProcessMember(saved, 'exitCode')) return;
         if (
           chain.some(({ fn }) => registersTeardownBefore(fn, node, restorers))
@@ -856,7 +859,9 @@ const envViaStub = {
       },
       'Program:exit'() {
         for (const node of exitCodes) {
-          if (restoredBlocks.some(block => within(node, block))) continue;
+          if (restoringHooks.some(fn => within(node, registeringBlock(fn)))) {
+            continue;
+          }
           context.report({ node, messageId: 'exitCode' });
         }
       },
@@ -874,13 +879,9 @@ const BLOCKING_SPAWNS = new Set(['spawnSync', 'execFileSync', 'execSync']);
  */
 function childProcessFunction(call, context) {
   const callee = unwrap(call.callee);
-  const identifier =
-    callee.type === 'Identifier'
-      ? callee
-      : callee.type === 'MemberExpression' &&
-          callee.object.type === 'Identifier'
-        ? callee.object
-        : null;
+  // A member's object, absent for any other callee; an object that is no
+  // Identifier names no variable (variableOf is null).
+  const identifier = callee.type === 'Identifier' ? callee : callee.object;
   if (!identifier) return null;
   const def = variableOf(identifier, context)?.defs[0];
   if (
@@ -1012,10 +1013,11 @@ const spawnTimeoutSigkill = {
         if (!object) return; // none (spawn-timeout's case) or built elsewhere
         const timeout = optionValue(object, 'timeout', context);
         const signal = optionValue(object, 'killSignal', context);
-        if (timeout === null || timeout === UNREAD || signal === UNREAD) return;
+        if (timeout === null || timeout === UNREAD) return;
         // No killSignal, or a literal other than SIGKILL, is the finding; a
-        // value built elsewhere is not provable here.
-        const value = signal && unwrap(signal);
+        // value built elsewhere, or a spread this file cannot read (UNREAD,
+        // no node), is not provable here. unwrap passes null through.
+        const value = unwrap(signal);
         if (
           value &&
           (value.type !== 'Literal' ||
@@ -1024,14 +1026,11 @@ const spawnTimeoutSigkill = {
         ) {
           return;
         }
+        // The timeout's own property, when it is written in these options:
+        // only that property holds the timeout node as its value.
         const own =
           unwrap(options) === object && signal === null
-            ? object.properties.find(
-                property =>
-                  property.type === 'Property' &&
-                  keyOf(property) === 'timeout' &&
-                  property.value === timeout,
-              )
+            ? object.properties.find(property => property.value === timeout)
             : undefined;
         context.report({
           node,
@@ -1155,6 +1154,7 @@ const detachedTeardown = {
         // Spawners only: `toHaveBeenCalledWith(..., { detached: true })`
         // asserts on a fake and starts nothing.
         if (!DETACHABLE_SPAWNERS.has(name)) return;
+        // Only a Literal has a `value`.
         const found = node.arguments
           .map(argument => objectOf(argument, context))
           .find(
@@ -1162,7 +1162,6 @@ const detachedTeardown = {
               object?.properties.some(
                 property =>
                   keyOf(property) === 'detached' &&
-                  unwrap(property.value).type === 'Literal' &&
                   unwrap(property.value).value === true,
               ) ?? false,
           );

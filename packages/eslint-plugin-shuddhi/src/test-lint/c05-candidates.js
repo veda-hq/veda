@@ -763,10 +763,12 @@ export function c05CandidateRules({
           const fn = node.arguments[0];
           if (!isFunction(fn)) return;
           if (method === 'map') {
-            // Only under Promise.all: allSettled is the fix. A parent that is
-            // not a call has no callee, and a receiver that is not a binding
-            // (`this.Promise`) has no name.
-            const callee = unwrap(node.parent.callee);
+            // Only under Promise.all: allSettled is the fix. A receiver that
+            // is not a binding (`this.Promise`) has no name.
+            const callee =
+              node.parent.type === 'CallExpression'
+                ? unwrap(node.parent.callee)
+                : null;
             if (
               callee?.type !== 'MemberExpression' ||
               unwrap(callee.object).name !== 'Promise' ||

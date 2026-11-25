@@ -1721,7 +1721,7 @@ describe('no-fixed-sleep edges', () => {
     );
   });
 
-  it('reads two setTimeout arguments as the callback form, whose delay comes second', () => {
+  it('reads no delay from a setTimeout given two arguments', () => {
     assert.deepEqual(
       ids(
         'no-fixed-sleep',
@@ -1823,6 +1823,8 @@ describe('cleanup-loop-settles edges', () => {
       // Only forEach, and map under Promise.all, run a callback per resource.
       `afterEach(() => { xs.some(x => { a(x); b(x); }); xs.forEach(); });`,
       `afterEach(async () => { await Other.all(xs.map(async x => { a(x); b(x); })); await Promise.race(xs.map(async x => { a(x); b(x); })); });`,
+      // A `new` around the map is not a call of Promise.all.
+      `afterEach(() => { new Promise.all(xs.map(x => { a(x); b(x); })); });`,
     ];
     for (const code of cases) {
       assert.deepEqual(ids('cleanup-loop-settles', code), [], code);

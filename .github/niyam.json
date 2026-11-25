@@ -22,7 +22,9 @@
     "scripts/guards.sh",
     "scripts/released-pins.mjs",
     ".veda/records-baseline.json",
-    ".veda/required-settings.json"
+    ".veda/required-settings.json",
+    "packages/kavach/python/mutation-equivalents.tsv",
+    "scripts/kavach_mutation/"
   ],
   "cloudSigningKeys": {
     "AthyaBot": [

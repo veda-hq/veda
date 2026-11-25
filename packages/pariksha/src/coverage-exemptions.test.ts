@@ -70,8 +70,21 @@ describe('parseConfig', () => {
       ['{"vitest": {"configs": ["a"]}}', /vitest\.requiredExcludes is empty/],
       ['{"build": {"configs": ["a"], "forbiddenIncludes": []}}', /build\.forbiddenIncludes is empty/],
       ['{"vitest": {"configs": ["a"], "requiredExcludes": ["x"]}, "loader": ""}', /"loader" must be a module name/],
+      ['{"vitest": {"configs": ["a"], "requiredExcludes": ["x"]}, "loader": 1}', /"loader" must be a module name/],
+      ['null', /must be a JSON object/],
+      ['"x"', /must be a JSON object/],
+      ['{"vitest": "x"}', /"vitest" must be an object/],
+      ['{"vitest": {"configs": ["a/"], "requiredExcludes": ["x"]}}', /"a\/" is not a normalized/],
     ];
     for (const [text, message] of bad) assert.throws(() => parseConfig(text), message, text);
+  });
+
+  it('takes no configs for a section that names none', () => {
+    assert.deepEqual(parseConfig('{"vitest": {"requiredExcludes": ["x"]}, "build": {"configs": ["b"], "forbiddenIncludes": ["y"]}}'), {
+      vitest: { configs: [], requiredExcludes: ['x'] },
+      build: { configs: ['b'], forbiddenIncludes: ['y'] },
+      loader: undefined,
+    });
   });
 });
 
@@ -109,6 +122,8 @@ describe('readExclude and loadVitestExclude', () => {
     'fn.mjs': 'export default { test: { coverage: { exclude: () => [] } } };',
     'wrote-then-failed.mjs': 'import { writeSync } from "node:fs"; writeSync(3, \'["x"]\'); process.exit(1);',
     'garbage.mjs': 'import { writeSync } from "node:fs"; writeSync(3, "oops"); export default {};',
+    'long.mjs': `import { writeSync } from "node:fs"; writeSync(3, "${'y'.repeat(100)}"); export default {};`,
+    'nodefault.mjs': 'export const x = 1;',
     'throws.mjs': 'throw new Error("config exploded");',
     'throws-text.mjs': 'throw "a string";',
     'hang.mjs': 'setInterval(() => {}, 1000); await new Promise(() => {});',
@@ -124,6 +139,7 @@ describe('readExclude and loadVitestExclude', () => {
     assert.deepEqual(await readExclude(join(root, 'factory.mjs')), ['f']);
     assert.deepEqual(await readExclude(join(root, 'async.mjs')), ['async']);
     assert.equal(await readExclude(join(root, 'none.mjs')), undefined);
+    assert.equal(await readExclude(join(root, 'nodefault.mjs')), undefined);
   });
 
   it('loads each config in its own process; nothing it prints is the answer', () => {
@@ -152,6 +168,7 @@ describe('readExclude and loadVitestExclude', () => {
     assert.deepEqual(loadVitestExclude(root, 'wrote-then-failed.mjs', undefined), { ok: false, error: 'exit 1' });
     const garbage = loadVitestExclude(root, 'garbage.mjs', undefined);
     assert.match(garbage.ok ? '' : garbage.error, /^the config's coverage\.exclude is not data: oops/);
+    assert.deepEqual(loadVitestExclude(root, 'long.mjs', undefined), { ok: false, error: `the config's coverage.exclude is not data: ${'y'.repeat(80)}` });
     const hang = loadVitestExclude(root, 'hang.mjs', undefined, 1_000);
     assert.match(hang.ok ? '' : hang.error, /ETIMEDOUT/);
     const noLoader = loadVitestExclude(root, 'object.mjs', 'no-such-loader-pariksha');
@@ -161,6 +178,8 @@ describe('readExclude and loadVitestExclude', () => {
   it('names a loader that does not load, and accepts none or one that does', () => {
     assert.equal(loaderFailure(root, undefined), undefined);
     assert.equal(loaderFailure(root, './hook.mjs'), undefined);
+    // A bare name is imported as written, not as a file under the root.
+    assert.equal(loaderFailure(root, 'node:fs'), undefined);
     assert.match(loaderFailure(root, 'no-such-loader-pariksha') ?? '', /^loader no-such-loader-pariksha does not load: .*no-such-loader-pariksha/);
   });
 
@@ -169,6 +188,20 @@ describe('readExclude and loadVitestExclude', () => {
     assert.equal(failureOf('node:internal/x:1\n  throw v;\n  ^\n\nplain value\n', 1), 'plain value');
     assert.equal(failureOf('just this\n', 1), 'just this');
     assert.equal(failureOf('', 4), 'exit 4');
+  });
+
+  it('reads a value after a caret line only, and the first line otherwise, trimmed', () => {
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      ['TypeError: bad  \n', 'TypeError: bad'],
+      ['first\nsecond\n', 'first'],
+      ['x\n^ marker text\n\nvalue\n', 'x'],
+      ['first\na ^\nvalue\n', 'first'],
+      ['node:x\n  throw v;\n  ^^  \n\nplain\n', 'plain'],
+      ['^\nvalue\n', 'value'],
+      ['  ^\n  v\n', 'v'],
+      ['x\n  ^\n', 'x'],
+    ];
+    for (const [stderr, reason] of cases) assert.equal(failureOf(stderr, 1), reason, stderr);
   });
 
   it('picks the .ts child under test and the .js child once built', () => {
@@ -207,6 +240,18 @@ describe('checkBuild', () => {
     'bad.json': '{ "include": ["src/**", "src/__mocks__/**", "**/*.test.ts"] }',
     'broken.json': '{ "include": [ }',
     'wrong.json': '{ "include": "src" }',
+    'numbers.json': '{ "include": [1] }',
+  });
+
+  it('reads an absent include as bringing nothing in, whatever is forbidden', () => {
+    const anyE = parseConfig(JSON.stringify({ build: { configs: ['none.json'], forbiddenIncludes: ['e'] } }));
+    assert.deepEqual(checkBuild(ts, anyE, root, ['none.json']), []);
+  });
+
+  it('names every line of a chained diagnostic', () => {
+    const chained = { messageText: 'outer', category: 1, code: 1, next: [{ messageText: 'inner', category: 1, code: 2 }] };
+    const fake = { ...ts, readConfigFile: () => ({ config: {}, error: { category: 1, code: 1, file: undefined, start: undefined, length: undefined, messageText: chained } }) } as unknown as Ts;
+    assert.throws(() => checkBuild(fake, CONFIG, root, ['x.json']), { message: 'x.json: outer\n  inner' });
   });
 
   it('passes an include with no test pattern, or none at all, reading JSON with comments', () => {
@@ -222,6 +267,7 @@ describe('checkBuild', () => {
 
   it('throws on a config it cannot read, rather than skip it', () => {
     assert.throws(() => checkBuild(ts, CONFIG, root, ['wrong.json']), /wrong\.json: "include" is not a list of strings/);
+    assert.throws(() => checkBuild(ts, CONFIG, root, ['numbers.json']), /numbers\.json: "include" is not a list of strings/);
     assert.throws(() => checkBuild(ts, CONFIG, root, ['missing.json']), /missing\.json: /);
     assert.throws(() => checkBuild(ts, CONFIG, root, ['broken.json']), /broken\.json: Expression or comma expected/);
   });
@@ -229,13 +275,15 @@ describe('checkBuild', () => {
 
 describe('formatViolations', () => {
   it('counts what it checked, scoped to a package', () => {
-    assert.deepEqual(formatViolations([], 2, 1, undefined).out, ['pariksha coverage-exemptions: 2 vitest and 1 build config(s) checked, none drifts']);
+    assert.deepEqual(formatViolations([], 2, 1, undefined), { ok: true, out: ['pariksha coverage-exemptions: 2 vitest and 1 build config(s) checked, none drifts'], err: [] });
     assert.deepEqual(formatViolations([], 0, 0, 'packages/shared').out, ['pariksha coverage-exemptions: 0 vitest and 0 build config(s) under packages/shared checked, none drifts']);
   });
 
   it('lists each problem and how to fix it', () => {
-    const r = formatViolations([{ file: 'a', message: 'm' }], 1, 0, undefined);
-    assert.equal(r.ok, false);
-    assert.deepEqual(r.err, ['pariksha coverage-exemptions: a: m', 'pariksha coverage-exemptions: 1 problem(s). Exempt test files from coverage in every vitest config, and keep them out of every build.']);
+    assert.deepEqual(formatViolations([{ file: 'a', message: 'm' }], 1, 0, undefined), {
+      ok: false,
+      out: [],
+      err: ['pariksha coverage-exemptions: a: m', 'pariksha coverage-exemptions: 1 problem(s). Exempt test files from coverage in every vitest config, and keep them out of every build.'],
+    });
   });
 });

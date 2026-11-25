@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 
 import { parseConfig, type Config } from './config.ts';
 import { hooksDir, kavachDir, plan, runAll, runPlan } from './run.ts';
@@ -139,5 +139,21 @@ describe('plan and runPlan, case by case', () => {
       timedOut: false,
       failClosed: true,
     });
+  });
+});
+
+describe('a handler’s timer', () => {
+  it('is cleared once the handler ends, so nothing kills its process group later', async () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const kill = mock.method(process, 'kill', () => true);
+    try {
+      const outcome = await runPlan(plan({ command: 'exit 0', timeout: 60 }, config(), () => '/kavach', () => '/sarathi/hooks'), '', tmpdir());
+      assert.equal(outcome.code, 0);
+      mock.timers.tick(60_000);
+      assert.equal(kill.mock.callCount(), 0);
+    } finally {
+      kill.mock.restore();
+      mock.timers.reset();
+    }
   });
 });

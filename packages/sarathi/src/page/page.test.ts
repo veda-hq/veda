@@ -2019,6 +2019,23 @@ describe('the page tool, rule by rule', () => {
     }
   });
 
+  it('gives a new page’s session no guard settings', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sarathi-page-guard-'));
+    try {
+      const page = join(root, 'page.html');
+      writeFileSync(page, BOXED);
+      const seen: string[][] = [];
+      const spawn = vi.fn<Spawn>((_command, args) => {
+        seen.push([...args]);
+        return { status: 0, stdout: stream([{ name: 'Artifact', action: 'publish', output: `Published ${URL}` }], 'done'), stderr: '', error: undefined };
+      });
+      expect(run([page], spawn, root, () => new Date('2026-09-30T05:00:00Z'))).toBe(URL);
+      expect(seen.map(args => args.includes('--settings'))).toEqual([false]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('hands the session the guard file it was given', () => {
     const root = mkdtempSync(join(tmpdir(), 'sarathi-page-guard-'));
     try {

@@ -111,8 +111,8 @@ const kindOf = (file: string): Kind | null => {
 /** Whether reading `file` needs the TypeScript compiler. */
 export const needsTypescript = (file: string): boolean => kindOf(file) === 'script';
 
-/** A match's group, as a string: an unmatched optional group is empty. */
-const group = (match: RegExpMatchArray, index: number): string => match[index] ?? '';
+/** A match's group, as a string: every group a caller reads takes part in each match of its pattern. */
+const group = (match: RegExpMatchArray, index: number): string => match[index] as string;
 
 /**
  * A type checker over this one file and nothing else (no lib, no imports, no
@@ -123,7 +123,8 @@ const group = (match: RegExpMatchArray, index: number): string => match[index] ?
 const checkerOf = (ts: Ts, tree: TS.SourceFile): TS.TypeChecker => {
   const options: TS.CompilerOptions = { noLib: true, noResolve: true, allowJs: true, types: [] };
   const host = ts.createCompilerHost(options);
-  host.getSourceFile = (name) => (name === tree.fileName ? tree : undefined);
+  // With no lib and nothing resolved, the program asks for its one root only.
+  host.getSourceFile = () => tree;
   return ts.createProgram({ rootNames: [tree.fileName], options, host }).getTypeChecker();
 };
 
@@ -157,21 +158,17 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
     const target = strip(node);
     if (ts.isStringLiteralLike(target)) return target.text;
     if (ts.isTemplateExpression(target)) {
-      let text = target.head.text;
-      for (const span of target.templateSpans) {
-        const part = constantString(span.expression);
-        if (part === null) return null;
-        text += part + span.literal.text;
-      }
-      return text;
+      // One unknown span leaves the text unknown.
+      const parts = [target.head.text, ...target.templateSpans.flatMap((span) => [constantString(span.expression), span.literal.text])];
+      return parts.includes(null) ? null : parts.join('');
     }
     if (ts.isBinaryExpression(target) && target.operatorToken.kind === ts.SyntaxKind.PlusToken) {
       // One unknown operand leaves the sum unknown.
       const parts = [constantString(target.left), constantString(target.right)];
       return parts.includes(null) ? null : parts.join('');
     }
-    if (!ts.isIdentifier(target)) return null;
-    const declaration = symbolOf(target)?.declarations?.at(0);
+    // A `const`'s name, plain or through its namespace (`keys.GATE`).
+    const declaration = declarationOf(target);
     if (
       declaration === undefined ||
       !ts.isVariableDeclaration(declaration) ||
@@ -189,8 +186,7 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
     }
   };
   /** The name an access or binding key names, or null. */
-  const literalKey = (node: TS.Node | undefined): string | null => {
-    if (node === undefined) return null;
+  const literalKey = (node: TS.Node): string | null => {
     if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) return node.text;
     if (ts.isStringLiteralLike(node)) return node.text;
     if (ts.isComputedPropertyName(node)) return constantString(node.expression);
@@ -229,7 +225,7 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
     if (ts.isIdentifier(target)) {
       if (target.text === 'process') {
         if (!declaresProcess) return true;
-        const declaration = symbolOf(target)?.declarations?.at(0);
+        const declaration = declarationOf(target);
         if (declaration !== undefined && ts.isBindingElement(declaration)) return destructuredGlobal(declaration);
         // Typed `NodeJS.Process` or `typeof globalThis.process`.
         return namedIsGlobal(target, /\bprocess\b/i, isProcess);
@@ -251,15 +247,19 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
   // The checker is built only for a file that aliases the environment.
   const receivers = new Set<TS.Symbol>();
   let checker: TS.TypeChecker | null = null;
-  const symbolOf = (identifier: TS.Identifier): TS.Symbol | undefined => {
+  const symbolOf = (node: TS.Node): TS.Symbol | undefined => {
     checker ??= checkerOf(ts, tree);
     // A shorthand `{ env }` names the variable it assigns, not a property.
-    return ts.isShorthandPropertyAssignment(identifier.parent) ? checker.getShorthandAssignmentValueSymbol(identifier.parent) : checker.getSymbolAtLocation(identifier);
+    return ts.isShorthandPropertyAssignment(node.parent) ? checker.getShorthandAssignmentValueSymbol(node.parent) : checker.getSymbolAtLocation(node);
   };
-  const bind = (identifier: TS.Identifier): void => {
-    const symbol = symbolOf(identifier);
-    if (symbol !== undefined) receivers.add(symbol);
+  /** The first declaration of what `node` names; none for a name the checker makes itself, such as `undefined`. */
+  const declarationOf = (node: TS.Node): TS.Declaration | undefined => symbolOf(node)?.declarations?.at(0);
+  /** Adds the binding `node` names to `set`; a name nothing declares adds nothing. */
+  const remember = (set: Set<TS.Symbol>, node: TS.Node): void => {
+    const symbol = symbolOf(node);
+    if (symbol !== undefined) set.add(symbol);
   };
+  const bind = (node: TS.Node): void => remember(receivers, node);
   /**
    * A local named `env` is taken as the environment (`function gate(env)`
    * called with `process.env`, `import { env } from 'node:process'`) unless
@@ -270,7 +270,7 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
    */
   const resolving = new Set<TS.Node>();
   const namedIsGlobal = (identifier: TS.Identifier, type: RegExp, holds: (node: TS.Expression) => boolean): boolean => {
-    const declaration = symbolOf(identifier)?.declarations?.at(0);
+    const declaration = declarationOf(identifier);
     if (declaration === undefined || !(ts.isParameter(declaration) || ts.isVariableDeclaration(declaration))) return true;
     // Initialised (or defaulted) with the global, it is the global, whatever
     // its annotation.
@@ -306,10 +306,12 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
     return false;
   };
 
-  const declarations: TS.VariableDeclaration[] = [];
+  // Each variable declared with an initialiser: the name or pattern it binds, and the initialiser.
+  const initialised: { name: TS.BindingName; init: TS.Expression }[] = [];
   // `settings = process.env` after `let settings;` aliases it as surely as an
-  // initialiser does (`||=`, `??=` and `&&=` too).
-  const assignments: { name: TS.Identifier; value: TS.Expression }[] = [];
+  // initialiser does (`||=`, `??=` and `&&=` too), and so does
+  // `keys.settings = process.env` to a namespace's `let`.
+  const assignments: { name: TS.Expression; value: TS.Expression }[] = [];
   // `({ PUSH_SKIP } = process.env)` reads as a destructuring declaration
   // does, and `({ env: settings } = process)` aliases the environment.
   const assigned: { pattern: TS.ObjectLiteralExpression; value: TS.Expression }[] = [];
@@ -325,7 +327,7 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
   /** `require('node:process')`. */
   const requiresProcess = (node: TS.Expression): boolean => {
     const target = strip(node);
-    if (!ts.isCallExpression(target) || !ts.isIdentifier(target.expression) || target.expression.text !== 'require') return false;
+    if (!ts.isCallExpression(target) || target.expression.getText(tree) !== 'require') return false;
     const [only, ...more] = target.arguments;
     return only !== undefined && more.length === 0 && ts.isStringLiteralLike(only) && PROCESS_MODULES.has(only.text);
   };
@@ -333,10 +335,7 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
   // under another name is the environment.
   const aliasProcessModule = (clause: TS.ImportClause | undefined): void => {
     if (clause === undefined) return;
-    const addProcess = (identifier: TS.Identifier): void => {
-      const symbol = symbolOf(identifier);
-      if (symbol !== undefined) processAliases.add(symbol);
-    };
+    const addProcess = (identifier: TS.Identifier): void => remember(processAliases, identifier);
     if (clause.name !== undefined) addProcess(clause.name);
     const bindings = clause.namedBindings;
     if (bindings === undefined) return;
@@ -355,18 +354,17 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
       aliasProcessModule(node.importClause);
     }
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer !== undefined && requiresProcess(node.initializer)) {
-      const symbol = symbolOf(node.name);
-      if (symbol !== undefined) processAliases.add(symbol);
+      remember(processAliases, node.name);
     }
-    if (ts.isVariableDeclaration(node)) declarations.push(node);
+    if (ts.isVariableDeclaration(node) && node.initializer !== undefined) initialised.push({ name: node.name, init: node.initializer });
     // Any name `process` (a parameter, a variable, a function, a member):
     // only then can a bare `process` be something other than Node's.
     const { parent } = node;
     if (ts.isIdentifier(node) && node.text === 'process' && 'name' in parent && parent.name === node) declaresProcess = true;
     if (ts.isBinaryExpression(node) && ASSIGNING.has(node.operatorToken.kind)) {
       const left = strip(node.left);
-      if (ts.isIdentifier(left)) assignments.push({ name: left, value: node.right });
       if (ts.isObjectLiteralExpression(left)) assigned.push({ pattern: left, value: node.right });
+      else assignments.push({ name: left, value: node.right });
     }
     ts.forEachChild(node, visit);
   };
@@ -386,12 +384,10 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
         if (key === 'env' && ts.isIdentifier(bound)) bind(bound);
       }
     }
-    for (const declaration of declarations) {
-      const init = declaration.initializer;
-      if (init === undefined) continue;
-      if (ts.isIdentifier(declaration.name) && isEnv(init)) bind(declaration.name);
-      if (ts.isObjectBindingPattern(declaration.name) && isProcess(init)) {
-        for (const element of declaration.name.elements) {
+    for (const { name, init } of initialised) {
+      if (ts.isIdentifier(name) && isEnv(init)) bind(name);
+      if (ts.isObjectBindingPattern(name) && isProcess(init)) {
+        for (const element of name.elements) {
           const key = literalKey(element.propertyName ?? element.name);
           if (key === 'env' && ts.isIdentifier(element.name)) bind(element.name);
         }
@@ -468,8 +464,8 @@ const scriptSwitchReads = (ts: Ts, file: string, source: string, report: (out: V
 const ARITHMETIC_PARTS = [
   // `(( X ))` and `$(( X ))`, up to the closing `))`.
   /\(\(((?:[^)]|\)(?!\)))*)\)\)/g,
-  // `let X+1`, to the end of its command.
-  /\blet\s+([^;&|#]*)/g,
+  // `let X+1`, to the end of its command; more blanks after `let` fall in the part.
+  /\blet\s([^;&|#]*)/g,
   // An integer comparison's operands (`[[ X -eq 1 ]]`).
   /(\b[A-Za-z_]\w*\s+)-(?:eq|ne|lt|le|gt|ge)\b/g,
   /-(?:eq|ne|lt|le|gt|ge)(\s+[A-Za-z_]\w*)\b/g,
@@ -510,8 +506,8 @@ const shellDepths = (lines: readonly (string | null)[]): number[] => {
   return lines.map((line) => {
     // A heredoc line is data: it opens and closes nothing.
     if (line === null) return depth;
-    // `shellLines` has already dropped every comment.
-    const code = line.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, '""');
+    // `shellLines` has already dropped every comment and left each single-quoted string empty.
+    const code = line.replace(/"(?:[^"\\]|\\.)*"/g, '""');
     const start = depth;
     const opens = (code.match(OPENS) ?? []).length;
     const closes = (code.match(CLOSES) ?? []).length;
@@ -544,26 +540,27 @@ const ONE_WORD = /^(?:"(?:[^"\\]|\\.)*"|'[^']*'|\$\([^()]*\)|[^\s'"&|;<>()`])*\s
  */
 const initialisedAt = (lines: readonly string[], shell: readonly ShellLine[], depths: readonly number[], name: string): number | null => {
   const assignment = new RegExp(`^(?:export\\s+|readonly\\s+)?${name}=(.*)$`);
-  // The command on the line above, and the last non-blank command before this line.
-  let above: string | null = null;
-  let prior: string | undefined;
+  // Whether the command on the line above ends in the `\` that joins this line
+  // to it (`scanLine` keeps a `\` raw only there), and whether the last
+  // non-blank command before this line ends in `&&`, `||` or `|`.
+  let joinsNext = false;
+  let listGoesOn = false;
   for (const [index, line] of shell.entries()) {
-    const lineAbove = above;
-    const priorCommand = prior;
-    above = line.command;
-    if (line.command !== null && line.command.trim() !== '') prior = line.command;
+    const joined = joinsNext;
+    const listed = listGoesOn;
+    joinsNext = line.command?.endsWith('\\') ?? false;
+    if (line.command !== null && line.command.trim() !== '') listGoesOn = /(?:&&|\|\|?)\s*$/.test(line.command);
     // Heredoc data, and text inside a string an earlier line opened, assign
     // nothing.
     if (line.command === null || line.quoted) continue;
-    const match = assignment.exec(lines[index] ?? '');
+    const match = assignment.exec(lines[index] as string);
     if (match === null) continue;
     // `false && \` or `false &&` on the line above makes this line the end of
     // a conditional list: the assignment may never run.
     // After `&&`, `||` or `|` bash reads on past blank and comment lines
     // (`false &&`, a blank line, `X_SKIP=0`) and past a heredoc's lines
     // (`cat <<EOF &&`, its body, `EOF`); a `\` joins only the next one.
-    if (lineAbove !== null && /\\\s*$/.test(lineAbove)) continue;
-    if (priorCommand !== undefined && /(?:&&|\|\|?)\s*$/.test(priorCommand)) continue;
+    if (joined || listed) continue;
     const value = group(match, 1);
     // `X_SKIP="${X_SKIP:-0}"` takes the caller's value: a read, not a decision.
     if (new RegExp(`\\$\\{?${name}\\b`).test(value)) return null;
@@ -653,7 +650,8 @@ const scanLine = (line: string, open: OpenQuote): { code: string; heredocs: Here
     if (stretch.end === -1) return { code, heredocs, open };
     index = stretch.end + 1;
   }
-  while (index < line.length) {
+  // The empty string past the end stops the scan.
+  while (line.charAt(index) !== '') {
     const char = line.charAt(index);
     if (char === '\\') {
       // An escaped character is literal; a trailing `\` continues the line.
@@ -737,9 +735,10 @@ const shellLines = (lines: readonly string[]): ShellLine[] => {
  * quote takes `\` escapes; a quote left open runs to the end of the line.
  * `# Removed: ${{ env.CI_SKIP }}` documents a switch; it reads nothing.
  */
-const BEFORE_WORKFLOW_COMMENT = /^(?:"(?:[^"\\]|\\(?:[\s\S]|$))*(?:"|$)|'[^']*(?:'|$)|(?<=\S)#|[^"'#])*/;
+const BEFORE_WORKFLOW_COMMENT = /(?:"(?:[^"\\]|\\(?:[\s\S]|$))*(?:"|$)|'[^']*(?:'|$)|(?<=\S)#|[^"'#])*/;
 
-const withoutComment = (line: string): string => BEFORE_WORKFLOW_COMMENT.exec(line)?.[0] ?? line;
+// The pattern matches at the line's start, if only the empty string, so `exec` always finds its match there.
+const withoutComment = (line: string): string => (BEFORE_WORKFLOW_COMMENT.exec(line) as RegExpExecArray)[0];
 
 /**
  * A Python comment, or a string literal not glued to a word before it: its
@@ -750,7 +749,8 @@ const withoutComment = (line: string): string => BEFORE_WORKFLOW_COMMENT.exec(li
 const PYTHON_TOKEN =
   /#[^\n]*|(?<!\w)([rRbBuUfF]{0,2}(?:'''(?:\\[\s\S]|(?!''')[^\\])*(?:'''|)|"""(?:\\[\s\S]|(?!""")[^\\])*(?:"""|)|'(?:\\[\s\S]|[^'\\\n])*'?|"(?:\\[\s\S]|[^"\\\n])*"?))/g;
 /** `from os import a, b as c` or `from os import (…)`, in code with strings and comments emptied. */
-const FROM_OS_IMPORT = /\bfrom\s+os\s+import\s+(\([^)]*\)|[^\n#;]*)/g;
+// More blanks after `import` fall in the list, which each name's own pattern reads past.
+const FROM_OS_IMPORT = /\bfrom\s+os\s+import\s(\([^)]*\)|[^\n#;]*)/g;
 /** An f-string: its braces hold code. */
 const F_STRING = /^[rRbB]?[fF]/;
 
@@ -794,7 +794,7 @@ export const readerFor = (config: Config): Reader => {
   /** Is `name` an approved non-gate switch in `file`? */
   const notAGate = (name: string, file: string): boolean => allowed.get(name)?.has(file) ?? false;
   const report = (out: Violation[], file: string, line: number, name: string | null): void => {
-    if (name === null || !IS_SWITCH.test(name) || notAGate(name, file)) return;
+    if (name === null || name.search(IS_SWITCH) === -1 || notAGate(name, file)) return;
     out.push({ file, line, name });
   };
 
@@ -882,8 +882,11 @@ export const readerFor = (config: Config): Reader => {
   /** A name, in a module-level `name = …` of the environment, a copy of it, or getenv. */
   const ASSIGNED_ENVIRON = /^[ \t]*(\w+)\s*=\s*(?:(?:[\w.]*\.)?environb?(?:\.copy\(\s*\))?|dict\(\s*(?:[\w.]*\.)?environb?\s*\))\s*(?:#.*)?$/gm;
   const ASSIGNED_GETENV = /^[ \t]*(\w+)\s*=\s*(?:[\w.]*\.)?getenvb?\s*(?:#.*)?$/gm;
-  /** A local name that `environ`'s own patterns do not already cover. */
-  const local = (name: string): string | null => (/^(?:environb?|getenvb?)$/.test(name) ? null : String.raw`(?<![\w.])${name}\b`);
+  /** `environ as env` or `getenv as g`, one name of a `from os import` list; a comment after it reads nothing. */
+  const IMPORTED_AS = /^\s*(environb?|getenvb?)\s+as\s+(\w+)/;
+  /** The patterns for local names, each once, less those `environ`'s and `getenv`'s own patterns already cover. */
+  const holders = (names: readonly string[]): string[] =>
+    [...new Set(names)].filter((name) => !/^(?:environb?|getenvb?)$/.test(name)).map((name) => String.raw`(?<![\w.])${name}\b`);
 
   /**
    * The reads through other names for the environment or getenv: those
@@ -892,19 +895,18 @@ export const readerFor = (config: Config): Reader => {
    * `read = os.getenv`), read file-wide.
    */
   const pythonAliasReads = (code: string): RegExp[] => {
-    const environ: string[] = [];
-    const getenv: string[] = [];
-    for (const imported of code.matchAll(FROM_OS_IMPORT)) {
-      for (const name of group(imported, 1).replace(/[()]/g, '').split(',')) {
-        const alias = /^\s*(environb?|getenvb?)\s+as\s+(\w+)\s*$/.exec(name);
-        if (alias !== null) (group(alias, 1).startsWith('environ') ? environ : getenv).push(group(alias, 2));
-      }
-    }
-    for (const assigned of code.matchAll(ASSIGNED_ENVIRON)) environ.push(group(assigned, 1));
-    for (const assigned of code.matchAll(ASSIGNED_GETENV)) getenv.push(group(assigned, 1));
+    const aliases = [...code.matchAll(FROM_OS_IMPORT)]
+      .flatMap((imported) => group(imported, 1).replace(/[()]/g, '').split(','))
+      .flatMap((name) => {
+        const alias = IMPORTED_AS.exec(name);
+        return alias === null ? [] : [{ of: group(alias, 1), name: group(alias, 2) }];
+      });
+    const named = (of: string, assigned: RegExp): string[] => [
+      ...aliases.filter((alias) => alias.of.startsWith(of)).map((alias) => alias.name),
+      ...[...code.matchAll(assigned)].map((match) => group(match, 1)),
+    ];
     // A name imported and assigned too is read once.
-    const holders = (names: string[]): string[] => [...new Set(names)].map(local).filter((h) => h !== null);
-    return [...holders(environ).flatMap(mappingReads), ...holders(getenv).flatMap(callReads)];
+    return [...holders(named('environ', ASSIGNED_ENVIRON)).flatMap(mappingReads), ...holders(named('getenv', ASSIGNED_GETENV)).flatMap(callReads)];
   };
 
   /**
@@ -1020,7 +1022,7 @@ export const listFiles = (reads: Reads, mode: Mode): Listed[] =>
         .map((file) => ({ file, symlink: false }));
 
 /** Errors that mean the file is gone from the working tree (deleted, or a parent replaced by a file). */
-const GONE = ['ENOENT', 'ENOTDIR'];
+const GONE = new Set<string | undefined>(['ENOENT', 'ENOTDIR']);
 
 /**
  * A gate file's text: the index's for staged, the working tree's for tree
@@ -1038,11 +1040,11 @@ export const readGate = (reads: Reads, mode: Mode, { file, symlink }: Listed): s
   try {
     return reads.read(file);
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code ?? '';
+    const { code } = e as NodeJS.ErrnoException;
     if (code === 'ELOOP') throw new UnreadableGateFile(`${file} is a symlink in the working tree; its target is unchecked`);
     // Only a file that is not there is skipped: one under an unreadable
     // folder (EACCES), or a folder in its place (EISDIR), is unchecked.
-    if (GONE.includes(code)) return undefined;
+    if (GONE.has(code)) return undefined;
     throw new UnreadableGateFile(`${file}: ${(e as Error).message}`);
   }
 };

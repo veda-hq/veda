@@ -26,7 +26,7 @@ export const parsePnpm = (words: readonly string[]): PnpmInvocation => {
   let at = 1;
   const out: PnpmInvocation = { args: [] };
   for (let word = words[at]; word?.startsWith('-') === true; word = words[at]) {
-    const [name = '', inline] = word.split(/=(.*)/s);
+    const [name, inline] = word.split(/=(.*)/s) as [string, string?];
     if (PNPM_VALUE_OPTIONS.has(name)) {
       const value = inline ?? words[at + 1];
       if (value !== undefined && (name === '--filter' || name === '-F')) out.filter = value;

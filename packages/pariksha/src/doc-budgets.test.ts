@@ -23,6 +23,19 @@ describe('parsing', () => {
     assert.equal(dataRows(crlf).length, 1);
     assert.deepEqual(dataRows(''), []);
   });
+
+  it('reads a row however its cells are spaced, and only a whole row of two cells', () => {
+    assert.deepEqual(parseBudgets('|`a.md`|5|\n|  `b.md`  |  1,234  |'), [
+      { path: 'a.md', bytes: 5 },
+      { path: 'b.md', bytes: 1234 },
+    ]);
+    assert.deepEqual(parseBudgets('x | `a.md` | 5 |'), []);
+    assert.deepEqual(parseBudgets('| `a.md` | 5 | x |'), []);
+  });
+
+  it('takes as rows the lines that start with a bar, a `-` inside a cell included', () => {
+    assert.deepEqual(dataRows('| D | B |\n| - | - |\n| `a.md` | -1 |\n| `b.md` | 2\nnote |'), ['| `a.md` | -1 |', '| `b.md` | 2']);
+  });
 });
 
 describe('checkBudgets', () => {

@@ -26,17 +26,16 @@ export interface FlagSpec {
 /** argparse actions that take no value: the flag alone is the input. */
 const FLAG_ONLY_ACTIONS: readonly string[] = ['store_true', 'store_false', 'store_const', 'append_const', 'count', 'help', 'version'];
 
-/** The keyword arguments in an `add_argument` call's text, each value unquoted. A string is read whole, so `help="nargs=0"` is one argument. */
-const keywordArguments = (text: string): Map<string, string> => {
-  const out = new Map<string, string>();
-  for (const match of text.matchAll(/"[^"]*"|'[^']*'|(\w+)\s*=\s*("[^"]*"|'[^']*'|[^,"']*)/g)) {
-    if (match[1] !== undefined) out.set(match[1], String(match[2]).trim().replace(/^["']|["']$/g, ''));
-  }
-  return out;
-};
+/**
+ * The keyword arguments in an `add_argument` call's text, each value unquoted.
+ * A string is read whole, so `help="nargs=0"` is one argument; a string
+ * matches with no name, and nothing is looked up under none.
+ */
+const keywordArguments = (text: string): Map<string | undefined, string> =>
+  new Map(Array.from(text.matchAll(/"[^"]*"|'[^']*'|(\w+)\s*=\s*("[^"]*"|'[^']*'|[^,"']*)/g), ([, name, value]) => [name, String(value).trim().replace(/^["']|["']$/g, '')]));
 
 /** Words an argparse option with these keyword arguments takes. */
-const argparseValueCount = (kwargs: Map<string, string>): number => {
+const argparseValueCount = (kwargs: Map<string | undefined, string>): number => {
   const action = kwargs.get('action');
   if (action !== undefined && (FLAG_ONLY_ACTIONS.includes(action) || action.endsWith('BooleanOptionalAction'))) return 0;
   const nargs = kwargs.get('nargs');
@@ -93,9 +92,9 @@ export const flagSpec = (source: string, path: string): FlagSpec => {
     known: (flag) => {
       if (flag === '--help' || flag === '-h') return true;
       if (new RegExp(`${flag}(?![\\w-])`).test(source)) return true;
-      // node:util parseArgs declares `name: { type: … }` without dashes.
-      const key = flag.replace(/^--/, '');
-      return new RegExp(`(?:^|[\\s{,])['"]?${key}['"]?\\s*:\\s*\\{[^}]*\\btype\\s*:`).test(source);
+      // node:util parseArgs declares a long flag `name: { type: … }` without its dashes.
+      // A short flag's own spelling would have matched above.
+      return flag.startsWith('--') && new RegExp(`(?:^|[\\s{,])['"]?${flag.slice(2)}['"]?\\s*:\\s*\\{[^}]*\\btype\\s*:`).test(source);
     },
     values,
     required,

@@ -179,7 +179,8 @@ export const documentedCommands = (file: string, content: string, exemptMarker: 
   // A fence's lines are one shell session: a `cd` on its own line moves the
   // lines after it. The next fence starts from the root again.
   let fenceCwd = '';
-  for (let index = 0; index < lines.length; index += 1) {
+  // The walk ends at the first index past the last line.
+  for (let index = 0; ; index += 1) {
     const line = lines[index];
     if (line === undefined) break;
     if (line.fence === null) {
@@ -195,7 +196,8 @@ export const documentedCommands = (file: string, content: string, exemptMarker: 
       // continues nothing, so the comment goes before a trailing backslash is
       // read. That backslash joins the next line as bash joins it, and the
       // joined text is read for a comment again. A CRLF line's CR is its line break.
-      let text = stripComment(withoutCr(line.text).replace(/^\s*\$\s+/, ''));
+      // A prompt's `$ ` goes; any more blanks after it go with trimCode below.
+      let text = stripComment(withoutCr(line.text).replace(/^\s*\$\s/, ''));
       const start = line.number;
       // Only a line of the same fence continues it.
       for (let next = lines[index + 1]; continues(text) && next?.block === line.block; next = lines[index + 1]) {

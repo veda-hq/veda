@@ -58,6 +58,7 @@ describe('withoutAssignments', () => {
   it('drops leading NAME=value words only', () => {
     assert.deepEqual(withoutAssignments(['FOO=1', 'B_2=', 'x', 'C=3']), ['x', 'C=3']);
     assert.deepEqual(withoutAssignments(['foo=1', 'x']), ['foo=1', 'x']);
+    assert.deepEqual(withoutAssignments(['aB=1', 'x']), ['aB=1', 'x']);
     assert.deepEqual(withoutAssignments(['FOO=1']), []);
     assert.deepEqual(withoutAssignments([]), []);
   });
@@ -98,6 +99,7 @@ describe('npxCall', () => {
     [['npx', '-c', ''], undefined],
     [['npx', 'tsx', '-c', 'x'], undefined],
     [['npx', '--callx', 'tsx'], undefined],
+    [['npx', '--yes'], undefined],
     [['node', '-c', 'x'], undefined],
   ];
   for (const [words, call] of cases) {
@@ -312,6 +314,9 @@ describe('documentedCommands', () => {
     ['cd -Px a', '-Px'],
     ['cd -P', ''],
     ['cd --', ''],
+    ['cd a-P b', 'a-P'],
+    ['cd a.', 'a.'],
+    ['cd .a', '.a'],
   ];
   for (const [line, cwd] of cdCases) {
     it(`reads the directory of \`${line}\` past its options`, () => {
@@ -329,6 +334,52 @@ describe('documentedCommands', () => {
         [2, ['pnpm', 'a', '\\']],
         [5, ['tsx', 'b']],
         [8, ['pnpm', 'c', '\\']],
+      ],
+    );
+  });
+
+  it('takes an inline span as a command only when a runner starts it, however its cd and assignments are spaced', () => {
+    const spans = ['`echo pnpm a`', '`ls x`', '`cd  d && pnpm b`', '`cd d&& pnpm c`', '`cd d &&pnpm e`', '`FOO= pnpm f`', '`FOO=12  pnpm g`', '`python h.py`'];
+    assert.deepEqual(
+      commandsOf(`Run ${spans.join(' or ')}.\n`).map((c) => [c.words, c.cwd]),
+      [
+        [['pnpm', 'b'], 'd'],
+        [['pnpm', 'c'], 'd'],
+        [['pnpm', 'e'], 'd'],
+        [['pnpm', 'f'], ''],
+        [['pnpm', 'g'], ''],
+        [['python', 'h.py'], ''],
+      ],
+    );
+  });
+
+  it('takes a script path as the command only at the line’s start, after assignments however spaced', () => {
+    assert.deepEqual(
+      commandsOf('```bash\nFOO=12  scripts/a.ts --x\necho scripts/b.ts\nscripts/c.ts\n```\n').map((c) => c.words),
+      [['scripts/a.ts', '--x'], ['scripts/c.ts']],
+    );
+  });
+
+  it('joins a command continued over three lines', () => {
+    assert.deepEqual(
+      commandsOf('```bash\npnpm a \\\nb \\\nc\npnpm d\n```\n').map((c) => [c.line, c.words]),
+      [
+        [2, ['pnpm', 'a', 'b', 'c']],
+        [5, ['pnpm', 'd']],
+      ],
+    );
+  });
+
+  it('reads commands only in a shell fence', () => {
+    assert.deepEqual(commandsOf('```js\npnpm x\n```\n'), []);
+  });
+
+  it('drops a prompt only at the line’s start, however many blanks follow it', () => {
+    assert.deepEqual(
+      commandsOf('```bash\npnpm a $ b\nx$ pnpm c\n$  pnpm d\n```\n').map((c) => [c.line, c.words]),
+      [
+        [2, ['pnpm', 'a', '$', 'b']],
+        [4, ['pnpm', 'd']],
       ],
     );
   });

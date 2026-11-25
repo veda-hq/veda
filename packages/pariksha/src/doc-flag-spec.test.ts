@@ -156,6 +156,34 @@ describe('flagSpec', () => {
     assert.equal(flagSpec('--k {a}', 'x.ts').values('--k'), undefined);
   });
 
+  it('tells a shell script by its extension at the end, or none', () => {
+    assert.equal(flagSpec('x "$@"', 'bin.d/run').closed, false);
+    assert.equal(flagSpec('x "$@"', 'x.sh.ts').closed, true);
+  });
+
+  it('reads the forwarding forms however spaced', () => {
+    assert.equal(flagSpec('main(sys.argv[1:] )', 'x.py').closed, false);
+    assert.equal(flagSpec('parseArgs({ strict:false })', 'x.ts').closed, false);
+    assert.equal(flagSpec('parseArgs({ strict:  false })', 'x.ts').closed, false);
+  });
+
+  it('reads a subcommand parser and option aliases written without blanks', () => {
+    assert.deepEqual(flagSpec('subs = p.add_subparsers()\nrun=subs.add_parser("r")\nrun.add_argument("--t", required=True)', 'x.py').required, []);
+    assert.deepEqual(flagSpec('subs = p.add_subparsers()\nrun  =  subs.add_parser("r")\nrun.add_argument("--t", required=True)', 'x.py').required, []);
+    assert.equal(flagSpec('p.add_argument("-o","--out")', 'x.py').valueCount('--out'), 1);
+    assert.equal(flagSpec('p.add_argument("-o" ,  "--out")', 'x.py').valueCount('--out'), 1);
+  });
+
+  it('unquotes a value only at its ends', () => {
+    assert.equal(flagSpec('p.add_argument("--o", action="count\'")', 'x.py').valueCount('--o'), 1);
+    assert.equal(flagSpec('p.add_argument("--o", action=\'"count\')', 'x.py').valueCount('--o'), 1);
+  });
+
+  it('reads parseArgs keys for long flags only', () => {
+    assert.equal(flagSpec('const o = c ? {} : { type: 1 };', 'x.ts').known('-z'), false);
+    assert.equal(flagSpec('{ z: { type: "boolean" } }', 'x.ts').known('-q'), false);
+  });
+
   it('knows a flag only as a whole word', () => {
     assert.equal(flagSpec('--stage', 'x.ts').known('--stage'), true);
     assert.equal(flagSpec('--staged', 'x.ts').known('--stage'), false);

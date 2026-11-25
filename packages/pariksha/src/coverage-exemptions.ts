@@ -25,7 +25,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === 'string' && s !== '');
 
 const section = (raw: Record<string, unknown>, key: string, list: string): { configs: string[]; rules: string[] } => {
-  const v = raw[key] ?? { configs: [], [list]: [] };
+  const v = raw[key] ?? {};
   if (!isRecord(v)) throw new Error(`"${key}" must be an object`);
   const extra = Object.keys(v).find((k) => k !== 'configs' && k !== list);
   if (extra !== undefined) throw new Error(`${key}: unknown key "${extra}"`);
@@ -104,9 +104,9 @@ export const failureOf = (stderr: string, status: number | null): string => {
   const named = lines.find((l) => /^\w*Error\b/.test(l));
   if (named !== undefined) return named.trim();
   // `throw 'text'` prints Node's own frame, a caret line, then the value.
+  // With no caret line findIndex gives -1, and the first line after it is the first line.
   const caret = lines.findIndex((l) => /^\s*\^+\s*$/.test(l));
-  const thrown = caret >= 0 ? lines.slice(caret + 1).find((l) => /\S/.test(l)) : undefined;
-  return (thrown ?? lines.find((l) => /\S/.test(l)) ?? `exit ${String(status)}`).trim();
+  return (lines.slice(caret + 1).find((l) => /\S/.test(l)) ?? lines.find((l) => /\S/.test(l)) ?? `exit ${String(status)}`).trim();
 };
 
 /**
@@ -120,7 +120,9 @@ export const loadVitestExclude = (root: string, config: string, loader: string |
   const file = join(root, config);
   const args = [...(loader === undefined ? [] : ['--import', importArg(root, loader)]), LOADER_SCRIPT, file];
   const r = spawnSync(process.execPath, args, { cwd: dirname(file), encoding: 'utf8', timeout, maxBuffer: 1 << 26, stdio: ['ignore', 'pipe', 'pipe', 'pipe'] });
-  const answer = r.status === 0 && r.error === undefined ? (r.output[3] ?? '') : '';
+  // A child can exit 0 and still time out, while a process it started holds its pipes open.
+  // fd 3 is a pipe, so a run that exited 0 in time has its text.
+  const answer = r.status === 0 && r.error === undefined ? (r.output[3] as string) : '';
   if (answer === '') return { ok: false, error: r.error?.message ?? failureOf(r.stderr, r.status) };
   try {
     return { ok: true, exclude: JSON.parse(answer) as unknown };
@@ -130,9 +132,11 @@ export const loadVitestExclude = (root: string, config: string, loader: string |
 };
 
 /** Whether the loader itself loads, from the root; a missing one would otherwise be blamed on every config. */
-export const loaderFailure = (root: string, loader: string | undefined): string | undefined => {
+export const loaderFailure = (root: string, loader: string | undefined, timeout = 120_000): string | undefined => {
   if (loader === undefined) return undefined;
-  const r = spawnSync(process.execPath, ['--import', importArg(root, loader), '-e', ''], { cwd: root, encoding: 'utf8', timeout: 120_000 });
+  // With no script node runs its standard input, which spawnSync leaves empty: only the loader runs.
+  const r = spawnSync(process.execPath, ['--import', importArg(root, loader)], { cwd: root, encoding: 'utf8', timeout });
+  // A node that exits 0 and still times out left a process holding its pipes.
   return r.status === 0 && r.error === undefined ? undefined : `loader ${loader} does not load: ${r.error?.message ?? failureOf(r.stderr, r.status)}`;
 };
 
@@ -168,7 +172,8 @@ export const checkBuild = (ts: Ts, config: Config, root: string, configs: readon
   for (const file of configs) {
     const read = ts.readConfigFile(join(root, file), (p) => readFileSync(p, 'utf8'));
     if (read.error !== undefined) throw new Error(`${file}: ${ts.flattenDiagnosticMessageText(read.error.messageText, '\n')}`);
-    const include: unknown = (read.config as { include?: unknown } | undefined)?.include ?? [];
+    // readConfigFile gives an object config whenever it gives no error.
+    const include: unknown = (read.config as { include?: unknown }).include ?? [];
     if (!Array.isArray(include) || !include.every((e) => typeof e === 'string')) throw new Error(`${file}: "include" is not a list of strings`);
     for (const pattern of config.build.forbiddenIncludes) {
       if (include.some((entry: string) => entry.includes(pattern))) out.push({ file, message: `include brings test files into the build: ${pattern}` });

@@ -81,6 +81,8 @@ export const DEFAULT_CONFIG: Config = {
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === 'string');
+/** 0, 1, 2…: Number.isInteger is false for anything that is not a number. */
+const isWholeNumber = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0;
 
 const regex = (source: string, where: string): RegExp => {
   // An empty pattern matches every path: an exclusion would judge nothing.
@@ -136,7 +138,7 @@ export const parseConfig = (text: string): Config => {
     exclude = raw['exclude'].map((src, i) => regex(src, `exclude[${i}]`));
   }
   const maxHops = raw['maxHops'] ?? DEFAULT_CONFIG.maxHops;
-  if (typeof maxHops !== 'number' || !Number.isInteger(maxHops) || maxHops < 0) throw new Error('"maxHops" must be a whole number, 0 or more');
+  if (!isWholeNumber(maxHops)) throw new Error('"maxHops" must be a whole number, 0 or more');
   const hint = raw['hint'] ?? DEFAULT_CONFIG.hint;
   if (hint !== undefined && typeof hint !== 'string') throw new Error('"hint" must be a string');
 
@@ -159,7 +161,7 @@ const toPosix = (p: string): string => p.split(sep).join('/');
 /** Extensions a specifier may omit, or carry as its ESM-facing `.js` form. */
 const MODULE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs'];
 /** The call forms that load a module at runtime, by callee name. */
-const RUNTIME_LOADERS = new Set(['require', 'importActual', 'requireActual']);
+const RUNTIME_LOADERS: ReadonlySet<string | undefined> = new Set(['require', 'importActual', 'requireActual']);
 
 /**
  * Whether an import or export clause survives to runtime. `import type` is erased
@@ -190,15 +192,16 @@ export const moduleSpecifiers = (ts: Ts, source: string, fileName = 'file.tsx'):
   const parsed = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest);
   const found: string[] = [];
   const visit = (node: TS.Node): void => {
-    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
-      if (clauseReachesRuntime(ts, node)) found.push(node.moduleSpecifier.text);
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      // A local `export { z }` names no module.
+      if (node.moduleSpecifier !== undefined && ts.isStringLiteral(node.moduleSpecifier) && clauseReachesRuntime(ts, node)) found.push(node.moduleSpecifier.text);
     } else if (ts.isCallExpression(node)) {
       const [first] = node.arguments;
       const callee = node.expression;
       const name = ts.isPropertyAccessExpression(callee) ? callee.name.text : ts.isIdentifier(callee) ? callee.text : undefined;
       const isDynamicImport = callee.kind === ts.SyntaxKind.ImportKeyword;
       const specifier = first && (ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first)) ? first.text : undefined;
-      if (specifier !== undefined && (isDynamicImport || (name !== undefined && RUNTIME_LOADERS.has(name)))) found.push(specifier);
+      if (specifier !== undefined && (isDynamicImport || RUNTIME_LOADERS.has(name))) found.push(specifier);
     }
     ts.forEachChild(node, visit);
   };
@@ -226,10 +229,13 @@ export class ImportWalk {
   readonly #specifiers = new Map<string, string[]>();
   readonly #ts: Ts;
   readonly #config: Config;
+  readonly #isFile: (path: string) => boolean;
 
-  constructor(ts: Ts, config: Config) {
+  /** `isFileAt` answers whether a path is a file on disk; a caller may count what the walk asks of it. */
+  constructor(ts: Ts, config: Config, isFileAt: (path: string) => boolean = isFile) {
     this.#ts = ts;
     this.#config = config;
+    this.#isFile = isFileAt;
   }
 
   #specifiersOf(file: string): string[] {
@@ -256,6 +262,7 @@ export class ImportWalk {
   reaches(testFile: string, sourceFile: string): boolean {
     const target = stripModuleExtension(resolve(sourceFile));
     const start = resolve(testFile);
+    // Each file is walked once, so a cycle costs no more however many hops are allowed.
     const visited = new Set([start]);
     let frontier = [start];
     for (let hop = 0; hop <= this.#config.maxHops; hop++) {
@@ -265,7 +272,7 @@ export class ImportWalk {
           const resolved = this.#resolveSpecifier(specifier, file);
           if (resolved === undefined) continue;
           if (resolved === target) return true;
-          const onDisk = resolveToFile(resolved);
+          const onDisk = this.#resolveToFile(resolved);
           if (onDisk === undefined) continue;
           if (stripModuleExtension(onDisk) === target) return true;
           if (!visited.has(onDisk)) {
@@ -278,11 +285,13 @@ export class ImportWalk {
     }
     return false;
   }
-}
 
-/** The file an extensionless path names: itself with an extension, or its directory's index. */
-const resolveToFile = (extensionless: string): string | undefined =>
-  MODULE_EXTENSIONS.map((e) => `${extensionless}${e}`).find(isFile) ?? MODULE_EXTENSIONS.map((e) => join(extensionless, `index${e}`)).find(isFile);
+  /** The file an extensionless path names: itself with an extension, or its directory's index. */
+  #resolveToFile(extensionless: string): string | undefined {
+    const isFileAt = this.#isFile;
+    return MODULE_EXTENSIONS.map((e) => `${extensionless}${e}`).find(isFileAt) ?? MODULE_EXTENSIONS.map((e) => join(extensionless, `index${e}`)).find(isFileAt);
+  }
+}
 
 export interface Gap {
   readonly file: string;

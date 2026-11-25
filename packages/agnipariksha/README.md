@@ -218,3 +218,23 @@ flags, inline style values and colour tables. A repository whose own code has
 arid nodes writes its own ignorer and lists it beside this one, as in
 `ignorers: ['agnipariksha-arid-nodes', 'my-arid-nodes']`. Stryker skips a node
 if any listed ignorer says to.
+
+## Sandbox exclusions
+
+```js
+// stryker.config.mjs
+import { MUTATION_IGNORE_PATTERNS } from '@veda-hq/agnipariksha/sandbox-ignore';
+
+export default {
+  ignorePatterns: [...MUTATION_IGNORE_PATTERNS, 'my-cache'],
+};
+```
+
+Stryker copies the working tree into one sandbox per run.
+`MUTATION_IGNORE_PATTERNS` lists the trees that copy never needs: build output
+(`dist`, `build`, `.next`), `coverage`, `node_modules`, the native trees of a
+mobile app (`ios`, `android`), and Stryker's own `.stryker-tmp`, `reports` and
+`.tmp`. It is `RECOVERED_IGNORE_PATTERNS` (the first seven) followed by
+`SANDBOX_IGNORE_PATTERNS` (the last three). Each list is frozen: spread it into
+your own array and add what your tree needs. Like `arid-nodes`, it is plain
+JavaScript and ships no type declarations.

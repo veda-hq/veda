@@ -229,10 +229,13 @@ export class ImportWalk {
   readonly #specifiers = new Map<string, string[]>();
   readonly #ts: Ts;
   readonly #config: Config;
+  readonly #isFile: (path: string) => boolean;
 
-  constructor(ts: Ts, config: Config) {
+  /** `isFileAt` answers whether a path is a file on disk; a caller may count what the walk asks of it. */
+  constructor(ts: Ts, config: Config, isFileAt: (path: string) => boolean = isFile) {
     this.#ts = ts;
     this.#config = config;
+    this.#isFile = isFileAt;
   }
 
   #specifiersOf(file: string): string[] {
@@ -258,31 +261,37 @@ export class ImportWalk {
   /** Whether a test reaches its subject, directly or through up to maxHops modules it imports. */
   reaches(testFile: string, sourceFile: string): boolean {
     const target = stripModuleExtension(resolve(sourceFile));
-    // Each hop's files are a set: a cycle walks no file twice in one hop, so
-    // a hop costs at most every file once, and the hops are bounded.
-    let frontier = new Set([resolve(testFile)]);
+    const start = resolve(testFile);
+    // Each file is walked once, so a cycle costs no more however many hops are allowed.
+    const visited = new Set([start]);
+    let frontier = [start];
     for (let hop = 0; hop <= this.#config.maxHops; hop++) {
-      const next = new Set<string>();
+      const next: string[] = [];
       for (const file of frontier) {
         for (const specifier of this.#specifiersOf(file)) {
           const resolved = this.#resolveSpecifier(specifier, file);
           if (resolved === undefined) continue;
           if (resolved === target) return true;
-          const onDisk = resolveToFile(resolved);
+          const onDisk = this.#resolveToFile(resolved);
           if (onDisk === undefined) continue;
           if (stripModuleExtension(onDisk) === target) return true;
-          next.add(onDisk);
+          if (!visited.has(onDisk)) {
+            visited.add(onDisk);
+            next.push(onDisk);
+          }
         }
       }
       frontier = next;
     }
     return false;
   }
-}
 
-/** The file an extensionless path names: itself with an extension, or its directory's index. */
-const resolveToFile = (extensionless: string): string | undefined =>
-  MODULE_EXTENSIONS.map((e) => `${extensionless}${e}`).find(isFile) ?? MODULE_EXTENSIONS.map((e) => join(extensionless, `index${e}`)).find(isFile);
+  /** The file an extensionless path names: itself with an extension, or its directory's index. */
+  #resolveToFile(extensionless: string): string | undefined {
+    const isFileAt = this.#isFile;
+    return MODULE_EXTENSIONS.map((e) => `${extensionless}${e}`).find(isFileAt) ?? MODULE_EXTENSIONS.map((e) => join(extensionless, `index${e}`)).find(isFileAt);
+  }
+}
 
 export interface Gap {
   readonly file: string;

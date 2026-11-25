@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -458,6 +458,22 @@ describe('ImportWalk edges', () => {
     writeFileSync(join(root, 'src/s.test.ts'), '');
     assert.equal(walk.reaches(join(root, 'src/s.test.ts'), join(root, 'src/s.ts')), true);
     assert.equal(reaches(root, 'src/s.test.ts', 'src/s.ts'), false);
+  });
+
+  it('walks a cycle once, however many hops are allowed', () => {
+    const root = tree({ 'src/s.ts': '', 'src/c.test.ts': "import './a';", 'src/a.ts': "import './b';", 'src/b.ts': "import './a';\nimport './c.test';" });
+    const probes = (maxHops: number): number => {
+      let asked = 0;
+      const walk = new ImportWalk(ts, { ...DEFAULT_CONFIG, maxHops }, (path) => {
+        asked += 1;
+        return existsSync(path);
+      });
+      assert.equal(walk.reaches(join(root, 'src/c.test.ts'), join(root, 'src/s.ts')), false);
+      return asked;
+    };
+    // One probe each for a.ts and b.ts, then one for each of b's imports: a.ts again and c.test.ts, the way back to the test.
+    assert.equal(probes(2), 4);
+    assert.equal(probes(50), 4);
   });
 
   it('counts a suite that imports its subject by name, even before the subject exists', () => {

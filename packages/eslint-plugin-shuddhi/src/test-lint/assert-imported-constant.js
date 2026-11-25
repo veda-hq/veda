@@ -40,9 +40,9 @@ const SCRIPT_EXTENSION = /\.[cm]?[jt]sx?$/;
 /** The names the module under test may have, from the test file's path. */
 function subjectNames(filename) {
   // `split` yields one part at least, so `pop` always has one to give. The
-  // greedy `(.*)` already matches from the start, so the pattern needs no `^`.
+  // `^` holds the stem to the start: `.` stops at a line break.
   const base = filename.split(/[\\/]/).pop();
-  const match = /(.*)\.(test|spec)\.[cm]?[jt]sx?$/.exec(base);
+  const match = /^(.*)\.(test|spec)\.[cm]?[jt]sx?$/.exec(base);
   if (!match) return new Set();
   const stem = match[1];
   const names = new Set([stem]);

@@ -192,8 +192,9 @@ export function c05CandidateRules({
       return {
         AwaitExpression(node) {
           const ms = sleepDelay(node.argument, context);
-          // No fixed delay (null) or a tick (zero) is not above zero.
-          if (!(ms > 0)) return;
+          // A tick (zero) is no wait, and no fixed delay (null) is too:
+          // `null <= 0` holds. A NaN delay (`0 * 1e999`) is still reported.
+          if (ms <= 0) return;
           if (ms < POLL_CEILING_MS && isPolling(node)) return;
           context.report({
             node,

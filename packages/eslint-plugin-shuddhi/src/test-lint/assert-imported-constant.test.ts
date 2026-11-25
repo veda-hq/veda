@@ -178,6 +178,8 @@ describe('subjectNames', () => {
 
   it('names nothing for a file that is not a test', () => {
     assert.deepEqual(subjectNames('src/widget.test.tsv'), new Set());
+    // The stem runs from the start of the name, and stops at a line break.
+    assert.deepEqual(subjectNames('src/a\nwidget.test.ts'), new Set());
     assert.deepEqual(subjectNames('src/widget.ts'), new Set());
     assert.deepEqual(subjectNames('src/widget.test.md'), new Set());
     assert.deepEqual(subjectNames(''), new Set());

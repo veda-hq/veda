@@ -1711,6 +1711,15 @@ describe('no-fixed-sleep edges', () => {
     );
   });
 
+  it('reports a delay that is not a number (NaN) as a fixed wait', () => {
+    assert.deepEqual(
+      findings('no-fixed-sleep', `async function f() { await sleep(0 * 1e999); }`).map(
+        finding => finding.slice(0, 31),
+      ),
+      ['fixedSleep: A fixed NaN ms wait'],
+    );
+  });
+
   it('reads a loop outside the waiting function as no poll', () => {
     assert.deepEqual(
       ids(

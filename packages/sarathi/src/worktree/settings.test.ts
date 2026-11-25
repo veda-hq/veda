@@ -115,3 +115,49 @@ describe('worktree settings', () => {
     }
   });
 });
+
+describe('worktree settings, rule by rule', () => {
+  const refusal = (value: unknown): string => {
+    try {
+      parseSettings(value, 'f', '/r');
+    } catch (error) {
+      return String(error);
+    }
+    return 'accepted';
+  };
+
+  it('default to sarathi and the owner', () => {
+    assert.deepEqual(parseSettings(undefined, 'f', '/r'), { name: 'sarathi', owner: 'the owner' });
+  });
+
+  it('refuse a worktree value that is not an object, as a SettingsError naming the file', () => {
+    assert.equal(refusal(null), 'SettingsError: f: "worktree" must be an object');
+    assert.equal(refusal('acme'), 'SettingsError: f: "worktree" must be an object');
+    assert.equal(refusal(7), 'SettingsError: f: "worktree" must be an object');
+  });
+
+  it('name every unknown key, under the file and worktree', () => {
+    assert.equal(refusal({ extra: 1, more: 2 }), 'SettingsError: f worktree: unknown key "extra", "more"');
+  });
+
+  it('take name, owner and cloud check only as strings', () => {
+    assert.equal(refusal({ name: ['acme'] }), 'SettingsError: f worktree: "name" must be lowercase letters, digits and dashes, starting with a letter');
+    assert.equal(refusal({ owner: 5 }), 'SettingsError: f worktree: "owner" must be a name');
+    assert.equal(refusal({ owner: [' x'] }), 'SettingsError: f worktree: "owner" must be a name');
+    assert.equal(refusal({ cloudCheck: 5 }), 'SettingsError: f worktree: "cloudCheck" must be a path');
+  });
+
+  it('take a package path only whole: one scope, one package, then a file with no space', () => {
+    const message = 'SettingsError: f worktree: "services" must be a path from the project root, or @scope/package/file';
+    assert.equal(refusal({ services: '@acme/rules/a b' }), message);
+    assert.equal(refusal({ services: '@ /@acme/rules/a' }), message);
+  });
+
+  it('refuse a cleanup list with any entry outside the checkout', () => {
+    assert.equal(
+      refusal({ cleanup: { primaryBuilt: ['build', ''] } }),
+      'SettingsError: f worktree cleanup: "primaryBuilt" must be a list of paths inside the primary checkout',
+    );
+    assert.deepEqual(parseSettings({ cleanup: { primaryBuilt: ['build', 'out/a'] } }, 'f', '/r').cleanup?.primaryBuilt, ['build', 'out/a']);
+  });
+});

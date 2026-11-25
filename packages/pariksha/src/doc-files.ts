@@ -64,7 +64,8 @@ export const isFileAt = (base: string, path: string): boolean => {
  * `base`, as git names it.
  */
 export const selectDocs = (base: string, listed: string | undefined, include: RegExp): string[] => {
-  const paths = listed === undefined ? must(gitAt(base), ['ls-files', '-z']).split('\0').filter(Boolean) : entries(listed);
+  // The empty name after git's last NUL resolves to `base`, a folder, which isFileAt drops.
+  const paths = listed === undefined ? must(gitAt(base), ['ls-files', '-z']).split('\0') : entries(listed);
   return paths.filter((path) => isFileAt(base, path) && include.test(path));
 };
 

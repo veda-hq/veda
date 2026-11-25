@@ -40,6 +40,9 @@ describe('parseDocConfig', () => {
     const cases: Array<[string, RegExp]> = [
       ['nope', /not JSON/],
       ['"x"', /must be a JSON object/],
+      ['null', /must be a JSON object/],
+      ['[]', /must be a JSON object/],
+      ['{"guidance": ["a", 1]}', /"guidance" must be a list of lines/],
       ['{"exclude": []}', /unknown key "exclude"/],
       ['{"include": ""}', /"include" must be a non-empty regex string/],
       ['{"include": 1}', /"include" must be a non-empty regex string/],

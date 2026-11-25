@@ -49,7 +49,7 @@ const typeScriptStartedWithout = (words: readonly string[]): string | undefined 
   if (words[0] !== 'node') return script;
   const options = words.slice(1, at);
   const loader = options.some((word, index) => {
-    const [name = '', inline] = word.split(/=(.*)/s);
+    const [name, inline] = word.split(/=(.*)/s) as [string, string?];
     return STRIP_OPTIONS.has(name) || (LOADER_OPTIONS.has(name) && /^tsx(?:\/|$)/.test(String(inline ?? options[index + 1])));
   });
   return loader ? undefined : script;
@@ -154,7 +154,7 @@ export const findCommandProblems = (config: Config, context: CommandContext, fil
       }
       args.forEach((word, index) => {
         if (!FLAG.test(word)) return;
-        const [flag = '', inline] = word.split(/=(.*)/s);
+        const [flag, inline] = word.split(/=(.*)/s) as [string, string?];
         const allowed = spec.values(flag);
         const value = inline ?? args[index + 1];
         if (allowed !== undefined && value !== undefined && /^[\w.:/-]+$/.test(value) && !value.startsWith('-') && !allowed.has(value)) {

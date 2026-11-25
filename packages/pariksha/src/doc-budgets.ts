@@ -34,9 +34,10 @@ export const dataRows = (text: string): string[] =>
 
 /** Rows of the form "| `path` | 1,200 |". */
 export const parseBudgets = (text: string): Budget[] =>
-  [...text.matchAll(/^\|\s*`([^`]+)`\s*\|\s*([\d,]+)\s*\|$/gm)].map(([, path = '', bytes = '']) => ({
-    path,
-    bytes: Number(bytes.replaceAll(',', '')),
+  // Both groups take part in every match, so neither is ever undefined.
+  [...text.matchAll(/^\|\s*`([^`]+)`\s*\|\s*([\d,]+)\s*\|$/gm)].map(([, path, bytes]) => ({
+    path: path as string,
+    bytes: Number((bytes as string).replaceAll(',', '')),
   }));
 
 export interface Outcome {

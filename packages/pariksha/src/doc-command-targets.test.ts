@@ -95,6 +95,7 @@ describe('parsePnpm', () => {
   it('parses pnpm options before the script', () => {
     assert.deepEqual(parsePnpm(['pnpm', '--filter=@a/b', 'run', 'x', '--y']), { filter: '@a/b', script: 'x', args: ['--y'] });
     assert.deepEqual(parsePnpm(['pnpm', '-C', 'apps', 'exec', 'tsx', 'a.ts']).exec, ['tsx', 'a.ts']);
+    assert.deepEqual(parsePnpm(['pnpm', 'exec', 'tsx', 'a.ts']), { exec: ['tsx', 'a.ts'], args: [] });
   });
 
   it('parses every pnpm option that takes a value', () => {
@@ -216,6 +217,11 @@ describe('interpreterTarget', () => {
     assert.equal(interpreterTarget(['tsx'], only('x.ts')), undefined);
     assert.equal(interpreterTarget(['tsx', '--watch'], only('x.ts')), undefined);
     assert.equal(interpreterTarget(['tsx', 'y.ts'], only('x.ts')), undefined);
+    // No word is asked about when none follows.
+    assert.equal(
+      interpreterTarget(['tsx', '--watch'], () => 'any.ts'),
+      undefined,
+    );
   });
 
   it('hands the resolver the word as written', () => {

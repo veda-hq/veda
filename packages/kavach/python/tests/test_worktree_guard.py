@@ -3051,6 +3051,11 @@ class OtherSessionsWorktreeTest(GuardFixture):
                 return real(path, *args, **kwargs)
 
             with mock.patch.object(MODULE.Path, "resolve", resolve):
+                # In the head: its check skips the record.
+                self.assertEqual(MODULE.worktree_owners(self.theirs, HOST), MODULE.OwnerScan((STARTER,), 1))
+                # Past the head: the owner check after the parse skips it.
+                record = {"padding": "x" * (2 * MODULE.RECORD_HEAD), "sessionId": STRANGER, "cwd": looped, "isArchived": False}
+                (self.records / f"{STRANGER}.json").write_text(json.dumps(record), encoding="utf-8")
                 self.assertEqual(MODULE.worktree_owners(self.theirs, HOST), MODULE.OwnerScan((STARTER,), 1))
         # A symlinked record is refused on purpose, not counted.
         (self.records / f"{STRANGER}.json").unlink()

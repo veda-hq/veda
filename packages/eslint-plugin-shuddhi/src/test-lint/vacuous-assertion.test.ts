@@ -1057,3 +1057,164 @@ describe('decision pins A: vacuous helpers', () => {
       ), ['typeFixed']);
   });
 });
+
+/** no-vacuous-assertion's messageIds for one test body. */
+const vacuousIn = (body: string): string[] =>
+  messageIds('no-vacuous-assertion', `it('a', () => { ${body} });`);
+
+describe('no-vacuous-assertion: decisions the mutation sweep pinned', () => {
+  it('holds a template or object static only when every part is', () => {
+    assert.deepEqual(vacuousIn("expect(`${1}${x}`).toBe('1');"), []);
+    assert.deepEqual(vacuousIn("expect(`${x}${1}`).toBe('1');"), []);
+    assert.deepEqual(vacuousIn('expect({ a: 1, b: x }).toEqual({ a: 1 });'), []);
+    assert.deepEqual(vacuousIn('expect({ a: x, b: 1 }).toEqual({ a: 1 });'), []);
+    assert.deepEqual(vacuousIn('expect({ a: 1, ...x }).toEqual({ a: 1 });'), []);
+    assert.deepEqual(vacuousIn('expect([1, , 2]).toEqual([1]);'), []);
+  });
+
+  it('types only a unary + or -, not ~ or delete', () => {
+    assert.deepEqual(vacuousIn("expect(typeof ~1).toBe('number', note);"), []);
+    assert.deepEqual(vacuousIn("expect(typeof delete x.a).toBe('boolean');"), []);
+    assert.deepEqual(vacuousIn("expect(typeof -1).toBe('number', note);"), ['typeFixed']);
+    assert.deepEqual(vacuousIn("expect(typeof +1).toBe('number', note);"), ['typeFixed']);
+    assert.deepEqual(vacuousIn("expect(typeof -1).toBe('bigint', note);"), []);
+    assert.deepEqual(vacuousIn("expect(typeof +1n).toBe('bigint', note);"), []);
+    assert.deepEqual(vacuousIn("expect(typeof null).toBe('object', note);"), ['typeFixed']);
+  });
+
+  it('types a Math call only on the global Math', () => {
+    assert.deepEqual(vacuousIn("expect(typeof Math.max(a)).toBe('number');"), ['typeFixed']);
+    assert.deepEqual(vacuousIn("expect(typeof this.Math.max(a)).toBe('number');"), []);
+    assert.deepEqual(vacuousIn("expect(typeof make().max(a)).toBe('number');"), []);
+  });
+
+  it('compares typeof only with a literal type it fixes', () => {
+    assert.deepEqual(vacuousIn('expect(typeof xs.some(f)).toBe();'), []);
+    assert.deepEqual(vacuousIn('expect(typeof value).toBe(null);'), []);
+    assert.deepEqual(vacuousIn('expect(typeof xs.some(f)).toBe(null);'), []);
+  });
+
+  it('reads a presence check under not.toBeUndefined', () => {
+    assert.deepEqual(vacuousIn('expect(new Foo()).not.toBeUndefined();'), ['typeFixed']);
+    assert.deepEqual(vacuousIn('expect(new Foo()).not.toBeNull();'), ['typeFixed']);
+  });
+
+  it('takes a count as a whole name, not a prefix of one', () => {
+    assert.deepEqual(vacuousIn('expect(x.itemCountry).toBeGreaterThanOrEqual(0);'), []);
+    assert.deepEqual(vacuousIn('expect(x.itemSized).toBeGreaterThanOrEqual(0);'), []);
+    assert.deepEqual(vacuousIn('expect(x.item_counter).toBeGreaterThanOrEqual(0);'), []);
+    assert.deepEqual(vacuousIn('expect(x.item_size).toBeGreaterThanOrEqual(0);'), ['nonNegative']);
+    assert.deepEqual(vacuousIn('expect(x.itemLength).toBeGreaterThanOrEqual(0);'), ['nonNegative']);
+    assert.deepEqual(vacuousIn('expect(q.recount()).toBeGreaterThanOrEqual(0);'), []);
+    assert.deepEqual(vacuousIn('expect(q.counter()).toBeGreaterThanOrEqual(0);'), []);
+    assert.deepEqual(vacuousIn('expect(-count).toBeGreaterThanOrEqual(0);'), []);
+  });
+
+  it('reads `>= 0` as never negative only on a count', () => {
+    assert.deepEqual(vacuousIn('expect(errors.length >= 0).toBe(true);'), ['nonNegative']);
+    assert.deepEqual(vacuousIn('expect(errors.length > 0).toBe(true);'), []);
+    assert.deepEqual(vacuousIn('expect(errors.length >= +0).toBe(true);'), []);
+  });
+
+  it('proves a receiver non-empty with matchers that take no argument', () => {
+    const every = (proof: string): string[] =>
+      vacuousIn(`${proof} expect(rows.every(f)).toBe(true);`);
+    assert.deepEqual(every('expect(rows).not.toEqual();'), ['vacuousEvery']);
+    assert.deepEqual(every('expect(rows.length).toBeGreaterThan();'), ['vacuousEvery']);
+    assert.deepEqual(every('expect(rows.length).toBeGreaterThanOrEqual();'), ['vacuousEvery']);
+    assert.deepEqual(every('expect(rows.some(f)).toBe();'), ['vacuousEvery']);
+    assert.deepEqual(every('expect(rows.some(f)).toEqual(true);'), []);
+    assert.deepEqual(every('expect(rows.length).toStrictEqual(0);'), ['vacuousEvery']);
+    assert.deepEqual(every('expect(rows.length).toStrictEqual(x);'), []);
+    assert.deepEqual(every('expect(rows.size).toBeGreaterThan(0);'), []);
+    assert.deepEqual(every('expect(rows.count).toBeGreaterThan(0);'), ['vacuousEvery']);
+    assert.deepEqual(every('expect(size(rows)).toBeGreaterThan(0);'), ['vacuousEvery']);
+  });
+
+  it('proves a receiver non-empty only through a const derived from it', () => {
+    const every = (proof: string): string[] =>
+      vacuousIn(`${proof} expect(rows.every(f)).toBe(true);`);
+    assert.deepEqual(every('const ids = rows.map(f); expect(ids).toEqual([1]);'), []);
+    assert.deepEqual(every('const ids = other; expect(ids).toEqual([1]);'), ['vacuousEvery']);
+    assert.deepEqual(every('expect(rows.map(f)).toEqual([1]);'), []);
+    assert.deepEqual(every('expect(ids).toEqual([1]);'), ['vacuousEvery']);
+  });
+
+  it('proves a marker present with matchers that take no argument', () => {
+    const order = (proof: string): string[] =>
+      vacuousIn(`${proof} expect(r.indexOf('A')).toBeLessThan(r.indexOf('B'));`);
+    assert.deepEqual(order("expect(r.indexOf('A')).toBeGreaterThan();"), ['unguardedOrder']);
+    assert.deepEqual(order("expect(r.indexOf('A')).toBeGreaterThanOrEqual();"), [
+      'unguardedOrder',
+    ]);
+    assert.deepEqual(order("expect(r.includes('A')).toBe();"), ['unguardedOrder']);
+    assert.deepEqual(order("expect(r.includes('A')).toEqual(true);"), []);
+    assert.deepEqual(order("expect(r).toContain('A', x);"), []);
+  });
+
+  it('needs the proof and the marker to name the same argument', () => {
+    const empty = (proof: string): string[] =>
+      vacuousIn(`${proof} expect(r.indexOf()).toBeLessThan(r.indexOf('B'));`);
+    assert.deepEqual(empty('expect(r).toContain();'), ['unguardedOrder']);
+    assert.deepEqual(empty('expect(r.includes()).toBe(true);'), ['unguardedOrder']);
+    assert.deepEqual(empty("expect(r.includes('A')).toBe(true);"), ['unguardedOrder']);
+  });
+
+  it('checks an ordering only when its lower side is an index', () => {
+    assert.deepEqual(vacuousIn("expect(x).toBeLessThan(r.indexOf('A'));"), []);
+    assert.deepEqual(vacuousIn("expect(r.indexOf('A')).toBeGreaterThan(x);"), []);
+    assert.deepEqual(vacuousIn("expect(r.indexOf('A')).toBeLessThan(x);"), ['unguardedOrder']);
+  });
+
+  it('takes the proof only from the same test', () => {
+    assert.deepEqual(
+      messageIds(
+        'no-vacuous-assertion',
+        `it('a', () => { expect(rows.length).toBeGreaterThan(0); }); it('b', () => { expect(rows.every(f)).toBe(true); });`,
+      ),
+      ['vacuousEvery'],
+    );
+    assert.deepEqual(
+      messageIds(
+        'no-vacuous-assertion',
+        `it('a', () => { expect(r).toContain('A'); }); it('b', () => { expect(r.indexOf('A')).toBeLessThan(r.indexOf('B')); });`,
+      ),
+      ['unguardedOrder'],
+    );
+    assert.deepEqual(
+      messageIds(
+        'no-vacuous-assertion',
+        `it('a', () => { expect(d.getTime()).toBe(1); }); it('b', () => { const d = parse(raw); expect(d).toBeInstanceOf(Date); });`,
+      ),
+      ['soleInstanceOf'],
+    );
+  });
+
+  it('reports a sole Date check once, and none beside a construction', () => {
+    assert.deepEqual(vacuousIn('expect(new Date(x)).toBeInstanceOf(Date);'), ['construction']);
+    assert.deepEqual(
+      vacuousIn('const d = parse(raw); expect(d).toBeInstanceOf(Date);'),
+      ['soleInstanceOf'],
+    );
+    assert.deepEqual(
+      vacuousIn('expect(parse(raw)).toBeInstanceOf(Date); expect(parse(raw)).toBeInstanceOf(Date);'),
+      ['duplicate'],
+    );
+  });
+
+  it('reads a negated or Boolean-wrapped subject for `||`', () => {
+    assert.deepEqual(vacuousIn('expect(!(a || b)).toBe(true);'), ['orInSubject']);
+    assert.deepEqual(vacuousIn('expect(Boolean(!(a || b))).toBe(true);'), ['orInSubject']);
+    assert.deepEqual(vacuousIn('expect(a ||= b).toBe(true);'), []);
+    assert.deepEqual(vacuousIn('expect(new Boolean(a || b)).toEqual(x);'), []);
+    assert.deepEqual(vacuousIn('expect(a | b).toBe(1);'), []);
+    assert.deepEqual(vacuousIn('expect(make()(a || b)).toBe(true);'), []);
+  });
+
+  it('repeats a custom matcher that only mentions toThrow', () => {
+    assert.deepEqual(vacuousIn('expect(run).customtoThrow(); expect(run).customtoThrow();'), [
+      'duplicate',
+    ]);
+    assert.deepEqual(vacuousIn('expect(run).toThrowError(); expect(run).toThrowError();'), []);
+  });
+});

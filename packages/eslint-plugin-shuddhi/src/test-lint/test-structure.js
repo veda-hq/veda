@@ -65,14 +65,13 @@ function identifiersIn(node, visitorKeys, found = []) {
   return found;
 }
 
-/** `vi.x(...)` / `jest.x(...)`. */
-function timerCall(node, method) {
+/** Is `call` a `vi.x(...)` / `jest.x(...)` call? */
+function timerCall(call, method) {
+  // Only an Identifier object has a `name`.
   return (
-    node.type === 'CallExpression' &&
-    node.callee.type === 'MemberExpression' &&
-    node.callee.object.type === 'Identifier' &&
-    ['vi', 'jest'].includes(node.callee.object.name) &&
-    propertyName(node.callee) === method
+    call.callee.type === 'MemberExpression' &&
+    ['vi', 'jest'].includes(call.callee.object.name) &&
+    propertyName(call.callee) === method
   );
 }
 
@@ -121,7 +120,8 @@ const fakeTimersRestored = {
   },
   create(context) {
     const fakes = [];
-    const finallyRestores = [];
+    /** The functions (null: module scope) that restore in a `finally`. */
+    const finallyRestores = new Set();
     // Each teardown restore covers the block that registers it, not the
     // file; an `afterAll` runs once after the block, so it covers a fake made
     // outside any test (`beforeAll`, `beforeEach`), never one a test made.
@@ -158,7 +158,7 @@ const fakeTimersRestored = {
             perTest: teardown.owner?.name !== 'afterAll',
           });
         }
-        if (inFinally(node)) finallyRestores.push(chain[0]?.fn ?? null);
+        if (inFinally(node)) finallyRestores.add(chain[0]?.fn ?? null);
       },
       'Program:exit'() {
         for (const fake of fakes) {
@@ -176,7 +176,7 @@ const fakeTimersRestored = {
               helper ||
               (within(fake, restore.block) && (restore.perTest || !inTest)),
           );
-          if (!hooked && !finallyRestores.includes(fn)) {
+          if (!hooked && !finallyRestores.has(fn)) {
             context.report({ node: fake, messageId: 'leak' });
           }
         }
@@ -188,10 +188,10 @@ const fakeTimersRestored = {
 /** `vi.hoisted(...)`, possibly awaited. */
 function isHoisted(init) {
   const value = unwrap(init?.type === 'AwaitExpression' ? init.argument : init);
+  // Only an Identifier object has a `name`.
   return (
     value?.type === 'CallExpression' &&
     value.callee.type === 'MemberExpression' &&
-    value.callee.object.type === 'Identifier' &&
     value.callee.object.name === 'vi' &&
     propertyName(value.callee) === 'hoisted'
   );
@@ -214,9 +214,9 @@ const mockFactoryHoisted = {
     return {
       CallExpression(node) {
         const callee = node.callee;
+        // Only an Identifier object has a `name`.
         if (
           callee.type !== 'MemberExpression' ||
-          callee.object.type !== 'Identifier' ||
           callee.object.name !== 'vi' ||
           propertyName(callee) !== 'mock'
         ) {
@@ -311,8 +311,9 @@ function renderCell(node, token) {
   if (value.type === 'Literal' && !value.regex) raw = value.value;
   else if (value.type === 'TemplateLiteral' && value.expressions.length === 0) {
     raw = value.quasis[0].value.cooked;
-  } else if (value.type === 'Identifier' && value.name === 'undefined')
-    raw = undefined;
+  }
+  // Only an Identifier has a `name`.
+  else if (value.name === 'undefined') raw = undefined;
   else return null;
   if (typeof raw !== 'string') return String(raw);
   if (['%d', '%i', '%f'].includes(token)) {
@@ -367,7 +368,7 @@ const eachTitleUnique = {
         const positional = placeholders.filter(
           p => !['%%', '%#', '%$'].includes(p),
         );
-        const dollars = [...title.matchAll(DOLLAR)].map(match => match[1]);
+        const dollars = title.match(DOLLAR) ?? [];
         if (
           rows.length >= 2 &&
           positional.length === 0 &&
@@ -457,7 +458,8 @@ const noCollectionTimeSkipState = {
         )) {
           const variable = variableOf(identifier, context);
           const def = variable?.defs[0];
-          if (!def || def.type !== 'Variable' || def.parent?.kind === 'const')
+          // A Variable def always has its declaration as `parent`.
+          if (!def || def.type !== 'Variable' || def.parent.kind === 'const')
             continue;
           const setInHook = variable.references.some(
             reference =>
@@ -494,11 +496,14 @@ const IO_MODULES = new Set([
 /** Probes that cannot throw: reading them at collection time is harmless. */
 const NON_THROWING_IO = new Set(['existsSync']);
 
-/** The root identifier of `a.b.c`. */
-function rootIdentifier(node) {
+/**
+ * The root object of `a.b.c`: `a`. Callers read its `name`, which only an
+ * Identifier root has.
+ */
+function rootObject(node) {
   let value = unwrap(node);
-  while (value?.type === 'MemberExpression') value = unwrap(value.object);
-  return value?.type === 'Identifier' ? value : null;
+  while (value.type === 'MemberExpression') value = unwrap(value.object);
+  return value;
 }
 
 const noCollectionTimeIo = {
@@ -537,9 +542,10 @@ const noCollectionTimeIo = {
         let name = null;
         if (callee.type === 'Identifier') {
           name = named.get(callee.name);
-        } else if (callee.type === 'MemberExpression') {
-          const root = rootIdentifier(callee);
-          if (root && namespaces.has(root.name)) name = propertyName(callee);
+        } else if (namespaces.has(rootObject(callee).name)) {
+          // A root other than an Identifier has no `name`, so any callee here
+          // is a member, whose propertyName is the function's.
+          name = propertyName(callee);
         }
         if (!name || NON_THROWING_IO.has(name)) return;
         const chain = enclosingFunctions(node, context);
@@ -553,19 +559,19 @@ const noCollectionTimeIo = {
 
 const SLICE_METHODS = new Set(['slice', 'substring', 'substr']);
 
-/** The leaves of `a + b - c`. */
-function arithmeticLeaves(node, leaves = []) {
+/** The leaves of `a + b - c`. A unary `-x` is one leaf. */
+function arithmeticLeaves(node) {
   const value = unwrap(node);
   if (
-    value?.type === 'BinaryExpression' &&
+    value.type === 'BinaryExpression' &&
     ['+', '-'].includes(value.operator)
   ) {
-    arithmeticLeaves(value.left, leaves);
-    arithmeticLeaves(value.right, leaves);
-  } else if (value) {
-    leaves.push(value);
+    return [
+      ...arithmeticLeaves(value.left),
+      ...arithmeticLeaves(value.right),
+    ];
   }
-  return leaves;
+  return [value];
 }
 
 /**
@@ -587,14 +593,15 @@ function isDiscarded(node) {
  */
 function isGuardUse(identifier) {
   const parent = identifier.parent;
-  if (parent.type === 'BinaryExpression' && COMPARISONS.has(parent.operator))
-    return !isDiscarded(parent);
+  // Only a BinaryExpression has a comparison operator.
+  if (COMPARISONS.has(parent.operator)) return !isDiscarded(parent);
+  // Only an Identifier callee has a `name`.
   if (
     parent.type === 'CallExpression' &&
     parent.arguments[0] === identifier &&
-    ((parent.callee.type === 'Identifier' && parent.callee.name === 'expect') ||
+    (parent.callee.name === 'expect' ||
       (parent.callee.type === 'MemberExpression' &&
-        rootIdentifier(parent.callee)?.name === 'Math'))
+        rootObject(parent.callee).name === 'Math'))
   ) {
     return true;
   }
@@ -651,18 +658,17 @@ const guardedMarkerSlice = {
 
     /** `expect(R).toContain(M)` or `expect(R.includes(M)).toBe(true)`. */
     const provesMarker = (found, receiver, marker) => {
-      if (!found.subject || found.negated || !found.args[0]) {
-        return false;
-      }
+      const { subject, matcher, negated } = found;
+      const [expected] = found.args;
+      if (!subject || negated || !expected) return false;
       if (
-        textOf(found.subject, context) === receiver &&
-        ['toContain', 'toMatch'].includes(found.matcher)
+        textOf(subject, context) === receiver &&
+        ['toContain', 'toMatch'].includes(matcher)
       ) {
-        return textOf(found.args[0], context) === marker;
+        return textOf(expected, context) === marker;
       }
-      const subject = found.subject;
+      // calledMethod is null for anything but a call.
       return (
-        subject.type === 'CallExpression' &&
         calledMethod(subject) === 'includes' &&
         textOf(unwrap(subject.callee).object, context) === receiver &&
         subject.arguments[0] !== undefined &&
@@ -681,10 +687,11 @@ const guardedMarkerSlice = {
         }
         const method = calledMethod(node);
         if (method === 'at') {
+          // A method call's callee is a member, so it has an object;
+          // calledMethod is null for anything but a call.
           const object = unwrap(unwrap(node.callee).object);
           const [index] = node.arguments;
           if (
-            object?.type === 'CallExpression' &&
             calledMethod(object) === 'split' &&
             index &&
             !isNumber(unwrap(index), 0)
@@ -701,11 +708,11 @@ const guardedMarkerSlice = {
               markerUse(node, leaf, 'inlineIndex');
               return;
             }
-            if (leaf.type !== 'Identifier') continue;
+            // constInit is null for anything but a const's name, and
+            // calledMethod for anything but a call.
             const init = constInit(leaf, context);
             if (
               !init ||
-              init.type !== 'CallExpression' ||
               !INDEX_METHODS.has(calledMethod(init)) ||
               !isMarker(init.arguments[0])
             ) {
@@ -729,19 +736,17 @@ const guardedMarkerSlice = {
         }
       },
       MemberExpression(node) {
-        // Only a Literal property has a numeric value, checked next.
-        if (!node.computed) return;
+        // Only a Literal property has a `value`, and a Literal property is
+        // always computed (`x[1]`).
         if (
           typeof node.property.value !== 'number' ||
           node.property.value < 1
         ) {
           return;
         }
+        // calledMethod is null for anything but a call.
         const object = unwrap(node.object);
-        if (
-          object?.type === 'CallExpression' &&
-          calledMethod(object) === 'split'
-        ) {
+        if (calledMethod(object) === 'split') {
           markerUse(node, object, 'splitIndex');
         }
       },
@@ -781,16 +786,16 @@ const resetSharedLet = {
         const parent = node.parent;
         const shared =
           parent.type === 'Program' ||
-          // Only a function is a registration's callback, so ownerOf is null
-          // for any other block parent.
-          (parent.type === 'BlockStatement' &&
-            ownerOf(parent.parent, context)?.kind === 'suite');
+          // Only a function is a registration's callback, and a declaration
+          // sits in a function only as a statement of its body block, so
+          // ownerOf is null unless `parent` is a suite callback's body.
+          ownerOf(parent.parent, context)?.kind === 'suite';
         if (!shared) return;
         for (const declarator of node.declarations) {
           if (declarator.id.type !== 'Identifier') continue;
+          // A plain name declares exactly one variable.
           const [variable] =
             context.sourceCode.getDeclaredVariables(declarator);
-          if (!variable) continue;
           const writes = variable.references.filter(
             reference =>
               reference.isWrite() && reference.identifier !== declarator.id,
@@ -831,8 +836,9 @@ const resetSharedLet = {
 
 /** A literal `true`, directly or through a `const`. */
 function isTrueLiteral(node, context) {
+  // `node` is a property's value, always there.
   let value = unwrap(node);
-  if (value?.type === 'Identifier') value = constInit(value, context);
+  if (value.type === 'Identifier') value = constInit(value, context);
   return value?.type === 'Literal' && value.value === true;
 }
 
@@ -896,10 +902,8 @@ const hermeticConfig = {
     const [{ helperModule }] = context.options;
     return {
       NewExpression(node) {
-        if (
-          node.callee.type === 'Identifier' &&
-          node.callee.name === 'ConfigService'
-        ) {
+        // Only an Identifier callee has a `name`.
+        if (node.callee.name === 'ConfigService') {
           context.report({
             node,
             messageId: 'configService',
@@ -908,10 +912,10 @@ const hermeticConfig = {
         }
       },
       CallExpression(node) {
+        // propertyName is null for anything but a member.
         const callee = node.callee;
         if (
-          callee.type !== 'MemberExpression' ||
-          rootIdentifier(callee)?.name !== 'ConfigModule' ||
+          rootObject(callee).name !== 'ConfigModule' ||
           propertyName(callee) !== 'forRoot'
         ) {
           return;
@@ -946,12 +950,13 @@ const e2eUsesSupertest = {
     let touchesApp = false;
     return {
       ImportDeclaration(node) {
+        // An import's source is always a string literal.
         const source = node.source.value;
-        if (typeof source !== 'string') return;
         if (source === 'supertest') usesSupertest = true;
+        // A relative source starts with `.`, so `src` follows a `/` in it.
         if (
           source.startsWith('@nestjs/') ||
-          (source.startsWith('.') && /(^|\/)src(\/|$)/.test(source))
+          (source.startsWith('.') && /\/src(\/|$)/.test(source))
         ) {
           touchesApp = true;
         }
@@ -987,7 +992,7 @@ const noVoidAsyncIife = {
       UnaryExpression(node) {
         if (node.operator !== 'void') return;
         const call = unwrap(node.argument);
-        if (call?.type !== 'CallExpression') return;
+        if (call.type !== 'CallExpression') return;
         const callee = unwrap(call.callee);
         if (isFunction(callee) && callee.async) {
           context.report({ node, messageId: 'voidIife' });
@@ -1014,21 +1019,12 @@ const DEFAULT_TOP_DIRS = [
   '.github',
 ];
 
-const pathLinePatterns = new Map();
-
-/** `dir/...:n` for any of `topDirs`, built once per list. */
+/** `dir/...:n` for any of `topDirs`, built once per linted file. */
 function pathLinePattern(topDirs) {
-  const key = JSON.stringify(topDirs);
-  if (pathLinePatterns.has(key)) return pathLinePatterns.get(key);
   const top = `(?:${topDirs
     .map(dir => dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     .join('|')})`;
-  const pattern = new RegExp(
-    `(?:^|[^\\w./-])(${top}/[\\w./-]+):(\\d+)\\b`,
-    'g',
-  );
-  pathLinePatterns.set(key, pattern);
-  return pattern;
+  return new RegExp(`(?:^|[^\\w./-])(${top}/[\\w./-]+):(\\d+)\\b`, 'g');
 }
 
 const repoRoots = new Map();

@@ -385,3 +385,71 @@ describe('the config’s nested commands', () => {
     assert.deepEqual(commands(fence('pnpm exec tsx scripts/gate.ts bun --bogus'), {}, testConfig({ commands: { nested: ['bun'] } })), []);
   });
 });
+
+describe('what a script reads', () => {
+  const at = (lines: string[], extra: Record<string, string> = {}): Array<[number, string]> => commands(fence(...lines), extra).map((p) => [p.line, p.reason]);
+
+  it('reads the imports of a JS or TS module however written, and only of one', () => {
+    const modules = {
+      'scripts/sub/mod.mts': "import { a } from  '../a';\nimport { d } from './lib.js/d.js';\nz",
+      'scripts/a.ts': 'a // --a1',
+      'scripts/sub/lib.js/d.ts': 'd // --d1',
+      'scripts/wrap.js.sh': "echo --known\n# from './sh.ts'\n",
+      'scripts/sh.ts': '// --s1',
+    };
+    assert.deepEqual(at(['pnpm exec tsx scripts/sub/mod.mts --a1 --d1', 'bash scripts/wrap.js.sh --known --s1'], modules), [[4, '`--s1` is not a flag of `scripts/wrap.js.sh` — the script never reads it']]);
+  });
+
+  it('reads each script once, however many commands run it', () => {
+    const files = new Map([
+      ['package.json', MANIFEST],
+      ['scripts/gate.ts', GATE_SOURCE],
+      [XML, fence('tsx scripts/gate.ts --staged', 'tsx scripts/gate.ts --mode fast')],
+    ]);
+    const reads: string[] = [];
+    const read = (path: string): string | undefined => {
+      reads.push(path);
+      return files.get(path);
+    };
+    assert.deepEqual(findCommandProblems(CONFIG, { read, exists: (path) => files.has(path), ...scriptBodies(CONFIG.scripts.manifests, read) }, [XML]), []);
+    assert.equal(reads.filter((path) => path === 'scripts/gate.ts').length, 1);
+  });
+
+  it('runs no package script whose folder it does not know', () => {
+    const doc = fence('pnpm gate --bogus');
+    const read = (path: string): string | undefined => (path === XML ? doc : path === 'scripts/gate.ts' ? GATE_SOURCE : undefined);
+    const scripts = new Map([['.', new Map([['gate', 'tsx scripts/gate.ts']])]]);
+    assert.deepEqual(findCommandProblems(CONFIG, { read, exists: (path) => path === 'scripts/gate.ts', scripts, scopeDirs: new Map() }, [XML]), []);
+  });
+
+  it('reads flags as words that start with `--`, and a misplaced filter as one that starts with it', () => {
+    assert.deepEqual(at(['pnpm gate a--bogus', 'pnpm gate a-F', 'pnpm nothing --filter x', 'pnpm gate x- --filter a', 'pnpm gate -q --filter a']), [
+      [6, '`--filter` is not a flag of `scripts/gate.ts` — the script never reads it'],
+      [7, '`--filter` after `gate` is handed to the script, not to pnpm — write `pnpm --filter <pkg> gate`'],
+    ]);
+  });
+
+  it('follows a script name only when it is an interpreter', () => {
+    assert.deepEqual(at(['pnpm npx tsx scripts/gate.ts --bogus']), []);
+  });
+
+  it('judges a value only after a flag', () => {
+    assert.deepEqual(at(['pnpm gate mode slow']), []);
+  });
+
+  it('ends an option’s values at the last word', () => {
+    assert.deepEqual(at(['python3 scripts/tool.py --out']), []);
+  });
+
+  it('requires the flags of an inline command with arguments, whatever other flags it has', () => {
+    assert.deepEqual(
+      commands('Run `python3 scripts/tool.py plan` now.\n').map((p) => [p.line, p.reason]),
+      [[1, '`scripts/tool.py` requires `--out`; the documented command omits it']],
+    );
+    assert.deepEqual(at(['python3 scripts/tool.py plan --level low']), [[3, '`scripts/tool.py` requires `--out`; the documented command omits it']]);
+  });
+
+  it('judges a first positional only when it is a whole word', () => {
+    assert.deepEqual(at(['python3 scripts/tool.py a.b --out o']), []);
+  });
+});

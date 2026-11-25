@@ -19,15 +19,17 @@ export interface CommandContext extends ScriptBodies {
 
 /** Text of a script plus the relative modules it imports directly. */
 const sourceWithImports = (context: CommandContext, path: string): string => {
-  const own = context.read(path) ?? '';
+  const own = context.read(path);
   const parts = [own];
   // Only a JS/TS module's imports are its own code.
-  if (!/\.[cm]?[jt]sx?$/.test(path)) return own;
-  for (const match of own.matchAll(/from\s+['"](\.{1,2}\/[^'"]+)['"]/g)) {
-    const base = posix.join(posix.dirname(path), String(match[1]));
-    const imported = [base, `${base}.ts`, `${base}.mjs`, `${base}.js`, base.replace(/\.js$/, '.ts')].map((candidate) => context.read(candidate)).find((text) => text !== undefined);
-    if (imported !== undefined) parts.push(imported);
+  if (own !== undefined && /\.[cm]?[jt]sx?$/.test(path)) {
+    for (const match of own.matchAll(/from\s+['"](\.{1,2}\/[^'"]+)['"]/g)) {
+      const base = posix.join(posix.dirname(path), String(match[1]));
+      // An import that names no file adds an empty part, which no flag pattern reads.
+      parts.push([base, `${base}.ts`, `${base}.mjs`, `${base}.js`, base.replace(/\.js$/, '.ts')].map((candidate) => context.read(candidate)).find((text) => text !== undefined));
+    }
   }
+  // join writes an undefined part as empty: a script that exists but cannot be read reads as empty.
   return parts.join('\n');
 };
 
@@ -117,9 +119,11 @@ export const findCommandProblems = (config: Config, context: CommandContext, fil
         const pnpm = parsePnpm(words);
         if (pnpm.exec !== undefined) {
           target = interpreterTarget(['exec', ...pnpm.exec], (path) => resolveFrom(posix.join(command.cwd, pnpm.dir ?? ''), path) ?? resolveFrom('', path));
-        } else if (pnpm.script !== undefined) {
+        } else {
+          // A `pnpm` with no script word finds no body, since no map holds an absent key, and no interpreter named "undefined".
+          const script = String(pnpm.script);
           const scope = pnpm.filter ?? (command.cwd === '' ? '.' : command.cwd);
-          const body = context.scripts.get(scope)?.get(pnpm.script);
+          const body = (context.scripts.get(scope) as ReadonlyMap<string | undefined, string> | undefined)?.get(pnpm.script);
           const dir = context.scopeDirs.get(scope);
           // A package script's own options come first; `--filter` among them
           // reaches the script, not pnpm. After a positional word it belongs
@@ -127,14 +131,14 @@ export const findCommandProblems = (config: Config, context: CommandContext, fil
           const misplaced = pnpm.args.findIndex((word) => /^(--filter|-F)(=|$)/.test(word));
           const before = pnpm.args.slice(0, misplaced);
           if (body !== undefined && misplaced !== -1 && before.every((word) => word.startsWith('-')) && !before.includes('--')) {
-            report(pnpm.script, `\`${String(pnpm.args[misplaced])}\` after \`${pnpm.script}\` is handed to the script, not to pnpm — write \`pnpm --filter <pkg> ${pnpm.script}\``);
+            report(script, `\`${String(pnpm.args[misplaced])}\` after \`${script}\` is handed to the script, not to pnpm — write \`pnpm --filter <pkg> ${script}\``);
             continue;
           }
           if (body !== undefined && dir !== undefined) {
             const inner = scriptTarget(body, dir, resolveFrom, nested);
             if (inner !== undefined) target = { path: inner.path, args: pnpm.args[0] === '--' ? pnpm.args.slice(1) : pnpm.args };
-          } else if (INTERPRETERS.has(pnpm.script)) {
-            target = interpreterTarget([pnpm.script, ...pnpm.args], (path) => resolveFrom(command.cwd, path) ?? resolveFrom('', path));
+          } else if (INTERPRETERS.has(script)) {
+            target = interpreterTarget([script, ...pnpm.args], (path) => resolveFrom(command.cwd, path) ?? resolveFrom('', path));
           }
         }
       } else {

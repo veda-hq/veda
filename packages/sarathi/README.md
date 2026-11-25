@@ -934,6 +934,49 @@ the binary, and `--settings` a snapshot to read instead of the checkout.
 The live-service tests start real containers, so they run only with
 `SARATHI_LIVE_SERVICES=required` and a Docker daemon.
 
+## Where
+
+`sarathi where` answers "what does this module sit next to" and "what
+depends on it" from the project's module graph, so a session finds out
+without opening files. It runs the project's own dependency-cruiser,
+`node_modules/.bin/depcruise` at the repository root, so sarathi adds no
+dependency; a checkout without it gets a refusal that names the binary. It
+passes `--cache`, which dependency-cruiser has had since 11.14.
+
+```sh
+sarathi where discount-engine/index             # direct neighbours (--depth N for more)
+sarathi where discount-engine/index --reaches   # everything that depends on it, transitively
+sarathi where --affected origin/main            # changed since the revision (default main), and what reaches it
+```
+
+`--scope DIR` limits the cruise, from the repository root (repeatable,
+default `apps packages`; a folder that starts with `-` is refused, since
+depcruise would read it as an option), and `--max N` the edges printed (default 60). The
+answer is one `a → b` edge per line, deduplicated and sorted, then
+`… N more of M (raise with --max)` when it was cut. Dependencies, built
+output, coverage, `.turbo`, `.stryker-tmp` and `.tmp` are excluded, so an
+answer arrives as source paths.
+
+The dependency-cruiser config is `--config <file>`, from the working
+folder, or `where.config` in `.claude/sarathi.json`, from the project root:
+
+```json
+{ "hooks": {}, "where": { "config": "scripts/where.config.cjs" } }
+```
+
+With neither, `where` refuses rather than fall back to the project's default
+config: that one is often an architecture gate that resolves packages to their
+built output, and an answer through it would look right while missing every
+edge into a package's source. Releases before 0.8.9 refuse a `where` key in
+`sarathi.json`, and on `PreToolUse` that refuses every tool call, so add it
+only once every checkout runs 0.8.9 or later.
+
+Exit 0 is an answer, `no modules matched` among them; exit 2 a usage error;
+exit 1 no answer: no git checkout, no dependency-cruiser, no config, or a
+cruise that was killed or printed nothing. A cruise that exits non-zero for
+rule violations but printed edges has answered. A caller can read any
+non-zero exit as "the graph failed".
+
 ## The working rules
 
 `skills/working-rules/SKILL.md` holds the generic rules an agent follows to

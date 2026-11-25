@@ -256,6 +256,7 @@ describe('identifierRef', () => {
     assert.deepEqual(identifierRef('abc()', NONE), { kind: 'symbol', text: 'abc()', word: 'abc' });
     assert.equal(identifierRef('a.b.runAll()', NONE)?.word, 'runAll');
     assert.equal(identifierRef('GET  /admin', NONE), null);
+    assert.equal(identifierRef('@Roles(ADMIN,  OWNER)', NONE), null);
     assert.equal(isCode(CONFIG, 'scripts/docs/doc-references-baseline.json'), false);
   });
 

@@ -73,34 +73,35 @@ const pollUnderFakeTimers = {
      * covers, wherever it is written; code outside any test or hook (the
      * file's top, a `describe` body) runs at collection, before every test.
      */
-    function covers(fake, poll) {
-      const at = poll.range[0];
+    function covers(fake, poll, calls) {
       const test = enclosingTest(poll, context);
-      const restoredAfter = start =>
-        reals.some(
-          real =>
-            real.range[0] > start &&
-            real.range[0] < at &&
-            (!test || within(real, test)),
-        );
+      // The fake, real and poll calls written before the poll, in source order.
+      const before = calls.slice(0, calls.indexOf(poll));
+      // The ones between `fake` and the poll: none when the fake comes later.
+      const since = () =>
+        before.includes(fake) ? before.slice(before.indexOf(fake) + 1) : [];
+      // Does a `vi.useRealTimers()` in `list` run first, inside the poll's
+      // test when it has one?
+      const restores = list =>
+        list.some(real => reals.includes(real) && (!test || within(real, test)));
       const chain = enclosingFunctions(fake, context);
       const ownTest = chain.find(entry => entry.owner?.kind === 'test');
       if (ownTest) {
-        return (
-          ownTest.fn === test && fake.range[0] < at && !restoredAfter(fake.range[0])
-        );
+        return ownTest.fn === test && before.includes(fake) && !restores(since());
       }
       const hook = chain.find(entry => entry.owner?.kind === 'hook');
       if (hook) {
         // A hook's name is one of beforeEach, beforeAll, afterEach and afterAll.
+        // Inside a test, every real before the poll is in the test, so after
+        // the hook has run.
         return (
           hook.owner.name.startsWith('before') &&
           within(poll, registeringBlock(hook.fn)) &&
-          !restoredAfter(test ? test.range[0] : fake.range[0])
+          !restores(test ? before : since())
         );
       }
       if (chain.some(entry => entry.owner?.kind !== 'suite')) return false;
-      return fake.range[0] < at && !restoredAfter(fake.range[0]);
+      return before.includes(fake) && !restores(since());
     }
 
     return {
@@ -112,8 +113,11 @@ const pollUnderFakeTimers = {
         if (name) polls.push({ node, name });
       },
       'Program:exit'() {
+        const calls = [...fakes, ...reals, ...polls.map(poll => poll.node)].sort(
+          (a, b) => a.range[0] - b.range[0],
+        );
         for (const poll of polls) {
-          if (fakes.some(fake => covers(fake, poll.node))) {
+          if (fakes.some(fake => covers(fake, poll.node, calls))) {
             context.report({
               node: poll.node,
               messageId: 'poll',

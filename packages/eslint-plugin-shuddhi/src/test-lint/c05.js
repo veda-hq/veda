@@ -245,12 +245,9 @@ export function c05Rules({
     return false;
   }
 
-  /**
-   * The option `ownedRootCalls` (further calls whose result is a directory
-   * the test owns) has no default: without it only {@link OWNED_ROOT_CALLS}
-   * count.
-   */
   const OWNED_REMOVAL_DEFAULTS = {
+    /** Further calls whose result is a directory the test owns. */
+    ownedRootCalls: [],
     /** The guarded removal helper the message points to. */
     removeHelper: 'removeFixtureRoot',
     /** Where it lives, named in the message. */
@@ -284,8 +281,7 @@ export function c05Rules({
     create(context) {
       // ESLint merges `meta.defaultOptions` under what the config passes.
       const [options] = context.options;
-      const owned = new Set(options.ownedRootCalls);
-      for (const call of OWNED_ROOT_CALLS) owned.add(call);
+      const owned = new Set([...OWNED_ROOT_CALLS, ...options.ownedRootCalls]);
       const from = options.removeHelperModule
         ? ` from ${options.removeHelperModule}`
         : '';

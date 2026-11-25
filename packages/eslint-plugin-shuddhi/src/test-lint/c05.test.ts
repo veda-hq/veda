@@ -877,6 +877,17 @@ describe('these rules say what they found and how to fix it', () => {
     assert.match(meta.docs.description, / \((oracle|fixture) family\)$/);
   });
 
+  it('owned-fixture-removal publishes its option defaults', () => {
+    const meta = (
+      rules['owned-fixture-removal'] as unknown as {
+        meta: { defaultOptions: unknown[] };
+      }
+    ).meta;
+    assert.deepEqual(meta.defaultOptions, [
+      { ownedRootCalls: [], removeHelper: 'removeFixtureRoot', removeHelperModule: '' },
+    ]);
+  });
+
   each([
     [
       'no-silent-early-return',

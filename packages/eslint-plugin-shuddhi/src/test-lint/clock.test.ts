@@ -288,6 +288,20 @@ ruleTester.run('poll-under-fake-timers at its edges', rules['poll-under-fake-tim
       code: `it('a', async () => { vi.useRealTimers(); vi.useFakeTimers(); await vi.waitFor(f); });`,
       errors: [poll('vi.waitFor')],
     },
+    // A beforeAll written after a top-level poll still runs first, and real
+    // timers before the poll come before that hook too.
+    {
+      filename: TEST_FILE,
+      code: `vi.useRealTimers(); await vi.waitFor(f);
+      beforeAll(() => { vi.useFakeTimers(); });`,
+      errors: [poll('vi.waitFor')],
+    },
+    // Each poll is held back on its own; an earlier poll restores nothing.
+    {
+      filename: TEST_FILE,
+      code: `it('a', async () => { vi.useFakeTimers(); await vi.waitFor(f); await expect.poll(g).toBe(1); });`,
+      errors: [poll('vi.waitFor'), poll('expect.poll')],
+    },
     // Real timers after the poll come too late.
     {
       filename: TEST_FILE,

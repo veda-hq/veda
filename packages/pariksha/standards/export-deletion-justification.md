@@ -48,9 +48,16 @@ presence search covers source files only and skips comment lines — otherwise a
 changelog entry or a `// removed clearGiftSelection` note would read as
 "still present" and suppress the very finding this check exists to raise. Bare
 re-export lists (`export { a, b }`) are out of scope — they shuffle constantly
-and name nothing new. That leaves a known gap: removing
-`export { internal as publicApi } from './internal.js'` goes unreported even
-when `publicApi` leaves the public surface.
+and name nothing new.
+
+Two known gaps follow from this:
+
+- Removing `export { internal as publicApi } from './internal.js'` goes
+  unreported even when `publicApi` leaves the public surface.
+- Test files are source files, so a test that still names the removed symbol,
+  such as one asserting its absence, keeps it "still present" and the check
+  stays silent. That is the incident's own last step, so read a new test that
+  names a removed export as you would an undeclared deletion.
 
 ## Rationale
 
@@ -106,7 +113,8 @@ remaining callers (ABC-447)
 - Moves and re-exports pay nothing: the still-present filter keeps them
   silent. A rename pays one trailer.
 - A symbol deleted together with its only consumer in the same branch still
-  requires the trailer. That is intended — it is the incident's exact shape.
+  requires the trailer. That is intended — it is the incident's exact shape,
+  unless a test still names the symbol (see the known gaps above).
 - A symbol that never existed on the base branch is not covered: it was never
   public, so its removal is a within-branch edit, not an API change.
 

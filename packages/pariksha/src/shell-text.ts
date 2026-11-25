@@ -31,6 +31,9 @@ type Quote = '"' | "'" | ')';
  */
 type QuoteStack = readonly Quote[];
 
+/** No quote open: where a line starts. */
+const OUTSIDE_QUOTES: QuoteStack = [];
+
 /**
  * Scans `line` starting inside `open`. With `stopWhenClosed`, returns the
  * index of the character that closes the outermost quote (-1 if none does);
@@ -61,7 +64,8 @@ const scanQuotes = (line: string, open: QuoteStack, stopWhenClosed: boolean): { 
       stack.push(char);
     } else if (top === ')' && char === '(') {
       stack.push(')');
-    } else if (top === ')' && char === ')') {
+    } else if (char === ')') {
+      // Quotes are handled above, so this closes a `$(` or `(` if one is open.
       stack.pop();
     }
     // The scan starts inside `open` (never empty when it stops at a close), so
@@ -87,7 +91,7 @@ const beforeComment = (line: string, at: number): string => {
  * quotes, so `"$(printf "%s" " #")"` holds no comment.
  */
 export const stripComment = (line: string): string => {
-  const at = scanQuotes(line, [], false).comment;
+  const at = scanQuotes(line, OUTSIDE_QUOTES, false).comment;
   return at === -1 ? line : beforeComment(line, at);
 };
 
@@ -98,25 +102,33 @@ const opensSubstitution = (code: string, at: number): boolean => code.startsWith
  * Outside quotes, `\` makes the next character literal. An escaped operator,
  * quote, `$` or backtick is blanked with its backslash; any other stays as
  * written. Returns the index past the escape.
+ *
+ * Every masker writes its blanks into `out`; `null` masks nothing, for a
+ * caller that only needs to know where a body ends.
  */
-const maskEscape = (code: string, at: number, out: string[]): number => {
-  if (/^\\[;&|()<>`$"']/.test(code.slice(at))) out.fill(' ', at, at + 2);
+const maskEscape = (code: string, at: number, out: string[] | null): number => {
+  if (/^\\[;&|()<>`$"']/.test(code.slice(at))) out?.fill(' ', at, at + 2);
   return at + 2;
 };
 
 /** Blanks a single-quoted body from `start`; returns the index past its close. */
-const maskSingle = (code: string, start: number, out: string[]): number => {
+const maskSingle = (code: string, start: number, out: string[] | null): number => {
   const close = code.indexOf("'", start);
   const end = close === -1 ? code.length : close;
-  out.fill(' ', start, end);
+  out?.fill(' ', start, end);
   return end + 1;
 };
 
 /** What the substitution skippers return when the body never closes. */
 const NEVER_CLOSES = Number.POSITIVE_INFINITY;
 
-/** A case pattern just before its `)`: after `in`, `;;` or a line start. */
-const CASE_PATTERN_BEFORE = /(?:^|\bin|;;|\n)\s*[^\s;&|()]+(?:\s*\|\s*[^\s;&|()]+)*\s*$/;
+/**
+ * A case pattern just before its `)`: after `in`, `;;` or a newline. Only
+ * text holding the word `case` is asked, so a "pattern" at the very start
+ * holds that word itself: a command such as `test-case` or `case.sh`, whose
+ * `)` closes its substitution.
+ */
+const CASE_PATTERN_BEFORE = /(?:\bin|;;|\n)\s*[^\s;&|()]+(?:\s*\|\s*[^\s;&|()]+)*\s*$/;
 
 /** Whether a `)` after `before` ends a pattern of a `case` open in `before`. */
 const closesCasePattern = (before: string): boolean => {
@@ -126,7 +138,7 @@ const closesCasePattern = (before: string): boolean => {
 };
 
 /** Leaves a backtick substitution's body as code, masking the strings inside it; `open` is the opening backtick. */
-const skipBacktick = (code: string, open: number, out: string[]): number => {
+const skipBacktick = (code: string, open: number, out: string[] | null): number => {
   let resume = open;
   for (const [at, char] of charsFrom(code, open + 1)) {
     if (at < resume) continue;
@@ -139,7 +151,7 @@ const skipBacktick = (code: string, open: number, out: string[]): number => {
 };
 
 /** Leaves a `$( … )` body as code, masking strings inside it; returns the index past `)`. */
-const skipSubstitution = (code: string, start: number, out: string[]): number => {
+const skipSubstitution = (code: string, start: number, out: string[] | null): number => {
   let depth = 1;
   let resume = start;
   for (const [at, char] of charsFrom(code, start)) {
@@ -163,19 +175,19 @@ const skipSubstitution = (code: string, start: number, out: string[]): number =>
  * `closes` false (a heredoc body) a `"` is literal text, never a close, and
  * strings inside a substitution are masked into `inner` rather than `out`.
  */
-function maskDouble(code: string, start: number, out: string[], closes = true, inner: string[] = out): number {
+function maskDouble(code: string, start: number, out: string[] | null, closes = true, inner: string[] | null = out): number {
   let resume = start;
   for (const [at, char] of charsFrom(code, start)) {
     if (at < resume) continue;
     if (char === '"' && closes) return at + 1;
     if (char === '\\') {
-      out.fill(' ', at, at + 2);
+      out?.fill(' ', at, at + 2);
       resume = at + 2;
     } else if (opensSubstitution(code, at)) {
       resume = skipSubstitution(code, at + 2, inner);
     } else if (char === '`') {
       resume = skipBacktick(code, at, inner);
-    } else {
+    } else if (out !== null) {
       out[at] = ' ';
     }
   }
@@ -210,7 +222,6 @@ export const maskQuoted = (code: string): string => {
  */
 export const messageView = (code: string): string => {
   const starts = [...commandPositions(code, 'echo'), ...commandPositions(code, 'printf')];
-  if (starts.length === 0) return code;
   const masked = maskQuoted(code);
   const keep: boolean[] = code.split('').map(() => true);
   for (const start of starts) {
@@ -229,9 +240,12 @@ export const messageView = (code: string): string => {
       } else if (char === '`') {
         tick = true;
       } else if (/^(?:[<>]|&>)/.test(masked.slice(at))) {
-        // A redirection and its target word are code.
+        // A redirection and its target word are code. `rest` starts with the
+        // operator, so the first match is at its start. With no target after
+        // it, the operator's own `<` or `>` reads as the word: the match
+        // stops at the operator, and the blanks after it are blanked anyway.
         const rest = code.slice(at);
-        const after = rest.replace(/^[<>&]*\s*(?:"[^"]*"|'[^']*'|[^\s;&|)]+)?/, '');
+        const after = rest.replace(/[<>&]*\s*(?:"[^"]*"|'[^']*'|[^\s;&|)]+)/, '');
         resume = at + rest.length - after.length;
       } else if (/[;&|)\n]/.test(char)) {
         break;
@@ -253,9 +267,9 @@ const substitutionOpen = (text: string): boolean => {
   for (const [at, char] of charsFrom(text, 0)) {
     if (at < resume) continue;
     if (char === '\\') resume = at + 2;
-    else if (opensSubstitution(text, at)) resume = skipSubstitution(text, at + 2, []);
+    else if (opensSubstitution(text, at)) resume = skipSubstitution(text, at + 2, null);
     // A backtick substitution may span lines too.
-    else if (char === '`') resume = skipBacktick(text, at, []);
+    else if (char === '`') resume = skipBacktick(text, at, null);
   }
   return resume === NEVER_CLOSES;
 };
@@ -304,20 +318,20 @@ const heredocsOpenedBy = (code: string): PendingHeredoc[] => {
 
 /** The quoting a line leaves open at its end (it starts outside any quote). */
 const openQuoteAfter = (line: string): QuoteStack => {
-  const { stack } = scanQuotes(line, [], false);
-  // Only a quote holds the logical line open; a bare `$(` is not tracked.
-  return stack[0] === '"' || stack[0] === "'" ? stack : [];
+  // Only a quote holds the logical line open. scanQuotes tracks a `$(` or
+  // `(` only inside a quote, so whatever it leaves open starts with one.
+  return scanQuotes(line, OUTSIDE_QUOTES, false).stack;
 };
 
 /**
  * Only the command substitutions of an expanding heredoc line, as code. A
  * heredoc body expands like a double-quoted string whose own quotes are
  * literal; a `$(…)` body is kept as written, the strings inside it masked
- * into a scratch list.
+ * into nothing.
  */
 const substitutionsIn = (line: string): string => {
   const out = line.split('');
-  maskDouble(line, 0, out, false, []);
+  maskDouble(line, 0, out, false, null);
   return out.join('');
 };
 
@@ -345,7 +359,7 @@ export const codeLines = (text: string): CodeLine[] => {
   const openedHeredocs: PendingHeredoc[] = [];
   let continued: CodeLine | null = null;
   // The quoting an earlier physical line left open; empty when none.
-  let openQuote: QuoteStack = [];
+  let openQuote: QuoteStack = OUTSIDE_QUOTES;
   // Heredoc bodies start after the next newline the shell reads as a token:
   // not one inside a string (`cat <<EOF; echo "a` + `b"` puts the body after
   // `b"`), and not a backslash-newline it removes (`cat <<'EOF' \` +
@@ -388,8 +402,9 @@ export const codeLines = (text: string): CodeLine[] => {
       }
       continue;
     }
-    // A quote left open is always on a logical line still being built.
-    if (openQuote.length > 0 && continued !== null) {
+    if (openQuote.length > 0) {
+      // A quote left open is always on a logical line still being built.
+      const building = continued as CodeLine;
       // Inside a string that began on an earlier line: its text joins that
       // logical line verbatim (no comment stripping, no heredoc openers).
       // The whole nesting carries over, so in `"$(printf "%s` the next
@@ -400,8 +415,8 @@ export const codeLines = (text: string): CodeLine[] => {
       // In double quotes or a substitution a backslash-newline is still
       // removed: `"$(no\` + `de x)"` runs node. In single quotes both stay.
       continued = {
-        line: continued.line,
-        code: openQuote.at(-1) !== "'" && CONTINUATION.test(continued.code) ? `${continued.code.slice(0, -1)}${inside}` : `${continued.code}\n${inside}`,
+        line: building.line,
+        code: openQuote.at(-1) !== "'" && CONTINUATION.test(building.code) ? `${building.code.slice(0, -1)}${inside}` : `${building.code}\n${inside}`,
       };
       if (scan.close === -1) {
         openQuote = scan.stack;
@@ -423,7 +438,7 @@ export const codeLines = (text: string): CodeLine[] => {
       }
       continue;
     }
-    if (continued === null && /^\s*#/.test(raw)) continue;
+    // A comment-only line strips to nothing, so it opens nothing and is no line.
     const withoutComment = stripComment(raw);
     openQuote = openQuoteAfter(withoutComment);
     openedHeredocs.push(...heredocsOpenedBy(withoutComment));
@@ -515,8 +530,11 @@ const commandStart = (): string => {
   );
 };
 
-/** What follows a case pattern's first word: more `|word`s, then `)`. */
-const CASE_LABEL_REST = /^(?:\s*\|\s*[^\s|;&()]+)*\s*\)/;
+/**
+ * What follows a case pattern's first word: more `|word`s, then `)`. Sticky,
+ * so it matches only where its `lastIndex` is set: right after the word.
+ */
+const CASE_LABEL_REST = /(?:\s*\|\s*[^\s|;&()]+)*\s*\)/y;
 
 /**
  * Indexes of the `)` that close case patterns, in quote-masked text: one
@@ -558,10 +576,12 @@ export const commandPositions = (code: string, command: string): number[] => {
   for (const match of separated.matchAll(pattern)) {
     const end = match.index + match[0].length;
     // A case label (`node)`, `node|npm)`) names a pattern, not a command.
-    const rest = CASE_LABEL_REST.exec(masked.slice(end));
+    CASE_LABEL_REST.lastIndex = end;
+    const rest = CASE_LABEL_REST.exec(masked);
     if (rest !== null && labels.has(end + rest[0].length - 1)) continue;
     // Past a closing quote the blanking removed, so callers read the args.
-    out.push(unquoted[end] === ' ' && /["']/.test(code.charAt(end)) ? end + 1 : end);
+    // A quote here was blanked: the match needs a blank or an operator after the word.
+    out.push(/["']/.test(code.charAt(end)) ? end + 1 : end);
   }
   return out;
 };

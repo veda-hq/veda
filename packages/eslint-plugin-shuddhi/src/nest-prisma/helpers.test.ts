@@ -175,6 +175,20 @@ describe('insideTransaction', () => {
   it('sees a named wrapper as a transaction', () => {
     assert.deepEqual(judged(new Set(['withClaim'])), [true, true, true, false, false]);
   });
+
+  it('matches a wrapper by an Identifier callee only, whatever the set holds', () => {
+    // A caller's set may hold undefined (a wrapper option left unset); a
+    // member callee has no name, and must not match it.
+    const wrappers = new Set([undefined]);
+    assert.deepEqual(
+      probe('retry.run(async () => { prisma.a.create(); });', (_context, out) => ({
+        'CallExpression[callee.property.name="create"]'(node: never) {
+          out.push(insideTransaction(node, wrappers as never));
+        },
+      })),
+      [false],
+    );
+  });
 });
 
 describe('isPrismaRoot', () => {
@@ -417,5 +431,39 @@ describe('valueResolver, trackValue and spreadObject', () => {
     // twice; `let none;` bound null; `f` is a function declaration, not a
     // declarator, so stays itself.
     assert.deepEqual(out, ['ObjectExpression', 'loop2', null, 'f']);
+  });
+
+  it('asks a caller’s values about Identifiers only', () => {
+    // A values whose lookup binds everything: only the resolver's own
+    // checks keep a non-Identifier, or no node, from being looked up.
+    const asked: unknown[] = [];
+    const bound = { type: 'ObjectExpression' };
+    const values = {
+      lookup: (node: unknown) => {
+        asked.push(node);
+        return bound;
+      },
+    };
+    const resolve = valueResolver(values as never);
+    const member = { type: 'MemberExpression' };
+    assert.equal(resolve(member as never), member);
+    assert.equal(resolve(null as never), null);
+    assert.deepEqual(asked, []);
+  });
+
+  it('stops on a cycle in a caller’s values, asking each name once', () => {
+    const a = { type: 'Identifier', name: 'a' };
+    const b = { type: 'Identifier', name: 'b' };
+    const asked: string[] = [];
+    const values = {
+      lookup: (node: { name: string }) => {
+        asked.push(node.name);
+        // A resolver that forgets what it has seen would loop: fail fast.
+        if (asked.length > 10) throw new Error('lookup looped');
+        return node === a ? b : a;
+      },
+    };
+    assert.equal(valueResolver(values as never)(a as never), a);
+    assert.deepEqual(asked, ['a', 'b']);
   });
 });

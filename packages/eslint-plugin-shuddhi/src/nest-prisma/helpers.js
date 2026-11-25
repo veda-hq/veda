@@ -126,8 +126,7 @@ export function insideTransaction(node, wrappers = new Set()) {
       if (memberName(unwrap(callee)) === '$transaction') {
         return true;
       }
-      // Only an Identifier callee has a `name`.
-      if (wrappers.has(callee.name)) {
+      if (callee.type === 'Identifier' && wrappers.has(callee.name)) {
         return true;
       }
     }
@@ -319,9 +318,8 @@ export function spreadObject(spread, resolve) {
 export function valueResolver(values) {
   return function resolve(node, seen = new Set()) {
     const value = unwrap(node);
-    // lookup binds only an Identifier: anything else, or no node, is
-    // undefined there and resolves to itself.
-    const bound = seen.has(value) ? undefined : values.lookup(value);
+    if (value?.type !== 'Identifier' || seen.has(value)) return value;
+    const bound = values.lookup(value);
     if (bound === undefined) return value;
     seen.add(value);
     return resolve(bound, seen);

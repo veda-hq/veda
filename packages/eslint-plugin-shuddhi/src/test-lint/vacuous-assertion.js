@@ -51,20 +51,19 @@ function isStatic(node, context, depth = 0) {
         isStatic(value.right, context, depth + 1)
       );
     case 'ArrayExpression':
-      // A spread element is not static: isStatic falls to its default.
-      return value.elements.every(
-        element => element !== null && isStatic(element, context, depth + 1),
+      // A hole (null) is not static, and neither is a spread element:
+      // isStatic falls past its switch.
+      return value.elements.every(element =>
+        isStatic(element, context, depth + 1),
       );
     case 'ObjectExpression':
+      // A spread element has no `value`, so it is not static.
       return value.properties.every(
         property =>
-          property.type === 'Property' &&
-          !property.computed &&
-          isStatic(property.value, context, depth + 1),
+          !property.computed && isStatic(property.value, context, depth + 1),
       );
-    default:
-      return false;
   }
+  return false;
 }
 
 /** `value` is a const's initialiser, already unwrapped (see constInit). */
@@ -170,8 +169,7 @@ function fixedTypeOf(node, context, depth = 0) {
   switch (value.type) {
     case 'Literal':
       // A regex literal's value is a RegExp, or null where the runtime cannot
-      // build it: 'object' either way.
-      if (value.value === null) return 'object';
+      // build it: 'object' either way, as for the null literal.
       return typeof value.value;
     case 'TemplateLiteral':
       return 'string';
@@ -180,11 +178,9 @@ function fixedTypeOf(node, context, depth = 0) {
       return 'object';
     case 'NewExpression':
       // A constructor may return any object, a function included
-      // (`new Object(() => {})`): never null, but not one `typeof`.
-      return value.callee.type === 'Identifier' &&
-        value.callee.name === 'Function'
-        ? 'function'
-        : CONSTRUCTED;
+      // (`new Object(() => {})`): never null, but not one `typeof`. Only an
+      // Identifier callee has a `name`.
+      return value.callee.name === 'Function' ? 'function' : CONSTRUCTED;
     case 'ArrowFunctionExpression':
     case 'FunctionExpression':
       return 'function';
@@ -228,11 +224,8 @@ function fixedTypeOf(node, context, depth = 0) {
       if (method && BOOLEAN_METHODS.has(method)) return 'boolean';
       if (method && STRING_METHODS.has(method)) return 'string';
       if (method && NUMBER_METHODS.has(method)) return 'number';
-      if (
-        callee.type === 'MemberExpression' &&
-        callee.object.type === 'Identifier' &&
-        callee.object.name === 'Math'
-      ) {
+      // Only an Identifier object has a `name`.
+      if (callee.type === 'MemberExpression' && callee.object.name === 'Math') {
         return 'number';
       }
       return null;
@@ -265,19 +258,17 @@ function isCount(node) {
     return COUNT_NAME.test(propertyName(value));
   }
   if (value.type === 'Identifier') return COUNT_NAME.test(value.name);
-  if (value.type === 'CallExpression') {
-    return /^count$/i.test(calledMethod(value));
-  }
-  return false;
+  // calledMethod is null for anything but a call.
+  return /^count$/i.test(calledMethod(value));
 }
 
 /** `r.indexOf(a)` (directly or through a const) → { receiver, arg, call }. */
 function indexCall(node, context) {
   let value = unwrap(node);
-  if (value?.type === 'Identifier') value = constInit(value, context);
-  if (!value || value.type !== 'CallExpression') return null;
-  const method = calledMethod(value);
-  if (!method || !INDEX_METHODS.has(method)) return null;
+  if (value.type === 'Identifier') value = constInit(value, context);
+  if (!value) return null;
+  // calledMethod is null for anything but a call.
+  if (!INDEX_METHODS.has(calledMethod(value))) return null;
   return {
     receiver: unwrap(value.callee).object,
     arg: value.arguments[0] ?? null,
@@ -288,8 +279,9 @@ function indexCall(node, context) {
 /** `r.every(...)` (directly or through a const) → the receiver. */
 function everyReceiver(node, context) {
   let value = unwrap(node);
-  if (value?.type === 'Identifier') value = constInit(value, context);
-  if (!value || value.type !== 'CallExpression') return null;
+  if (value.type === 'Identifier') value = constInit(value, context);
+  if (!value) return null;
+  // calledMethod is null for anything but a call.
   return calledMethod(value) === 'every' ? unwrap(value.callee).object : null;
 }
 
@@ -344,9 +336,8 @@ function builtFrom(node, receiverText, context, depth = 0) {
       return from(value.argument);
     case 'ArrayExpression':
       return value.elements.some(from);
-    default:
-      return false;
   }
+  return false;
 }
 
 /** Does this assertion prove `receiverText` is non-empty? */
@@ -355,10 +346,11 @@ function provesNonEmpty(found, receiverText, context) {
   if (!subject) return false;
   const subjectText = textOf(subject, context);
   const [arg] = found.args;
+  // Read only for an argument that is there.
   const isEmptyLiteral = node =>
     isNumber(node, 0) ||
-    (node?.type === 'ArrayExpression' && node.elements.length === 0) ||
-    (node?.type === 'ObjectExpression' && node.properties.length === 0);
+    (node.type === 'ArrayExpression' && node.elements.length === 0) ||
+    (node.type === 'ObjectExpression' && node.properties.length === 0);
   if (subjectText === receiverText) {
     if (found.matcher === 'toHaveLength') {
       return found.negated ? isNumber(arg, 0) : !isNumber(arg, 0);
@@ -374,12 +366,14 @@ function provesNonEmpty(found, receiverText, context) {
   }
   // A value derived from the receiver (`rows.map(f)`, `new Set(rows)`) held
   // equal to something non-empty proves the receiver was non-empty too —
-  // directly or through a const (`const codes = rows.map(f).sort()`).
-  const init =
-    subject.type === 'Identifier' ? constInit(subject, context) : null;
-  const derived =
-    builtFrom(subject, receiverText, context) ||
-    (init ? builtFrom(init, receiverText, context) : false);
+  // directly or through a const (`const codes = rows.map(f).sort()`). A name
+  // other than the receiver is built from nothing itself: only its const
+  // initialiser can be.
+  const derived = builtFrom(
+    subject.type === 'Identifier' ? constInit(subject, context) : subject,
+    receiverText,
+    context,
+  );
   if (
     derived &&
     !found.negated &&
@@ -396,11 +390,10 @@ function provesNonEmpty(found, receiverText, context) {
   ) {
     return true;
   }
-  const lengthOf =
-    subject.type === 'MemberExpression' &&
-    ['length', 'size'].includes(propertyName(subject))
-      ? textOf(subject.object, context)
-      : null;
+  // propertyName is null for anything but a member.
+  const lengthOf = ['length', 'size'].includes(propertyName(subject))
+    ? textOf(subject.object, context)
+    : null;
   if (lengthOf === receiverText) {
     if (found.negated)
       return ['toBe', 'toEqual'].includes(found.matcher) && isNumber(arg, 0);
@@ -414,8 +407,8 @@ function provesNonEmpty(found, receiverText, context) {
     return found.matcher === 'toBeTruthy';
   }
   // `expect(r.some(...)).toBe(true)` also proves an element exists.
+  // calledMethod is null for anything but a call.
   if (
-    subject.type === 'CallExpression' &&
     calledMethod(subject) === 'some' &&
     textOf(unwrap(subject.callee).object, context) === receiverText
   ) {
@@ -434,15 +427,14 @@ function provesFound(found, index, context) {
   if (!subject) return false;
   const [arg] = found.args;
   const receiverText = textOf(index.receiver, context);
+  // textOf is never null, so a missing index argument matches no text.
   const argText = index.arg ? textOf(index.arg, context) : null;
   if (
     textOf(subject, context) === receiverText &&
     !found.negated &&
     ['toContain', 'toMatch'].includes(found.matcher)
   ) {
-    return (
-      argText !== null && arg !== undefined && textOf(arg, context) === argText
-    );
+    return arg !== undefined && textOf(arg, context) === argText;
   }
   const other = indexCall(subject, context);
   if (other && textOf(other.call, context) === textOf(index.call, context)) {
@@ -454,11 +446,9 @@ function provesFound(found, index, context) {
       return arg?.type === 'Literal' && arg.value >= 0;
   }
   if (
-    subject.type === 'CallExpression' &&
     calledMethod(subject) === 'includes' &&
     textOf(unwrap(subject.callee).object, context) === receiverText &&
     subject.arguments[0] &&
-    argText !== null &&
     textOf(subject.arguments[0], context) === argText
   ) {
     return (
@@ -482,9 +472,8 @@ function chainHasFilter(node) {
   let value = unwrap(node);
   while (value && value.type === 'CallExpression') {
     if (calledMethod(value) === 'filter') return true;
-    const callee = unwrap(value.callee);
-    if (callee.type !== 'MemberExpression') return false;
-    value = unwrap(callee.object);
+    // Only a member callee has an `object`: any other ends the chain.
+    value = unwrap(unwrap(value.callee).object);
   }
   return false;
 }
@@ -529,7 +518,6 @@ const noVacuousAssertion = {
     const everyChecks = [];
     const orderChecks = [];
     const eachChecks = [];
-    const instanceOfDate = [];
 
     function checkBlock(statements) {
       let seen = new Set();
@@ -578,7 +566,9 @@ const noVacuousAssertion = {
         const found = assertion(node, context);
         if (!found) return;
         const test = enclosingTest(node, context);
-        all.push({ found, test });
+        // `dateCheck`: a `toBeInstanceOf(Date)` that no earlier check reported.
+        const entry = { found, test, dateCheck: false };
+        all.push(entry);
         const { subject, matcher, args, negated } = found;
         if (!subject) return;
 
@@ -599,8 +589,8 @@ const noVacuousAssertion = {
           context.report({ node, messageId: 'nonNegative' });
           return;
         }
+        // Only a BinaryExpression has the operator `>=`.
         if (
-          subject.type === 'BinaryExpression' &&
           subject.operator === '>=' &&
           isCount(subject.left) &&
           isNumber(unwrap(subject.right), 0) &&
@@ -610,8 +600,8 @@ const noVacuousAssertion = {
           return;
         }
 
+        // Only a UnaryExpression has the operator `typeof`.
         if (
-          subject.type === 'UnaryExpression' &&
           subject.operator === 'typeof' &&
           ['toBe', 'toEqual', 'toStrictEqual'].includes(matcher) &&
           !negated &&
@@ -667,15 +657,15 @@ const noVacuousAssertion = {
           args[0]?.type === 'Identifier' &&
           args[0].name === 'Date'
         ) {
-          instanceOfDate.push({ node, test });
+          entry.dateCheck = true;
         }
 
+        // Only a UnaryExpression has the operator `!`, only a LogicalExpression
+        // has `||`, and only an Identifier callee has a `name`.
         let orSubject = subject;
         while (
-          (orSubject.type === 'UnaryExpression' &&
-            orSubject.operator === '!') ||
+          orSubject.operator === '!' ||
           (orSubject.type === 'CallExpression' &&
-            orSubject.callee.type === 'Identifier' &&
             orSubject.callee.name === 'Boolean')
         ) {
           orSubject = unwrap(
@@ -685,10 +675,7 @@ const noVacuousAssertion = {
           );
           if (!orSubject) return;
         }
-        if (
-          orSubject.type === 'LogicalExpression' &&
-          orSubject.operator === '||'
-        ) {
+        if (orSubject.operator === '||') {
           context.report({ node, messageId: 'orInSubject' });
           return;
         }
@@ -701,14 +688,10 @@ const noVacuousAssertion = {
         }
 
         if (ORDER_MATCHERS.has(matcher) && !negated && args[0]) {
+          // The lower side: an index there may be the -1 of a missing item.
           const lower = matcher.startsWith('toBeLess') ? subject : args[0];
           const index = indexCall(lower, context);
-          if (
-            index &&
-            (indexCall(subject, context) || indexCall(args[0], context))
-          ) {
-            orderChecks.push({ node, test, index });
-          }
+          if (index) orderChecks.push({ node, test, index });
         }
       },
       'Program:exit'() {
@@ -738,9 +721,9 @@ const noVacuousAssertion = {
             context.report({ node: table, messageId: 'eachFilter' });
           }
         }
-        for (const entry of instanceOfDate) {
-          if (entry.test && scoped(entry.test).length === 1) {
-            context.report({ node: entry.node, messageId: 'soleInstanceOf' });
+        for (const { found, test, dateCheck } of all) {
+          if (dateCheck && test && scoped(test).length === 1) {
+            context.report({ node: found.node, messageId: 'soleInstanceOf' });
           }
         }
       },

@@ -1963,6 +1963,11 @@ describe('the page tool, rule by rule', () => {
     expect(parseStream([...lines.slice(0, 3), '  ', ...lines.slice(3)].join('\n'))).toEqual({ result: 'done', calls: [], tools: ['Artifact'] });
   });
 
+  it('throws an error result before reading a broken line after it', () => {
+    const stream = [JSON.stringify({ type: 'result', result: 'the session hit an error', is_error: true }), '{"type":'].join('\n');
+    expect(() => parseStream(stream)).toThrow('the session hit an error');
+  });
+
   it('counts only the named tool’s call for the comments', () => {
     const comments = jobOf(['--comments', URL]);
     expect(() => outcome(comments, { result: 'r', calls: [call('Artifact', 'read', 'x')] })).toThrow('the comments were not read:\nr');

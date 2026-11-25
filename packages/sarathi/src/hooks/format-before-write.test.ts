@@ -327,7 +327,7 @@ test('updatedInput: lets the tool run as asked on every doubt, never throwing', 
   const outside = checkout();
   writeFileSync(join(root, 'a.ts'), 'aa = 1\n');
   writeFileSync(join(outside, 'o.ts'), 'o = 1\n');
-  const edit = (tool_input: Record<string, unknown>, tool_name = 'Edit', prettier: Prettier | null = recordingPrettier()) => updatedInput({ tool_name, tool_input }, prettier, root);
+  const edit = (tool_input: Record<string, unknown>, tool_name = 'Edit', prettier: Prettier = recordingPrettier()) => updatedInput({ tool_name, tool_input }, prettier, root);
   const path = join(root, 'a.ts');
   // In a folder that does not exist, a file that does not exist, a file outside the checkout.
   assert.equal(await edit({ file_path: join(root, 'missing', 'a.ts'), old_string: 'a', new_string: 'b' }), null);
@@ -338,8 +338,7 @@ test('updatedInput: lets the tool run as asked on every doubt, never throwing', 
   assert.equal(await edit({ file_path: path, old_string: 1, new_string: 'b' }), null);
   assert.equal(await edit({ file_path: path, old_string: 'aa', new_string: 2 }), null);
   assert.equal(await edit({ file_path: path, old_string: '', new_string: 'b', replace_all: true }), null);
-  // No prettier, or one that ignores the file.
-  assert.equal(await edit({ file_path: path, old_string: 'aa', new_string: 'bb' }, 'Edit', null), null);
+  // A prettier that ignores the file.
   const ignoring = recordingPrettier({ getFileInfo: () => Promise.resolve({ ignored: true, inferredParser: 'babel' }) });
   assert.equal(await edit({ file_path: path, old_string: 'aa', new_string: 'bb' }, 'Edit', ignoring), null);
   // Only Edit and Write are rewritten.
@@ -347,7 +346,6 @@ test('updatedInput: lets the tool run as asked on every doubt, never throwing', 
   // A path that is not a string, and content that is not a string.
   assert.equal(await edit({ file_path: 5, content: 'a' }, 'Write'), null);
   assert.equal(await edit({ file_path: join(root, 'w.ts'), content: 5 }, 'Write'), null);
-  assert.equal(await edit({ file_path: join(root, 'w.ts'), content: 'a' }, 'Write', null), null);
   assert.equal(await updatedInput({ tool_name: 'Write' }, recordingPrettier(), root), null);
 });
 
@@ -437,4 +435,14 @@ test('start: runs only as the script node was given, reading the stream it is ha
   const answered: string[] = [];
   await start(fileURLToPath(self), self.href, [event.slice(0, 9), event.slice(9)], text => answered.push(text), { CLAUDE_PROJECT_DIR: root });
   assert.deepEqual(answered, [JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: { file_path, content: 'a;' } } })]);
+});
+
+test('respond: without a prettier, never opens the file an Edit names', () => {
+  const root = checkout();
+  const pipe = join(root, 'pipe.ts');
+  execFileSync('mkfifo', [pipe]);
+  const event = { tool_name: 'Edit', cwd: root, tool_input: { file_path: pipe, old_string: 'a', new_string: 'b' } };
+  // A named pipe with no writer blocks whoever opens it: a hook that reads the file hangs until the timeout kills it.
+  const run = spawnSync(process.execPath, [HOOK], { input: JSON.stringify(event), env: { ...process.env, CLAUDE_PROJECT_DIR: root }, encoding: 'utf8', timeout: 10_000 });
+  assert.deepEqual([run.status, run.signal, run.stdout], [0, null, '']);
 });

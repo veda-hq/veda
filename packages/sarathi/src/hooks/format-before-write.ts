@@ -154,19 +154,17 @@ function applyEdit(current: string, input: Record<string, unknown>): string | nu
   return current.slice(0, at) + newString + current.slice(at + oldString.length);
 }
 
-/** `text` formatted as prettier formats `filePath`, or `null` when there is no prettier or it formats no such file. */
-async function format(prettier: Prettier | null, filePath: string, text: string, repoRoot: string): Promise<string | null> {
-  if (prettier === null) return null;
+async function format(prettier: Prettier, filePath: string, text: string, repoRoot: string): Promise<string | null> {
   const info = await prettier.getFileInfo(filePath, { ignorePath: join(repoRoot, '.prettierignore') });
   if (info.ignored || !info.inferredParser) return null;
   const options = (await prettier.resolveConfig(filePath)) ?? {};
   return prettier.format(text, { ...options, filepath: filePath });
 }
 
-/** The tool input to run instead, or `null` to let the tool run as asked (`null` prettier: none found). */
+/** The tool input to run instead, or `null` to let the tool run as asked. */
 export async function updatedInput(
   event: ToolEvent,
-  prettier: Prettier | null,
+  prettier: Prettier,
   root: string,
 ): Promise<Record<string, unknown> | null> {
   const input = event.tool_input ?? {};
@@ -200,7 +198,10 @@ export async function respond(raw: string, env: NodeJS.ProcessEnv = process.env)
   try {
     const event = JSON.parse(raw) as ToolEvent;
     const root = sessionRoot(event, env);
-    const next = await updatedInput(event, loadPrettier(root, env), root);
+    const prettier = loadPrettier(root, env);
+    // Without a prettier there is nothing to format: the file the tool names is never opened.
+    if (prettier === null) return '';
+    const next = await updatedInput(event, prettier, root);
     if (next === null) return '';
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: next } });
   } catch {

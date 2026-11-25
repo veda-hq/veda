@@ -622,13 +622,14 @@ export function parseStream(stdout: string): {
   calls: ToolCall[];
   tools?: string[];
 } {
-  const events = stdout
-    .split('\n')
-    .filter(line => line.trim() !== '')
-    .map((line): unknown => JSON.parse(line));
+  const events: unknown[] = [];
   let result: string | undefined;
   let tools: string[] | undefined;
-  for (const event of events) {
+  // One line at a time: an error result throws before a later line is read.
+  for (const line of stdout.split('\n')) {
+    if (line.trim() === '') continue;
+    const event: unknown = JSON.parse(line);
+    events.push(event);
     const {
       type,
       subtype,

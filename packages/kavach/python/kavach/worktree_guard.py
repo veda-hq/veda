@@ -1486,7 +1486,7 @@ def judge_other_sessions_worktree(
     try:
         message, scan = other_sessions_worktree(data.get("session_id"), root, loaded, environ)
         if scan is not None:
-            outcome = "the call was refused" if message is not None and mode == "refuse" else "the call was allowed"
+            outcome = "this rule refused the call" if message is not None and mode == "refuse" else "this rule let the call through"
             refusal_log.record(
                 "worktree",
                 json.dumps(data),

@@ -3035,9 +3035,23 @@ class OtherSessionsWorktreeTest(GuardFixture):
             (self.records / f"{STRANGER}.json").write_text("{not json", encoding="utf-8")
             self.assertEqual(MODULE.worktree_owners(self.theirs, HOST), MODULE.OwnerScan((STARTER,)))
             self.write_cut_record()
-            # A record over the limit is counted, and names nobody.
+            # A record over the limit that could name the worktree is counted,
+            # and names nobody; one whose head names another folder (this
+            # session's own, naming mine-task) is not counted.
             with mock.patch.object(MODULE, "RECORD_LIMIT", 10):
-                self.assertEqual(MODULE.worktree_owners(self.theirs, HOST), MODULE.OwnerScan((), 3))
+                self.assertEqual(MODULE.worktree_owners(self.theirs, HOST), MODULE.OwnerScan((), 2))
+            # A cwd that cannot be resolved skips that record, not the whole scan.
+            looped = f"{self.made}/../their-task"
+            self.write_record(STRANGER, "77777777-7777-4777-8777-777777777777", looped)
+            real = MODULE.Path.resolve
+
+            def resolve(path: Path, *args: object, **kwargs: object) -> Path:
+                if str(path) == looped:
+                    raise RuntimeError("symlink loop")
+                return real(path, *args, **kwargs)
+
+            with mock.patch.object(MODULE.Path, "resolve", resolve):
+                self.assertEqual(MODULE.worktree_owners(self.theirs, HOST), MODULE.OwnerScan((STARTER,), 1))
         # A symlinked record is refused on purpose, not counted.
         (self.records / f"{STRANGER}.json").unlink()
         (self.records / f"{STRANGER}.json").symlink_to(self.records / f"{STARTER}.json")
@@ -3063,7 +3077,7 @@ class OtherSessionsWorktreeTest(GuardFixture):
                 self.assertEqual(
                     row["reason"],
                     "WARNING: the other-sessions-worktree record scan failed (the app's records folder is a symlink), "
-                    "so it found no owner; the call was allowed.",
+                    "so it found no owner; this rule let the call through.",
                 )
         self.assertEqual(len(self.rows()), 2)
 
@@ -3075,16 +3089,16 @@ class OtherSessionsWorktreeTest(GuardFixture):
         self.assertEqual(
             scan["reason"],
             "WARNING: the other-sessions-worktree record scan could not read 1 session record, which names no owner; "
-            "the call was allowed.",
+            "this rule let the call through.",
         )
         refused = self.guard(self.theirs, settings=self.REFUSE)
         self.assertEqual(refused.returncode, 2, refused.stderr)
-        self.assertTrue(self.rows()[2]["reason"].endswith("which names no owner; the call was refused."))
+        self.assertTrue(self.rows()[2]["reason"].endswith("which names no owner; this rule refused the call."))
         self.assertEqual(self.rows()[3]["mode"], "refuse")
         # With no live owner left, the unreadable record alone allows the call.
         (self.records / f"{STARTER}.json").unlink()
         self.assert_silent(self.guard(self.theirs, settings=self.REFUSE))
-        self.assertTrue(self.rows()[-1]["reason"].endswith("the call was allowed."))
+        self.assertTrue(self.rows()[-1]["reason"].endswith("this rule let the call through."))
 
     def test_a_failed_scan_is_no_error_of_the_check(self) -> None:
         data = {"session_id": SESSION, "cwd": str(self.theirs), "tool_name": "Bash", "tool_input": {}}
@@ -3093,7 +3107,7 @@ class OtherSessionsWorktreeTest(GuardFixture):
         with failed, mine, mock.patch.object(ADAPTER.refusal_log, "record") as record:
             self.assertIsNone(ADAPTER.judge_other_sessions_worktree(data, self.theirs, ADAPTER.config.parse(self.REFUSE), {}))
         self.assertEqual(record.call_args.kwargs, {"rule": "other-sessions-worktree", "mode": "scan-failed"})
-        self.assertIn("record scan failed (OSError), so it found no owner; the call was allowed.", record.call_args.args[2])
+        self.assertIn("record scan failed (OSError), so it found no owner; this rule let the call through.", record.call_args.args[2])
 
 
 class ClaudeHarnessStateTest(GuardFixture):

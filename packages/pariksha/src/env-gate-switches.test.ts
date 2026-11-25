@@ -1212,6 +1212,8 @@ describe('findSwitchReads on scripts, at the edges of what names the environment
     ['const { process: { env: { A_SKIP } } } = global;', ['A_SKIP']],
     // A namespace's `let`, assigned the environment through the namespace, holds it.
     ['namespace keys { export let settings: unknown; }\nkeys.settings = process.env;\nnamespace keys { if (settings.A_SKIP) {} }', ['A_SKIP']],
+    // So does a top-level `var`, assigned through `globalThis`.
+    ['var settings;\nglobalThis.settings = process.env;\nif (settings.A_SKIP) {}', ['A_SKIP']],
     ['for (let i = 0; i < 1; i += 1) {}\nif (process.env.A_SKIP) {}', ['A_SKIP']],
   ] as const) {
     it(`${found.length > 0 ? 'reads' : 'does not read'} ${j(source)}`, () => {
@@ -1245,11 +1247,11 @@ describe('findSwitchReads on shell, at the edges of control flow and quoting', (
     // A `{ … }` group, opened at the line's start and closed however it is followed.
     ['{ :\nGATE_SKIP=0\n}\n[ "$GATE_SKIP" = 1 ]', [4]],
     ['{ :\n:; }\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
-    ['{ :\n: } || true\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
-    ['{ :\n: };\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
+    ['{ :\n:; } || true\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
+    ['{ :\n:; };\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
     // A `( … )` subshell after `then`, however spaced, and closed before `;`.
-    ['if a; then ( :; fi\nGATE_SKIP=0\n)\n[ "$GATE_SKIP" = 1 ]', [4]],
-    ['if a; then  ( :; fi\nGATE_SKIP=0\n)\n[ "$GATE_SKIP" = 1 ]', [4]],
+    ['if a; then ( :\n)\nGATE_SKIP=0\nfi\n[ "$GATE_SKIP" = 1 ]', [5]],
+    ['if a; then  ( :\n)\nGATE_SKIP=0\nfi\n[ "$GATE_SKIP" = 1 ]', [5]],
     ['(\n:\n);\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
     // A quoted value with a blank is one word.
     ['GATE_SKIP="a b"\n[ "$GATE_SKIP" = 1 ]', []],

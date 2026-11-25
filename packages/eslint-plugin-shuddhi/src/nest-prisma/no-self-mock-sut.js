@@ -125,10 +125,10 @@ function resolveRelativeSpecifier(directory, specifier) {
 /** Match `vi.mock(...)` / `vi.doMock(...)` / `jest.mock(...)`, else null. */
 function mockSpecifierOf(node) {
   const { callee } = node;
+  // Only an Identifier object has a `name`: `a.vi.mock()` is not vi's.
   if (
     callee.type !== 'MemberExpression' ||
     callee.computed ||
-    callee.object.type !== 'Identifier' ||
     !MOCK_OBJECTS.has(callee.object.name) ||
     callee.property.type !== 'Identifier' ||
     !MOCK_METHODS.has(callee.property.name)
@@ -136,15 +136,9 @@ function mockSpecifierOf(node) {
     return null;
   }
 
+  // Among expressions only a string Literal carries a string `value`.
   const [first] = node.arguments;
-  if (
-    first === undefined ||
-    first.type !== 'Literal' ||
-    typeof first.value !== 'string'
-  ) {
-    return null;
-  }
-  return first;
+  return typeof first?.value === 'string' ? first : null;
 }
 
 const NAMES = { type: 'array', items: { type: 'string', minLength: 1 } };
@@ -210,7 +204,8 @@ export default {
           directory,
           specifierNode.value,
         );
-        if (resolved === null || !subjects.has(resolved)) {
+        // A package specifier resolves to null, which is never a subject.
+        if (!subjects.has(resolved)) {
           return;
         }
 

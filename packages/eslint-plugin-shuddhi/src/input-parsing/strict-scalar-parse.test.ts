@@ -149,6 +149,36 @@ ruleTester.run('strict-scalar-parse (syntax only)', rule as never, {
     { code: "const p = URLSearchParams(qs).get('page');" },
     // Near-miss: an angle-bracket cast inside the guard keeps it a guard.
     { code: 'const ok = Number.isInteger(<number>Number(text));' },
+    // Near-miss: a number literal, `-`, and `+` without a string literal
+    // on either side are not visibly text.
+    ...[
+      'const d = new Date(0);',
+      "const d = new Date(start - '0');",
+      'const d = new Date(base + offset);',
+    ].map(code => ({ code })),
+    // Whole-text checks built of digits, quantifier ranges and literal
+    // digits validate the text.
+    { code: 'const n = /^\\d{10,12}$/.test(raw) ? Number(raw) : 0;' },
+    { code: 'const n = /^42$/.test(raw) ? Number(raw) : 0;' },
+    // Near-miss: names that hold a page word but are none of the page
+    // parameters, whole.
+    ...['nolimit', 'pageCount', 'homePageUrl'].map(name => ({
+      code: `const value = searchParams.get('${name}');`,
+    })),
+    // Near-miss: another method, an extra argument, a private method or
+    // field, and no argument to `Number` at all.
+    { code: "const has = searchParams.has('page');" },
+    { code: "const page = searchParams.get('page', 1);" },
+    {
+      code: "class C { #get() {} m() { return searchParams.#get('page'); } }",
+    },
+    {
+      code: "class C { #params; m() { return this.#params.get('page'); } }",
+    },
+    { code: 'const zero = Number();' },
+    { code: 'const n = Number(text, 10);' },
+    // Near-miss: a local `Date` is not the global one.
+    { code: "const Date = Temporal; const d = new Date('2026-02-29');" },
   ],
   invalid: [
     // Page fields through every coercion.
@@ -400,9 +430,37 @@ ruleTester.run('strict-scalar-parse (syntax only)', rule as never, {
       // A PASSING guard's exit protects nothing after the `if`.
       'function f(t) { const n = Number(t); if (Number.isFinite(n)) return 1; return n; }',
       'let x = 0; if (Number.isFinite(x)) { x += Number(text); use(x); }',
+      // A read left of the guard, even grouped with it, is not behind it;
+      // a `case` passes no branch; a `new` is neither an exit nor a guard;
+      // a destructured result binds no variable the guard checks.
+      'const n = Number(t); const r = w && (use(n) && Number.isFinite(n));',
+      'const n = Number(t); switch (true) { case Number.isFinite(n): use(n); }',
+      'const n = Number(t); if (!Number.isFinite(n)) new process.exit(2); use(n);',
+      'const n = Number(t); if (!new Number.isFinite(n)) throw 1; use(n);',
+      'const { valueOf } = Number(t); if (!Number.isFinite(valueOf)) throw 1; use(valueOf);',
+      // A guard of a conditional built on the value checks the conditional.
+      'const ok = Number.isFinite(Number(raw) ? 1 : 0);',
+      // A string literal is text, and `.test` must be the regex's own
+      // method taking the text alone.
+      "const n = Number('12');",
+      'const n = /^\\d+$/.test(raw, 1) ? Number(raw) : 0;',
+      'class C { #test() {} m(raw) { return /^\\d+$/.#test(raw) ? Number(raw) : 0; } }',
+      // A private field is no page field.
+      'class C { #page; m() { return Number(this.#page); } }',
     ].map(code => ({
       code,
       errors: [{ messageId: 'unguardedNumber' as const }],
+    })),
+    // The read must be the reader's first argument.
+    {
+      code: "const p = usePageParam(fallback, searchParams.get('page'));",
+      options: READERS,
+      errors: [{ messageId: 'pageParam', data: page('page') }],
+    },
+    // `perpage` and `per_page` are page sizes too.
+    ...['perpage', 'per_page'].map(name => ({
+      code: `const size = searchParams.get('${name}');`,
+      errors: [{ messageId: 'pageParam' as const, data: page(name) }],
     })),
   ],
 });
@@ -438,8 +496,24 @@ typedTester.run('strict-scalar-parse (typed)', rule as never, {
     {
       code: 'declare const parts: [string]; const d = new Date(...parts);',
     },
+    // Near-miss: a side that may be a number is not definitely a string.
+    {
+      code: 'declare const a: string | number; declare const b: string; const x = a < b;',
+    },
+    // Near-miss: typed, a search-like name is judged by its type, and a
+    // receiver with no type symbol is not URLSearchParams.
+    {
+      code: "declare const query: Map<string, string>; const l = query.get('limit');",
+    },
+    { code: "declare const params: any; const p = params.get('page');" },
+    // Near-miss: only unary `+` coerces to a number here.
+    { code: 'declare const s: string; const b = !s;' },
   ],
   invalid: [
+    {
+      code: "declare const a: 'x' | 'y'; declare const b: string; const x = a < b;",
+      errors: [{ messageId: 'stringCompare' }],
+    },
     ...['>', '<=', '>='].map(operator => ({
       code: `declare const a: string; declare const b: string; const x = a ${operator} b;`,
       errors: [{ messageId: 'stringCompare' as const, data: { operator, hint: DEFAULT_HINTS.stringCompare } }],
@@ -476,6 +550,7 @@ interface RuleMeta {
     type: string;
     docs: { description: string };
     messages: Record<string, string>;
+    defaultOptions: { pageReaders: string[] }[];
   };
 }
 
@@ -557,6 +632,13 @@ describe('strict-scalar-parse meta', () => {
       });
     assert.deepEqual(verify({ pageReaders: ['readPage'] }), []);
     assert.throws(() => verify({ pageReaders: 'readPage' }), /should be array/);
+    assert.throws(() => verify({ pageReaders: [1] }), /should be string/);
+    assert.throws(() => verify({ pageReaders: ['readPage', 'readPage'] }), /duplicate items/);
+    assert.throws(() => verify({ readers: ['readPage'] }), /additional properties/);
+  });
+
+  it('names no page reader by default', () => {
+    assert.deepEqual(meta.defaultOptions[0]?.pageReaders, []);
   });
 });
 

@@ -310,10 +310,12 @@ describe('prismaCall and trackDelegateAlias', () => {
 
   it('reads no alias by default, and no call from a non-call', () => {
     assert.deepEqual(
-      eachExpression('prisma.user.findMany();\nproducts.findMany();\nprisma.user;', node =>
-        prismaCall(node),
+      eachExpression(
+        'prisma.user.findMany();\nproducts.findMany();\nprisma.user;\nnew prisma.user.findMany();',
+        node => prismaCall(node),
       ),
-      [{ delegate: 'user', method: 'findMany' }, null, null],
+      // A `new` has a callee too, but constructs rather than calls.
+      [{ delegate: 'user', method: 'findMany' }, null, null, null],
     );
   });
 });

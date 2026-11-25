@@ -95,6 +95,16 @@ describe('require-orderby-findfirst', () => {
         code: 'prisma.user.findFirst({ [sortKey]: { id: 1 } });',
         errors: [{ messageId: 'missingOrderBy' }],
       },
+      {
+        name: 'the message names the fix',
+        code: 'prisma.order.findFirst({ select: { id: true } });',
+        errors: [
+          {
+            message:
+              'Prisma findFirst() without orderBy returns non-deterministic results. Add an orderBy clause.',
+          },
+        ],
+      },
     ],
   });
 });

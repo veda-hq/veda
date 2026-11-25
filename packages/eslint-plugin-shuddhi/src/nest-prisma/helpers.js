@@ -71,9 +71,12 @@ export function memberName(member) {
   if (!member || member.type !== 'MemberExpression') return null;
   const key = member.property;
   if (!member.computed) return key.type === 'Identifier' ? key.name : null;
-  if (key.type === 'Literal' && typeof key.value === 'string') return key.value;
+  // Among key expressions only a Literal carries a `value`.
+  if (typeof key.value === 'string') return key.value;
+  // A template without expressions has exactly one quasi, and outside a tag
+  // its cooked text is always a string.
   if (key.type === 'TemplateLiteral' && key.expressions.length === 0) {
-    return key.quasis[0]?.value.cooked ?? null;
+    return key.quasis[0].value.cooked;
   }
   return null;
 }
@@ -123,7 +126,8 @@ export function insideTransaction(node, wrappers = new Set()) {
       if (memberName(unwrap(callee)) === '$transaction') {
         return true;
       }
-      if (callee.type === 'Identifier' && wrappers.has(callee.name)) {
+      // Only an Identifier callee has a `name`.
+      if (wrappers.has(callee.name)) {
         return true;
       }
     }
@@ -169,11 +173,9 @@ export function isPrismaRoot(input) {
   // to a `this.` receiver on purpose: accepting ANY `x.prisma` chain meant an
   // unrelated object that merely holds a `.prisma` field pulled its writes into
   // the transaction rule and reported them.
-  if (
-    node.type === 'MemberExpression' &&
-    node.object.type === 'ThisExpression' &&
-    memberName(node) !== null
-  ) {
+  // `this[key]` has no name (null), and null names no client: it is in no
+  // set, and the pattern reads it as the text "null".
+  if (node.type === 'MemberExpression' && node.object.type === 'ThisExpression') {
     return named(memberName(node));
   }
   // A call-expression root counts only when the CALLEE is named for Prisma:
@@ -317,8 +319,9 @@ export function spreadObject(spread, resolve) {
 export function valueResolver(values) {
   return function resolve(node, seen = new Set()) {
     const value = unwrap(node);
-    if (value?.type !== 'Identifier' || seen.has(value)) return value;
-    const bound = values.lookup(value);
+    // lookup binds only an Identifier: anything else, or no node, is
+    // undefined there and resolves to itself.
+    const bound = seen.has(value) ? undefined : values.lookup(value);
     if (bound === undefined) return value;
     seen.add(value);
     return resolve(bound, seen);

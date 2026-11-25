@@ -54,11 +54,11 @@ const nestHttpException = {
         if (!isNestModule) return;
         const argument = node.argument;
         // `Error('x')` without `new` constructs the same bare Error, so it
-        // reaches Nest with the same nothing-to-map 500.
+        // reaches Nest with the same nothing-to-map 500. Only an Identifier
+        // callee has a `name`: `new errors.Error()` is another class.
         if (
           (argument.type === 'NewExpression' ||
             argument.type === 'CallExpression') &&
-          argument.callee.type === 'Identifier' &&
           argument.callee.name === 'Error'
         ) {
           context.report({ node, messageId: 'bareError' });
@@ -153,8 +153,8 @@ const nestParamPipe = {
       'MethodDefinition > FunctionExpression > :matches(Identifier, TSParameterProperty)'(
         node,
       ) {
+        // A parser without decorators gives a parameter none at all.
         const decorators = node.decorators ?? [];
-        if (decorators.length === 0) return;
 
         const decorated = decorators.some(d => {
           const expression = d.expression;
@@ -162,9 +162,8 @@ const nestParamPipe = {
             expression.type === 'CallExpression'
               ? expression.callee
               : expression;
-          return (
-            callee.type === 'Identifier' && PARAM_DECORATORS.has(callee.name)
-          );
+          // Only an Identifier has a `name`: `@nest.Query()` is not read.
+          return PARAM_DECORATORS.has(callee.name);
         });
         if (!decorated) return;
 
@@ -190,11 +189,11 @@ const nestParamPipe = {
         if (!annotation) return;
         const paramName = node.name;
 
+        // A qualified type name (`luxon.Date`) has no `name` of its own.
         const declared =
           annotation.type === 'TSNumberKeyword'
             ? 'number'
             : annotation.type === 'TSTypeReference' &&
-                annotation.typeName.type === 'Identifier' &&
                 annotation.typeName.name === 'Date'
               ? 'Date'
               : // An id-shaped param typed `string` is the UUID case. The
@@ -272,15 +271,15 @@ const noRawSqlInterpolation = {
       const callee = unwrap(node.callee);
       const local = unsafeLocals.lookup(callee);
       if (local !== undefined) return { method: local, sql: node.arguments[0] };
+      // A member with no readable name is null, which UNSAFE never holds.
       const name = memberName(callee);
-      if (name !== null && UNSAFE.has(name)) {
+      if (UNSAFE.has(name)) {
         return { method: name, sql: node.arguments[0] };
       }
       const invoked = unwrap(callee.object);
       const inner = memberName(invoked);
       const viaIdentifier = unsafeLocals.lookup(invoked) ?? null;
-      const method =
-        inner !== null && UNSAFE.has(inner) ? inner : viaIdentifier;
+      const method = UNSAFE.has(inner) ? inner : viaIdentifier;
       if (method === null) return null;
       if (name === 'call') return { method, sql: node.arguments[1] };
       if (name === 'apply') {
@@ -299,10 +298,10 @@ const noRawSqlInterpolation = {
           if (entry.type !== 'Property') continue;
           // `{ [name]: local }` takes the property named by name's VALUE;
           // only a literal computed key is known here.
+          // A nested pattern or a default (`{ $queryRawUnsafe: q = f }`)
+          // binds nothing: only an Identifier names a variable (bindings).
           const key = propertyName(entry);
-          if (UNSAFE.has(key) && entry.value.type === 'Identifier') {
-            unsafeLocals.bind(entry.value, key);
-          }
+          if (UNSAFE.has(key)) unsafeLocals.bind(entry.value, key);
         }
       },
       CallExpression(node) {
@@ -432,17 +431,23 @@ const noUnboundTestApp = {
       helper,
       from: helperModule === '' ? '' : ` from ${helperModule}`,
     };
-    /** Identifiers holding a Nest application built in this file. */
+    /**
+     * Holders (holderName) of a Nest application built in this file. A
+     * holder the AST cannot name is null, which may enter this set and the
+     * next but matches nothing: a call whose receiver is null is dropped
+     * before either is read for it.
+     */
     const nestApps = new Set();
     /**
-     * Identifiers routed through the loopback helper. Tracked PER APP: a
+     * Holders routed through the loopback helper. Tracked PER APP: a
      * file-level flag meant that one harnessed app silenced `bareInit` for
      * every OTHER app in the same file, so a second unbound application went
      * unreported.
      */
     const harnessed = new Set();
-    const bareInits = [];
-    const hostlessListens = [];
+    /** Calls judged once the whole file is read: call node -> receiver. */
+    const bareInits = new Map();
+    const hostlessListens = new Map();
     let usesSupertest = false;
 
     /** Is this call `<something>.createNestApplication(...)`? */
@@ -473,27 +478,16 @@ const noUnboundTestApp = {
       return null;
     };
 
-    /** The receiver of `x.method()` / `this.x.method()`, by holder name. */
-    const receiverName = node => {
-      const callee = unwrap(node.callee);
-      return callee.type === 'MemberExpression'
-        ? holderName(callee.object)
-        : null;
-    };
-
     /**
      * A host argument that actually keeps the server off the network.
      *
      * Restricted to loopback literals, not any string: `listen(0, '0.0.0.0')`
      * names a host and still publishes an app whose auth guards are stubbed
      * open on every interface, which is half of what this rule exists to
-     * prevent.
+     * prevent. Among arguments only a Literal carries a `value`.
      */
     const namesHost = args =>
-      args.some(
-        argument =>
-          argument.type === 'Literal' && LOOPBACK_HOSTS.has(argument.value),
-      );
+      args.some(argument => LOOPBACK_HOSTS.has(argument.value));
 
     return {
       ImportDeclaration(node) {
@@ -504,36 +498,31 @@ const noUnboundTestApp = {
         // second unbound app in the same file went unreported.
       },
       // `const app = moduleRef.createNestApplication()` and `app = ...`
+      // A pattern (`const { app } = …`) names no holder: null.
       VariableDeclarator(node) {
-        if (
-          node.init &&
-          createsNestApp(node.init) &&
-          node.id.type === 'Identifier'
-        ) {
-          nestApps.add(node.id.name);
+        if (node.init && createsNestApp(node.init)) {
+          nestApps.add(holderName(node.id));
         }
       },
       AssignmentExpression(node) {
-        const holder = holderName(node.left);
-        if (createsNestApp(node.right) && holder !== null) {
-          nestApps.add(holder);
-        }
+        if (createsNestApp(node.right)) nestApps.add(holderName(node.left));
       },
       CallExpression(node) {
         const callee = unwrap(node.callee);
-        if (callee.type === 'Identifier' && callee.name === helper) {
+        // Only an Identifier callee has a `name`.
+        if (callee.name === helper) {
           // `helper(app)` harnesses that holder specifically.
-          const holder = holderName(node.arguments[0]);
-          if (holder !== null) harnessed.add(holder);
+          harnessed.add(holderName(node.arguments[0]));
           return;
         }
-        const method = memberName(callee);
-        if (method === null) return;
-        const receiver = receiverName(node);
+        // The receiver of `x.method()` / `this.x.method()`: a callee that is
+        // no member has no `object`, and so no holder.
+        const receiver = holderName(callee.object);
         if (receiver === null) return;
+        const method = memberName(callee);
 
         if (method === 'init' && node.arguments.length === 0) {
-          bareInits.push({ node, receiver });
+          bareInits.set(node, receiver);
         }
         if (method === 'listen') {
           if (namesHost(node.arguments)) {
@@ -544,19 +533,19 @@ const noUnboundTestApp = {
             // that already listened are written this way.
             harnessed.add(receiver);
           } else {
-            hostlessListens.push({ node, receiver });
+            hostlessListens.set(node, receiver);
           }
         }
       },
       'Program:exit'() {
-        for (const { node, receiver } of hostlessListens) {
+        for (const [node, receiver] of hostlessListens) {
           if (nestApps.has(receiver)) {
             context.report({ node, messageId: 'hostlessListen', data });
           }
         }
         // A bare init only matters when the suite actually makes HTTP requests.
         if (!usesSupertest) return;
-        for (const { node, receiver } of bareInits) {
+        for (const [node, receiver] of bareInits) {
           if (nestApps.has(receiver) && !harnessed.has(receiver)) {
             context.report({ node, messageId: 'bareInit', data });
           }

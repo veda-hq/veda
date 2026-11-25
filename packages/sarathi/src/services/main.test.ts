@@ -3,6 +3,7 @@
 import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, mock, test } from 'node:test';
 
@@ -42,8 +43,17 @@ const io = (cwd: string, extra: Partial<Io> = {}): Io => ({
   err: text => {
     err += text;
   },
+  // Half a second at most: a setup lock left held fails a case in that time, not in a whole start's.
+  lock: { pause: () => delay(5), attempts: 100 },
   ...extra,
 });
+
+/**
+ * Longest a block here may take, so a mutant that waits fails instead of
+ * hanging; node:test bounds a describe block as a whole. Each block takes
+ * well under 10 s.
+ */
+const BOUND_MS = 60_000;
 
 const calls = (): string[] => {
   try {
@@ -81,7 +91,7 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-describe('sarathi services', () => {
+describe('sarathi services', { timeout: BOUND_MS }, () => {
   test('names only its usage, and runs nothing, without an action or with a flag for one', async () => {
     const usage = [
       'usage: sarathi services up|down|status|web|server|<action> [args]',
@@ -174,7 +184,7 @@ describe('sarathi services', () => {
   });
 });
 
-describe('sarathi services reap', () => {
+describe('sarathi services reap', { timeout: BOUND_MS }, () => {
   const host = (calls: string[][]): ((write: (text: string) => void) => SweepHost) => write => ({
     docker: async args => {
       calls.push(args);
@@ -226,7 +236,7 @@ describe('sarathi services reap', () => {
   });
 });
 
-describe('sarathi services prune', () => {
+describe('sarathi services prune', { timeout: BOUND_MS }, () => {
   test('previews a sweep from this checkout, with its names, through the given docker', async () => {
     expect(await servicesMain(['prune', 'run', '--dry-run', '--docker', join(root, 'bin', 'docker')], io(join(root, 'bin')))).toBe(0);
     expect(err).toBe('');

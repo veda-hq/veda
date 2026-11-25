@@ -940,7 +940,8 @@ The live-service tests start real containers, so they run only with
 depends on it" from the project's module graph, so a session finds out
 without opening files. It runs the project's own dependency-cruiser,
 `node_modules/.bin/depcruise` at the repository root, so sarathi adds no
-dependency; a checkout without it gets a refusal that names the binary.
+dependency; a checkout without it gets a refusal that names the binary. It
+passes `--cache`, which dependency-cruiser has had since 11.14.
 
 ```sh
 sarathi where discount-engine/index             # direct neighbours (--depth N for more)
@@ -949,7 +950,8 @@ sarathi where --affected origin/main            # changed since the revision (de
 ```
 
 `--scope DIR` limits the cruise, from the repository root (repeatable,
-default `apps packages`), and `--max N` the edges printed (default 60). The
+default `apps packages`; a folder that starts with `-` is refused, since
+depcruise would read it as an option), and `--max N` the edges printed (default 60). The
 answer is one `a → b` edge per line, deduplicated and sorted, then
 `… N more of M (raise with --max)` when it was cut. Dependencies, built
 output, coverage, `.turbo`, `.stryker-tmp` and `.tmp` are excluded, so an

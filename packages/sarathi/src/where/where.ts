@@ -124,6 +124,8 @@ export function parseArgs(argv: readonly string[]): Parsed {
       if (value === undefined || value === '') return { kind: 'error', message: `${arg} needs a value` };
       index += 1;
       if (arg === '--scope') {
+        // depcruise would read a folder that starts with a dash as one of its options.
+        if (value.startsWith('-')) return { kind: 'error', message: `--scope needs a folder, not the option-like ${JSON.stringify(value)}` };
         scope.push(value);
         continue;
       }

@@ -99,8 +99,14 @@ describe('parseArgs', () => {
     assert.equal(runOptions(['x', '-r', '--config', 'c.cjs']).config, 'c.cjs');
   });
 
-  it('keeps an option value that looks like a flag', () => {
-    assert.deepEqual(runOptions(['x', '--scope', '-odd']).scope, ['-odd']);
+  it('refuses a scope that depcruise would read as an option, and keeps a dash inside one', () => {
+    assert.equal(errorMessage(['x', '--scope', '-odd']), '--scope needs a folder, not the option-like "-odd"');
+    assert.equal(errorMessage(['x', '--scope', 'apps', '--scope', '--help']), '--scope needs a folder, not the option-like "--help"');
+    assert.deepEqual(runOptions(['x', '--scope', 'apps/my-app']).scope, ['apps/my-app']);
+  });
+
+  it('takes an option-like --config, which never reaches depcruise as typed', () => {
+    assert.equal(runOptions(['x', '--config', '-odd.cjs']).config, '-odd.cjs');
   });
 
   for (const [argv, mode] of [

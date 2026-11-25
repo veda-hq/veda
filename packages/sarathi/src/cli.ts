@@ -75,7 +75,8 @@ const USAGE = `usage: sarathi hook <Event> [--config <file>]
        sarathi services run -- <command>
        sarathi services reap
        sarathi services prune install|run|run-now|status|uninstall [--dry-run] [--docker <path>] [--settings <file>]
-       sarathi where <regex> [--reaches | --depth N] | --affected [rev] [--scope DIR]... [--max N] [--config <file>]
+       sarathi where <regex> [--reaches | --depth N] [--scope DIR]... [--max N] [--config <file>]
+       sarathi where --affected [rev] [--scope DIR]... [--max N] [--config <file>]
        sarathi --version
 `;
 

@@ -41,7 +41,7 @@ import sys
 import tempfile
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Mapping, NoReturn, Sequence
+from typing import Any, Mapping, NamedTuple, NoReturn, Sequence
 
 
 HERE = Path(__file__).resolve().parent
@@ -1409,12 +1409,24 @@ def reviewed(
 
 
 OTHER_SESSIONS_WORKTREE = config.OTHER_SESSIONS_WORKTREE_RULE
+# The `mode` of the row a failed or partial record scan logs (veda#588). It is
+# not one of the rule's modes: the call goes on as if no owner were found.
+SCAN_FAILED = "scan-failed"
+
+
+class OtherSessionsFinding(NamedTuple):
+    """What ``other_sessions_worktree`` found: why the write is in another
+    session's worktree (``message``, or None), and what went wrong reading the
+    records (``scan``, or None)."""
+
+    message: str | None
+    scan: str | None = None
 
 
 def other_sessions_worktree(
     session_id: object, root: Path, loaded: Any, environ: Mapping[str, str]
-) -> str | None:
-    """Why a write from ``root`` is in another session's worktree, or None.
+) -> OtherSessionsFinding:
+    """Why a write from ``root`` is in another session's worktree, if it is.
 
     It fires only when both hold (veda#363):
 
@@ -1427,23 +1439,32 @@ def other_sessions_worktree(
     So a worktree shared with the session that started this one passes (this
     session's own record names it). So do a worktree the session made itself
     and a subagent's ``agent-*`` worktree, since no other record names them.
-    With no record, or one that does not match, nothing fires. Both readers
-    never raise, so on any failure nothing fires either."""
+    With no record, or one that does not match, nothing fires and nothing is
+    said. A scan that failed, or skipped records it could not read, is said
+    in ``scan`` (veda#588); a failed scan finds no owner."""
 
     own = boundary.session_worktree(session_id, loaded.own_checkout, environ)
     if own is None or own.resolve() == root.resolve():
-        return None
-    owners = boundary.worktree_owners(root, environ.get("CLAUDE_CODE_HOST_SESSION_ID", ""))
-    if not owners:
-        return None
+        return OtherSessionsFinding(None)
+    scan = boundary.worktree_owners(root, environ.get("CLAUDE_CODE_HOST_SESSION_ID", ""))
+    problem = None
+    if scan.owners is None:
+        problem = f"failed ({scan.failure}), so it found no owner"
+    elif scan.skipped:
+        records = {1: "record, which names"}.get(scan.skipped, "records, which name")
+        problem = f"could not read {scan.skipped} session {records} no owner"
+    if not scan.owners:
+        return OtherSessionsFinding(None, problem)
+    owners = scan.owners
     if len(owners) == 1:
         sessions, whose = "another live session works", "that session's"
     else:
         sessions, whose = f"{len(owners)} other live sessions work", "their"
-    return (
+    return OtherSessionsFinding(
         f"the shell is in worktree {root.name}, which {sessions} in; this session's is "
         f"{own.name}. A write here changes {whose} files and branch. Run "
-        f"`cd {shlex.quote(str(own))}` alone to return, then retry (the shell is in {root})."
+        f"`cd {shlex.quote(str(own))}` alone to return, then retry (the shell is in {root}).",
+        problem,
     )
 
 
@@ -1454,11 +1475,30 @@ def judge_other_sessions_worktree(
     log the fire and return the answer to print once the call is allowed.
 
     While it warns, an error in it allows the call and logs a row naming the
-    error's type; once it refuses, the error refuses too (``run``)."""
+    error's type; once it refuses, the error refuses too (``run``).
+
+    A record scan that failed or skipped records is not such an error: in
+    either mode it logs a row of its own (mode ``scan-failed``) and the call
+    is judged by the owners the scan did find, none when it failed. So a
+    broken scan never refuses (#335's lockout) and never hides (veda#588)."""
 
     mode, refuses_from = rules.mode_of(loaded, OTHER_SESSIONS_WORKTREE)
+    scan: str | None = None
+
+    def note_scan(outcome: str) -> None:
+        # The row says only what this rule decided: a later check in the
+        # guard can still refuse the call.
+        if scan:
+            refusal_log.record(
+                "worktree",
+                json.dumps(data),
+                f"WARNING: the {OTHER_SESSIONS_WORKTREE} record scan {scan}; this rule {outcome}.",
+                rule=OTHER_SESSIONS_WORKTREE,
+                mode=SCAN_FAILED,
+            )
+
     try:
-        message = other_sessions_worktree(data.get("session_id"), root, loaded, environ)
+        message, scan = other_sessions_worktree(data.get("session_id"), root, loaded, environ)
     except Exception as error:
         if mode == "refuse":
             raise
@@ -1472,12 +1512,15 @@ def judge_other_sessions_worktree(
             mode=mode,
         )
     if message is None:
+        note_scan("let the call through")
         return None
     fire = rules.Fire(OTHER_SESSIONS_WORKTREE, mode, message, refuses_from)
     if mode == "refuse":
+        note_scan("refused the call")
         refusal_log.label(OTHER_SESSIONS_WORKTREE, mode)
         print(rules.refusal([fire]), file=sys.stderr)
         raise SystemExit(2)
+    note_scan("let the call through")
     refusal_log.record("worktree", json.dumps(data), f"WARNING: {message}", rule=OTHER_SESSIONS_WORKTREE, mode=mode)
     return rules.answer([rules.context(fire)])
 

@@ -703,7 +703,18 @@ def session_worktree(session_id: object, own: Any, environ: Mapping[str, str]) -
         return None
 
 
-def worktree_owners(root: Path, host: str) -> tuple[str, ...]:
+class OwnerScan(NamedTuple):
+    """What ``worktree_owners`` found. ``owners`` is ``None`` when the scan
+    as a whole failed, so the caller can tell that from "no owner";
+    ``skipped`` counts the records it could not read (veda#588)."""
+
+    owners: tuple[str, ...] | None
+    skipped: int = 0
+    # Why the whole scan failed, when it did.
+    failure: str = ""
+
+
+def worktree_owners(root: Path, host: str) -> OwnerScan:
     """The desktop app sessions, other than ``host``, whose record names
     ``root`` as their ``cwd`` and is not archived (veda#363).
 
@@ -714,23 +725,32 @@ def worktree_owners(root: Path, host: str) -> tuple[str, ...]:
     ``cwd`` third. A head whose top-level ``cwd`` is another folder is
     skipped. The whole record is read and parsed only when that ``cwd`` is
     the worktree, or when the head holds no complete top-level ``cwd`` and the
-    text holds the worktree's folder name. One that is a symlink, too large,
-    unreadable or of the wrong shape names nobody, and so does a missing app
-    folder. Never raises: a failure counts as no owner, so the caller can only
-    stay quiet."""
+    text holds the worktree's folder name.
+
+    A record that is a symlink, not a file or of the wrong shape names
+    nobody. One that could name the worktree but is too large, or cannot be
+    read, parsed or resolved (one the app is part way through writing, say),
+    names nobody either, and is counted in ``skipped``. One whose head or text
+    shows it cannot name the worktree is never parsed, so it is not counted. A missing or symlinked records folder, or any
+    other error, fails the whole scan: ``owners`` is ``None`` and
+    ``failure`` says why. Never raises, so the caller decides what a failure
+    means (veda#588: it allows the call and logs a row)."""
 
     try:
         app = claude_app_root()
         sessions = app / "claude-code-sessions"
-        if app.is_symlink() or sessions.is_symlink() or not sessions.is_dir():
-            return ()
+        if app.is_symlink() or sessions.is_symlink():
+            return OwnerScan(None, failure="the app's records folder is a symlink")
+        if not sessions.is_dir():
+            return OwnerScan(None, failure="the app's records folder is missing")
         wanted = root.resolve()
         # The app writes JSON as JavaScript does, non-ASCII unescaped.
         needle = json.dumps(wanted.name, ensure_ascii=False)[1:-1]
         owners: list[str] = []
+        skipped = 0
         for path in sorted(sessions.glob("*/*/local_*.json")):
             try:
-                if path.is_symlink() or not path.is_file() or path.stat().st_size > RECORD_LIMIT:
+                if path.is_symlink() or not path.is_file():
                     continue
                 with path.open("rb") as handle:
                     head = handle.read(RECORD_HEAD).decode("utf-8", errors="replace")
@@ -744,26 +764,34 @@ def worktree_owners(root: Path, host: str) -> tuple[str, ...]:
                         and Path(named).resolve() == wanted
                     ):
                         continue
+                # Only a record that could name the worktree gets this far, so
+                # only such a one counts as skipped (veda#588).
+                if path.stat().st_size > RECORD_LIMIT:
+                    skipped += 1
+                    continue
                 text = path.read_text(encoding="utf-8")
                 if needle not in text:
                     continue
                 record = json.loads(text)
-            except (OSError, ValueError, RecursionError):
+                if not isinstance(record, dict):
+                    continue
+                name, cwd = record.get("sessionId"), record.get("cwd")
+                if not isinstance(name, str) or not HOST_SESSION.fullmatch(name) or name == host:
+                    continue
+                if record.get("isArchived") is True:
+                    continue
+                if not isinstance(cwd, str) or not cwd.startswith("/"):
+                    continue
+                if Path(cwd).resolve() == wanted:
+                    owners.append(name)
+            except (OSError, ValueError, RecursionError, RuntimeError):
+                # One record that cannot be read, parsed or resolved is
+                # skipped, never the whole scan.
+                skipped += 1
                 continue
-            if not isinstance(record, dict):
-                continue
-            name, cwd = record.get("sessionId"), record.get("cwd")
-            if not isinstance(name, str) or not HOST_SESSION.fullmatch(name) or name == host:
-                continue
-            if record.get("isArchived") is True:
-                continue
-            if not isinstance(cwd, str) or not cwd.startswith("/"):
-                continue
-            if Path(cwd).resolve() == wanted:
-                owners.append(name)
-        return tuple(dict.fromkeys(owners))
-    except Exception:
-        return ()
+        return OwnerScan(tuple(dict.fromkeys(owners)), skipped)
+    except Exception as error:
+        return OwnerScan(None, failure=type(error).__name__)
 
 
 def deny(message: str) -> None:

@@ -30,9 +30,9 @@ const noStubenvInBeforeAll = {
     return {
       CallExpression(node) {
         const callee = unwrap(node.callee);
+        // Of the objects a member can have, only an Identifier has a `name`.
         if (
           callee.type !== 'MemberExpression' ||
-          unwrap(callee.object).type !== 'Identifier' ||
           unwrap(callee.object).name !== 'vi' ||
           propertyName(callee) !== 'stubEnv'
         ) {

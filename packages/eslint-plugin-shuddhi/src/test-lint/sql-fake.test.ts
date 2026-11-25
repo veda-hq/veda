@@ -232,6 +232,49 @@ ruleTester.run('no-sql-fake: fake shapes', rules['no-sql-fake'], {
       filename: TEST_FILE,
       code: `makeMock(db, 'query').mockImplementation((sql: string) => rows);`,
     },
+    // A spyOn with no method named, or one this file cannot read.
+    {
+      filename: TEST_FILE,
+      code: `vi.spyOn(db).mockImplementation((sql: string) => rows);
+      vi.spyOn(db, name).mockImplementation((sql: string) => rows);`,
+    },
+    // A mock given no implementation, or one built elsewhere.
+    {
+      filename: TEST_FILE,
+      code: `db.query.mockImplementation();
+      const db = { query: vi.fn(handler) };`,
+    },
+    // A plain call around the implementation is no vi.fn.
+    {
+      filename: TEST_FILE,
+      code: `const db = { query: once((sql: string) => rows) };`,
+    },
+    // Calls on the method other than a mock implementation.
+    {
+      filename: TEST_FILE,
+      code: `seen.query.forEach((sql: string) => seen.push(sql));`,
+    },
+    // A parameter name only ends or starts with an SQL name.
+    {
+      filename: TEST_FILE,
+      code: `const db = {
+        query: (mysql: Pool) => rows,
+        execute: (sqlite: Db) => rows,
+        unsafe: (subquery: string) => rows,
+        $queryRaw: (queryOptions: Options) => rows,
+      };`,
+    },
+    // An sql parameter on a method that names no SQL call.
+    {
+      filename: TEST_FILE,
+      code: `const view = { render: (sql: string) => html };
+      class Repo { find(id: string) { return rows; } }`,
+    },
+    // A named function expression forwards its first parameter, not its name.
+    {
+      filename: TEST_FILE,
+      code: `const db = { query: function query(sql: string) { return engine.prepare(sql).all(); } };`,
+    },
   ],
   invalid: [
     {

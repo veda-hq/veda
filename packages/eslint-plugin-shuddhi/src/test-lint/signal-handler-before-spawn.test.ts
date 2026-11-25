@@ -59,6 +59,12 @@ ruleTester.run('signal-handler-before-spawn', rules['signal-handler-before-spawn
       const child = fork(worker);
       function later() { process.on('SIGINT', stop); }`,
     },
+    // A spawn chained off the handler's own call starts where it does, and
+    // runs after the handler is installed.
+    {
+      filename: SCRIPT,
+      code: `process.on('SIGTERM', stop).spawn('x', []);`,
+    },
     // A handler on the child, for another event, for a signal not named
     // here, for a signal the rule cannot read, or removing a listener.
     {

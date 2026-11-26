@@ -254,6 +254,13 @@ export const wordsInCode = (config: Config, snapshot: RepoSnapshot, words: reado
   return found;
 };
 
+/** Of `words`, the ones no code in the snapshot holds; it reads the code only for some word, and keeps it read. */
+export const wordsGoneFromCode = (config: Config, snapshot: RepoSnapshot, words: readonly string[]): string[] => {
+  if (words.length === 0) return [];
+  const code = codeWords(config, snapshot);
+  return words.filter((word) => !code.has(word));
+};
+
 /** Whether `text` holds `flag` whole: `--base` is not in `--baseline`. */
 const holdsFlag = (text: string, flag: string): boolean => {
   for (let at = text.indexOf(flag); at !== -1; at = text.indexOf(flag, at + 1)) {

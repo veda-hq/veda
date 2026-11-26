@@ -21,7 +21,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { findCommandProblems } from './doc-command-rules.ts';
-import { codeWords, findIdentifierProblems, flagsGoneFromCode, manifestObject } from './doc-identifiers.ts';
+import { findIdentifierProblems, flagsGoneFromCode, manifestObject, wordsGoneFromCode } from './doc-identifiers.ts';
 import { findLinkProblems, type LinkRunner } from './doc-links.ts';
 import { findPathProblems } from './doc-paths.ts';
 import type { Config } from './doc-references-config.ts';
@@ -189,6 +189,20 @@ export const hunkLines = (diff: string): string[] => {
   return lines;
 };
 
+/**
+ * `diff` without the files in `skip`, by the `--- a/` or `+++ b/` path of
+ * each file's header (before its first hunk). A quoted path matches nothing
+ * and stays.
+ */
+export const withoutFiles = (diff: string, skip: ReadonlySet<string>): string =>
+  diff
+    .split(/^(?=diff --git )/m)
+    .filter((section) => {
+      const header = section.split('\n@@')[0] ?? '';
+      return ![...header.matchAll(/^(?:--- a|\+\+\+ b)\/(.*)$/gm)].some((match) => skip.has(String(match[1])));
+    })
+    .join('');
+
 /** What the diff's removed lines held that its added lines do not, by `pattern`, kept when `keep` says so. */
 const removedTokens = (diff: string, pattern: RegExp, keep: (token: string) => boolean): Set<string> => {
   const removed = new Set<string>();
@@ -218,12 +232,11 @@ export const runGate = (options: GateOptions): GateReport => {
   // A push's merge base and head; a commit and --all have none.
   let range: { base: string; head: string } | undefined;
   // What a finding already there is judged against: a push's merge base, a
-  // commit's HEAD (none before the first commit), nothing under --all.
-  let legacyRef: string | undefined;
-  // The files whose failures that ref may excuse: every file a push checks;
-  // at a commit, only the docs it pulls in for what it removed, so a staged
-  // doc or an edited baseline entry is held to its count as before.
-  let legacyFiles: ReadonlySet<string> | 'every' = new Set();
+  // commit's HEAD (none before the first commit), nothing under --all. And
+  // the files whose failures it may excuse: every file a push checks; at a
+  // commit, only the docs it pulls in for what it removed, so a staged doc or
+  // an edited baseline entry is held to its count as before.
+  let legacy: { ref: string; files: ReadonlySet<string> | 'every' } | undefined;
   // A file's path at the merge base: a rename's old path.
   let baseOf = (file: string): string => file;
   // Baseline entries whose file this change answers for if it is gone: every
@@ -246,14 +259,13 @@ export const runGate = (options: GateOptions): GateReport => {
       taken = takenFromMerge(root);
       snapshot = createSnapshot(root, { kind: 'index' });
       const hasHead = gitOrUndefined(root, ['show', 'HEAD:']) !== undefined;
-      if (hasHead) legacyRef = 'HEAD';
+      if (hasHead) legacy = { ref: 'HEAD', files: new Set() };
       diffArgs = ['diff', '--cached', '--name-status', '-z', '-M', ...(hasHead ? ['HEAD'] : [])];
       before = (path) => (hasHead ? gitOrUndefined(root, ['show', `HEAD:${path}`]) : undefined);
     } else {
       const base = git(root, ['merge-base', mode.base, mode.head]).trim();
       range = { base, head: mode.head };
-      legacyRef = base;
-      legacyFiles = 'every';
+      legacy = { ref: base, files: 'every' };
       snapshot = createSnapshot(root, { kind: 'ref', ref: mode.head });
       diffArgs = ['diff', '--name-status', '-z', '-M', base, mode.head];
       before = (path) => gitOrUndefined(root, ['show', `${base}:${path}`]);
@@ -277,20 +289,15 @@ export const runGate = (options: GateOptions): GateReport => {
       const diff = git(root, ['diff', '-U0', '--no-color', '--no-ext-diff', '--no-textconv', range.base, range.head, '--', '.', ...diffExclude]);
       terms.push(...removedFlags(diff));
       if (checks.includes('DOC-DRIFT-04')) words = removedIdentifiers(diff);
-    } else if (legacyRef !== undefined) {
+    } else if (legacy !== undefined) {
       // Committed: an identifier or flag the commit removes strands the docs
       // that name it once no code in the index holds it; one still defined
       // elsewhere pulls in no doc, so a commit stays a few seconds. Mid-merge,
-      // only the paths the merge did not take unchanged.
-      const paths = taken.size === 0 ? ['.'] : changes.flatMap((change) => [...new Set([change.from, change.path])]).map((path) => `:(literal)${path}`);
-      const diff = paths.length === 0 ? '' : git(root, ['diff', '--cached', '-U0', '--no-color', '--no-ext-diff', '--no-textconv', legacyRef, '--', ...paths, ...diffExclude]);
+      // what the merge took unchanged removes nothing.
+      const diff = withoutFiles(git(root, ['diff', '--cached', '-U0', '--no-color', '--no-ext-diff', '--no-textconv', legacy.ref, '--', '.', ...diffExclude]), taken);
       terms.push(...flagsGoneFromCode(config, snapshot, removedFlags(diff)));
-      if (checks.includes('DOC-DRIFT-04')) {
-        const removed = [...removedIdentifiers(diff)];
-        // Kept for the snapshot, so DOC-DRIFT-04 below reads the code no second time.
-        const code = removed.length === 0 ? new Set<string>() : codeWords(config, snapshot);
-        words = new Set(removed.filter((word) => !code.has(word)));
-      }
+      // The code read here is kept, so DOC-DRIFT-04 below reads it no second time.
+      if (checks.includes('DOC-DRIFT-04')) words = new Set(wordsGoneFromCode(config, snapshot, [...removedIdentifiers(diff)]));
     }
     // Ignore rules decide which absent paths count, so a change to them re-checks every reference.
     const everything = changes.some((change) => posix.basename(change.path) === '.gitignore');
@@ -302,9 +309,9 @@ export const runGate = (options: GateOptions): GateReport => {
     // An entry dropped for a file the check no longer reads re-checks nothing.
     const reread = edited.filter((file) => snapshot.files.has(file) && docKind(config, file) !== null);
     checked = (everything ? referenceFiles(config, snapshot) : [...new Set([...changed, ...cited, ...reread])].sort()).filter((file) => !taken.has(file));
-    if (range === undefined) {
+    if (legacy !== undefined && range === undefined) {
       const own = new Set([...changed, ...reread]);
-      legacyFiles = new Set(cited.filter((file) => !own.has(file)));
+      legacy.files = new Set(cited.filter((file) => !own.has(file)));
     }
   }
 
@@ -344,15 +351,14 @@ export const runGate = (options: GateOptions): GateReport => {
   ];
   const judged = applyBaseline(problems, current, checked, checks);
   let { failures } = judged;
-  const legacy = legacyFiles;
-  const legacyFor = (file: string): boolean => legacy === 'every' || legacy.has(file);
-  const excusable = failures.filter((p) => legacyFor(p.file));
-  if (legacyRef !== undefined && excusable.length > 0) {
+  if (legacy !== undefined) {
     // Over its count, a file still fails only for what the merge base (a
     // push) or HEAD (a commit) did not already have. A legacy finding
     // matches by check, so only the checks that failed run there: links
     // alone materialise the whole tree for lychee.
-    const baseRef = legacyRef;
+    const { ref: baseRef, files: excused } = legacy;
+    const legacyFor = (file: string): boolean => excused === 'every' || excused.has(file);
+    const excusable = failures.filter((p) => legacyFor(p.file));
     const failed = checks.filter((check) => excusable.some((p) => p.check === check));
     const introduced = new Set(
       introducedFailures(

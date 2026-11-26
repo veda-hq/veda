@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { boundedWord, codeWords, findIdentifierProblems, flagsGoneFromCode, identifierRef, isCode, manifestObject, wordsInCode } from './doc-identifiers.ts';
+import { boundedWord, codeWords, findIdentifierProblems, flagsGoneFromCode, identifierRef, isCode, manifestObject, wordsGoneFromCode, wordsInCode } from './doc-identifiers.ts';
 import { CONFIG, createTestRepo, testConfig, type TestRepo } from './doc-references.fixture.test.ts';
 import type { Config } from './doc-references-config.ts';
 import type { RepoSnapshot } from './doc-references.ts';
@@ -687,12 +687,25 @@ describe('wordsInCode, manifestObject, boundedWord', () => {
   });
 
   it('flagsGoneFromCode keeps the flags no code file holds whole', () => {
-    const r = createTestRepo({ 'a.ts': "run('--faster', '--slow=1')\n", 'b.sh': 'tool --quiet', 'docs/x.md': '--loud\n' });
+    const r = createTestRepo({ 'a.ts': "run('--faster', '--slow=1', '--dry-run')\n", 'b.sh': 'tool --quick-x --quick --quiet', 'docs/x.md': '--loud\n' });
     const rec = recording(r.snapshot());
     assert.deepEqual(flagsGoneFromCode(CONFIG, rec.snapshot, []), []);
     assert.deepEqual(rec.pulled, []);
-    // `--faster` holds no `--fast`, `--slow=1` holds `--slow`, a flag at the end of a file counts, docs are not code.
-    assert.deepEqual(flagsGoneFromCode(CONFIG, rec.snapshot, ['--fast', '--slow', '--quiet', '--loud', '--faster']), ['--fast', '--loud']);
+    // `--faster` holds no `--fast` and `--dry-run` no `--dry`; `--slow=1` holds `--slow`; a later
+    // `--quick` counts after a `--quick-x`; a flag at the end of a file counts; docs are not code.
+    assert.deepEqual(flagsGoneFromCode(CONFIG, rec.snapshot, ['--fast', '--dry', '--slow', '--quick', '--quiet', '--loud', '--faster']), ['--fast', '--dry', '--loud']);
+  });
+
+  it('wordsGoneFromCode keeps the words no code holds, reading the code only when asked about some', () => {
+    const r = createTestRepo({ 'a.ts': 'alphaWord betaWord\n', 'docs/x.md': 'gammaWord\n' });
+    const rec = recording(r.snapshot());
+    assert.deepEqual(wordsGoneFromCode(CONFIG, rec.snapshot, []), []);
+    assert.deepEqual(rec.pulled, []);
+    assert.deepEqual(wordsGoneFromCode(CONFIG, rec.snapshot, ['betaWord', 'gammaWord', 'deltaWord']), ['gammaWord', 'deltaWord']);
+    assert.deepEqual(rec.pulled, ['.gitignore', 'a.ts']);
+    // The code it read is kept: the next ask reads nothing.
+    assert.deepEqual(wordsInCode(CONFIG, rec.snapshot, ['alphaWord', 'gammaWord']), new Set(['alphaWord']));
+    assert.deepEqual(rec.pulled, ['.gitignore', 'a.ts']);
   });
 
   it('bounds a word, `$` included, by non-identifier characters', () => {

@@ -6,7 +6,7 @@ import { delimiter, join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import type { LinkRunner } from './doc-links.ts';
 import type { Config } from './doc-references-config.ts';
-import { formatReport, hunkLines, introducedFailures, parseNameStatus, referrers, removedFlags, removedIdentifiers, runChecks, runGate, type GateMode, type GateReport } from './doc-references-gate.ts';
+import { formatReport, hunkLines, introducedFailures, parseNameStatus, referrers, removedFlags, removedIdentifiers, runChecks, runGate, withoutFiles, type GateMode, type GateReport } from './doc-references-gate.ts';
 import { CHECK_IDS, type CheckId, type ReferenceProblem } from './doc-references.ts';
 import { CONFIG, CONFIG_JSON, createTestRepo, fakeLinks, noLinks, testConfig, type TestRepo } from './doc-references.fixture.test.ts';
 
@@ -736,6 +736,20 @@ describe('diff reading', () => {
     assert.deepEqual(hunkLines(diff), ['---verbose \\', '-  run fooBar', '+++fooBar;', '+export const keep = 1;']);
     assert.deepEqual(removedFlags(diff), ['--verbose']);
     assert.deepEqual([...removedIdentifiers(diff)], []);
+  });
+
+  it('withoutFiles drops a skipped file by either side of its header, and keeps the rest', () => {
+    const file = (from: string, to: string, body: string): string => `diff --git a/x b/x\nindex 1..2 100644\n--- ${from}\n+++ ${to}\n@@ -1 +0,0 @@\n${body}\n`;
+    const changed = file('a/kept.ts', 'b/kept.ts', '-keptWord');
+    const deleted = file('a/gone.ts', '/dev/null', '-goneWord');
+    const added = file('/dev/null', 'b/new.ts', '+newWord');
+    // A removed line `-- a/kept.ts` reads `--- a/kept.ts`, after the hunk starts: no header.
+    const tricky = file('a/other.ts', 'b/other.ts', '--- a/kept.ts');
+    const diff = `${changed}${deleted}${added}${tricky}`;
+    assert.equal(withoutFiles(diff, new Set()), diff);
+    assert.equal(withoutFiles(diff, new Set(['gone.ts', 'new.ts'])), `${changed}${tricky}`);
+    assert.equal(withoutFiles(diff, new Set(['kept.ts'])), `${deleted}${added}${tricky}`);
+    assert.equal(withoutFiles('', new Set(['kept.ts'])), '');
   });
 
   it('skips anything before the first hunk', () => {

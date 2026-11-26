@@ -55,7 +55,8 @@ export const readStageLists = (
   const path = resolve(root, config.stageList);
   let text: string;
   try {
-    text = readFileSync(path, "utf8");
+    // Decoded as UTF-8, as JSON.parse would decode the bytes anyway.
+    text = readFileSync(path).toString();
   } catch (error) {
     throw new Error(
       `dvara: cannot read the stage list ${path}: ${(error as Error).message}. Is the package that ships it installed?`,
@@ -92,7 +93,9 @@ export const stageViolation = (
     }
     if (!list.includes(name))
       return `${hook} marked stage "${name}", which its stage list does not have`;
-    return `${hook} marked stage "${name}" after "${names[index - 1] ?? ""}", out of its stage list's order`;
+    // Never the first mark: every name the list has is found at or after 0.
+    const previous = names[index - 1] as string;
+    return `${hook} marked stage "${name}" after "${previous}", out of its stage list's order`;
   }
   return null;
 };

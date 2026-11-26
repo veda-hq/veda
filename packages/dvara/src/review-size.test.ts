@@ -65,6 +65,24 @@ describe("sizeOf", () => {
     assert.deepEqual(sizeOf("", []), { lines: 0, files: [] });
   });
 
+  it("reads an entry cut short as a rename's counts", () => {
+    // No tab: the added count alone, and the two fields after it are the paths.
+    assert.deepEqual(sizeOf(["7", "old.ts", "new.ts", ""].join("\0"), []), {
+      lines: 7,
+      files: [{ path: "new.ts", lines: 7 }],
+    });
+    // One tab: the added count alone, and then a rename.
+    assert.deepEqual(sizeOf(["4\t", "old.ts", "new.ts", ""].join("\0"), []), {
+      lines: 4,
+      files: [{ path: "new.ts", lines: 4 }],
+    });
+    // A rename with its new path missing is counted under no path.
+    assert.deepEqual(sizeOf(["2\t1\t", "old.ts"].join("\0"), []), {
+      lines: 3,
+      files: [{ path: "", lines: 3 }],
+    });
+  });
+
   it("orders files of one size by path", () => {
     const numstat = ["1\t0\tb.ts", "1\t0\ta.ts", ""].join("\0");
     assert.deepEqual(

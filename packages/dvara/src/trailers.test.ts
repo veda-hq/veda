@@ -75,6 +75,15 @@ describe("misplacedTrailers", () => {
     );
   });
 
+  it("starts no paragraph of its own with comment lines below the last blank one", () => {
+    assert.deepEqual(
+      lines(
+        "feat: x\n\nSlice: L-04\n\n# Please enter the commit message\n# Lines starting with '#' are ignored\n",
+      ),
+      [],
+    );
+  });
+
   it("counts a whitespace-only line as blank, and trailing blanks start no paragraph", () => {
     assert.deepEqual(
       lines("feat: x\n\nSlice: L-04\n \t\nCo-Authored-By: A <a@a>\n\n\n  \n"),

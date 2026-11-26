@@ -247,6 +247,41 @@ describe("markdown model: fences", () => {
     }
   });
 
+  it("leaves a fence open on the line that ends its container unless that line closes it", () => {
+    // A quote in a list item holds the fence; the next line leaves the item.
+    for (const [text, spans_] of [
+      // Too short a closer, of either character.
+      ["- > ```\n> ``\n", [[1, 1, ""]]],
+      ["- > ~~~~\n> ~~\n", [[1, 1, ""]]],
+      // The other character.
+      [
+        "- > ```\n> ~~~\n",
+        [
+          [1, 1, ""],
+          [2, 2, ""],
+        ],
+      ],
+      // A run with text after it, or before it.
+      [
+        "- > ```\n> ``` x\n",
+        [
+          [1, 1, ""],
+          [2, 2, "x"],
+        ],
+      ],
+      [
+        "1. ```\n> > ```\nx`",
+        [
+          [1, 1, ""],
+          [2, 2, ""],
+        ],
+      ],
+      // A `>` past the line's start is no quote marker.
+      ["- > > ```\n> ``> `\n", [[1, 1, ""]]],
+    ] as const)
+      assert.deepEqual(spans(read(text)), spans_, JSON.stringify(text));
+  });
+
   it("reads an opener indented up to three spaces, keeping the body's indent", () => {
     for (const pad of [" ", "  ", "   "]) {
       const doc = read(`p\n\n${pad}\`\`\`\n${pad}x\n${pad}\`\`\`\nq\n`);
@@ -288,6 +323,19 @@ describe("markdown model: frontmatter", () => {
     const doc = read("---\na: 1\n```\nx\n```\n");
     assert.deepEqual(spans(doc), [[3, 5, ""]]);
     assert.deepEqual(read("---\ntitle: x\n\nbody").fences, []);
+  });
+
+  it("opens and closes on a `---` line with space around it", () => {
+    assert.deepEqual(read("--- \n```\n---\nx\n").fences, []);
+    assert.deepEqual(read("---\n```\n --- \nx\n").fences, []);
+  });
+
+  it("closes on the first `---` line after the first, not on any other line", () => {
+    assert.deepEqual(read("---\na: 1\n```\n---\n").fences, []);
+  });
+
+  it("is none when the first line is no `---`, whatever follows", () => {
+    assert.deepEqual(spans(read("```\na\n```\n---\n")), [[1, 3, ""]]);
   });
 
   it("is read only from the first line", () => {

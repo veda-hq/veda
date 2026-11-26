@@ -424,11 +424,12 @@ describe("decide", () => {
 
   it("spares a tree containing an exempt command such as sleep", () => {
     const withSleep = (tree: PsRow[]): PsRow[] => {
-      const [root, reader] = tree;
-      if (!root || !reader) throw new Error("the deadlock tree has two rows");
+      const [, reader] = tree;
+      if (!reader) throw new Error("the deadlock tree has two rows");
+      // Under no member of the core, so only the exemption can spare it.
       return [
         ...tree,
-        { ...reader, pid: 999_991, ppid: root.pid, comm: "sleep", key: "sleep" },
+        { ...reader, pid: 999_991, ppid: 999_990, comm: "sleep", key: "sleep" },
       ];
     };
     assert.equal(verdictFor("deadlock", config.idleMs, withSleep), null);
@@ -1316,7 +1317,7 @@ describe("findHangCore by shape", () => {
   });
 
   it("follows only internal channels with a peer", () => {
-    const tree = [psRow(1, 0), psRow(2, 1), psRow(3, 1)];
+    const tree = [psRow(1, 0), psRow(2, 1), psRow(3, 0)];
     const classes = new Map([
       [
         1,
@@ -1397,7 +1398,7 @@ describe("coreSharedOutside by shape", () => {
 describe("decide by shape", () => {
   it("spares a core when another leaf holds an external channel", () => {
     const config = { idleMs: 1000, externalIdleMs: 5000 };
-    const tree = [psRow(1, 0), psRow(2, 1), psRow(3, 1)];
+    const tree = [psRow(1, 0), psRow(2, 1), psRow(3, 0)];
     const classes = new Map([
       [1, [classified("internal", 2)]],
       [2, [classified("internal", 1)]],
@@ -2079,8 +2080,9 @@ describe("createWatchdog", () => {
  * log lines, the summary and the diagnostics files.
  *
  * The tree is synthetic: a node root (40467) under the supervisor (40375),
- * a bash leaf (40479) on a socketpair with the root, and an idle cat leaf
- * (40480) that holds nothing. The root also holds a pipe whose other end is
+ * a bash leaf (40479) on a socketpair with the root, and a zombie cat leaf
+ * (40480) that holds nothing: an exited child wakes no parent, so the core
+ * stays closed. The root also holds a pipe whose other end is
  * the supervisor's, so the supervisor's own listing decides whether it is
  * inherited.
  */
@@ -2120,7 +2122,7 @@ describe("createWatchdog, step by step", () => {
     const supervisor = psLine(40375, 40365, 40351, "node", { time: "0:00.03" });
     const root = psLine(40467, 40375, 40351, "node", { time: "0:00.03" });
     const leaf = psLine(40479, 40467, 40351, "bash");
-    const idle = psLine(40480, 40467, 40351, "cat");
+    const idle = psLine(40480, 40467, 40351, "cat", { state: "Z" });
     const supLsof =
       "p40375\nf0\ntCHR\nd0x10\nn/dev/ttys001\nf1\ntPIPE\nd0x11\nn->0x12\n";
     const treeLsof =
@@ -2343,7 +2345,7 @@ describe("createWatchdog, step by step", () => {
         tree: [
           { pid: 40467, ppid: 40375, pgid: 40351, state: "S", cpuMs: 30, comm: "node" },
           { pid: 40479, ppid: 40467, pgid: 40351, state: "S", cpuMs: 0, comm: "bash" },
-          { pid: 40480, ppid: 40467, pgid: 40351, state: "S", cpuMs: 0, comm: "cat" },
+          { pid: 40480, ppid: 40467, pgid: 40351, state: "Z", cpuMs: 0, comm: "cat" },
         ],
       },
     );

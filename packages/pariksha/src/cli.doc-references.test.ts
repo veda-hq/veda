@@ -149,11 +149,21 @@ describe('pariksha doc-references: nothing checked is not a pass', () => {
 });
 
 describe('pariksha doc-references: a clean run', () => {
-  it('prints the one clean line for a commit: DOC-DRIFT-01 and -02 by default', () => {
+  it('prints the one clean line for a commit: every check by default', () => {
     const repo = repoWith();
     repo.write('docs/ok.md', 'Run `scripts/tool.ts`.\n');
     repo.git('add', '-A');
-    assert.deepEqual(docRefs(['--config', CFG, '--staged', '--root', repo.root]), { code: 0, out: [clean(1, 'staged; DOC-DRIFT-04 not run')], err: [] });
+    assert.deepEqual(docRefs(['--config', CFG, '--staged', '--root', repo.root]), { code: 0, out: [clean(1, 'staged')], err: [] });
+    assert.deepEqual(docRefs(['--config', CFG, '--staged', '--checks', '01,02', '--root', repo.root]).out, [clean(1, 'staged; DOC-DRIFT-04 not run')]);
+  });
+
+  it('a commit runs DOC-DRIFT-04 by default: a staged doc naming no code fails', () => {
+    const repo = repoWith();
+    repo.write('docs/api.md', 'Call `startTool` first.\n');
+    repo.git('add', '-A');
+    const result = docRefs(['--config', CFG, '--staged', '--root', repo.root]);
+    assert.equal(result.code, 1);
+    assert.match(result.err[0] ?? '', /^pariksha doc-references: docs\/api\.md:1: \[DOC-DRIFT-04\] startTool: /);
   });
 
   it('prints the one clean line for a push: every check by default', () => {
@@ -230,7 +240,7 @@ describe('pariksha doc-references: problems', () => {
     other.git('add', '-A');
     assert.deepEqual(docRefs(['--config', CFG, '--staged', '--root', other.root]), {
       code: 0,
-      out: [`${P} ${BASELINE}: docs/old.md DOC-DRIFT-02: baseline 1, now 0; ${LOWER}`, clean(1, 'staged; DOC-DRIFT-04 not run')],
+      out: [`${P} ${BASELINE}: docs/old.md DOC-DRIFT-02: baseline 1, now 0; ${LOWER}`, clean(1, 'staged')],
       err: [],
     });
   });

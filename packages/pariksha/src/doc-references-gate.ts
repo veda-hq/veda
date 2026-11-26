@@ -2,8 +2,11 @@
 // -02 (documented scripts and commands) and -04 (code identifiers), each
 // held to a per-file baseline whose counts only fall.
 //
-//   staged  a commit: the index. Staged docs and comments, plus any doc
-//           naming a path the commit deletes or renames. DOC-DRIFT-01, -02.
+//   staged  a commit: the index against HEAD. Staged docs and comments, and
+//           docs naming a path the commit deletes or renames, a script it
+//           removes, or an identifier or flag it removes that no code in the
+//           index still holds. All three checks. In a doc pulled in only for
+//           what the commit removed, a finding HEAD already had is legacy.
 //   range   a push: the pushed tree against its merge base. Changed docs, and
 //           docs naming a deleted or renamed path, a changed file by
 //           `name:line`, or an identifier, script or flag the diff removed.
@@ -18,7 +21,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { findCommandProblems } from './doc-command-rules.ts';
-import { findIdentifierProblems, manifestObject } from './doc-identifiers.ts';
+import { codeWords, findIdentifierProblems, flagsGoneFromCode, manifestObject } from './doc-identifiers.ts';
 import { findLinkProblems, type LinkRunner } from './doc-links.ts';
 import { findPathProblems } from './doc-paths.ts';
 import type { Config } from './doc-references-config.ts';
@@ -214,6 +217,13 @@ export const runGate = (options: GateOptions): GateReport => {
   let previous: Baseline | undefined;
   // A push's merge base and head; a commit and --all have none.
   let range: { base: string; head: string } | undefined;
+  // What a finding already there is judged against: a push's merge base, a
+  // commit's HEAD (none before the first commit), nothing under --all.
+  let legacyRef: string | undefined;
+  // The files whose failures that ref may excuse: every file a push checks;
+  // at a commit, only the docs it pulls in for what it removed, so a staged
+  // doc or an edited baseline entry is held to its count as before.
+  let legacyFiles: ReadonlySet<string> | 'every' = new Set();
   // A file's path at the merge base: a rename's old path.
   let baseOf = (file: string): string => file;
   // Baseline entries whose file this change answers for if it is gone: every
@@ -236,11 +246,14 @@ export const runGate = (options: GateOptions): GateReport => {
       taken = takenFromMerge(root);
       snapshot = createSnapshot(root, { kind: 'index' });
       const hasHead = gitOrUndefined(root, ['show', 'HEAD:']) !== undefined;
+      if (hasHead) legacyRef = 'HEAD';
       diffArgs = ['diff', '--cached', '--name-status', '-z', '-M', ...(hasHead ? ['HEAD'] : [])];
       before = (path) => (hasHead ? gitOrUndefined(root, ['show', `HEAD:${path}`]) : undefined);
     } else {
       const base = git(root, ['merge-base', mode.base, mode.head]).trim();
       range = { base, head: mode.head };
+      legacyRef = base;
+      legacyFiles = 'every';
       snapshot = createSnapshot(root, { kind: 'ref', ref: mode.head });
       diffArgs = ['diff', '--name-status', '-z', '-M', base, mode.head];
       before = (path) => gitOrUndefined(root, ['show', `${base}:${path}`]);
@@ -256,13 +269,28 @@ export const runGate = (options: GateOptions): GateReport => {
     const terms = changes.filter((change) => change.path.endsWith('package.json')).flatMap((change) => removedScripts(before(change.from), snapshot.read(change.path)));
     let lineCited: string[] = [];
     let words = new Set<string>();
+    const diffExclude = config.identifiers.diffExclude.map((p) => `:(exclude)${p}`);
     if (range !== undefined) {
       // Pushed: a changed file can move the line a doc cites, and a removed
       // definition or flag strands the docs that name it.
       lineCited = changes.filter((change) => change.status === 'M').map((change) => change.path);
-      const diff = git(root, ['diff', '-U0', '--no-color', '--no-ext-diff', '--no-textconv', range.base, range.head, '--', '.', ...config.identifiers.diffExclude.map((p) => `:(exclude)${p}`)]);
+      const diff = git(root, ['diff', '-U0', '--no-color', '--no-ext-diff', '--no-textconv', range.base, range.head, '--', '.', ...diffExclude]);
       terms.push(...removedFlags(diff));
       if (checks.includes('DOC-DRIFT-04')) words = removedIdentifiers(diff);
+    } else if (legacyRef !== undefined) {
+      // Committed: an identifier or flag the commit removes strands the docs
+      // that name it once no code in the index holds it; one still defined
+      // elsewhere pulls in no doc, so a commit stays a few seconds. Mid-merge,
+      // only the paths the merge did not take unchanged.
+      const paths = taken.size === 0 ? ['.'] : changes.flatMap((change) => [...new Set([change.from, change.path])]).map((path) => `:(literal)${path}`);
+      const diff = paths.length === 0 ? '' : git(root, ['diff', '--cached', '-U0', '--no-color', '--no-ext-diff', '--no-textconv', legacyRef, '--', ...paths, ...diffExclude]);
+      terms.push(...flagsGoneFromCode(config, snapshot, removedFlags(diff)));
+      if (checks.includes('DOC-DRIFT-04')) {
+        const removed = [...removedIdentifiers(diff)];
+        // Kept for the snapshot, so DOC-DRIFT-04 below reads the code no second time.
+        const code = removed.length === 0 ? new Set<string>() : codeWords(config, snapshot);
+        words = new Set(removed.filter((word) => !code.has(word)));
+      }
     }
     // Ignore rules decide which absent paths count, so a change to them re-checks every reference.
     const everything = changes.some((change) => posix.basename(change.path) === '.gitignore');
@@ -270,18 +298,14 @@ export const runGate = (options: GateOptions): GateReport => {
     // A seed (no earlier baseline) edits every entry, but deleted none of their files.
     const answered = new Set([...removedPaths, ...(previous === undefined ? [] : edited)]);
     answersForGone = (file) => answered.has(file);
-    checked = (
-      everything
-        ? referenceFiles(config, snapshot)
-        : [
-            ...new Set([
-              ...changed,
-              ...referrers(config, snapshot, removedPaths, lineCited, words, terms),
-              // An entry dropped for a file the check no longer reads re-checks nothing.
-              ...edited.filter((file) => snapshot.files.has(file) && docKind(config, file) !== null),
-            ]),
-          ].sort()
-    ).filter((file) => !taken.has(file));
+    const cited = everything ? [] : referrers(config, snapshot, removedPaths, lineCited, words, terms);
+    // An entry dropped for a file the check no longer reads re-checks nothing.
+    const reread = edited.filter((file) => snapshot.files.has(file) && docKind(config, file) !== null);
+    checked = (everything ? referenceFiles(config, snapshot) : [...new Set([...changed, ...cited, ...reread])].sort()).filter((file) => !taken.has(file));
+    if (range === undefined) {
+      const own = new Set([...changed, ...reread]);
+      legacyFiles = new Set(cited.filter((file) => !own.has(file)));
+    }
   }
 
   // --all reads the worktree, where a baseline being written is not yet
@@ -320,19 +344,29 @@ export const runGate = (options: GateOptions): GateReport => {
   ];
   const judged = applyBaseline(problems, current, checked, checks);
   let { failures } = judged;
-  if (range !== undefined) {
-    // Over its count, a file still fails only for what the merge base did not already have.
-    const baseRef = range.base;
-    failures = introducedFailures(
-      failures,
-      (files) => {
-        const base = createSnapshot(root, { kind: 'ref', ref: baseRef });
-        const present = files.filter((file) => base.files.has(file));
-        base.readMany(present);
-        return runChecks(config, base, present, checks, links);
-      },
-      baseOf,
+  const legacy = legacyFiles;
+  const legacyFor = (file: string): boolean => legacy === 'every' || legacy.has(file);
+  const excusable = failures.filter((p) => legacyFor(p.file));
+  if (legacyRef !== undefined && excusable.length > 0) {
+    // Over its count, a file still fails only for what the merge base (a
+    // push) or HEAD (a commit) did not already have. A legacy finding
+    // matches by check, so only the checks that failed run there: links
+    // alone materialise the whole tree for lychee.
+    const baseRef = legacyRef;
+    const failed = checks.filter((check) => excusable.some((p) => p.check === check));
+    const introduced = new Set(
+      introducedFailures(
+        excusable,
+        (files) => {
+          const base = createSnapshot(root, { kind: 'ref', ref: baseRef });
+          const present = files.filter((file) => base.files.has(file));
+          base.readMany(present);
+          return runChecks(config, base, present, failed, links);
+        },
+        baseOf,
+      ),
     );
+    failures = failures.filter((p) => !legacyFor(p.file) || introduced.has(p));
   }
   const changedSet = new Set(changed);
   const blocking = judged.slack.some((entry) => changedSet.has(entry.file));

@@ -36,6 +36,7 @@ const gate = (repo: TestRepo, mode: GateMode, checks: readonly CheckId[], baseli
   runGate({ root: repo.root, config, mode, checks, baseline, links: runner });
 
 const staged = (repo: TestRepo, config: Config = CONFIG): GateReport => gate(repo, { kind: 'staged' }, STAGED, undefined, config);
+const committed = (repo: TestRepo, runner: LinkRunner = links): GateReport => gate(repo, { kind: 'staged' }, ALL, undefined, CONFIG, runner);
 const pushed = (repo: TestRepo, from: string): GateReport => gate(repo, { kind: 'range', base: from, head: 'HEAD' }, ALL);
 const all = (repo: TestRepo, baseline: 'update' | 'write' | undefined = undefined): GateReport => gate(repo, { kind: 'all' }, ALL, baseline);
 
@@ -184,6 +185,99 @@ describe('pre-commit (staged)', () => {
     assert.ok(report.checked.includes('docs/run.md'));
     assert.equal(report.failures[0]?.check, 'DOC-DRIFT-02');
     assert.equal(report.failures[0]?.ref, 'gate');
+  });
+
+  it('a removed identifier no code still holds fails the doc that names it (DOC-DRIFT-04)', () => {
+    const repo = base();
+    repo.write('docs/api.md', 'Call `runTool` to start.\n');
+    repo.commit('doc');
+    repo.write('scripts/tool.ts', 'export function startTool() {\n  return 1;\n}\n');
+    repo.git('add', '-A');
+    const report = committed(repo);
+    assert.deepEqual(report.checked, ['docs/api.md', 'scripts/tool.ts']);
+    assert.deepEqual(
+      report.failures.map((p) => [p.check, p.file, p.ref]),
+      [['DOC-DRIFT-04', 'docs/api.md', 'runTool']],
+    );
+    // Without DOC-DRIFT-04 the removed word pulls in no doc.
+    assert.deepEqual(staged(repo).checked, ['scripts/tool.ts']);
+  });
+
+  it('an identifier still in the code elsewhere pulls in no doc', () => {
+    const repo = base();
+    repo.write('docs/api.md', 'Call `runTool` to start.\n');
+    repo.write('scripts/other.ts', "import { runTool } from './tool.ts';\n");
+    repo.commit('doc');
+    repo.write('scripts/tool.ts', 'export function startTool() {\n  return 1;\n}\n');
+    repo.git('add', '-A');
+    const report = committed(repo);
+    assert.deepEqual(report.checked, ['scripts/tool.ts']);
+    assert.equal(report.exitCode, 0);
+  });
+
+  it('a removed flag no code still holds re-checks the docs that pass it; one still held does not', () => {
+    const repo = base();
+    repo.write('scripts/cli.ts', "// usage: cli.ts [--fast] [--slow]\nif (process.argv.includes('--fast') || process.argv.includes('--slow')) {}\n");
+    repo.write('scripts/other.ts', "// --faster and --slow=1 are another tool's.\n");
+    repo.write('docs/cli.md', '```bash\npnpm exec tsx scripts/cli.ts --fast\n```\n');
+    repo.write('docs/slow.md', '```bash\npnpm exec tsx scripts/cli.ts --slow\n```\n');
+    repo.commit('cli');
+    repo.write('scripts/cli.ts', '// usage: cli.ts\n');
+    repo.git('add', '-A');
+    const report = committed(repo);
+    // `--faster` is not `--fast`, so `--fast` is gone; `--slow=1` still holds
+    // `--slow`. A referrer is found by substring, so other.ts is read too.
+    assert.deepEqual(report.checked, ['docs/cli.md', 'scripts/cli.ts', 'scripts/other.ts']);
+    assert.deepEqual(
+      report.failures.map((p) => [p.file, p.ref]),
+      [['docs/cli.md', '--fast']],
+    );
+  });
+
+  it('a doc pulled in for a removal answers only for what the commit adds there; a staged doc for all it holds', () => {
+    const repo = base();
+    repo.write('docs/api.md', 'Call `runTool`. See `scripts/gone.ts`.\n');
+    repo.commit('legacy drift');
+    repo.write('scripts/tool.ts', 'export function startTool() {\n  return 1;\n}\n');
+    repo.git('add', '-A');
+    const pulled = committed(repo);
+    assert.deepEqual(
+      pulled.problems.map((p) => p.ref),
+      ['scripts/gone.ts', 'runTool'],
+    );
+    assert.deepEqual(
+      pulled.failures.map((p) => p.ref),
+      ['runTool'],
+    );
+    repo.write('docs/api.md', 'Call `runTool`. See `scripts/gone.ts`. Edited.\n');
+    repo.git('add', '-A');
+    assert.deepEqual(
+      committed(repo).failures.map((p) => p.ref),
+      ['scripts/gone.ts', 'runTool'],
+    );
+  });
+
+  it('mid-merge: an identifier the merge took from main removes nothing; one this side removes does', () => {
+    const repo = base();
+    repo.write('docs/api.md', 'Call `runTool` to start.\n');
+    repo.write('scripts/side.ts', 'export const sideThing = 1;\n');
+    repo.write('docs/side.md', 'Read `sideThing` first.\n');
+    repo.commit('docs');
+    repo.git('checkout', '-q', '-b', 'side');
+    repo.git('checkout', '-q', 'main');
+    repo.write('scripts/tool.ts', 'export function startTool() {\n  return 1;\n}\n');
+    repo.commit('main renames');
+    repo.git('checkout', '-q', 'side');
+    repo.git('merge', '-q', '--no-commit', '--no-ff', 'main');
+    assert.deepEqual(committed(repo).checked, []);
+    repo.write('scripts/side.ts', 'export const otherThing = 1;\n');
+    repo.git('add', '-A');
+    const report = committed(repo);
+    assert.deepEqual(report.checked, ['docs/side.md', 'scripts/side.ts']);
+    assert.deepEqual(
+      report.failures.map((p) => p.ref),
+      ['sideThing'],
+    );
   });
 
   it('runs before the first commit, against an empty HEAD', () => {
@@ -475,6 +569,25 @@ describe('pre-push and CI (range)', () => {
       report.failures.map((p) => [p.line, p.ref]),
       [[1, 'lost.md']],
     );
+  });
+
+  it('re-runs at the base only the checks that failed: a DOC-DRIFT-04 failure runs no links there', () => {
+    const repo = base();
+    repo.write('docs/api.md', 'See [the guide](guide.md). Call `runTool`.\n');
+    const from = repo.commit('doc');
+    repo.write('scripts/tool.ts', 'export function startTool() {\n  return 1;\n}\n');
+    repo.commit('rename');
+    const dirs: string[] = [];
+    const counting: LinkRunner = (dir, files) => {
+      dirs.push(dir);
+      return links(dir, files);
+    };
+    const report = gate(repo, { kind: 'range', base: from, head: 'HEAD' }, ALL, undefined, CONFIG, counting);
+    assert.deepEqual(
+      report.failures.map((p) => p.ref),
+      ['runTool'],
+    );
+    assert.equal(dirs.length, 1);
   });
 
   it('runs only the checks it is given', () => {

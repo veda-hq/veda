@@ -124,7 +124,7 @@ function positiveMs(raw: string | undefined, fallback: number): number {
 export function resolveWatchdogConfig(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
-  perfLevelNames: readonly string[] = [],
+  perfLevelNames: readonly string[],
 ): WatchdogConfig {
   const requested = env.DVARA_WATCHDOG;
   const explicit = isMode(requested) ? requested : null;
@@ -348,8 +348,8 @@ export function parseLsof(text: string): Map<number, LsofFd[]> {
   const byPid = new Map<number, LsofFd[]>();
   let fds: LsofFd[] | null = null;
   let fd: LsofFd | null = null;
+  // An empty line has no tag, so it matches no branch below.
   for (const line of text.split("\n")) {
-    if (!line) continue;
     const tag = line[0];
     const value = line.slice(1);
     if (tag === "p") {
@@ -388,8 +388,10 @@ export interface ClassifiedFd extends LsofFd {
 }
 
 const isNumericFd = (fd: LsofFd): boolean => /^\d+$/.test(fd.fd);
+// A missing field reads as "null", which no pattern below matches, no type
+// table holds and no type check names.
 const peerAddress = (name: string | null): string | null =>
-  /^->(0x[0-9a-f]+)$/i.exec(name ?? "")?.[1] ?? null;
+  /^->(0x[0-9a-f]+)$/i.exec(String(name))?.[1] ?? null;
 
 /**
  * Classify every IPC fd of the tree as `internal` (its peer is a tree
@@ -404,13 +406,13 @@ const peerAddress = (name: string | null): string | null =>
 export function classifyFds(
   lsofByPid: ReadonlyMap<number, readonly LsofFd[]>,
   treePids: readonly number[],
-  supervisorFds: readonly LsofFd[] = [],
+  supervisorFds: readonly LsofFd[],
 ): Map<number, ClassifiedFd[]> {
   const inTree = new Set(treePids);
-  const supervisorObjects = new Set(
-    supervisorFds.flatMap((fd) => (fd.device ? [fd.device] : [])),
-  );
-  const holders = new Map<string, Set<number>>();
+  // A missing device is held too: every lookup below is by a non-empty
+  // string, so it matches nothing.
+  const supervisorObjects = new Set(supervisorFds.map((fd) => fd.device));
+  const holders = new Map<string | null, Set<number>>();
   const tcpByName = new Map<string, number>();
   for (const [pid, fds] of lsofByPid) {
     if (!inTree.has(pid)) continue;
@@ -420,7 +422,7 @@ export function classifyFds(
         if (held) held.add(pid);
         else holders.set(fd.device, new Set([pid]));
       }
-      if (/^IPv[46]$/.test(fd.type ?? "") && fd.name)
+      if (/^IPv[46]$/.test(String(fd.type)) && fd.name)
         tcpByName.set(fd.name, pid);
     }
   }
@@ -431,7 +433,7 @@ export function classifyFds(
     for (const fd of fds) {
       if (!isNumericFd(fd)) continue;
       const entry: ClassifiedFd = { ...fd, class: "external", peerPid: null };
-      const type = fd.type ?? "";
+      const type = String(fd.type);
       if (NON_IPC_TYPES.has(type)) {
         entry.class = "ignored";
       } else if (fd.device && supervisorObjects.has(fd.device)) {
@@ -440,7 +442,7 @@ export function classifyFds(
         const peer = peerAddress(fd.name);
         if (peer && supervisorObjects.has(peer)) {
           entry.class = "ignored";
-        } else if (peer && /^0x0+$/i.test(peer)) {
+        } else if (peer && Number.parseInt(peer, 16) === 0) {
           entry.class = "ignored";
         } else if (peer) {
           const peers = [...(holders.get(peer) ?? [])];
@@ -453,7 +455,8 @@ export function classifyFds(
           entry.class = "ignored";
         }
       } else if (type === "FIFO") {
-        const sharers = [...(holders.get(fd.device ?? "") ?? [])].filter(
+        // Only a device was ever held, so a missing one has no sharers.
+        const sharers = [...(holders.get(fd.device) ?? [])].filter(
           (p) => p !== pid,
         );
         const [sharer] = sharers;
@@ -462,7 +465,7 @@ export function classifyFds(
           entry.peerPid = sharer;
         }
       } else if (/^IPv[46]$/.test(type)) {
-        const arrow = /^(.+)->(.+)$/.exec(fd.name ?? "");
+        const arrow = /^(.+)->(.+)$/.exec(String(fd.name));
         if (fd.tcpState && CLOSED_TCP.has(fd.tcpState)) {
           entry.class = "ignored";
         } else if (arrow && fd.tcpState === "ESTABLISHED") {
@@ -498,7 +501,9 @@ function internalComponent(
   const queue = [start];
   // The iterator reads the length each step, so the pids pushed are visited too.
   for (const pid of queue) {
-    for (const fd of classes.get(pid) ?? []) {
+    const fds = classes.get(pid);
+    if (!fds) continue;
+    for (const fd of fds) {
       if (fd.class !== "internal" || fd.peerPid === null) continue;
       if (reached.has(fd.peerPid)) continue;
       reached.add(fd.peerPid);
@@ -530,16 +535,17 @@ export function findHangCore(
   const parents = new Set(tree.map((row) => row.ppid));
   const leaves = tree.filter((row) => !parents.has(row.pid));
   for (const leaf of leaves) {
-    if ((cpuDeltaByPid.get(leaf.pid) ?? 1) !== 0) continue;
-    const ipc = (classes.get(leaf.pid) ?? []).filter(
-      (fd) => fd.class !== "ignored",
-    );
-    if (ipc.length === 0 || ipc.some((fd) => fd.class !== "internal")) continue;
+    // A process with no measurement is not quiet: undefined is not 0.
+    if (cpuDeltaByPid.get(leaf.pid) !== 0) continue;
+    // A leaf with no channel at all reaches no peer, which `peers` below
+    // refuses.
+    const fds = classes.get(leaf.pid);
+    if (!fds || fds.some((fd) => fd.class === "external")) continue;
     const peers = internalComponent(leaf.pid, classes);
     const peersQuiet = peers.every(
       (peer) =>
-        (cpuDeltaByPid.get(peer) ?? 1) === 0 &&
-        !(classes.get(peer) ?? []).some((fd) => fd.class === "external"),
+        cpuDeltaByPid.get(peer) === 0 &&
+        !classes.get(peer)?.some((fd) => fd.class === "external"),
     );
     const members = new Set([leaf.pid, ...peers]);
     const childOutside = tree.some(
@@ -578,9 +584,12 @@ export function coreSharedOutside(
   wideByPid: ReadonlyMap<number, readonly LsofFd[]>,
   treePids: readonly number[],
 ): boolean {
-  const objects = new Set<string>();
+  // Never null, so an outside fd with no device matches nothing.
+  const objects = new Set<string | null>();
   for (const pid of [core.leaf, ...core.peers]) {
-    for (const fd of classes.get(pid) ?? []) {
+    const fds = classes.get(pid);
+    if (!fds) continue;
+    for (const fd of fds) {
       if (fd.class !== "internal") continue;
       if (fd.device) objects.add(fd.device);
       const peer = peerAddress(fd.name);
@@ -590,8 +599,7 @@ export function coreSharedOutside(
   const inTree = new Set(treePids);
   for (const [pid, fds] of wideByPid) {
     if (inTree.has(pid)) continue;
-    if (fds.some((fd) => fd.device !== null && objects.has(fd.device)))
-      return true;
+    if (fds.some((fd) => objects.has(fd.device))) return true;
   }
   return false;
 }
@@ -631,7 +639,7 @@ export function decide({
     const leafHoldsExternal = tree.some(
       (row) =>
         !parents.has(row.pid) &&
-        (classes.get(row.pid) ?? []).some((fd) => fd.class === "external"),
+        classes.get(row.pid)?.some((fd) => fd.class === "external"),
     );
     const exempt = tree.find((row) => EXEMPT_COMMANDS.test(row.comm));
     const core = findHangCore(tree, classes, cpuDeltaByPid);
@@ -862,14 +870,14 @@ export function createWatchdog({
     tree: readonly PsRow[],
     classes: ReadonlyMap<number, readonly ClassifiedFd[]> | null,
   ): Promise<Verdict | null> {
-    if (verdict?.kind !== "internal-deadlock" || classes === null)
-      return verdict;
+    if (verdict?.kind !== "internal-deadlock") return verdict;
     const wide = await exec("lsof", LSOF_ARGS, { timeout: 20_000 });
     const shared =
       !wide.ok ||
       coreSharedOutside(
         verdict.core,
-        classes,
+        // decide finds a core only in classified fds, so these are set.
+        classes!,
         parseLsof(wide.stdout),
         tree.map((row) => row.pid),
       );
@@ -1122,8 +1130,9 @@ export function createWatchdog({
     // now under that pid are unrelated. The process group can still be
     // signalled while a verified survivor belongs to it (a pgid is not reused
     // while any member lives), and otherwise must not be.
-    const originalRoot = tree.find((row) => row.pid === rootPid);
-    const rootIntact = originalRoot !== undefined && alive.has(originalRoot.key);
+    const rootIntact = tree.some(
+      (row) => row.pid === rootPid && alive.has(row.key),
+    );
     const spawnedDuringGrace = rootIntact
       ? remaining.tree.filter(
           (row) => !tree.some((original) => original.key === row.key),
@@ -1225,7 +1234,8 @@ export function createWatchdog({
     stop() {
       armed = false;
       clearInterval(timer);
-      if (summary.verdict && !summary.acted && verdictAt !== null)
+      // verdictAt is set exactly while summary.verdict is.
+      if (verdictAt !== null && !summary.acted)
         summary.resolvedAfterMs = Math.round(clock.now() - verdictAt);
     },
     summary: () => summary,

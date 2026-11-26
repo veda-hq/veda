@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {
+import fs, {
   appendFileSync,
   mkdirSync,
   mkdtempSync,
@@ -10,8 +10,9 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { afterEach, describe, it, mock } from "node:test";
 import {
   DEFAULT_EXTERNAL_IDLE_MS,
@@ -281,6 +282,7 @@ describe("classifyFds", () => {
     const classes = classifyFds(
       lsof,
       tree.map((row) => row.pid),
+      [],
     );
     const clientTcp = classesOf(classes, client).find(
       (fd) => fd.type === "IPv4",
@@ -300,6 +302,7 @@ describe("classifyFds", () => {
     const classes = classifyFds(
       lsof,
       tree.map((row) => row.pid),
+      [],
     );
     const tcp = classesOf(classes, info.rootPid).find(
       (fd) => fd.type === "IPv4",
@@ -312,6 +315,7 @@ describe("classifyFds", () => {
     const classes = classifyFds(
       lsof,
       tree.map((row) => row.pid),
+      [],
     );
     const socket = classesOf(classes, info.rootPid).find(
       (fd) => fd.type === "unix",
@@ -344,7 +348,7 @@ describe("classifyFds", () => {
   for (const [label, shape, expected] of shapes)
     it(`classifies ${label} as ${expected}`, () => {
       const fd: LsofFd = { fd: "5", device: "0xabc", inode: null, ...shape };
-      const classes = classifyFds(new Map([[1, [fd]]]), [1]);
+      const classes = classifyFds(new Map([[1, [fd]]]), [1], []);
       assert.equal(classesOf(classes, 1)[0]?.class, expected);
     });
 });
@@ -551,15 +555,15 @@ describe("resolveWatchdogConfig", () => {
       "enforce",
     );
     assert.equal(
-      resolveWatchdogConfig({ DVARA_WATCHDOG: "off" }, "darwin").mode,
+      resolveWatchdogConfig({ DVARA_WATCHDOG: "off" }, "darwin", []).mode,
       "off",
     );
   });
 
   it("is unsupported off macOS unless switched off", () => {
-    assert.equal(resolveWatchdogConfig({}, "linux").mode, "unsupported");
+    assert.equal(resolveWatchdogConfig({}, "linux", []).mode, "unsupported");
     assert.equal(
-      resolveWatchdogConfig({ DVARA_WATCHDOG: "off" }, "linux").mode,
+      resolveWatchdogConfig({ DVARA_WATCHDOG: "off" }, "linux", []).mode,
       "off",
     );
   });
@@ -567,7 +571,7 @@ describe("resolveWatchdogConfig", () => {
   for (const raw of [undefined, "", "0", "-1", "abc", "1.5"])
     it(`keeps the default idle window rather than removing it for ${String(JSON.stringify(raw))}`, () => {
       assert.equal(
-        resolveWatchdogConfig({ DVARA_WATCHDOG_IDLE_MS: raw }, "darwin").idleMs,
+        resolveWatchdogConfig({ DVARA_WATCHDOG_IDLE_MS: raw }, "darwin", []).idleMs,
         DEFAULT_IDLE_MS,
       );
     });
@@ -577,6 +581,7 @@ describe("resolveWatchdogConfig", () => {
       resolveWatchdogConfig(
         { DVARA_WATCHDOG_IDLE_MS: String(2 ** 40) },
         "darwin",
+        [],
       ).idleMs,
       MAX_TIMER_MS,
     );
@@ -590,6 +595,7 @@ describe("resolveWatchdogConfig", () => {
           DVARA_WATCHDOG_EXTERNAL_IDLE_MS: "1000",
         },
         "darwin",
+        [],
       ).externalIdleMs,
       5000,
     );
@@ -1040,7 +1046,7 @@ describe("classifyFds by shape", () => {
       [99, [lsofFd("4", { type: "REG" })]],
     ]);
     assert.deepEqual(
-      classifyFds(lsof, [1]),
+      classifyFds(lsof, [1], []),
       new Map([[1, [{ ...keep, class: "ignored", peerPid: null }]]]),
     );
   });
@@ -1062,7 +1068,7 @@ describe("classifyFds by shape", () => {
     ];
     const fds = types.map((type, i) => lsofFd(String(i), { type, name: "x" }));
     assert.deepEqual(
-      classesOf(classifyFds(new Map([[1, fds]]), [1]), 1).map((fd) => fd.class),
+      classesOf(classifyFds(new Map([[1, fds]]), [1], []), 1).map((fd) => fd.class),
       types.map(() => "ignored"),
     );
   });
@@ -1083,7 +1089,7 @@ describe("classifyFds by shape", () => {
       lsofFd(String(i), { type: "IPv6", name: "a:1->b:2", tcpState }),
     );
     assert.deepEqual(
-      classesOf(classifyFds(new Map([[1, fds]]), [1]), 1).map((fd) => fd.class),
+      classesOf(classifyFds(new Map([[1, fds]]), [1], []), 1).map((fd) => fd.class),
       [
         "ignored",
         "ignored",
@@ -1103,7 +1109,7 @@ describe("classifyFds by shape", () => {
       lsofFd(String(i), { type, name: "a:1->b:2", tcpState: "CLOSE_WAIT" }),
     );
     assert.deepEqual(
-      classesOf(classifyFds(new Map([[1, fds]]), [1]), 1).map((fd) => fd.class),
+      classesOf(classifyFds(new Map([[1, fds]]), [1], []), 1).map((fd) => fd.class),
       ["external", "external", "external", "ignored"],
     );
   });
@@ -1115,7 +1121,7 @@ describe("classifyFds by shape", () => {
       tcpState: "ESTABLISHED",
     });
     const clientClass = (peer: LsofFd) =>
-      classesOf(classifyFds(new Map([[1, [client]], [2, [peer]]]), [1, 2]), 1);
+      classesOf(classifyFds(new Map([[1, [client]], [2, [peer]]]), [1, 2], []), 1);
     for (const type of ["XIPv4", "IPv4x", "IPv5", "unix"])
       assert.deepEqual(
         clientClass(lsofFd("3", { type, name: "b:2->a:1" })),
@@ -1148,7 +1154,7 @@ describe("classifyFds by shape", () => {
       const client = lsofFd("3", { type: "IPv4", name, tcpState: "ESTABLISHED" });
       assert.deepEqual(
         classesOf(
-          classifyFds(new Map([[1, [client]], [2, [server]]]), [1, 2]),
+          classifyFds(new Map([[1, [client]], [2, [server]]]), [1, 2], []),
           1,
         ),
         [{ ...client, class: "external", peerPid: null }],
@@ -1167,7 +1173,7 @@ describe("classifyFds by shape", () => {
       const client = lsofFd("3", { type: "IPv4", name: "a:1->b:2", tcpState });
       assert.deepEqual(
         classesOf(
-          classifyFds(new Map([[1, [client]], [2, [server]]]), [1, 2]),
+          classifyFds(new Map([[1, [client]], [2, [server]]]), [1, 2], []),
           1,
         ),
         [{ ...client, class: "external", peerPid: null }],
@@ -1184,7 +1190,7 @@ describe("classifyFds by shape", () => {
       new Map([[1, [{ ...socket, class: "ignored", peerPid: null }]]]),
     );
     assert.deepEqual(
-      classifyFds(new Map([[1, [socket]]]), [1]),
+      classifyFds(new Map([[1, [socket]]]), [1], []),
       new Map([[1, [{ ...socket, class: "external", peerPid: null }]]]),
     );
   });
@@ -1198,7 +1204,7 @@ describe("classifyFds by shape", () => {
       "->0x10",
     ].map((name, i) => lsofFd(String(i), { type: "unix", name }));
     assert.deepEqual(
-      classesOf(classifyFds(new Map([[1, fds]]), [1]), 1).map((fd) => fd.class),
+      classesOf(classifyFds(new Map([[1, fds]]), [1], []), 1).map((fd) => fd.class),
       ["ignored", "ignored", "ignored", "external", "external"],
     );
   });
@@ -1209,7 +1215,7 @@ describe("classifyFds by shape", () => {
       lsofFd("4", { type: "unix", name: "/var/run/docker.sock" }),
     ];
     assert.deepEqual(
-      classesOf(classifyFds(new Map([[1, fds]]), [1]), 1).map((fd) => fd.class),
+      classesOf(classifyFds(new Map([[1, fds]]), [1], []), 1).map((fd) => fd.class),
       ["ignored", "external"],
     );
   });
@@ -1221,7 +1227,7 @@ describe("classifyFds by shape", () => {
     );
     assert.deepEqual(
       classesOf(
-        classifyFds(new Map([[1, fds], [2, [holder]]]), [1, 2]),
+        classifyFds(new Map([[1, fds], [2, [holder]]]), [1, 2], []),
         1,
       ).map((fd) => [fd.class, fd.peerPid]),
       [
@@ -1250,7 +1256,7 @@ describe("classifyFds by shape", () => {
         ],
       ],
     ]);
-    const classes = classifyFds(lsof, [1, 2, 3]);
+    const classes = classifyFds(lsof, [1, 2, 3], []);
     const peers = (pid: number) =>
       classesOf(classes, pid).map((fd) => [fd.class, fd.peerPid]);
     assert.deepEqual(peers(1), [
@@ -1282,7 +1288,7 @@ describe("classifyFds by shape", () => {
         ],
       ],
     ]);
-    const classes = classifyFds(lsof, [1, 2]);
+    const classes = classifyFds(lsof, [1, 2], []);
     const peers = (pid: number) =>
       classesOf(classes, pid).map((fd) => [fd.class, fd.peerPid]);
     assert.deepEqual(peers(1), [
@@ -1459,7 +1465,7 @@ describe("exitDisposition's shapes", () => {
 describe("resolveWatchdogConfig's reasons", () => {
   it("says an explicit mode is explicit", () => {
     assert.deepEqual(
-      resolveWatchdogConfig({ DVARA_WATCHDOG: "report" }, "darwin"),
+      resolveWatchdogConfig({ DVARA_WATCHDOG: "report" }, "darwin", []),
       {
         mode: "report",
         reason: "explicit",
@@ -1473,7 +1479,7 @@ describe("resolveWatchdogConfig's reasons", () => {
   });
 
   it("says why it is unsupported off macOS", () => {
-    assert.partialDeepStrictEqual(resolveWatchdogConfig({}, "linux"), {
+    assert.partialDeepStrictEqual(resolveWatchdogConfig({}, "linux", []), {
       mode: "unsupported",
       reason: "non-darwin",
     });
@@ -1594,7 +1600,7 @@ describe("createWatchdog", () => {
       hangsDir,
       runId: "run-under-test",
       config: {
-        ...resolveWatchdogConfig({ DVARA_WATCHDOG: mode }, "darwin"),
+        ...resolveWatchdogConfig({ DVARA_WATCHDOG: mode }, "darwin", []),
         idleMs: 5000,
         externalIdleMs: 60_000,
         sampleMs: 1000,
@@ -2377,6 +2383,49 @@ describe("createWatchdog, step by step", () => {
     ]);
   });
 
+  it("times nothing when it stops without a verdict", async () => {
+    const { watchdog } = watch();
+    await advance(1000);
+    watchdog.stop();
+    assert.equal(watchdog.summary().verdict, null);
+    assert.equal(Object.hasOwn(watchdog.summary(), "resolvedAfterMs"), false);
+  });
+
+  it("prunes every expired entry when one vanishes between its stat and its removal", async () => {
+    const base = mkdtempSync(join(tmpdir(), "watchdog-627-prune-"));
+    dirs.push(base);
+    const hangsDir = join(base, "hangs");
+    const expiredAt = (START + 11_000 - 1_209_600_000 - 1000) / 1000;
+    for (const name of ["expired-a", "expired-b"]) {
+      mkdirSync(join(hangsDir, name), { recursive: true });
+      utimesSync(join(hangsDir, name), expiredAt, expiredAt);
+    }
+    // The first expired entry stat-ed is removed right after, as another
+    // run's pruning would: its removal must not end the pruning.
+    const realStat = fs.statSync;
+    let vanished = "";
+    mock.method(fs, "statSync", (path: string) => {
+      const stats = realStat(path);
+      if (vanished === "" && basename(path).startsWith("expired-")) {
+        vanished = basename(path);
+        rmSync(path, { recursive: true });
+      }
+      return stats;
+    });
+    syncBuiltinESMExports();
+    try {
+      const { watchdog } = watch({ hangsDir, mode: "report" });
+      await advance(11_000);
+      watchdog.stop();
+      assert.equal(watchdog.summary().verdict?.kind, "internal-deadlock");
+      assert.match(vanished, /^expired-[ab]$/);
+      assert.deepEqual(readdirSync(hangsDir), ["run-627"]);
+    } finally {
+      mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+  });
+
   it("only reports in report mode, says when diagnostics fail, and times how the hook ended", async () => {
     const { calls, kills, logs, watchdog } = watch({
       mode: "report",
@@ -3139,6 +3188,7 @@ describe("a core whose member still has a live child outside it", () => {
     classifyFds(
       lsof,
       tree.map((r) => r.pid),
+      [],
     );
   const verdictOf = (tree: PsRow[]) =>
     decide({
@@ -3171,5 +3221,60 @@ describe("a core whose member still has a live child outside it", () => {
   it("counts only a member's own child: a live child of the core's parent does not spare it", () => {
     const sibling = row(91900, 71035, 91900, "node");
     assert.deepEqual(verdictOf([bash, pnpm, sibling, sh]), deadlock);
+  });
+});
+
+describe("the pure functions with a field or an entry missing", () => {
+  it("classifies an fd lsof gave no type as external", () => {
+    assert.deepEqual(classifyFds(new Map([[1, [lsofFd("3")]]]), [1], []), new Map([
+      [1, [{ ...lsofFd("3"), class: "external", peerPid: null }]],
+    ]));
+  });
+
+  it("shares no FIFO through fds that have no device", () => {
+    const classes = classifyFds(
+      new Map([
+        [1, [lsofFd("3", { type: "FIFO" })]],
+        [2, [lsofFd("4", { type: "FIFO" })]],
+      ]),
+      [1, 2],
+      [],
+    );
+    assert.deepEqual(
+      [...classes.values()].flat().map((fd) => [fd.class, fd.peerPid]),
+      [
+        ["external", null],
+        ["external", null],
+      ],
+    );
+  });
+
+  it("finds a core whose peer has no classified fds, past a leaf that has none", () => {
+    const tree = [psRow(1, 0), psRow(3, 0), psRow(2, 1)];
+    const classes = new Map([[2, [classified("internal", 1)]]]);
+    const core = { leaf: 2, peers: [1] };
+    assert.deepEqual(findHangCore(tree, classes, zeroDeltas(tree)), core);
+    assert.deepEqual(
+      decide({
+        tree,
+        classes,
+        cpuDeltaByPid: zeroDeltas(tree),
+        quietMs: 1000,
+        config: { idleMs: 1000, externalIdleMs: 5000 },
+      }),
+      { kind: "internal-deadlock", core, quietMs: 1000 },
+    );
+  });
+
+  it("shares nothing outside through a member with no classified fds, or a channel with no device or address", () => {
+    assert.equal(
+      coreSharedOutside(
+        { leaf: 2, peers: [1] },
+        new Map([[2, [classified("internal", 1)]]]),
+        new Map([[9, [lsofFd("3")]]]),
+        [1, 2],
+      ),
+      false,
+    );
   });
 });

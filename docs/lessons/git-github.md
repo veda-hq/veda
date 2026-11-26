@@ -106,7 +106,7 @@ and PR state, and the GitHub API.
   `#<number>` reference as a footer, so a long line such as "... describes only PR #N. Keep ..."
   fails `footer-max-line-length` (100) after every other hook has run. Wrap body lines well under
   100 and keep issue references off long lines.
-  <!-- held by: kavach command guard, rule commit-body-ref-line-length (warns, then refuses, a commit body line over 100 characters holding #<number>) -->
+  <!-- held by: kavach command guard, rule commit-body-ref-line-length (warns, then refuses, a commit body line over 100 characters holding #<number>, except where commitlint passes it: a URL on the line, or a message its default ignores skip) -->
 - **The shell eats commit messages.** In zsh, backticks, `$()` or `!` inside a double-quoted
   `git commit -m` are expanded and the word silently vanishes; commitlint checks only the
   header, so the damage ships. Write the message to a file and use `git commit -F <file>`, and
@@ -137,7 +137,7 @@ and PR state, and the GitHub API.
   `git checkout --ours <file>` or `--theirs` is file-wide and drops the other side's changes to
   that file. Never use `git checkout -- <file>` to restore while uncommitted work is present;
   commit or copy it first.
-  <!-- held by: kavach command guard, rule checkout-discards-uncommitted (warns, then refuses, checkout -- / --ours / --theirs / restore over a path with uncommitted changes) -->
+  <!-- held by: kavach command guard, rule checkout-discards-uncommitted (warns, then refuses, checkout -- / --ours / --theirs / restore over a path with uncommitted changes; a path in a merge conflict passes) -->
 - **Review bots that need a seat; verified commits without a key.** Some review bots review only
   PRs whose author holds a seat, so a PR opened by an unseated bot sits skipped and never
   merges. To get a GitHub-verified commit without a local signing key, create it with GraphQL

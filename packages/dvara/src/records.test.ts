@@ -16,6 +16,10 @@ describe("parseRecords", () => {
       "proof\ttests\treused\t120",
       "proof\ttests\tran\tjunk",
       "proof-reason\ttests\tunchanged\t5\t\tInfinity",
+      "failed\tlint",
+      "held\tmutation\tthe tests failed",
+      "failed\tlint",
+      "skipped\tios\tno\tsimulator",
       "something-else\tx",
       "",
     ].join("\n");
@@ -41,12 +45,35 @@ describe("parseRecords", () => {
         previousExecutionMs: null,
       },
     ]);
+    // One entry per refusal, in order: a stage that refused twice is listed twice.
+    assert.deepEqual(records.failed, ["lint", "lint"]);
+    assert.deepEqual(records.held, [
+      { check: "mutation", reason: "the tests failed" },
+    ]);
+    // A reason is free text: a tab inside it stays in it.
+    assert.deepEqual(records.skipped, [
+      { check: "ios", reason: "no\tsimulator" },
+    ]);
+  });
+
+  it("has every list empty without records, as with no file at all", () => {
+    for (const text of [null, "", "refs-source\tstdin"]) {
+      const { failed, held, skipped, proof, proofDiagnostics } =
+        parseRecords(text);
+      assert.deepEqual(
+        { failed, held, skipped, proof, proofDiagnostics },
+        { failed: [], held: [], skipped: [], proof: [], proofDiagnostics: [] },
+      );
+    }
   });
 
   it("fills missing fields with empty text", () => {
     const records = parseRecords(
-      "refs-source\nref\nstage-input\nproof\nproof-reason",
+      "refs-source\nref\nstage-input\nproof\nproof-reason\nfailed\nheld\nskipped\tx",
     );
+    assert.deepEqual(records.failed, [""]);
+    assert.deepEqual(records.held, [{ check: "", reason: "" }]);
+    assert.deepEqual(records.skipped, [{ check: "x", reason: "" }]);
     assert.deepEqual(records.pushed, {
       source: "",
       refs: [{ local: "", remote: "" }],

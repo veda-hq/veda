@@ -25,6 +25,7 @@ import {
 } from "./supervisor.ts";
 
 const STAGES = resolve(import.meta.dirname, "..", "shell", "stages.sh");
+const KEEP_GOING = resolve(import.meta.dirname, "..", "shell", "keep-going.sh");
 
 /**
  * Every test fails at 5 s; each takes under 1 s. A mutant that keeps a run
@@ -254,6 +255,41 @@ describe("supervise", () => {
         "utf8",
       ).trim(),
       "pre-push",
+    );
+  });
+
+  it("names each refusal keep-going carried on past, and each check held or skipped", async () => {
+    const { root, hook } = repo(
+      [
+        `source '${KEEP_GOING}'`,
+        "dvara_stage lint",
+        "exit 1",
+        "dvara_stage test",
+        "exit 1",
+        'dvara_keep_going_held mutation "a cheap check failed"',
+        'dvara_keep_going_skipped ios "no simulator"',
+        "dvara_keep_going_report",
+      ].join("\n"),
+    );
+    const { opts } = options(root);
+    assert.equal(await supervise([hook], opts), 1);
+    const [row] = rows(root);
+    assert.equal(row?.status, "failure");
+    assert.deepEqual(row?.failed, ["lint", "test"]);
+    assert.deepEqual(row?.held, [
+      { check: "mutation", reason: "a cheap check failed" },
+    ]);
+    assert.deepEqual(row?.skipped, [{ check: "ios", reason: "no simulator" }]);
+  });
+
+  it("writes the lists empty for a run that refused nothing", async () => {
+    const { root, hook } = repo("dvara_stage lint");
+    const { opts } = options(root);
+    assert.equal(await supervise([hook], opts), 0);
+    const [row] = rows(root);
+    assert.deepEqual(
+      [row?.failed, row?.held, row?.skipped, row?.proof, row?.proofDiagnostics],
+      [[], [], [], [], []],
     );
   });
 

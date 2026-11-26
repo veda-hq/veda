@@ -1,7 +1,7 @@
 // The shell helpers, run in real bash.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, it } from "node:test";
@@ -123,6 +123,60 @@ describe("keep-going.sh", () => {
         .out,
       /went-on[\s\S]*❌ y/,
     );
+  });
+
+  it("records each refusal, held check and skipped check for the row", (t) => {
+    const dir = mkdtempSync(join(tmpdir(), "dvara-sh-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const records = join(dir, "r");
+    const result = bash(
+      [
+        `source '${STAGES}'`,
+        `source '${KEEP_GOING}'`,
+        "dvara_stage lint",
+        "exit 1",
+        "exit 1",
+        "(exit 1) || true",
+        'dvara_keep_going_held mutation "the tests failed"',
+        "dvara_keep_going_skipped ios $'no\\nsimulator'",
+        "dvara_keep_going_report",
+      ].join("\n"),
+      { DVARA_RECORD_FILE: records },
+    );
+    assert.equal(result.code, 1);
+    // A subshell's exit ends only the subshell, and is no refusal.
+    assert.equal(
+      readFileSync(records, "utf8"),
+      [
+        "failed\tlint",
+        "failed\tlint",
+        "held\tmutation\tthe tests failed",
+        "skipped\tios\tno simulator",
+        "",
+      ].join("\n"),
+    );
+    assert.match(result.out, /⏭ {2}ios: skipped: no\nsimulator/);
+  });
+
+  it("records nothing, and still carries on, without stages.sh", (t) => {
+    const dir = mkdtempSync(join(tmpdir(), "dvara-sh-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const records = join(dir, "r");
+    const result = bash(
+      [
+        "set -eu",
+        `source '${KEEP_GOING}'`,
+        "exit 1",
+        "dvara_keep_going_held a b",
+        "dvara_keep_going_skipped c d",
+        "echo went-on",
+        "dvara_keep_going_report",
+      ].join("\n"),
+      { DVARA_RECORD_FILE: records },
+    );
+    assert.equal(result.code, 1);
+    assert.match(result.out, /went-on[\s\S]*❌ unknown/);
+    assert.equal(existsSync(records), false);
   });
 
   it("names an unmarked stage unknown", () => {

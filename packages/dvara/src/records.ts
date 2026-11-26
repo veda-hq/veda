@@ -32,12 +32,22 @@ export interface ProofReason {
   readonly previousExecutionMs: number | null;
 }
 
+/** A check keep-going mode held or skipped, and why (keep-going.sh). */
+export interface NotRun {
+  readonly check: string;
+  readonly reason: string;
+}
+
 export interface Records {
   /** null: the hook wrote no records file at all. */
   readonly pushed: Pushed | null;
   readonly declared: Map<string, Input>;
   readonly proof: Proof[];
   readonly proofDiagnostics: ProofReason[];
+  /** The stage of each refusal keep-going mode carried on past, in order. */
+  readonly failed: string[];
+  readonly held: NotRun[];
+  readonly skipped: NotRun[];
 }
 
 /**
@@ -53,16 +63,26 @@ export const recordedMs = (text: string | undefined): number | null => {
 /**
  * Records, one tab-separated line each: `refs-source <stdin|none>`,
  * `ref <local> <remote>`, `stage-input <stage> <kind> <digest>`,
- * `proof <check> <outcome> <ms>`, and
- * `proof-reason <check> <reason> <waitMs> <executionMs> <previousExecutionMs>`.
+ * `proof <check> <outcome> <ms>`,
+ * `proof-reason <check> <reason> <waitMs> <executionMs> <previousExecutionMs>`,
+ * and keep-going mode's `failed <stage>`, `held <check> <reason>` and
+ * `skipped <check> <reason>`, whose reason is free text: a tab in it stays.
  * Anything else is ignored.
  */
 export const parseRecords = (text: string | null): Records => {
   const declared = new Map<string, Input>();
   const proof: Proof[] = [];
   const proofDiagnostics: ProofReason[] = [];
-  if (text === null) return { pushed: null, declared, proof, proofDiagnostics };
+  const failed: string[] = [];
+  const held: NotRun[] = [];
+  const skipped: NotRun[] = [];
+  const lists = { proof, proofDiagnostics, failed, held, skipped };
+  if (text === null) return { pushed: null, declared, ...lists };
   const pushed: Pushed = { source: "none", refs: [] };
+  const notRun = ([check = "", ...reason]: string[]): NotRun => ({
+    check,
+    reason: reason.join("\t"),
+  });
   // A blank line's type is empty, which no record has: it is ignored.
   for (const line of text.split("\n")) {
     const [type, ...f] = line.split("\t");
@@ -86,8 +106,11 @@ export const parseRecords = (text: string | null): Records => {
         executionMs: recordedMs(f[3]),
         previousExecutionMs: recordedMs(f[4]),
       });
+    else if (type === "failed") failed.push(f[0] ?? "");
+    else if (type === "held") held.push(notRun(f));
+    else if (type === "skipped") skipped.push(notRun(f));
   }
-  return { pushed, declared, proof, proofDiagnostics };
+  return { pushed, declared, ...lists };
 };
 
 /**

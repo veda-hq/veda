@@ -24,7 +24,12 @@ file in your repository; dvara runs it.
   `DVARA_VERBOSE=1` streams it.
 - **Keep-going mode.** For a preflight, a run of the push hook ahead of the
   push: each stage's `exit 1` is recorded and the hook carries on, so one run
-  lists every failure.
+  lists every failure. The row says which: `failed` lists the stage of each
+  refusal, in order, once per refusal, and `held` and `skipped` list each check
+  not run as `{ "check", "reason" }`. Every row has the three, empty when
+  there were none. A stop keep-going mode does not carry on past
+  (`builtin exit`, a `set -e` abort, a hook run without it) adds nothing to
+  `failed`: there the row's last stage reads `failed`.
 - **A watchdog, if you want one.** `"watchdog": "dvara"` attaches the built-in
   watchdog to each run (below); any other value names a module of your own.
   It may stop a hung hook and decide the verdict. Without one, or when it
@@ -88,9 +93,13 @@ if [ "${DVARA_MODE:-}" = preflight ] && [ $# -eq 0 ]; then dvara_keep_going_repo
 | `dvara_record_refs "$stdin"`    | the commits a push updates, from git's ref lines; never the ref names                                       |
 | `dvara_passed`                  | false once after keep-going mode carried on past a refusal, to guard a "✅" line                            |
 
-`keep-going.sh` adds `dvara_keep_going_held`, `dvara_keep_going_skipped` and
-`dvara_keep_going_report`. `DVARA_KEEP_GOING_NAME` and `DVARA_KEEP_GOING_TITLE`
-rename it in its messages (default "preflight" and "Preflight").
+`keep-going.sh` adds `dvara_keep_going_held <check> <reason>`,
+`dvara_keep_going_skipped <check> <reason>` and `dvara_keep_going_report`.
+`DVARA_KEEP_GOING_NAME` and `DVARA_KEEP_GOING_TITLE` rename it in its messages
+(default "preflight" and "Preflight"). It records each refusal, held check and
+skipped check through `dvara_record` (`failed <stage>`, `held <check> <reason>`,
+`skipped <check> <reason>`), so source `stages.sh` first; without it,
+keep-going mode records nothing.
 
 ## Configuration
 

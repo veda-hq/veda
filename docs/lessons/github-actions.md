@@ -91,9 +91,9 @@ scanning. Each lesson names the symptom and the fix.
   stack-trace line numbers beyond your file's length are the tell.
 - **A conflicted PR runs no CI.** A PR with merge conflicts (`mergeStateStatus` `DIRTY`) triggers
   no `pull_request` workflows, so only external app checks (merge queue, review bots) report and
-  the PR looks green. Before believing a PR is green, compare its check count with the
-  repository's normal count and confirm `gh run list --branch <branch>` is non-empty. A CI watcher
-  must require a minimum check count and two consecutive settled polls.
+  the PR looks green in `gh pr checks` and on its page. `niyam pr-signals` warns when no GitHub
+  Actions run has reported; without it, confirm `gh run list --branch <branch>` is non-empty. A CI
+  watcher must require a minimum check count and two consecutive settled polls.
 - **`workflow_dispatch` can dequeue a PR.** A dispatch run from a branch with an open PR posts
   every job's check on the head sha, including a required aggregate gate as skipped, which
   replaces the PR run's success. A merge queue's `check-success` then fails and dequeues the PR,

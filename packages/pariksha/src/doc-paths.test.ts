@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { findPathProblems, pathRef } from './doc-paths.ts';
 import { CONFIG, createTestRepo, testConfig, type TestRepo } from './doc-references.fixture.test.ts';
 import type { Config } from './doc-references-config.ts';
-import { createSnapshot } from './doc-references.ts';
+import { createSnapshot, type RepoSnapshot } from './doc-references.ts';
 
 const SKILL = '.agents/skills/resolve-health/SKILL.md';
 const COLLECTOR = '.claude/scripts/collect-health-signals.ts';
@@ -189,6 +189,24 @@ describe('DOC-DRIFT-01 backticked path forms', () => {
     );
   });
 
+  it('scans the tree once for each glob, however often a doc names it', () => {
+    // A doc at the root, with no workspace: each glob is tried from the root only.
+    const snapshot = createTestRepo({ 'NOTES.md': '`apps/**/*.py` `apps/**/*.py` `apps/**/*.ts` `apps/**/*.ts`\n', 'apps/a.ts': '' }).snapshot();
+    let scans = 0;
+    class Counted extends Set<string> {
+      override [Symbol.iterator](): SetIterator<string> {
+        scans += 1;
+        return super[Symbol.iterator]();
+      }
+    }
+    const counted: RepoSnapshot = { ...snapshot, dirs: new Counted(snapshot.dirs) };
+    assert.deepEqual(
+      findPathProblems(CONFIG, counted, ['NOTES.md']).map((p) => p.ref),
+      ['apps/**/*.py', 'apps/**/*.py'],
+    );
+    assert.equal(scans, 2);
+  });
+
   it('anchors a ./ or ../ directory at the repository root with no workspaces', () => {
     // No workspace and no ancestor below the root: only the explicit `.`
     // and `..` segments anchor these, so each is checked, not skipped.
@@ -328,6 +346,79 @@ describe('DOC-DRIFT-01 backticked path forms', () => {
   });
 });
 
+describe('DOC-DRIFT-01 as the citing text writes it', () => {
+  it('reads the symbol beside a citation only in the forms it takes', () => {
+    const r = pathRepo(
+      [
+        '`store.ghostFn` in `apps/server/src/app.ts:2`',
+        '`ghostFn` `apps/server/src/app.ts:2`',
+        '`ghostFn` in[`apps/server/src/app.ts:2`]',
+        '`apps/server/src/app.ts:2` (see `ghostFn`)',
+        '`apps/server/src/app.ts:2` and (`ghostFn`)',
+        '`apps/server/src/app.ts:2` ( `ghostFn`)',
+        '`apps/server/src/app.ts:2`(`ghostFn`)',
+        '',
+      ].join('\n'),
+      { 'apps/server/src/cite.ts': '// [`apps/server/src/app.ts:2`](../app.ts) (`ghostFn`)\n' },
+    );
+    const drifted = (symbol: string): string => `\`${symbol}\` is not at \`apps/server/src/app.ts:2\` — the citation drifted`;
+    assert.deepEqual(
+      pathProblems(r, [SKILL, 'apps/server/src/cite.ts']).map((p) => [p.file, p.line, p.reason]),
+      [
+        [SKILL, 1, drifted('store.ghostFn')],
+        [SKILL, 2, drifted('ghostFn')],
+        [SKILL, 3, drifted('ghostFn')],
+        [SKILL, 6, drifted('ghostFn')],
+        [SKILL, 7, drifted('ghostFn')],
+        ['apps/server/src/cite.ts', 1, drifted('ghostFn')],
+      ],
+    );
+  });
+
+  it('reports a path above the root as not tracked', () => {
+    assert.deepEqual(
+      pathProblems(pathRepo('`../../../../gone/file.md`\n')).map((p) => p.reason),
+      ['`../../../../gone/file.md` is not tracked (looked beside the doc, above it and at the root)'],
+    );
+  });
+
+  it('keeps a problem with a tracked file under a rule that ignores everything', () => {
+    const r = pathRepo('`apps/server/src/app.ts/` `apps/server/src/app.ts:9` `docs/absent.md`\n', { '.gitignore': '*\n' });
+    r.git('add', '-f', '-A');
+    assert.deepEqual(
+      pathProblems(r).map((p) => p.reason),
+      ['`apps/server/src/app.ts/` is a file, not a directory', '`apps/server/src/app.ts` has 2 lines; line 9 does not exist'],
+    );
+  });
+
+  it('reads a layout from any of the patterns the config lists', () => {
+    const config = testConfig({ paths: { layouts: [{ pattern: '^handoffs/' }, { pattern: '^evidence/' }] } });
+    assert.deepEqual(pathProblems(pathRepo('`evidence/A-01.md`\n'), [SKILL], config), []);
+  });
+
+  it('resolves a bare name beside the doc first, however many share it elsewhere', () => {
+    const r = pathRepo('`run.ts:5`\n', { '.agents/skills/resolve-health/run.ts': 'one\n', 'apps/run.ts': 'one\n' });
+    assert.deepEqual(
+      pathProblems(r).map((p) => p.reason),
+      ['`.agents/skills/resolve-health/run.ts` has 1 lines; line 5 does not exist'],
+    );
+  });
+
+  it('ends a shell line at a word that starts a comment', () => {
+    assert.deepEqual(pathProblems(pathRepo(['```sh', 'cat docs/guide.md #see docs/absent.md', '```', ''].join('\n'))), []);
+  });
+
+  it('reads a frontmatter value only from a line that starts one, and up to its end', () => {
+    // A line ending in a carriage return reads as no value: today's reading of a CRLF file.
+    assert.deepEqual(pathProblems(pathRepo(['---', 'just text - docs/absent-1.md', 'see: docs/absent-2.md\r', '---', ''].join('\n'))), []);
+  });
+
+  it('checks a link label in a code comment as a path', () => {
+    const r = pathRepo('ok\n', { 'apps/server/src/link.ts': '// [`apps/gone/label.ts`](https://example.com)\n' });
+    assert.deepEqual(refs(r, ['apps/server/src/link.ts']), ['apps/gone/label.ts']);
+  });
+});
+
 describe('pathRef', () => {
   for (const token of ['scripts/<name>.ts', 'docs/work/NNNN-slug/', 'src/foo.ts', 'path/to/file.md', 'https://example.com/a.md', 'abc1234:docs/x.md', 'origin/main:docs/x.md', '.claude/worktrees/x/a.md', 'github.com/org/repo.md', 'plain-word', '0.1/2.5']) {
     it(`is not a path: ${token}`, () => {
@@ -389,6 +480,26 @@ describe('pathRef', () => {
     assert.deepEqual(pathRef(CONFIG, 'docs/*'), { path: 'docs/*', glob: true, dir: false, lines: undefined });
     assert.equal(pathRef(CONFIG, 'install.sh:3')?.path, 'install.sh');
     assert.equal(pathRef(CONFIG, '.claude/worktreesX/guide.md')?.path, '.claude/worktreesX/guide.md');
+  });
+
+  it('reads a token whole: what comes before or after a form leaves it no path', () => {
+    for (const token of ["docs/it's.md", 'a--b=docs/guide.md', 'a:docs/guide.md', 'apps/server/src/app.ts:12x', '--root=docs/guide.md\nx', ':docs/guide.md\nx', 'x\ndocs/guide.md:3', '1/2/', 'origin/server.ts:12']) {
+      assert.equal(pathRef(CONFIG, token), null, JSON.stringify(token));
+    }
+    assert.deepEqual(pathRef(CONFIG, 'xorigin/server.ts:12'), { path: 'xorigin/server.ts', glob: false, dir: false, lines: [12, 12] });
+  });
+
+  it('reads every digit of a line, and the last extension of a name', () => {
+    assert.deepEqual(pathRef(CONFIG, 'src/main.ts:3:45')?.lines, [3, 3]);
+    assert.deepEqual(pathRef(CONFIG, 'src/main.md#L12')?.lines, [12, 12]);
+    assert.deepEqual(pathRef(CONFIG, 'src/main.md#L7-L19')?.lines, [7, 19]);
+    assert.equal(pathRef(CONFIG, 'apps/server/src/env.d.ts')?.path, 'apps/server/src/env.d.ts');
+  });
+
+  it('leaves out a path under any untracked folder', () => {
+    const config = testConfig({ paths: { untracked: ['.claude/worktrees/', '.tmp/'] } });
+    assert.equal(pathRef(config, '.tmp/out.json'), null);
+    assert.equal(pathRef(config, '.claude/worktrees/x/a.md'), null);
   });
 
   it('reads examples and untracked folders from the config', () => {

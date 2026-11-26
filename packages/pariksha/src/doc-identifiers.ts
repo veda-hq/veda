@@ -32,11 +32,14 @@ export interface IdentifierRef {
 const UPPER_SNAKE = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
 const CAMEL = /^[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)+$/;
 const PASCAL = /^[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+$/;
-const CALL = /^([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\(\)$/;
+/** A call, `a.b.run()`: its last name is the word looked for. */
+const CALL = /^(?:[A-Za-z_$][\w$]*\.)*([A-Za-z_$][\w$]*)\(\)$/;
 const DOTTED = /^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$/;
 const MIGRATION = /^\d{14}_[a-z0-9_]+$/;
-const ROUTE = /^(GET|POST|PUT|PATCH|DELETE)\s+(\/\S*)$/;
+// One blank: a span with two in a row names nothing.
+const ROUTE = /^(GET|POST|PUT|PATCH|DELETE)\s(\/\S*)$/;
 const ROLES = /^@Roles\((.*)\)$/;
+const PRISMA_UNIQUE = /^@@unique\(\[([\w\s,]+)\]\)$/;
 const SCOPED_PACKAGE = /^(@[a-z0-9][\w.-]*\/[a-z0-9][\w.-]*)(?:@(\d+\.\d+\.\d+))?$/;
 const VERSIONED_PACKAGE = /^([a-z0-9][\w.-]*)@(\d+\.\d+\.\d+)$/;
 
@@ -47,12 +50,12 @@ export const identifierRef = (span: string, notIdentifiers: ReadonlySet<string>)
   if (MIGRATION.test(text)) return { kind: 'migration', text };
   if (ROUTE.test(text)) return { kind: 'route', text };
   if (ROLES.test(text)) return { kind: 'roles', text };
-  if (/^@@unique\(\[[\w\s,]+\]\)$/.test(text)) return { kind: 'prisma-unique', text };
+  if (PRISMA_UNIQUE.test(text)) return { kind: 'prisma-unique', text };
   if (SCOPED_PACKAGE.test(text) || VERSIONED_PACKAGE.test(text)) return { kind: 'package', text };
   if (/\s/.test(text) || notIdentifiers.has(text)) return null;
   const call = CALL.exec(text);
   if (call !== null) {
-    const word = String(call[1]).replace(/^.*\./, '');
+    const word = String(call[1]);
     return word.length < 3 || notIdentifiers.has(word) ? null : { kind: 'symbol', text, word };
   }
   const dotted = DOTTED.exec(text);
@@ -65,7 +68,8 @@ export const identifierRef = (span: string, notIdentifiers: ReadonlySet<string>)
 
 interface PrismaModel {
   readonly fields: Set<string>;
-  readonly uniques: string[];
+  /** Each `@@unique` or `@@id`, its fields joined by `,`. */
+  readonly uniques: Set<string>;
 }
 
 /** Text of every tracked file whose path matches `pattern`. */
@@ -76,13 +80,13 @@ const prismaModels = (snapshot: RepoSnapshot, schemas: RegExp): Map<string, Pris
   for (const text of contents(snapshot, schemas)) {
     for (const block of text.matchAll(/^(model|enum|type|view)\s+(\w+)\s*\{([\s\S]*?)^\}/gm)) {
       const fields = new Set<string>();
-      const uniques: string[] = [];
+      const uniques = new Set<string>();
       for (const raw of String(block[3]).split('\n')) {
         // A blank line, a `//` comment or an `@@` attribute starts with no word, so it names no field.
         const line = raw.trim();
         const unique = /^@@(?:unique|id)\(\s*\[([^\]]+)\]/.exec(line);
         if (unique !== null) {
-          uniques.push(
+          uniques.add(
             String(unique[1])
               .split(',')
               .map((f) => String(f.trim().split(/[\s(]/)[0]))
@@ -141,52 +145,61 @@ const roleValues = (snapshot: RepoSnapshot, schema: string, name: string): Set<s
   return roles;
 };
 
-/** Job ids and job names in the workflow files; one that does not parse is its linter's to fail. */
-const workflowJobs = (snapshot: RepoSnapshot, workflows: RegExp): Set<string> => {
-  const jobs = new Set<string>();
+/** A YAML document as an object, or `{}` when it is none or does not parse. */
+const yamlObject = (text: string): Record<string, unknown> => {
+  try {
+    const parsed: unknown = load(text);
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+/**
+ * Job ids and job names in the workflow files; one that does not parse is its
+ * linter's to fail. Only strings are ever asked for, so a name that is not
+ * one is held but never found.
+ */
+const workflowJobs = (snapshot: RepoSnapshot, workflows: RegExp): Set<unknown> => {
+  const jobs = new Set<unknown>();
   for (const text of contents(snapshot, workflows)) {
-    let workflow: unknown;
-    try {
-      workflow = load(text);
-    } catch {
-      continue;
-    }
-    const all = isRecord(workflow) ? workflow['jobs'] : undefined;
+    const all = yamlObject(text)['jobs'];
     if (!isRecord(all)) continue;
     for (const [id, job] of Object.entries(all)) {
       jobs.add(id);
-      if (isRecord(job) && typeof job['name'] === 'string') jobs.add(job['name']);
+      if (isRecord(job)) jobs.add(job['name']);
     }
   }
   return jobs;
 };
 
-/** A manifest's parsed JSON as an object, or undefined: a malformed manifest is another check's to fail. */
-export const manifestObject = (text: string): Record<string, unknown> | undefined => {
+/** A manifest's parsed JSON as an object, or `{}`: a malformed manifest is another check's to fail. */
+export const manifestObject = (text: string): Record<string, unknown> => {
   try {
     const parsed: unknown = JSON.parse(text);
-    return isRecord(parsed) ? parsed : undefined;
+    return isRecord(parsed) ? parsed : {};
   } catch {
-    return undefined;
+    return {};
   }
 };
 
 interface PackageIndex {
-  readonly names: Set<string>;
+  /** Workspace and locked names; a manifest's name that is not a string is held but never asked for. */
+  readonly names: Set<unknown>;
   readonly versions: Set<string>;
 }
 
 const packageIndex = (snapshot: RepoSnapshot, manifests: RegExp, lockfile: string | undefined): PackageIndex => {
-  const names = new Set<string>();
+  const names = new Set<unknown>();
   const versions = new Set<string>();
-  for (const text of contents(snapshot, manifests)) {
-    const name = manifestObject(text)?.['name'];
-    if (typeof name === 'string') names.add(name);
-  }
+  for (const text of contents(snapshot, manifests)) names.add(manifestObject(text)['name']);
   const lock = lockfile === undefined ? undefined : snapshot.read(lockfile);
-  for (const match of (lock ?? '').matchAll(/^ {2}'?((?:@[\w.-]+\/)?[\w.-]+)@(\d+\.\d+\.\d+[^:'(]*)/gm)) {
-    names.add(String(match[1]));
-    versions.add(`${String(match[1])}@${String(match[2])}`);
+  if (lock !== undefined) {
+    // A version's digits past its last dot are the tail's, which takes them as `\d+` would.
+    for (const match of lock.matchAll(/^ {2}'?((?:@[\w.-]+\/)?[\w.-]+)@(\d+\.\d+\.\d[^:'(]*)/gm)) {
+      names.add(String(match[1]));
+      versions.add(`${String(match[1])}@${String(match[2])}`);
+    }
   }
   return { names, versions };
 };
@@ -263,7 +276,7 @@ export const findIdentifierProblems = (config: Config, snapshot: RepoSnapshot, f
   let models: Map<string, PrismaModel> | undefined;
   let routes: Route[] | undefined;
   let roles: Set<string> | undefined;
-  let jobs: Set<string> | undefined;
+  let jobs: Set<unknown> | undefined;
   let packages: PackageIndex | undefined;
 
   const problems: ReferenceProblem[] = [];
@@ -287,7 +300,8 @@ export const findIdentifierProblems = (config: Config, snapshot: RepoSnapshot, f
       case 'prisma-field': {
         if (prisma === undefined) break;
         models ??= prismaModels(snapshot, prisma.schemas);
-        const [model = '', field = ''] = ref.text.split('.');
+        // DOTTED gave it exactly one dot.
+        const [model, field] = ref.text.split('.') as [string, string];
         const found = models.get(model);
         // Every `Capital.lower` reads as a column (`Object.keys`), so only a model the schema declares is judged.
         if (found !== undefined && !found.fields.has(field)) flag(p, `Prisma model \`${model}\` has no field \`${field}\``);
@@ -296,12 +310,12 @@ export const findIdentifierProblems = (config: Config, snapshot: RepoSnapshot, f
       case 'prisma-unique': {
         if (prisma === undefined) break;
         models ??= prismaModels(snapshot, prisma.schemas);
-        const wanted = ref.text
-          .replace(/^@@unique\(\[|\]\)$/g, '')
+        const [, list] = PRISMA_UNIQUE.exec(ref.text) as unknown as [string, string];
+        const wanted = list
           .split(',')
           .map((f) => f.trim())
           .join(',');
-        if (![...models.values()].some((model) => model.uniques.includes(wanted))) flag(p, `no Prisma model declares \`${ref.text}\``);
+        if (![...models.values()].some((model) => model.uniques.has(wanted))) flag(p, `no Prisma model declares \`${ref.text}\``);
         break;
       }
       case 'migration': {
@@ -312,14 +326,14 @@ export const findIdentifierProblems = (config: Config, snapshot: RepoSnapshot, f
       case 'route': {
         if (routeConfig === undefined) break;
         routes ??= controllerRoutes(snapshot, routeConfig.controllers);
-        const [, method = '', rawPath = ''] = ROUTE.exec(ref.text) ?? [];
-        const path = rawPath.replace(/[?#].*$/, '');
+        const [, method, rawPath] = ROUTE.exec(ref.text) as unknown as [string, string, string];
+        const path = rawPath.replace(/[?#].*/, '');
         if (/[{][^}]*,/.test(path)) break; // a brace expansion lists several
         const all = splitRoute(path);
         const known = new Set(routes.map((route) => route.segments[0]));
         // Clients and proxies prefix the served paths (`/api/v1`); the server does not.
-        const start = all.findIndex((segment) => known.has(segment) || !routeConfig.prefixes.test(segment));
-        const segments = all.slice(start === -1 ? all.length : start);
+        // When every segment is a prefix, none is known, so the one `slice(-1)` keeps is judged unknown below.
+        const segments = all.slice(all.findIndex((segment) => known.has(segment) || !routeConfig.prefixes.test(segment)));
         const head = segments[0];
         if (head === undefined || !known.has(head)) break; // not this repository's
         if (!routes.some((served) => routeMatches(served, method, segments))) flag(p, `no controller serves \`${method} ${path}\``);
@@ -334,7 +348,8 @@ export const findIdentifierProblems = (config: Config, snapshot: RepoSnapshot, f
           flag(p, `no \`${rolesConfig.enum}\` in the Prisma schema to check roles against`);
           break;
         }
-        for (const match of ref.text.replace(/^@Roles\(|\)$/g, '').matchAll(/(?:\w+\.)?([A-Z][A-Z_]+)/g)) {
+        const [, listed] = ROLES.exec(ref.text) as unknown as [string, string];
+        for (const match of listed.matchAll(/(?:\w+\.)?([A-Z][A-Z_]+)/g)) {
           const role = String(match[1]);
           if (!roles.has(role)) flag(p, `\`${role}\` is not a value of ${rolesConfig.enum}`);
         }
@@ -349,10 +364,8 @@ export const findIdentifierProblems = (config: Config, snapshot: RepoSnapshot, f
       case 'package': {
         if (packageConfig === undefined) break;
         packages ??= packageIndex(snapshot, packageConfig.manifests, packageConfig.lockfile);
-        const scoped = SCOPED_PACKAGE.exec(ref.text);
-        const versioned = VERSIONED_PACKAGE.exec(ref.text);
-        const name = scoped?.[1] ?? versioned?.[1] ?? ref.text;
-        const version = scoped?.[2] ?? versioned?.[2];
+        // A package ref matched one of the two.
+        const [, name, version] = (SCOPED_PACKAGE.exec(ref.text) ?? VERSIONED_PACKAGE.exec(ref.text)) as unknown as [string, string, string | undefined];
         if (!packages.names.has(name)) {
           // Only the repository's own scopes are knowable; a third-party name the lockfile lacks may be installed elsewhere.
           if (packageConfig.ownScopes.some((scope) => name.startsWith(scope))) flag(p, `no workspace is named \`${name}\``);

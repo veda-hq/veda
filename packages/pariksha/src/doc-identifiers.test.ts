@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { boundedWord, findIdentifierProblems, identifierRef, isCode, manifestObject, wordsInCode } from './doc-identifiers.ts';
 import { CONFIG, createTestRepo, testConfig, type TestRepo } from './doc-references.fixture.test.ts';
 import type { Config } from './doc-references-config.ts';
+import type { RepoSnapshot } from './doc-references.ts';
 
 const DOC = 'docs/guides/DEPLOYMENT_CHECKLIST.md';
 
@@ -24,6 +25,30 @@ const repo = (doc: string, extra: Record<string, string> = {}): TestRepo =>
     ...extra,
     [DOC]: doc,
   });
+
+/** `snapshot` handing out readMany's texts one at a time; records each path pulled, and each path read. */
+const recording = (snapshot: RepoSnapshot): { snapshot: RepoSnapshot; pulled: string[]; read: unknown[] } => {
+  const pulled: string[] = [];
+  const read: unknown[] = [];
+  const wrapped: RepoSnapshot = {
+    ...snapshot,
+    read: (path) => {
+      read.push(path);
+      return snapshot.read(path);
+    },
+    readMany: (paths) => {
+      const texts = snapshot.readMany(paths);
+      const values = function* (): Generator<string> {
+        for (const [path, text] of texts) {
+          pulled.push(path);
+          yield text;
+        }
+      };
+      return Object.assign(new Map(texts), { values }) as unknown as Map<string, string>;
+    },
+  };
+  return { snapshot: wrapped, pulled, read };
+};
 
 const problems = (r: TestRepo, files: string[] = [DOC], config: Config = CONFIG) => findIdentifierProblems(config, r.snapshot(), files);
 const refs = (r: TestRepo, files: string[] = [DOC], config: Config = CONFIG): string[] => problems(r, files, config).map((p) => p.ref);
@@ -109,6 +134,10 @@ describe('DOC-DRIFT-04 kinds', () => {
     assert.deepEqual(problems(r, [DOC, 'docs/history/0001-x/spec.md']), []);
   });
 
+  it('reads no span inside a fence', () => {
+    assert.deepEqual(problems(repo(['```sh', 'echo `ghostName`', '```', ''].join('\n'))), []);
+  });
+
   it('reads Markdown only: a code file, frontmatter and an absent doc name nothing', () => {
     const r = repo(['---', 'title: `ghostFrontmatter`', '---', 'body', ''].join('\n'), { 'apps/server/src/note.ts': '// `ghostInCode`\n' });
     assert.deepEqual(problems(r, [DOC, 'apps/server/src/note.ts', 'docs/absent.md']), []);
@@ -148,6 +177,9 @@ describe('identifierRef', () => {
     assert.equal(isCode(CONFIG, 'README.md'), false);
     assert.equal(isCode(CONFIG, 'pnpm-lock.yaml'), false);
     assert.equal(isCode(CONFIG, 'assets/logo.png'), false);
+    assert.equal(isCode(CONFIG, 'assets/photo.jpg'), false);
+    assert.equal(isCode(CONFIG, 'assets/font.woff'), false);
+    assert.equal(isCode(CONFIG, 'apps/server/src/logo.png.ts'), true);
     assert.equal(isCode(CONFIG, CONFIG.baseline), false);
   });
 
@@ -224,7 +256,51 @@ describe('identifierRef', () => {
     assert.deepEqual(identifierRef('abc()', NONE), { kind: 'symbol', text: 'abc()', word: 'abc' });
     assert.equal(identifierRef('a.b.runAll()', NONE)?.word, 'runAll');
     assert.equal(identifierRef('GET  /admin', NONE), null);
+    assert.equal(identifierRef('@Roles(ADMIN,  OWNER)', NONE), null);
     assert.equal(isCode(CONFIG, 'scripts/docs/doc-references-baseline.json'), false);
+  });
+
+  it('reads every part of a name, and every digit of a version', () => {
+    assert.deepEqual(identifierRef('A_B_C', NONE), { kind: 'symbol', text: 'A_B_C', word: 'A_B_C' });
+    assert.deepEqual(identifierRef('FooBarBaz', NONE), { kind: 'symbol', text: 'FooBarBaz', word: 'FooBarBaz' });
+    assert.deepEqual(identifierRef('store.findAll()', NONE), { kind: 'symbol', text: 'store.findAll()', word: 'findAll' });
+    assert.deepEqual(identifierRef('@acme/core@10.20.30', NONE), { kind: 'package', text: '@acme/core@10.20.30' });
+    assert.deepEqual(identifierRef('zod@10.20.30', NONE), { kind: 'package', text: 'zod@10.20.30' });
+  });
+
+  // Each holds a name of one kind with something before or after it, and no blank to stop it early.
+  for (const span of [
+    'xA_B',
+    'A_Bx',
+    '_fooBar',
+    'fooBar_',
+    '_FooBar',
+    'FooBar_',
+    '-runAll()',
+    'runAll()x',
+    '-Store.code',
+    'Store.code-x',
+    'aB.code',
+    'Store.Code',
+    'x20250101000000_init',
+    '20250101000000_init-x',
+    'x@Roles(A)',
+    '@Roles(A)x',
+    'x@@unique([a])',
+    '@@unique([a])x',
+    'x@acme/core',
+    '@acme/core@1.2.3x',
+    '-zod@1.2.3',
+    'zod@1.2.3x',
+  ]) {
+    it(`${span} names nothing: the whole span is the name`, () => {
+      assert.equal(identifierRef(span, NONE), null);
+    });
+  }
+
+  it('reads a route as the whole span', () => {
+    assert.equal(identifierRef('xGET /a', NONE), null);
+    assert.equal(identifierRef('GET /a b', NONE), null);
   });
 
   it('trims a span before reading it', () => {
@@ -374,6 +450,129 @@ describe('DOC-DRIFT-04 reasons and edges', () => {
   });
 });
 
+describe('DOC-DRIFT-04 as the schema, controllers and lockfile write it', () => {
+  it('reads models and their fields only where the schema starts them', () => {
+    const schema = [
+      'model  Spaced {',
+      '  id String',
+      '}',
+      'model Tight{',
+      '  id String',
+      '}',
+      '// model Ghost {',
+      'model Store {',
+      '  meta  Json   @default("{}")',
+      '  code  String',
+      '  label String // was @@unique([note])',
+      '  // note',
+      '  @@unique( [code, label])',
+      '}',
+      '',
+    ].join('\n');
+    const r = repo('`Ghost.name` `Spaced.gone` `Tight.gone` `Store.label` `Store.note`\n`@@unique([note])` `@@unique([code, label])`\n', { 'apps/server/prisma/schema.prisma': schema });
+    assert.deepEqual(
+      problems(r).map((p) => [p.line, p.reason]),
+      [
+        [1, 'Prisma model `Spaced` has no field `gone`'],
+        [1, 'Prisma model `Tight` has no field `gone`'],
+        [1, 'Prisma model `Store` has no field `note`'],
+        [2, 'no Prisma model declares `@@unique([note])`'],
+      ],
+    );
+  });
+
+  it('reads role values alone on their line, blanks after them included', () => {
+    const schema = ['enum UserRoleEnum {', '  ADMIN ', '  // retired OWNER', '}', ''].join('\n');
+    const r = repo('`@Roles(ADMIN)` `@Roles(OWNER)` `@Roles(XY.ADMIN)`\n', { 'apps/server/prisma/schema.prisma': schema });
+    assert.deepEqual(
+      problems(r).map((p) => p.reason),
+      ['`OWNER` is not a value of UserRoleEnum'],
+    );
+  });
+
+  it('reads a parameter only as a whole segment, and a route with no segment as no one’s', () => {
+    const r = repo(['`GET /things/other` `GET /things/items:batch` `GET /things/extra`', '`POST /`', '`DELETE /admin/stores/{ab,cd}` `DELETE /admin/stores/a,b`', ''].join('\n'), {
+      'apps/server/src/things/things.controller.ts': "@Controller('things')\n@Get('items:batch')\n@Get('extra', 1)\n",
+      'apps/server/src/root/root.controller.ts': '@Get()\n',
+    });
+    assert.deepEqual(
+      problems(r).map((p) => [p.line, p.reason]),
+      [
+        [1, 'no controller serves `GET /things/other`'],
+        [3, 'no controller serves `DELETE /admin/stores/a,b`'],
+      ],
+    );
+  });
+
+  it('reads a job named as one only from the blanks right after it', () => {
+    assert.deepEqual(
+      problems(repo('The `lintAll` x job.\nThe `lintAll`  job.\n')).map((p) => [p.line, p.reason]),
+      [
+        [1, '`lintAll` occurs nowhere in the code — renamed, removed, or never written'],
+        [2, 'no workflow has a job `lintAll`'],
+      ],
+    );
+  });
+
+  it('reads a cited file only from a whole `in` or `from`, and drops its line suffix only', () => {
+    const r = repo(
+      [
+        '`REDIS_URL` used in `apps/server/src/stores/stores.controller.ts`',
+        '`REDIS_URL` in this `apps/server/src/stores/stores.controller.ts`',
+        '`REDIS_URL`in `apps/server/src/stores/stores.controller.ts`',
+        '`REDIS_URL` in`apps/server/src/stores/stores.controller.ts`',
+        '`REDIS_URL` in `apps/server/src/stores/stores.controller.ts:10-12`',
+        '`ghostName` in `apps/server/src/v:2.ts`',
+        '',
+      ].join('\n'),
+      { 'apps/server/src/v:2.ts': 'export const other = 1;\n' },
+    );
+    const cited = '`REDIS_URL` does not occur in `apps/server/src/stores/stores.controller.ts`, the file the doc cites for it';
+    assert.deepEqual(
+      problems(r).map((p) => [p.line, p.reason]),
+      [
+        [3, cited],
+        [4, cited],
+        [5, cited],
+        [6, '`ghostName` does not occur in `apps/server/src/v:2.ts`, the file the doc cites for it'],
+      ],
+    );
+  });
+
+  it('judges no cited file that has nothing to read, as a submodule entry has not', () => {
+    const s = repo('`ghostName` in `apps/server/src/redis/redis.module.ts`\n').snapshot();
+    const blank: RepoSnapshot = { ...s, read: (path) => (path === 'apps/server/src/redis/redis.module.ts' ? undefined : s.read(path)) };
+    assert.deepEqual(findIdentifierProblems(CONFIG, blank, [DOC]), []);
+  });
+
+  it('reads the lockfile’s own entries only, scoped ones and long versions included', () => {
+    const lock = ['packages:', '', '  zod@3.24.1:', '  zod@10.1.0:', "  '@other/lib@1.2.3':", '    dependencies:', '      zod@9.9.9:', ''].join('\n');
+    const config = testConfig({ identifiers: { packages: { ownScopes: ['@acme/', '@third/'] } } });
+    const r = repo('`zod@9.9.9` `zod@10.1.0` `@other/lib@9.9.9` `@third/ghost`\n', { 'pnpm-lock.yaml': lock });
+    assert.deepEqual(
+      problems(r, [DOC], config).map((p) => p.reason),
+      ['the lockfile has no `zod@9.9.9`', 'the lockfile has no `@other/lib@9.9.9`', 'no workspace is named `@third/ghost`'],
+    );
+  });
+
+  it('asks for no lockfile when none is configured', () => {
+    const config = testConfig({ identifiers: { packages: { lockfile: null } } });
+    const rec = recording(repo('`zod@3.24.1`\n').snapshot());
+    assert.deepEqual(findIdentifierProblems(config, rec.snapshot, [DOC]), []);
+    assert.deepEqual(rec.read, [DOC]);
+  });
+
+  it('looks in the code for symbols only, so a migration beside one does not keep it reading', () => {
+    const r = createTestRepo({ 'a.ts': 'REDIS_URL\n', 'b.ts': 'other\n', 'docs/x.md': '`REDIS_URL` `20250101000000_init`\n' });
+    const rec = recording(r.snapshot());
+    assert.deepEqual(
+      findIdentifierProblems(CONFIG, rec.snapshot, ['docs/x.md']).map((p) => p.ref),
+      ['20250101000000_init'],
+    );
+    assert.deepEqual(rec.pulled, ['.gitignore', 'a.ts']);
+  });
+});
+
 describe('DOC-DRIFT-04 with a config key set to null', () => {
   const ALL = [
     '`Store.storeCode`', // 1 prisma-field
@@ -455,11 +654,21 @@ describe('wordsInCode, manifestObject, boundedWord', () => {
     assert.deepEqual(wordsInCode(CONFIG, snapshot, ['alpha']), new Set(['alpha']));
   });
 
-  it('reads a manifest as an object or nothing', () => {
+  it('reads a manifest as an object, or an empty one', () => {
     assert.deepEqual(manifestObject('{"name":"x"}'), { name: 'x' });
-    assert.equal(manifestObject('[1]'), undefined);
-    assert.equal(manifestObject('null'), undefined);
-    assert.equal(manifestObject('{ nope'), undefined);
+    assert.deepEqual(manifestObject('[1]'), {});
+    assert.deepEqual(manifestObject('null'), {});
+    assert.deepEqual(manifestObject('{ nope'), {});
+  });
+
+  it('reads no code for no words, and stops pulling files once every word is found', () => {
+    const r = createTestRepo({ 'a.ts': 'alpha beta\n', 'b.ts': 'gamma\n' });
+    const none = recording(r.snapshot());
+    assert.deepEqual(wordsInCode(CONFIG, none.snapshot, []), new Set());
+    assert.deepEqual(none.pulled, []);
+    const some = recording(r.snapshot());
+    assert.deepEqual(wordsInCode(CONFIG, some.snapshot, ['beta', 'alpha']), new Set(['alpha', 'beta']));
+    assert.deepEqual(some.pulled, ['.gitignore', 'a.ts']);
   });
 
   it('bounds a word, `$` included, by non-identifier characters', () => {

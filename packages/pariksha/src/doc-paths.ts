@@ -10,8 +10,12 @@ import type { Config } from './doc-references-config.ts';
 import { ancestorDirs, codeSpans, commentText, docKind, globToRegExp, isShellFence, normalizeRepoPath, scanMarkdown, type CodeSpan, type DocLine, type ReferenceProblem, type RepoSnapshot } from './doc-references.ts';
 import { boundedWord, manifestObject } from './doc-identifiers.ts';
 
-/** `0123abcd:path` and `origin/main:path` name a blob in history, not the tree. */
-const HISTORICAL_BLOB = /^(?:[0-9a-f]{7,40}|HEAD[~^\d]*|origin\/[\w./-]+|main):/;
+/**
+ * `origin/x.ts:12` names a blob in history, not the tree. So do `0123abcd:path`,
+ * `HEAD~1:path` and `main:path`, whose `:` stays in their first segment, which
+ * the segment test refuses.
+ */
+const HISTORICAL_BLOB = /^origin\/[\w./-]+:/;
 
 const DOMAIN = /\.(com|org|io|dev|net|ai|app|co|so|sh)$/i;
 
@@ -45,7 +49,8 @@ export const pathRef = (config: Config, raw: string, requireSlash = true): PathR
   if (placeholder.test(raw)) return null;
   let token = trimToken(raw);
   // `--root=docs/x.md` names its value; `:docs/x.md` names a staged path.
-  const assigned = /^-{1,2}[\w-]+=(.+)$/.exec(token);
+  // `[\w-]` takes a second leading dash.
+  const assigned = /^-[\w-]+=(.+)$/.exec(token);
   if (assigned !== null) token = String(assigned[1]);
   if (HISTORICAL_BLOB.test(token)) return null;
   const blob = /^:([^:\d].*)$/.exec(token);
@@ -71,8 +76,10 @@ export const pathRef = (config: Config, raw: string, requireSlash = true): PathR
   if (!segments.every((segment) => /^[\w.@+*?,-]+$/.test(segment))) return null;
   if (segments.length > 1 && DOMAIN.test(String(segments[0]))) return null;
   if (requireSlash && segments.length < 2 && lines === undefined) return null;
-  const extension = /\.([A-Za-z0-9]+)$/.exec(String(segments.at(-1)))?.[1]?.toLowerCase();
-  const hasExtension = extension !== undefined && paths.extensions.has(extension);
+  // A match always holds its group.
+  const extension = (/\.([A-Za-z0-9]+)$/.exec(String(segments.at(-1))) as unknown as [string, string] | null)?.[1].toLowerCase();
+  // The configured extensions are words, never undefined.
+  const hasExtension = (paths.extensions as ReadonlySet<string | undefined>).has(extension);
   if (!dir && !hasExtension && !(glob && segments.length > 1)) return null;
   // `0.1/2.5` and friends: a path segment has at least one letter.
   if (!segments.some((segment) => /[A-Za-z]/.test(segment))) return null;
@@ -105,7 +112,7 @@ const resolverFor = (config: Config, snapshot: RepoSnapshot): Resolver => {
   for (const text of snapshot.readMany(manifests).values()) {
     const pkg = manifestObject(text);
     for (const list of DEPENDENCY_LISTS) {
-      const deps = pkg?.[list];
+      const deps = pkg[list];
       // A malformed list names no dependencies; the manifest's other lists count.
       if (typeof deps === 'object' && deps !== null && !Array.isArray(deps)) for (const name of Object.keys(deps)) dependencies.add(name);
     }
@@ -120,6 +127,8 @@ const resolverFor = (config: Config, snapshot: RepoSnapshot): Resolver => {
     return found;
   };
   const exists = (path: string): boolean => snapshot.files.has(path) || snapshot.dirs.has(path);
+  // A base above the root gives null, which names no directory.
+  const dirs: ReadonlySet<string | null> = snapshot.dirs;
   return {
     inDependency: (path) => dependencies.has(String(path.split('/')[0])),
     // A path as a reader would resolve it: next to the doc, then upwards, then from each workspace.
@@ -134,10 +143,7 @@ const resolverFor = (config: Config, snapshot: RepoSnapshot): Resolver => {
     anchored: (doc, ref) => {
       const first = String(ref.path.split('/')[0]);
       if (first === '..') return true;
-      return [...ancestorDirs(doc), ...workspaces].some((base) => {
-        const candidate = normalizeRepoPath(posix.join(base, first));
-        return candidate !== null && snapshot.dirs.has(candidate);
-      });
+      return [...ancestorDirs(doc), ...workspaces].some((base) => dirs.has(normalizeRepoPath(posix.join(base, first))));
     },
   };
 };
@@ -151,12 +157,13 @@ interface PendingPath {
   readonly tried: readonly string[];
 }
 
-const IDENTIFIER = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\(\))?$/;
+/** A symbol, `a.b.run()`: its last name is the one looked for. */
+const IDENTIFIER = /^(?:[A-Za-z_$][\w$]*\.)*([A-Za-z_$][\w$]*)(?:\(\))?$/;
 
 /** The backticked symbol cited beside a span: "`name` in `file.ts:12`", or "`file.ts:12` (`name`)". */
 const symbolNear = (text: string, spans: readonly CodeSpan[], index: number): string | null => {
-  const span = spans[index];
-  if (span === undefined) return null;
+  // `index` is the span's own place in `spans`.
+  const span = spans[index] as CodeSpan;
   const before = spans[index - 1];
   if (before !== undefined && IDENTIFIER.test(before.content) && /^\s*(?:\(|at|in|—|–|-|:)?\s*\[?$/.test(text.slice(before.end + 1, span.start - 1))) return before.content;
   const after = spans[index + 1];
@@ -186,7 +193,7 @@ export const findPathProblems = (config: Config, snapshot: RepoSnapshot, files: 
     }
     if (symbol === null) return;
     // `a.b.run()` is looked for as `run`.
-    const name = symbol.replace(/\(\)$/, '').replace(/^.*\./, '');
+    const [, name] = IDENTIFIER.exec(symbol) as unknown as [string, string];
     const window = content.slice(Math.max(0, start - 4), end + 3).join('\n');
     if (!boundedWord(name).test(window)) flag(file, line, shown, `\`${symbol}\` is not at \`${target}:${start}${end === start ? '' : `-${end}`}\` — the citation drifted`);
   };
@@ -231,7 +238,8 @@ export const findPathProblems = (config: Config, snapshot: RepoSnapshot, files: 
       // A span that is the label of a link is checked through its link.
       if (skipLinkLabels && /\]\(/.test(text.slice(span.end, span.end + 3))) return;
       const symbol = symbolNear(text, spans, index);
-      for (const token of span.content.split(/\s+/)) checkToken(file, line, token, symbol);
+      // An empty word between two blanks is no path.
+      for (const token of span.content.split(/\s/)) checkToken(file, line, token, symbol);
     });
   };
 
@@ -240,15 +248,16 @@ export const findPathProblems = (config: Config, snapshot: RepoSnapshot, files: 
     if (line.fence !== null) {
       if (!isShellFence(line.fence)) return;
       // A `$ ` prompt is no path (a placeholder); a `#` word starts a comment that runs to the end of the line.
-      for (const token of line.text.split(/\s+/)) {
+      for (const token of line.text.split(/\s/)) {
         if (token.startsWith('#')) break;
         checkToken(file, line.number, token, null);
       }
       return;
     }
     if (line.frontmatter) {
-      for (const [, value] of line.text.matchAll(/^\s*(?:-\s+|[\w-]+:\s+)(.+)$/g)) {
-        for (const token of String(value).split(/[\s,]+/)) checkToken(file, line.number, token, null);
+      // More blanks after the `-` or `:` read as empty words, which are no paths.
+      for (const [, value] of line.text.matchAll(/^\s*(?:-\s|[\w-]+:\s)(.+)$/g)) {
+        for (const token of String(value).split(/[\s,]/)) checkToken(file, line.number, token, null);
       }
       return;
     }
@@ -257,14 +266,17 @@ export const findPathProblems = (config: Config, snapshot: RepoSnapshot, files: 
 
   for (const file of files) {
     const kind = docKind(config, file);
+    // HTML is the link check's.
+    if (kind !== 'markdown' && kind !== 'code') continue;
     const content = snapshot.read(file);
-    if (kind === null || content === undefined) continue;
+    if (content === undefined) continue;
     if (kind === 'markdown') {
       for (const line of scanMarkdown(content, config.exemptMarker)) checkMarkdownLine(file, line);
-    } else if (kind === 'code') {
+    } else {
       content.split('\n').forEach((text, index) => {
-        const comment = commentText(config.files.hashComments, file, text);
-        if (comment === null || config.exemptMarker.test(comment)) return;
+        // A line that is no comment reads as `null`, which holds no code span.
+        const comment = String(commentText(config.files.hashComments, file, text));
+        if (config.exemptMarker.test(comment)) return;
         checkSpans(file, index + 1, comment, false);
       });
     }

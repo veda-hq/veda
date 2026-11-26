@@ -3084,3 +3084,90 @@ describe("createWatchdog, step by step", () => {
     ]);
   });
 });
+
+describe("a core whose member still has a live child outside it", () => {
+  // The 2026-11-26 incident: a pre-push's pnpm (91855) ran sh (91890) and
+  // node (91869). sh reads a pipe only pnpm holds, so the two look closed.
+  // node was polling for a lock file another worktree's run held: a pid file
+  // made with `wx`, so it holds no fd on it, and only its exit could wake
+  // pnpm. ps and lsof rows are the captured ones, with private paths scrubbed.
+  const row = (
+    pid: number,
+    ppid: number,
+    pgid: number,
+    comm: string,
+    state = "S",
+  ): PsRow => ({
+    pid,
+    ppid,
+    pgid,
+    state,
+    cpuMs: 0,
+    started: "Thu Nov 26 13:34:22 2026",
+    comm,
+    key: `${pid}@start`,
+  });
+  const bash = row(71035, 70683, 71035, "bash", "Ss");
+  const pnpm = row(91855, 71035, 71035, "pnpm");
+  const waiter = row(91869, 91855, 91869, "node");
+  const sh = row(91890, 91855, 91890, "sh");
+  const stdio = ["f0", "tPIPE", "d0xa33bcc12b81239e8", "n", "f1", "tREG", "n/tmp/out", "f2", "tREG", "n/tmp/out"];
+  const lsof = parseLsof(
+    [
+      "p71035", "fcwd", "tDIR", "n/repo", ...stdio, "f255", "tREG", "n/repo/pre-push",
+      "p91855", "fcwd", "tDIR", "n/repo", ...stdio,
+      "f3", "tKQUEUE", "ncount=0, state=0xa",
+      "f6", "tunix", "d0x84e3da3ac615990a", "n->0xd48a751a0f556f7",
+      "f7", "tunix", "d0xd48a751a0f556f7", "n->0x84e3da3ac615990a",
+      "f8", "tunix", "d0x84e3da3ac615990a", "n->0xd48a751a0f556f7",
+      "f10", "tPIPE", "d0xae6eae1251bf2818", "n->0xf79ddb45dd5536bf",
+      "p91869", "fcwd", "tDIR", "n/repo", ...stdio,
+      "f3", "tKQUEUE", "ncount=0, state=0x8",
+      "f4", "tPIPE", "d0x3b09fa9ffebd1e74", "n->0x145c55caea053ecc",
+      "f5", "tPIPE", "d0x145c55caea053ecc", "n->0x3b09fa9ffebd1e74",
+      "f6", "tDIR", "n/",
+      "f11", "tPIPE", "d0x3e9710632ae67bc3", "n->0x68d4116fb964f951",
+      "f12", "tPIPE", "d0x68d4116fb964f951", "n->0x3e9710632ae67bc3",
+      "p91890", "fcwd", "tDIR", "n/repo",
+      "f0", "tPIPE", "d0xf79ddb45dd5536bf", "n->0xae6eae1251bf2818",
+      "f1", "tCHR", "n/dev/null", "f2", "tCHR", "n/dev/null",
+    ].join("\n"),
+  );
+  const classesOf = (tree: readonly PsRow[]) =>
+    classifyFds(
+      lsof,
+      tree.map((r) => r.pid),
+    );
+  const verdictOf = (tree: PsRow[]) =>
+    decide({
+      tree,
+      classes: classesOf(tree),
+      cpuDeltaByPid: zeroDeltas(tree),
+      quietMs: config.idleMs,
+      config,
+    });
+  const deadlock = {
+    kind: "internal-deadlock",
+    core: { leaf: sh.pid, peers: [pnpm.pid] },
+    quietMs: config.idleMs,
+  };
+
+  it("spares the incident: pnpm is woken when the lock waiter exits", () => {
+    const tree = [bash, pnpm, waiter, sh];
+    assert.equal(findHangCore(tree, classesOf(tree), zeroDeltas(tree)), null);
+    assert.equal(verdictOf(tree), null);
+  });
+
+  it("convicts the same pair once the waiter has gone, or is a zombie", () => {
+    assert.deepEqual(verdictOf([bash, pnpm, sh]), deadlock);
+    assert.deepEqual(
+      verdictOf([bash, pnpm, { ...waiter, state: "Z" }, sh]),
+      deadlock,
+    );
+  });
+
+  it("counts only a member's own child: a live child of the core's parent does not spare it", () => {
+    const sibling = row(91900, 71035, 91900, "node");
+    assert.deepEqual(verdictOf([bash, pnpm, sibling, sh]), deadlock);
+  });
+});

@@ -9,7 +9,10 @@
  *
  * The rule is built so that "quiet" alone never kills. A kill needs POSITIVE
  * evidence of a deadlock: after a long quiet window, some leaf process whose
- * every open IPC channel leads to another idle process inside the same tree.
+ * every open IPC channel leads to another idle process inside the same tree,
+ * and none of whose processes still has a live child outside that set: a
+ * parent waits on its children's exit, which `lsof` never shows (2026-11-26:
+ * a push was killed while a child polled for a lock another worktree held).
  * Anything waiting on the outside world (a network peer, the Docker daemon, a
  * database, a terminal) or on an opaque or timed wait (`sleep`, Xcode's XPC
  * services) is spared. A missing or unreadable measurement is also never
@@ -510,8 +513,14 @@ function internalComponent(
  * least one IPC channel, and whose every channel leads to a tree process.
  * Every process those channels reach, directly or through further internal
  * channels, must also have spent no CPU and hold nothing external: an outside
- * wait anywhere along the chain can still wake it. Returns `{ leaf, peers }`
- * (peers: that whole component) or null.
+ * wait anywhere along the chain can still wake it.
+ *
+ * The component must also hold every live child of its members. A parent
+ * waits on its children's exit, a wait `lsof` never shows: a member with a
+ * child outside the component (a run polling for a lock another process
+ * holds, say, which keeps no fd on the lock) is woken when that child ends,
+ * so the component is not closed. A zombie child has already ended and wakes
+ * nobody. Returns `{ leaf, peers }` (peers: that whole component) or null.
  */
 export function findHangCore(
   tree: readonly PsRow[],
@@ -532,7 +541,15 @@ export function findHangCore(
         (cpuDeltaByPid.get(peer) ?? 1) === 0 &&
         !(classes.get(peer) ?? []).some((fd) => fd.class === "external"),
     );
-    if (peers.length > 0 && peersQuiet) return { leaf: leaf.pid, peers };
+    const members = new Set([leaf.pid, ...peers]);
+    const childOutside = tree.some(
+      (row) =>
+        members.has(row.ppid) &&
+        !members.has(row.pid) &&
+        !row.state.startsWith("Z"),
+    );
+    if (peers.length > 0 && peersQuiet && !childOutside)
+      return { leaf: leaf.pid, peers };
   }
   return null;
 }

@@ -94,8 +94,20 @@ jobs:
                 uptime
                 free -m
                 df -h / "${RUNNER_TEMP:-/tmp}" /tmp
-                echo "node processes: $(pgrep -c node || true)"
-                ps -eo rss,etime,args --sort=-rss | head -n 8 | cut -c1-160
+                echo "node processes: $(pgrep -fc node || true)"
+                ps -eo pid,rss,etime,args --sort=-rss | head -n 6
+                # A test process past 2 GB: its test file, the mutant Stryker
+                # gave it, and that mutant's code in the sandbox it runs in.
+                set -- $(ps -eo pid=,rss= --sort=-rss | head -n 1)
+                if [ "${2:-0}" -gt 2000000 ]; then
+                  echo "big process $1 (${2} KB): $(tr '\0' ' ' < "/proc/$1/cmdline")"
+                  id=$(tr '\0' '\n' < "/proc/$1/environ" | sed -n 's/^__STRYKER_ACTIVE_MUTANT__=//p')
+                  dir=$(readlink "/proc/$1/cwd")
+                  echo "active mutant: ${id:-none}, sandbox: $dir"
+                  if [ -n "$id" ]; then
+                    grep -rnoE "stryMutAct_9fa48\(\"$id\"\)[^;]{0,240}" "$dir" --exclude-dir=node_modules | head -n 3
+                  fi
+                fi
               done
             ) &
             sampler=$!

@@ -29,14 +29,20 @@ Accepted citations, in two tiers:
 | Form                                                       | Checked how                            |
 | ---------------------------------------------------------- | -------------------------------------- |
 | Commit SHA (7–40 hex)                                      | **Resolved** — `git cat-file -e <sha>` |
-| `ADR-NNNN` / `docs/adr/NNNN-…`                             | **Resolved** — the ADR file must exist |
+| `ADR-NNNN` / `docs/adr/NNNN-…`                             | **Resolved** — the ADR is committed    |
 | Linear id `ABC-123` / `XYZ-45`                            | Shape only — a hook has no network     |
 | `https://github.com/<o>/<r>/(pull\|issues)/<n>`, `PR #123` | Shape only — a hook has no network     |
 
 A prose comment is not a citation. **A markdown file is not a citation** — a doc
 an agent could have written is the fabrication restated one level down. An ADR
-is the one exception, and the check asks only that its file exist, so an ADR
-added in the same change passes: review an ADR's own history as you would the
+is the one exception, and only once it is committed: at a commit, the ADR must
+already be in `HEAD` and still be on disk, so a commit that adds an ADR cannot
+also add its first citation; they land in two commits. (Amending the ADR's
+own commit afterwards folds them into one: `HEAD` held the ADR when the
+citation was checked.)
+On a merge, `HEAD` is the branch being merged into, so a line the merge itself
+writes cannot cite an ADR only the merged branch carries. The whole-tree mode
+reads the ADR folder on disk. Review an ADR's own history as you would the
 claim.
 
 Lines that use the words without asserting authority carry
@@ -63,7 +69,7 @@ they had not made that decision caught it.
 
 This rule is the one gate that reaches outside the claim: it asks whether the
 cited artifact exists at all. It checks existence, not authorship: a SHA
-resolves to any commit in the repository, an ADR to any file in the ADR folder,
+resolves to any commit in the repository, an ADR to any committed file in the ADR folder,
 and issue and PR ids are checked for shape alone. What it buys is a pointer a
 reviewer can follow, to who made the commit, who wrote and accepted the ADR,
 who moved the issue, where a bare claim gives them nothing to check.
@@ -77,7 +83,7 @@ who moved the issue, where a bare claim gives them nothing to check.
 // ❌ BAD — points at a file any agent can write. ALLOW-AUTHORITY-PHRASE: rule example
 // owner decision: see docs/decisions/gifts.md
 
-// ❌ BAD — ADR-9999 is not on disk, so it does not resolve. ALLOW-AUTHORITY-PHRASE: rule example
+// ❌ BAD — ADR-9999 is not committed, so it does not resolve. ALLOW-AUTHORITY-PHRASE: rule example
 // founder decision: gate blocks on surviving mutants (ADR-9999)
 ```
 
@@ -92,7 +98,7 @@ issue and ADR here are illustrations and do not resolve in this repository.
 // ✅ GOOD — a Linear transition only the owner can perform.
 // owner decision: rebuild rather than patch the returns flow (ABC-447)
 
-// ✅ GOOD — an ADR that exists under docs/adr/.
+// ✅ GOOD — an ADR committed under docs/adr/ before this line.
 // Diff-scoped, zero-survivor mutation gate, per the owner — see ADR-0039.
 ```
 

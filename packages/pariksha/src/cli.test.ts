@@ -2079,7 +2079,7 @@ describe('run authority-citations', () => {
     '',
     'An authority claim must anchor in something only that authority can produce. Cite one of:',
     '  a commit id                       (owner decision, f1a0da2d)',
-    `  an existing ADR                   ADR-0040, in ${adrDir}/`,
+    `  a committed ADR                   ADR-0040, in ${adrDir}/`,
     ...(prefix === undefined ? [] : [`  an issue id                       ${prefix}-447`]),
     '  a GitHub pull request or issue    PR #269, or its full URL',
     'A comment or a document an agent could have written is not a citation, and neither',
@@ -2134,6 +2134,21 @@ describe('run authority-citations', () => {
   it('reads ADRs from --adr-dir', () => {
     const r = cli(['authority-citations', '--mode', 'tree', '--adr-dir', 'decisions', '--root', citations()]);
     assert.deepEqual(r, { code: 0, out: [`${P} every authority claim cites an anchor`], err: [] });
+  });
+
+  it('counts only the ADRs HEAD holds in staged mode, and those on disk in tree mode', () => {
+    const root = temp();
+    git(root, 'init', '-q');
+    w2Put(root, { 'decisions/0001-rounding.md': '# Rounding\n' });
+    git(root, 'add', '-A');
+    w2Commit(root, 'base');
+    const fresh = 'Refunds are approved by Lee (ADR-0002).';
+    w2Put(root, { 'decisions/0002-refunds.md': '# Refunds\n', 'c.md': `${COMMITTED}\n`, 'd.md': `${fresh}\n` });
+    git(root, 'add', '-A');
+    const staged = cli(['authority-citations', '--authority', 'Lee', '--adr-dir', 'decisions', '--root', root]);
+    assert.deepEqual(staged, { code: 1, out: [], err: [`${P} uncited authority claim(s) in d.md:`, `  1: [approved by Lee] ${fresh}`, ...guidance('decisions'), '1 claim(s) across 1 file(s).'] });
+    const tree = cli(['authority-citations', '--mode', 'tree', '--authority', 'Lee', '--adr-dir', 'decisions', '--root', root]);
+    assert.deepEqual(tree, { code: 0, out: [`${P} every authority claim cites an anchor`], err: [] });
   });
 
   it('exits 2 when the check cannot read what it must', () => {

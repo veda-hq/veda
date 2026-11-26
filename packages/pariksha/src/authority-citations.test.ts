@@ -7,6 +7,7 @@ import { after, describe, it } from 'node:test';
 import {
   addedLines,
   adrDirOf,
+  committedAdrs,
   DEFAULTS,
   findUncited,
   formatClaims,
@@ -182,6 +183,21 @@ describe('authority-citations, staged, on a merge', () => {
     assert.equal(validate(root).status, 0);
   });
 
+  it('counts an ADR only HEAD holds, not one the merged branch brings in', () => {
+    const root = fixture();
+    git(root, 'checkout', '--quiet', 'main');
+    mkdirSync(join(root, 'docs', 'adr'), { recursive: true });
+    write(root, 'docs/adr/0005-prices.md', ['# Prices']);
+    commitThroughGate(root, 'an ADR on main');
+    git(root, 'checkout', '--quiet', 'feature');
+    git(root, 'merge', '--quiet', '--no-commit', '--no-ff', 'main');
+    write(root, 'notes.md', ['# Notes', 'feature work', `${NEW_CLAIM} ADR-0005`]);
+    git(root, 'add', 'notes.md');
+    const r = validate(root);
+    assert.equal(r.status, 1, r.output);
+    assert.ok(r.output.includes(`3: ${NEW_MATCH} ${NEW_CLAIM} ADR-0005`), r.output);
+  });
+
   it('fails closed to the HEAD diff when MERGE_HEAD does not resolve', () => {
     const root = fixture();
     git(root, 'merge', '--quiet', '--no-commit', '--no-ff', 'main');
@@ -291,11 +307,42 @@ describe('authority-citations, staged, outside a merge', () => {
     mkdirSync(join(root, 'sub'));
     mkdirSync(join(root, 'decisions'));
     write(root, 'decisions/0007-prices.md', ['# Prices']);
+    git(root, 'add', '--all');
+    git(root, 'commit', '--quiet', '-m', 'the ADR, a commit before its first citation');
     write(root, 'sub/a.md', [`${NEW_CLAIM} ADR-0007`]);
     git(root, 'add', '--all');
     assert.equal(validate(join(root, 'sub')).status, 1);
     const r = validate(join(root, 'sub'), {}, 'staged', ['--adr-dir', 'decisions']);
     assert.equal(r.status, 0, r.output);
+  });
+
+  it('refuses an ADR the same commit adds, which tree mode, reading the disk, accepts', () => {
+    const root = init();
+    write(root, 'base.md', ['# Base']);
+    git(root, 'add', '--all');
+    git(root, 'commit', '--quiet', '-m', 'base');
+    mkdirSync(join(root, 'docs', 'adr'), { recursive: true });
+    write(root, 'docs/adr/0003-prices.md', ['# Prices']);
+    write(root, 'a.md', [`${NEW_CLAIM} ADR-0003`]);
+    git(root, 'add', '--all');
+    const r = validate(root);
+    assert.equal(r.status, 1, r.output);
+    assert.ok(r.output.includes(`1: ${NEW_MATCH} ${NEW_CLAIM} ADR-0003`), r.output);
+    assert.ok(r.output.includes('  a committed ADR                   ADR-0040, in docs/adr/'), r.output);
+    const tree = validate(root, {}, 'tree');
+    assert.equal(tree.status, 0, tree.output);
+  });
+
+  it('refuses an ADR in HEAD that the commit deletes', () => {
+    const root = init();
+    mkdirSync(join(root, 'docs', 'adr'), { recursive: true });
+    write(root, 'docs/adr/0004-prices.md', ['# Prices']);
+    git(root, 'add', '--all');
+    git(root, 'commit', '--quiet', '-m', 'the ADR');
+    git(root, 'rm', '--quiet', 'docs/adr/0004-prices.md');
+    write(root, 'a.md', [`${NEW_CLAIM} ADR-0004`]);
+    git(root, 'add', '--all');
+    assert.equal(validate(root).status, 1);
   });
 });
 
@@ -376,7 +423,10 @@ describe('authority-citations, staged, against what git or its config can hide',
     const root = init();
     mkdirSync(join(root, 'docs', 'adr', '0002-dir.md'), { recursive: true });
     writeFileSync(join(root, 'docs', 'adr', '0002-dir.md', 'x'), '');
-    write(root, 'docs/adr/0001-self.md', [`${NEW_CLAIM} ADR-0001`]);
+    write(root, 'docs/adr/0001-self.md', ['# Self']);
+    git(root, 'add', '--all');
+    git(root, 'commit', '--quiet', '-m', 'the ADRs, a commit before their citations');
+    write(root, 'docs/adr/0001-self.md', ['# Self', `${NEW_CLAIM} ADR-0001`]);
     write(root, 'b.md', [`${NEW_CLAIM} ADR-0002`]);
     git(root, 'add', '--all');
     const r = validate(root, {}, 'staged', ['--adr-dir', './docs//adr/']);
@@ -536,8 +586,30 @@ describe('citations', () => {
     assert.deepEqual(listAdrs(root, 'docs/adr'), []);
     mkdirSync(join(root, 'docs', 'adr'), { recursive: true });
     writeFileSync(join(root, 'docs', 'adr', '0001-a.md'), '');
+    mkdirSync(join(root, 'docs', 'adr', '0002-dir.md'));
     assert.deepEqual(listAdrs(root, 'docs/adr'), ['docs/adr/0001-a.md']);
     assert.equal(readOrUndefined(join(root, 'missing.md')), undefined);
+  });
+
+  it('lists the committed ADRs: files HEAD holds directly under the folder and the disk still has', () => {
+    const root = init();
+    const at: Git = { run: (args) => gitMayFailOut(root, args) };
+    mkdirSync(join(root, 'docs', 'adr', '0002-dir.md'), { recursive: true });
+    write(root, 'docs/adr/0001-a.md', ['# A']);
+    write(root, 'docs/adr/0002-dir.md/0003-nested.md', ['# Nested']);
+    write(root, 'docs/adr/0004-gone.md', ['# Gone']);
+    write(root, '0006-root.md', ['# Root']);
+    git(root, 'add', '--all');
+    assert.deepEqual(committedAdrs(at, root, 'docs/adr'), [], 'no HEAD, no ADRs');
+    git(root, 'commit', '--quiet', '-m', 'adrs');
+    rmSync(join(root, 'docs', 'adr', '0004-gone.md'));
+    write(root, 'docs/adr/0005-new.md', ['# New']);
+    // HEAD holds a folder where the disk now has a file: that file is not committed.
+    rmSync(join(root, 'docs', 'adr', '0002-dir.md'), { recursive: true });
+    write(root, 'docs/adr/0002-dir.md', ['# Was a folder']);
+    assert.deepEqual(committedAdrs(at, root, 'docs/adr'), ['docs/adr/0001-a.md']);
+    assert.deepEqual(committedAdrs(at, root, '.'), ['./0006-root.md']);
+    assert.deepEqual(committedAdrs(at, root, 'decisions'), [], 'no such folder in HEAD');
   });
 });
 
@@ -715,7 +787,7 @@ describe('findUncited and formatClaims', () => {
       '',
       'An authority claim must anchor in something only that authority can produce. Cite one of:',
       '  a commit id                       (owner decision, f1a0da2d)',
-      '  an existing ADR                   ADR-0040, in decisions/',
+      '  a committed ADR                   ADR-0040, in decisions/',
     ];
     const rest = [
       '  a GitHub pull request or issue    PR #269, or its full URL',

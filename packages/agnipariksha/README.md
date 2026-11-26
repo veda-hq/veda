@@ -105,9 +105,17 @@ runs the repository's own `node_modules/.bin/stryker`.
   mutators. What runs is the retried mutant and the other replacements its own
   mutator makes at that node (`>` to `>=` and to `<=`). The lane's own
   plugins, ignorers and exclusions stay. A retry that reports its mutant
-  Ignored refuses: the verdict would not count it. The retry
-  pass refuses once it has run 15 minutes, or when a retry's dry run times
-  out: the machine is busy. A retry whose dry run fails on a test refuses as
+  Ignored refuses: the verdict would not count it. Each retry prints a line
+  naming its mutant as it starts (`retry 2 of 3: src/a.ts:12:9
+  EqualityOperator (">=")`) and one with its status and minutes as it ends.
+  At the end of the pass, the gate names each mutant that timed out again.
+  It is caught, but every run pays a whole retry for it, so the suite that
+  owns its file should kill it fast. The 15-minute budget is a wall: the pass
+  starts no retry when the time gone plus its longest retry so far would
+  pass 15 minutes, so it ends near its budget, never a whole retry past it.
+  A pass the budget stops, or one whose retry finds the machine busy (its
+  dry run timed out), refuses once and names every mutant it left
+  unretried. A retry whose dry run fails on a test refuses as
   flaky, naming the tests Stryker printed: the lane's own run had passed
   them.
 - **A failed test in the dry run** is named in the gate's own line. A lane

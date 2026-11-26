@@ -116,6 +116,7 @@ interface Run {
 function fakeDeps(reports: (string | undefined)[], codes: { code: number; seen: string[]; refusal?: string; failedTests?: string[] }[] = [], key: string | null = 'k1') {
   const files = new Map<string, string>();
   const runs: Run[] = [];
+  const logs: string[] = [];
   const deps: LaneDeps = {
     root: '/repo',
     reportsDir: '/repo/reports/agnipariksha',
@@ -134,12 +135,15 @@ function fakeDeps(reports: (string | undefined)[], codes: { code: number; seen: 
     },
     reuseKey: () => key,
     now: () => 0,
+    log: (line) => {
+      logs.push(line);
+    },
   };
   let plan: Plan = { lane: web, targets: [], suites: [], notJudged: [] };
   const setPlan = (next: Plan) => {
     plan = next;
   };
-  return { deps, files, runs, setPlan };
+  return { deps, files, runs, logs, setPlan };
 }
 
 const webPlan: Plan = { lane: web, targets: ['apps/web/src/a.ts'], suites: ['apps/web/src/a.test.ts'], notJudged: [] };
@@ -193,7 +197,7 @@ test('an unreadable reuse file is removed; no key or no reuse means no --increme
 
 test('a timed-out mutant is retried alone, with one worker, a 3-minute limit, its span for the ignorer and the file\'s other mutators left out', async () => {
   const other = (mutatorName: string, line: number) => ({ ...strykerMutant('Killed', line), mutatorName });
-  const { deps, files, runs, setPlan } = fakeDeps(
+  const { deps, files, runs, logs, setPlan } = fakeDeps(
     [
       report({
         'src/a.ts': [strykerMutant('Timeout'), strykerMutant('Killed', 4), other('ConditionalExpression', 5), other('ConditionalExpression', 6), other('BlockStatement', 7)],
@@ -217,6 +221,7 @@ test('a timed-out mutant is retried alone, with one worker, a 3-minute limit, it
   assert.deepEqual(runs[0]?.env, { X: '1' }, 'the lane run carries no span');
   assert.equal(result.retried, 1);
   assert.deepEqual(result.judgement.byStatus, { Killed: 6 });
+  assert.deepEqual(logs, ['  retry 1 of 1: apps/web/src/a.ts:3:5 StringLiteral ("\\"\\"")', '  retry 1 of 1: Killed after 0.0 min'], 'the gate\'s log names the mutant it retries');
 });
 
 test('the retry ignorer the retry config loads is the compiled one beside lanes', () => {
@@ -562,7 +567,10 @@ test('a retry that fails refuses that mutant, and only a busy dry run stops the 
   busy.setPlan(webPlan);
   const stopped = await judgeLane(webPlan, busy.deps);
   assert.equal(busy.runs.length, 2);
-  assert.deepEqual(stopped.refusals, [`${where}: Stryker's initial test run timed out: the machine is busy; push again when it is quieter`]);
+  assert.deepEqual(stopped.refusals, [
+    `${where}: Stryker's initial test run timed out: the machine is busy; push again when it is quieter`,
+    'a retry found the machine busy; 1 timed-out mutant(s) left unretried: apps/web/src/a.ts:7:5 StringLiteral ("\\"\\""). For each, make the suite that owns its file kill it fast, or push again when the machine is quieter',
+  ]);
 
   const noEnd = { ...strykerMutant('Timeout'), location: { start: { line: 3, column: 5 } } };
   const located = fakeDeps([report({ 'src/a.ts': [noEnd, strykerMutant('Timeout', 7)] }), report({ 'src/a.ts': [strykerMutant('Killed', 7)] })], [], null);

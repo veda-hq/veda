@@ -42,6 +42,7 @@ import {
   resolveSettings,
   SETTINGS_FILENAME,
   sleepFor,
+  TICKET_SCHEMA,
   ticketPath,
   TICKETS_DIRNAME,
   turn,
@@ -317,6 +318,11 @@ describe("parseTicket", () => {
     assert.deepEqual(parseTicket(JSON.stringify(push)), push);
   });
 
+  it("reads a ticket of a later format, dropping what it does not know", () => {
+    const later = { schema: 2, ...ticket(), priority: "high" };
+    assert.deepEqual(parseTicket(JSON.stringify(later)), ticket());
+  });
+
   it("refuses anything incomplete", () => {
     const bad: Array<Record<string, unknown>> = [
       { token: "" },
@@ -350,6 +356,11 @@ describe("tickets on disk", () => {
     assert.equal(ticketPath(dir, "mine"), join(dir, "tickets", "mine.json"));
     assert.equal(TICKETS_DIRNAME, "tickets");
     assert.deepEqual(readdirSync(join(dir, TICKETS_DIRNAME)).sort(), ["mine.json", "their-token.json"]);
+    assert.deepEqual(JSON.parse(readFileSync(ticketPath(dir, "mine"), "utf8")), {
+      schema: 1,
+      ...ticket({ token: "mine", pid: SELF }),
+    });
+    assert.equal(TICKET_SCHEMA, 1);
     assert.deepEqual(
       readTickets(dir).map((entry) => entry.token).sort(),
       ["mine", "their-token"],

@@ -80,6 +80,12 @@ export const SETTINGS_FILENAME = "settings.json";
 /** One JSON line per request. */
 export const TURN_LOG_FILENAME = "turns.jsonl";
 export const TICKETS_DIRNAME = "tickets";
+/**
+ * The ticket format. A later format only adds fields, which this one's
+ * readers drop, and keeps every field here: dvaras of different versions,
+ * pinned by different repositories, share one queue.
+ */
+export const TICKET_SCHEMA = 1;
 export const WAITERS_DIRNAME = "waiters";
 /** The short lock each decision is made under: `dvara slot`'s lock, named `queue`. */
 export const QUEUE_LOCK_NAME = "queue";
@@ -253,7 +259,23 @@ export const parseTicket = (raw: string): Ticket | null => {
     isText(repo) &&
     isTextOrNull(worktree) &&
     isTextOrNull(branch);
-  return ok ? (value as unknown as Ticket) : null;
+  if (!ok) return null;
+  // Field by field: `schema` and any field a later dvara adds are dropped, so
+  // every dvara sharing the machine's queue reads every other's tickets.
+  return {
+    token,
+    pid,
+    startIdentity,
+    class: value["class"] as TurnClass,
+    exclusive: value["exclusive"] as boolean,
+    askedAt,
+    grantedAt,
+    overBound: value["overBound"] as boolean,
+    label,
+    repo,
+    worktree,
+    branch,
+  };
 };
 
 /** The files a queue keeps, in its directory. */
@@ -267,7 +289,7 @@ export const writeTicket = (dir: string, ticket: Ticket): void => {
   const path = ticketPath(dir, ticket.token);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temp = `${path}.tmp`;
-  writeFileSync(temp, JSON.stringify(ticket), { mode: 0o600 });
+  writeFileSync(temp, JSON.stringify({ schema: TICKET_SCHEMA, ...ticket }), { mode: 0o600 });
   renameSync(temp, path);
 };
 

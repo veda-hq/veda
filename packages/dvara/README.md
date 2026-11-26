@@ -407,7 +407,9 @@ dvara turn [--exclusive] [--class push|other] [--label <text>] -- <command> [arg
 
 The queue lives in `~/.dvara/turns/<hostname>/` (`DVARA_TURN_DIR` replaces
 the whole directory): `settings.json` (`{ "mode", "turns", "waitMinutes" }`,
-all optional), one ticket per request under `tickets/`, judged by its
+all optional, for the whole machine), one ticket per request under
+`tickets/` (`"schema": 1`; a later format only adds fields, which older
+readers drop, so dvaras pinned at different versions share one queue), judged by its
 process's liveness and start time as the slot's lock is, so a dead holder or
 waiter frees its place with no cleanup step, and `dvara slot`'s lock
 `queue.lock` around each decision. A request waiting in enforce mode also

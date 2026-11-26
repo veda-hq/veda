@@ -8,11 +8,16 @@ import {
   DEFAULT_GRACE_MS,
   DEFAULT_IDLE_MS,
   DEFAULT_SAMPLE_MS,
+  EXEMPT_COMMANDS,
+  HANG_RETENTION_MS,
+  LSOF_ARGS,
   MAX_TIMER_MS,
+  PS_ARGS,
   WATCHDOG_EXIT_CODE,
   advanceWindow,
   buildTree,
   classifyFds,
+  coreIdentity,
   coreSharedOutside,
   createWatchdog,
   decide,
@@ -607,6 +612,856 @@ describe("lsofCoversTree", () => {
       partial.delete(pid);
       assert.equal(lsofCoversTree(partial, info.treePids), false);
     }
+  });
+});
+
+/** A `ps` row with only what a case sets; the key is the pid and `started`. */
+const psRow = (pid: number, ppid: number, fields: Partial<PsRow> = {}): PsRow => ({
+  pid,
+  ppid,
+  pgid: 1,
+  state: "S",
+  cpuMs: 0,
+  started: "start",
+  comm: "node",
+  key: `${pid}@start`,
+  ...fields,
+});
+
+/** An `lsof` fd with only the fields a case sets. */
+const lsofFd = (fd: string, fields: Partial<LsofFd> = {}): LsofFd => ({
+  fd,
+  type: null,
+  device: null,
+  inode: null,
+  name: null,
+  tcpState: null,
+  ...fields,
+});
+
+/** A classified fd, for the functions that read `classifyFds`' result. */
+const classified = (
+  cls: ClassifiedFd["class"],
+  peerPid: number | null,
+  fields: Partial<LsofFd> = {},
+): ClassifiedFd => ({ ...lsofFd("3", fields), class: cls, peerPid });
+
+describe("the watchdog's fixed arguments and tables", () => {
+  it("lists every process with the columns PS_ROW reads", () => {
+    assert.deepEqual(PS_ARGS, [
+      "-axo",
+      "pid=,ppid=,pgid=,state=,time=,lstart=,comm=",
+    ]);
+  });
+
+  it("lists open files without name lookups, warnings or anything but the fields read", () => {
+    assert.deepEqual(LSOF_ARGS, ["-nP", "-w", "-F", "pftdinT"]);
+  });
+
+  it("keeps hang diagnostics for fourteen days", () => {
+    assert.equal(HANG_RETENTION_MS, 1_209_600_000);
+  });
+
+  it("exempts each opaque or timed command, by name or by path", () => {
+    for (const name of [
+      "sleep",
+      "xcodebuild",
+      "xcrun",
+      "simctl",
+      "actool",
+      "ibtool",
+      "SWBBuildService",
+      "XCBBuildService",
+      "docker",
+      "docker-buildx",
+      "com.docker.cli",
+      "osascript",
+      "pod",
+    ]) {
+      assert.equal(EXEMPT_COMMANDS.test(name), true, name);
+      assert.equal(EXEMPT_COMMANDS.test(`/usr/bin/${name}`), true, name);
+    }
+  });
+
+  it("exempts no command that only contains an exempt name", () => {
+    for (const name of [
+      "nosleep",
+      "sleepy",
+      "/bin/sleep2",
+      "a-sleep",
+      "dockerd",
+      "comXdockerXcli",
+      "podman",
+    ])
+      assert.equal(EXEMPT_COMMANDS.test(name), false, name);
+  });
+});
+
+describe("parseCpuTime's edges", () => {
+  it("reads hundredths in the long form and multi-digit days and hours", () => {
+    for (const [text, ms] of [
+      ["02:03:04.56", 7_384_560],
+      ["1-02:03:04.56", 93_784_560],
+      ["12-02:03:04", 1_044_184_000],
+      ["123:03:04", 442_984_000],
+      ["02:03.04", 123_040],
+    ] as const)
+      assert.equal(parseCpuTime(text), ms, text);
+  });
+
+  it("refuses a time with anything before or after it, or a short fraction", () => {
+    for (const text of [
+      "x0:00.07",
+      "0:00.07x",
+      "0:00.071",
+      "x02:03:04",
+      "02:03:04x",
+      "02:03:04.5",
+      "02:03:04.ab",
+      "02:03:04.",
+      "x-02:03:04",
+    ])
+      assert.equal(parseCpuTime(text), null, text);
+  });
+});
+
+describe("parsePs's row shapes", () => {
+  it("reads a row with no padding and single spaces", () => {
+    assert.deepEqual(
+      parsePs("123 1 123 Ss 0:00.07 Sun Sep 13 17:16:29 2026 bash\n"),
+      {
+        rows: [
+          {
+            pid: 123,
+            ppid: 1,
+            pgid: 123,
+            state: "Ss",
+            cpuMs: 70,
+            started: "Sun Sep 13 17:16:29 2026",
+            comm: "bash",
+            key: "123@Sun Sep 13 17:16:29 2026",
+          },
+        ],
+        malformed: 0,
+      },
+    );
+  });
+
+  it("reads padded columns, a one-digit day and a command with spaces", () => {
+    assert.deepEqual(
+      parsePs(
+        "  40375   40365   40351   S+    12:03.45   Thu  Sep   3   07:06:05   2026    Google Chrome Helper   \n",
+      ),
+      {
+        rows: [
+          {
+            pid: 40375,
+            ppid: 40365,
+            pgid: 40351,
+            state: "S+",
+            cpuMs: 723_450,
+            started: "Thu Sep 3 07:06:05 2026",
+            comm: "Google Chrome Helper",
+            key: "40375@Thu Sep 3 07:06:05 2026",
+          },
+        ],
+        malformed: 0,
+      },
+    );
+  });
+
+  it("skips blank and whitespace-only lines without counting them", () => {
+    assert.deepEqual(parsePs("\n   \n\t\n"), { rows: [], malformed: 0 });
+  });
+
+  it("counts a well-shaped row whose CPU time does not parse as malformed", () => {
+    assert.deepEqual(
+      parsePs("123 1 123 S 1:2.3 Sun Sep 13 17:16:29 2026 bash\n"),
+      { rows: [], malformed: 1 },
+    );
+  });
+
+  it("counts a row with anything before its pid as malformed", () => {
+    assert.deepEqual(
+      parsePs("x123 1 123 S 0:00.07 Sun Sep 13 17:16:29 2026 bash\n"),
+      { rows: [], malformed: 1 },
+    );
+  });
+});
+
+describe("buildTree's shapes", () => {
+  it("takes every child of a parent, then their children, and nothing else", () => {
+    const rows = [
+      psRow(4, 2),
+      psRow(1, 0),
+      psRow(2, 1),
+      psRow(3, 1),
+      psRow(9, 8),
+    ];
+    assert.deepEqual(
+      buildTree(rows, 1).map((row) => row.pid),
+      [1, 2, 3, 4],
+    );
+  });
+
+  it("is empty when the root is not in the snapshot", () => {
+    assert.deepEqual(buildTree([psRow(1, 0), psRow(2, 1)], 7), []);
+  });
+
+  it("takes a root that is its own parent once", () => {
+    assert.deepEqual(
+      buildTree([psRow(1, 1), psRow(2, 1)], 1).map((row) => row.pid),
+      [1, 2],
+    );
+  });
+});
+
+describe("advanceWindow's thresholds", () => {
+  const observation = (
+    at: number,
+    wallAt: number,
+    tree: readonly PsRow[],
+  ): Observation => ({ at, wallAt, tree, stageBytes: 0 });
+
+  it("starts a window with the tree's keys sorted and joined", () => {
+    const tree = [psRow(2, 1, { key: "2@b", cpuMs: 7 }), psRow(1, 0, { key: "1@a" })];
+    assert.deepEqual(
+      advanceWindow(null, observation(0, 0, tree), {
+        sampleMs: 1000,
+        cpuQuietMs: 100,
+      }),
+      {
+        quietSince: 0,
+        lastAt: 0,
+        lastWallAt: 0,
+        members: "1@a|2@b",
+        stageBytes: 0,
+        baseCpu: new Map([
+          ["2@b", 7],
+          ["1@a", 0],
+        ]),
+        windowCpuMs: 0,
+        lastCheckAt: null,
+        checkCpu: null,
+        resetReason: "start",
+      },
+    );
+  });
+
+  it("allows a gap of three samples when that is above 15 s, and not a millisecond more", () => {
+    const tree = [psRow(1, 0)];
+    const config = { sampleMs: 10_000, cpuQuietMs: 100 };
+    const first = advanceWindow(null, observation(0, 0, tree), config);
+    for (const [at, reason] of [
+      [20_000, null],
+      [30_000, null],
+      [30_001, "sampling-gap"],
+    ] as const)
+      assert.equal(
+        advanceWindow(first, observation(at, at, tree), config).resetReason,
+        reason,
+        String(at),
+      );
+  });
+
+  it("allows a gap of 15 s when three samples are shorter, and not a millisecond more", () => {
+    const tree = [psRow(1, 0)];
+    const config = { sampleMs: 1000, cpuQuietMs: 100 };
+    const first = advanceWindow(null, observation(0, 0, tree), config);
+    for (const [at, reason] of [
+      [15_000, null],
+      [15_001, "sampling-gap"],
+    ] as const)
+      assert.equal(
+        advanceWindow(first, observation(at, at, tree), config).resetReason,
+        reason,
+        String(at),
+      );
+  });
+
+  it("allows 5 s of drift between the clocks, and not a millisecond more", () => {
+    const tree = [psRow(1, 0)];
+    const config = { sampleMs: 5000, cpuQuietMs: 100 };
+    const first = advanceWindow(null, observation(0, 0, tree), config);
+    for (const [wallAt, reason] of [
+      [10_000, null],
+      [0, null],
+      [10_001, "clock-jump"],
+    ] as const)
+      assert.equal(
+        advanceWindow(first, observation(5000, wallAt, tree), config)
+          .resetReason,
+        reason,
+        String(wallAt),
+      );
+  });
+
+  it("restarts on a running, uninterruptible, disk-waiting or stopped process, by its first letter", () => {
+    const config = { sampleMs: 5000, cpuQuietMs: 100 };
+    const first = advanceWindow(
+      null,
+      observation(0, 0, [psRow(1, 0)]),
+      config,
+    );
+    for (const [state, reason] of [
+      ["R", "process-state"],
+      ["U", "process-state"],
+      ["D", "process-state"],
+      ["T", "process-state"],
+      ["Ss", null],
+      ["SR", null],
+    ] as const)
+      assert.equal(
+        advanceWindow(
+          first,
+          observation(5000, 5000, [psRow(1, 0, { state })]),
+          config,
+        ).resetReason,
+        reason,
+        state,
+      );
+  });
+
+  it("tolerates CPU up to cpuQuietMs, and not a millisecond more", () => {
+    const config = { sampleMs: 5000, cpuQuietMs: 100 };
+    const first = advanceWindow(
+      null,
+      observation(0, 0, [psRow(1, 0, { cpuMs: 50 })]),
+      config,
+    );
+    const at = advanceWindow(
+      first,
+      observation(5000, 5000, [psRow(1, 0, { cpuMs: 150 })]),
+      config,
+    );
+    assert.equal(at.resetReason, null);
+    assert.equal(at.windowCpuMs, 100);
+    assert.equal(
+      advanceWindow(
+        first,
+        observation(5000, 5000, [psRow(1, 0, { cpuMs: 151 })]),
+        config,
+      ).resetReason,
+      "cpu",
+    );
+  });
+});
+
+describe("parseLsof's fields", () => {
+  it("reads each field of each fd, and only the TCP state of the T lines", () => {
+    const text = [
+      "p12",
+      "fcwd",
+      "tDIR",
+      "n/home",
+      "f3",
+      "tIPv4",
+      "d0xabc",
+      "i123",
+      "n1.2.3.4:5->6.7.8.9:10",
+      "TST=ESTABLISHED",
+      "TQR=0",
+      "TQS=0",
+      "p13",
+      "",
+      "f0",
+      "tPIPE",
+      "",
+    ].join("\n");
+    assert.deepEqual(
+      parseLsof(text),
+      new Map([
+        [
+          12,
+          [
+            lsofFd("cwd", { type: "DIR", name: "/home" }),
+            lsofFd("3", {
+              type: "IPv4",
+              device: "0xabc",
+              inode: "123",
+              name: "1.2.3.4:5->6.7.8.9:10",
+              tcpState: "ESTABLISHED",
+            }),
+          ],
+        ],
+        [13, [lsofFd("0", { type: "PIPE" })]],
+      ]),
+    );
+  });
+
+  it("lists a process with no open files as an empty list", () => {
+    assert.deepEqual(parseLsof("p7\n"), new Map([[7, []]]));
+  });
+
+  it("takes a TCP state only from a T line", () => {
+    assert.deepEqual(
+      parseLsof("p1\nf3\ntIPv4\nTST=LISTEN\naST=CLOSED\n"),
+      new Map([[1, [lsofFd("3", { type: "IPv4", tcpState: "LISTEN" })]]]),
+    );
+  });
+
+  it("drops fields that belong to no process or to no fd", () => {
+    assert.deepEqual(
+      parseLsof("f3\ntREG\np1\ntCHR\nf4\n"),
+      new Map([[1, [lsofFd("4")]]]),
+    );
+  });
+});
+
+describe("classifyFds by shape", () => {
+  it("classifies only numeric fds of tree processes", () => {
+    const keep = lsofFd("10", { type: "REG" });
+    const lsof = new Map([
+      [
+        1,
+        [
+          lsofFd("cwd", { type: "DIR" }),
+          lsofFd("txt", { type: "REG" }),
+          keep,
+          lsofFd("x3", { type: "REG" }),
+          lsofFd("3x", { type: "REG" }),
+        ],
+      ],
+      [99, [lsofFd("4", { type: "REG" })]],
+    ]);
+    assert.deepEqual(
+      classifyFds(lsof, [1]),
+      new Map([[1, [{ ...keep, class: "ignored", peerPid: null }]]]),
+    );
+  });
+
+  it("ignores every fd type that is not a channel to another process", () => {
+    const types = [
+      "REG",
+      "DIR",
+      "CHR",
+      "KQUEUE",
+      "systm",
+      "NPOLICY",
+      "NEXUS",
+      "CHAN",
+      "PSXSHM",
+      "PSXSEM",
+      "ATALK",
+      "FSEVENT",
+    ];
+    const fds = types.map((type, i) => lsofFd(String(i), { type, name: "x" }));
+    assert.deepEqual(
+      classesOf(classifyFds(new Map([[1, fds]]), [1]), 1).map((fd) => fd.class),
+      types.map(() => "ignored"),
+    );
+  });
+
+  it("ignores TCP in every closed state, and only in those", () => {
+    const states = [
+      "CLOSE_WAIT",
+      "TIME_WAIT",
+      "FIN_WAIT_1",
+      "FIN_WAIT_2",
+      "CLOSED",
+      "LAST_ACK",
+      "CLOSING",
+      "LISTEN",
+      "SYN_SENT",
+    ];
+    const fds = states.map((tcpState, i) =>
+      lsofFd(String(i), { type: "IPv6", name: "a:1->b:2", tcpState }),
+    );
+    assert.deepEqual(
+      classesOf(classifyFds(new Map([[1, fds]]), [1]), 1).map((fd) => fd.class),
+      [
+        "ignored",
+        "ignored",
+        "ignored",
+        "ignored",
+        "ignored",
+        "ignored",
+        "ignored",
+        "external",
+        "external",
+      ],
+    );
+  });
+
+  it("reads only IPv4 and IPv6 as TCP", () => {
+    const fds = ["XIPv4", "IPv4x", "IPv5", "IPv4"].map((type, i) =>
+      lsofFd(String(i), { type, name: "a:1->b:2", tcpState: "CLOSE_WAIT" }),
+    );
+    assert.deepEqual(
+      classesOf(classifyFds(new Map([[1, fds]]), [1]), 1).map((fd) => fd.class),
+      ["external", "external", "external", "ignored"],
+    );
+  });
+
+  it("pairs a TCP connection only with the IPv4 or IPv6 fd on its other end", () => {
+    const client = lsofFd("3", {
+      type: "IPv4",
+      name: "a:1->b:2",
+      tcpState: "ESTABLISHED",
+    });
+    const clientClass = (peer: LsofFd) =>
+      classesOf(classifyFds(new Map([[1, [client]], [2, [peer]]]), [1, 2]), 1);
+    for (const type of ["XIPv4", "IPv4x", "IPv5", "unix"])
+      assert.deepEqual(
+        clientClass(lsofFd("3", { type, name: "b:2->a:1" })),
+        [{ ...client, class: "external", peerPid: null }],
+        type,
+      );
+    assert.deepEqual(
+      clientClass(lsofFd("3", { type: "IPv4" })),
+      [{ ...client, class: "external", peerPid: null }],
+    );
+    assert.deepEqual(
+      clientClass(
+        lsofFd("3", {
+          type: "IPv6",
+          name: "b:2->a:1",
+          tcpState: "ESTABLISHED",
+        }),
+      ),
+      [{ ...client, class: "internal", peerPid: 2 }],
+    );
+  });
+
+  it("reads a connection only from a name that is wholly one", () => {
+    const server = lsofFd("3", {
+      type: "IPv4",
+      name: "b:2->a:1",
+      tcpState: "ESTABLISHED",
+    });
+    for (const name of ["x a:1->b:2", "a:1->b:2 x"]) {
+      const client = lsofFd("3", { type: "IPv4", name, tcpState: "ESTABLISHED" });
+      assert.deepEqual(
+        classesOf(
+          classifyFds(new Map([[1, [client]], [2, [server]]]), [1, 2]),
+          1,
+        ),
+        [{ ...client, class: "external", peerPid: null }],
+        JSON.stringify(name),
+      );
+    }
+  });
+
+  it("pairs only an established connection", () => {
+    const server = lsofFd("3", {
+      type: "IPv4",
+      name: "b:2->a:1",
+      tcpState: "ESTABLISHED",
+    });
+    for (const tcpState of ["SYN_SENT", null]) {
+      const client = lsofFd("3", { type: "IPv4", name: "a:1->b:2", tcpState });
+      assert.deepEqual(
+        classesOf(
+          classifyFds(new Map([[1, [client]], [2, [server]]]), [1, 2]),
+          1,
+        ),
+        [{ ...client, class: "external", peerPid: null }],
+        String(tcpState),
+      );
+    }
+  });
+
+  it("ignores a socket whose peer the supervisor holds", () => {
+    const socket = lsofFd("3", { type: "unix", device: "0xa", name: "->0x5" });
+    const supervisor = [lsofFd("9", { type: "unix", device: "0x5" })];
+    assert.deepEqual(
+      classifyFds(new Map([[1, [socket]]]), [1], supervisor),
+      new Map([[1, [{ ...socket, class: "ignored", peerPid: null }]]]),
+    );
+    assert.deepEqual(
+      classifyFds(new Map([[1, [socket]]]), [1]),
+      new Map([[1, [{ ...socket, class: "external", peerPid: null }]]]),
+    );
+  });
+
+  it("ignores a socket with a zero peer, and no other", () => {
+    const fds = [
+      "->0x0000000000000000",
+      "->0x00",
+      "->0X0",
+      "->0x01",
+      "->0x10",
+    ].map((name, i) => lsofFd(String(i), { type: "unix", name }));
+    assert.deepEqual(
+      classesOf(classifyFds(new Map([[1, fds]]), [1]), 1).map((fd) => fd.class),
+      ["ignored", "ignored", "ignored", "external", "external"],
+    );
+  });
+
+  it("ignores a nameless pipe and keeps a named socket with no peer external", () => {
+    const fds = [
+      lsofFd("3", { type: "PIPE" }),
+      lsofFd("4", { type: "unix", name: "/var/run/docker.sock" }),
+    ];
+    assert.deepEqual(
+      classesOf(classifyFds(new Map([[1, fds]]), [1]), 1).map((fd) => fd.class),
+      ["ignored", "external"],
+    );
+  });
+
+  it("reads a peer address only from a name that is exactly an arrow and an address", () => {
+    const holder = lsofFd("5", { type: "unix", device: "0xb" });
+    const fds = ["x->0xb", "->0xbz", "->0xb"].map((name, i) =>
+      lsofFd(String(i), { type: "unix", name }),
+    );
+    assert.deepEqual(
+      classesOf(
+        classifyFds(new Map([[1, fds], [2, [holder]]]), [1, 2]),
+        1,
+      ).map((fd) => [fd.class, fd.peerPid]),
+      [
+        ["external", null],
+        ["external", null],
+        ["internal", 2],
+      ],
+    );
+  });
+
+  it("names another holder of a socket's peer as its peer, and itself only when it is the only one", () => {
+    const lsof = new Map([
+      [
+        1,
+        [
+          lsofFd("3", { type: "unix", device: "0xa", name: "->0xb" }),
+          lsofFd("4", { type: "unix", device: "0xb", name: "->0xa" }),
+        ],
+      ],
+      [2, [lsofFd("3", { type: "unix", device: "0xb", name: "->0xa" })]],
+      [
+        3,
+        [
+          lsofFd("3", { type: "unix", device: "0xc", name: "->0xd" }),
+          lsofFd("4", { type: "unix", device: "0xd", name: "->0xc" }),
+        ],
+      ],
+    ]);
+    const classes = classifyFds(lsof, [1, 2, 3]);
+    const peers = (pid: number) =>
+      classesOf(classes, pid).map((fd) => [fd.class, fd.peerPid]);
+    assert.deepEqual(peers(1), [
+      ["internal", 2],
+      ["internal", 1],
+    ]);
+    assert.deepEqual(peers(3), [
+      ["internal", 3],
+      ["internal", 3],
+    ]);
+  });
+
+  it("pairs a FIFO with the other tree process that holds it, and no FIFO without one", () => {
+    const lsof = new Map([
+      [
+        1,
+        [
+          lsofFd("3", { type: "FIFO", device: "0xf" }),
+          lsofFd("4", { type: "FIFO", device: "0xg" }),
+          lsofFd("5", { type: "FIFO" }),
+          lsofFd("6", { type: "FIFO", device: "" }),
+        ],
+      ],
+      [
+        2,
+        [
+          lsofFd("3", { type: "FIFO", device: "0xf" }),
+          lsofFd("6", { type: "FIFO", device: "" }),
+        ],
+      ],
+    ]);
+    const classes = classifyFds(lsof, [1, 2]);
+    const peers = (pid: number) =>
+      classesOf(classes, pid).map((fd) => [fd.class, fd.peerPid]);
+    assert.deepEqual(peers(1), [
+      ["internal", 2],
+      ["external", null],
+      ["external", null],
+      ["external", null],
+    ]);
+    assert.deepEqual(peers(2), [
+      ["internal", 1],
+      ["external", null],
+    ]);
+  });
+});
+
+describe("findHangCore by shape", () => {
+  it("spares a leaf that also holds an external channel", () => {
+    const tree = [psRow(1, 0), psRow(2, 1)];
+    const classes = new Map([
+      [1, [classified("internal", 2)]],
+      [2, [classified("internal", 1), classified("external", null)]],
+    ]);
+    assert.equal(findHangCore(tree, classes, zeroDeltas(tree)), null);
+  });
+
+  it("spares a leaf whose only channels lead back to itself", () => {
+    const tree = [psRow(1, 0), psRow(2, 1)];
+    const classes = new Map([
+      [2, [classified("internal", 2), classified("internal", null)]],
+    ]);
+    assert.equal(findHangCore(tree, classes, zeroDeltas(tree)), null);
+  });
+
+  it("follows only internal channels with a peer", () => {
+    const tree = [psRow(1, 0), psRow(2, 1), psRow(3, 1)];
+    const classes = new Map([
+      [
+        1,
+        [
+          classified("internal", 2),
+          classified("ignored", 3),
+          classified("internal", null),
+        ],
+      ],
+      [2, [classified("internal", 1)]],
+    ]);
+    assert.deepEqual(findHangCore(tree, classes, zeroDeltas(tree)), {
+      leaf: 2,
+      peers: [1],
+    });
+  });
+});
+
+describe("coreIdentity", () => {
+  it("joins the sorted keys of the core's processes, and of no other", () => {
+    const tree = [
+      psRow(3, 2, { key: "3@c" }),
+      psRow(1, 0, { key: "1@a" }),
+      psRow(2, 1, { key: "2@b" }),
+    ];
+    assert.equal(coreIdentity(tree, { leaf: 3, peers: [1] }), "1@a|3@c");
+  });
+});
+
+describe("coreSharedOutside by shape", () => {
+  it("finds an outside holder of an internal fd's object", () => {
+    const core = { leaf: 2, peers: [1] };
+    const classes = new Map([
+      [2, [classified("internal", 1, { device: "0xa" })]],
+      [1, [classified("internal", 2)]],
+    ]);
+    const wide = new Map([
+      [1, [lsofFd("3")]],
+      [2, [lsofFd("3", { device: "0xa" })]],
+      [50, [lsofFd("3", { device: "0xq" }), lsofFd("4", { device: "0xa" })]],
+    ]);
+    assert.equal(coreSharedOutside(core, classes, wide, [1, 2]), true);
+  });
+
+  it("finds an outside holder of an internal socket's peer", () => {
+    const core = { leaf: 2, peers: [1] };
+    const classes = new Map([
+      [2, [classified("internal", 1, { name: "->0x9" })]],
+    ]);
+    const wide = new Map([[50, [lsofFd("3", { device: "0x9" })]]]);
+    assert.equal(coreSharedOutside(core, classes, wide, [1, 2]), true);
+  });
+
+  it("does not count an outside holder of an ignored fd's object, or a tree holder", () => {
+    const core = { leaf: 2, peers: [1] };
+    const classes = new Map([
+      [2, [classified("ignored", null, { device: "0xe", name: "->0x7" })]],
+      [1, [classified("internal", 2, { device: "0xa" })]],
+    ]);
+    const wide = new Map([
+      [50, [lsofFd("3", { device: "0xe" }), lsofFd("4", { device: "0x7" })]],
+      [1, [lsofFd("3", { device: "0xa" })]],
+      [2, [lsofFd("3", { device: "0xa" })]],
+    ]);
+    assert.equal(coreSharedOutside(core, classes, wide, [1, 2]), false);
+  });
+
+  it("does not take an empty device for an object", () => {
+    const core = { leaf: 2, peers: [1] };
+    const classes = new Map([
+      [2, [classified("internal", 1, { device: "" })]],
+    ]);
+    const wide = new Map([[50, [lsofFd("3", { device: "" })]]]);
+    assert.equal(coreSharedOutside(core, classes, wide, [1, 2]), false);
+  });
+});
+
+describe("decide by shape", () => {
+  it("spares a core when another leaf holds an external channel", () => {
+    const config = { idleMs: 1000, externalIdleMs: 5000 };
+    const tree = [psRow(1, 0), psRow(2, 1), psRow(3, 1)];
+    const classes = new Map([
+      [1, [classified("internal", 2)]],
+      [2, [classified("internal", 1)]],
+      [3, [classified("ignored", null), classified("external", null)]],
+    ]);
+    assert.equal(
+      decide({
+        tree,
+        classes,
+        cpuDeltaByPid: zeroDeltas(tree),
+        quietMs: 1000,
+        config,
+      }),
+      null,
+    );
+  });
+
+  it("does not count an external channel of a process with children", () => {
+    const config = { idleMs: 1000, externalIdleMs: 5000 };
+    const tree = [psRow(1, 0), psRow(2, 1), psRow(3, 2), psRow(4, 1)];
+    const classes = new Map([
+      [1, [classified("external", null)]],
+      [2, [classified("internal", 3)]],
+      [3, [classified("internal", 2)]],
+    ]);
+    assert.deepEqual(
+      decide({
+        tree,
+        classes,
+        cpuDeltaByPid: zeroDeltas(tree),
+        quietMs: 1000,
+        config,
+      }),
+      { kind: "internal-deadlock", core: { leaf: 3, peers: [2] }, quietMs: 1000 },
+    );
+  });
+});
+
+describe("exitDisposition's shapes", () => {
+  it("imposes 124 and timed_out for an acted-on internal deadlock", () => {
+    assert.deepEqual(
+      exitDisposition({ acted: true, verdict: { kind: "internal-deadlock" } }),
+      { code: 124, status: "timed_out" },
+    );
+  });
+
+  it("keeps the hook's outcome for a verdict that is not an object with a kind", () => {
+    for (const verdict of ["internal-deadlock", null, {}])
+      assert.equal(
+        exitDisposition({ acted: true, verdict }),
+        null,
+        JSON.stringify(verdict),
+      );
+    assert.equal(exitDisposition(null), null);
+  });
+});
+
+describe("resolveWatchdogConfig's reasons", () => {
+  it("says an explicit mode is explicit", () => {
+    assert.deepEqual(
+      resolveWatchdogConfig({ DVARA_WATCHDOG: "report" }, "darwin"),
+      {
+        mode: "report",
+        reason: "explicit",
+        idleMs: 600_000,
+        externalIdleMs: 3_600_000,
+        sampleMs: 5000,
+        graceMs: 10_000,
+        cpuQuietMs: 1200,
+      },
+    );
+  });
+
+  it("says why it is unsupported off macOS", () => {
+    assert.partialDeepStrictEqual(resolveWatchdogConfig({}, "linux"), {
+      mode: "unsupported",
+      reason: "non-darwin",
+    });
   });
 });
 

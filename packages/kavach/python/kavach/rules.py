@@ -27,6 +27,9 @@ The rules (README, "Rules that hold a lesson"):
   back into one a session can own passes (veda#339). Where the desktop app's
   record names the session's worktree, a ``cd`` into it passes from anywhere,
   another session's worktree included, and a finding names it (veda#362).
+  Where it names a main checkout instead (a scheduled task's), a ``cd`` out
+  of a worktree another live record names passes to that main checkout or
+  to a managed worktree of it no other live record names (veda#641).
 - ``stryker-inplace``: ``stryker run --inPlace``, or a Stryker config written
   with ``inPlace: true``, mutates the real files and restores them only after
   a run that finishes.
@@ -341,6 +344,60 @@ def recorded_worktree(call: Call) -> str | None:
     return str(found) if found is not None else None
 
 
+def recorded_main_checkout(call: Call) -> str | None:
+    """The main checkout the desktop app's record names as this session's
+    (``boundary.session_main_checkout``: a scheduled task's, veda#641), or
+    ``None``."""
+
+    if __package__:
+        from . import boundary
+    else:
+        import boundary  # type: ignore[no-redef]
+    own = getattr(call.settings, "own_checkout", None)
+    found = boundary.session_main_checkout(call.session_id, own, os.environ)
+    return str(found) if found is not None else None
+
+
+def main_checkout_way_out(target: str, root: str, started: str) -> tuple[str, bool] | None:
+    """Where a ``cd`` to ``target`` leads a session whose record names the
+    main checkout ``started``, when it is the way out of worktree ``root``
+    (veda#641), and whether the session owns it there; else ``None``.
+
+    Only from a worktree another live record names (``boundary.
+    worktree_owners``), where rule ``other-sessions-worktree`` refuses this
+    session's writes, so the ``cd`` out is all that is left. It leads to the
+    main checkout itself, or to a managed worktree of it whose scan finds no
+    live owner: one the session made, or an ``agent-*`` one. A scan of
+    ``root`` that fails finds no owner, so the write rule lets writes through
+    there and the ``cd`` is judged as before."""
+
+    if __package__:
+        from . import boundary
+    else:
+        import boundary  # type: ignore[no-redef]
+    host = os.environ.get("CLAUDE_CODE_HOST_SESSION_ID", "")
+    if not boundary.worktree_owners(Path(root), host).owners:
+        return None
+    top = session_checkout(target)
+    if top is None:
+        return None
+    main = Path(started).resolve()
+    if Path(top).resolve() == main:
+        # No session owns the main checkout: the worktree guard refuses
+        # writes there.
+        return started, False
+    state = boundary.checkout_state(Path(top))
+    if state is None:
+        return None
+    tree, linked, primary = state
+    if not linked or primary.resolve() != main or not boundary.is_claude_managed(tree, primary):
+        return None
+    owners = boundary.worktree_owners(tree, host).owners
+    if owners is None or owners:
+        return None
+    return top, True
+
+
 # Not yet read: ``recorded_worktree`` runs at most once per call.
 UNREAD = object()
 
@@ -385,6 +442,16 @@ def cd_out_of_worktree(call: Call) -> str | None:
         if recorded is not None and inside(target, recorded):
             root, owned = recorded, True
             continue
+        if recorded is None and owned:
+            # A record naming a main checkout (a scheduled task's) names no
+            # worktree to come back to: from a live peer's worktree, the way
+            # out is the main checkout or a worktree no one else works in
+            # (veda#641).
+            started = recorded_main_checkout(call)
+            way = None if started is None else main_checkout_way_out(target, root, started)
+            if way is not None:
+                root, owned = way
+                continue
         moves =f"`{command.words[0].text} {target}` moves the shell"
         elsewhere = recorded is not None and not inside(root, recorded)
         whose = "this session's" if owned and not elsewhere else "its"

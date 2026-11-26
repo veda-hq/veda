@@ -408,9 +408,19 @@ describe('DOC-DRIFT-01 as the citing text writes it', () => {
     assert.deepEqual(pathProblems(pathRepo(['```sh', 'cat docs/guide.md #see docs/absent.md', '```', ''].join('\n'))), []);
   });
 
-  it('reads a frontmatter value only from a line that starts one, and up to its end', () => {
-    // A line ending in a carriage return reads as no value: today's reading of a CRLF file.
-    assert.deepEqual(pathProblems(pathRepo(['---', 'just text - docs/absent-1.md', 'see: docs/absent-2.md\r', '---', ''].join('\n'))), []);
+  it('reads a frontmatter value only from a line that starts one', () => {
+    assert.deepEqual(pathProblems(pathRepo(['---', 'just text - docs/absent-1.md', '---', ''].join('\n'))), []);
+  });
+
+  it('reads a frontmatter value in a CRLF file up to its carriage return', () => {
+    const r = pathRepo(['---\r', 'see: docs/absent-2.md\r', '- docs/guide.md, docs/absent-3.md\r', '---\r', 'body\r', ''].join('\n'));
+    assert.deepEqual(
+      pathProblems(r).map((p) => [p.line, p.ref]),
+      [
+        [2, 'docs/absent-2.md'],
+        [3, 'docs/absent-3.md'],
+      ],
+    );
   });
 
   it('checks a link label in a code comment as a path', () => {

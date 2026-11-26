@@ -36,8 +36,10 @@ Accepted citations, in two tiers:
 A prose comment is not a citation. **A markdown file is not a citation** — a doc
 an agent could have written is the fabrication restated one level down. An ADR
 is the one exception, and only once it is committed: at a commit, the ADR must
-already be in `HEAD` (and still be there), so a claim and the ADR it cites
-cannot be written together. An ADR and its first citation land in two commits.
+already be in `HEAD` and still be on disk, so a commit that adds an ADR cannot
+also add its first citation; they land in two commits. (Amending the ADR's
+own commit afterwards folds them into one: `HEAD` held the ADR when the
+citation was checked.)
 On a merge, `HEAD` is the branch being merged into, so a line the merge itself
 writes cannot cite an ADR only the merged branch carries. The whole-tree mode
 reads the ADR folder on disk. Review an ADR's own history as you would the

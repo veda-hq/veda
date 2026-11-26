@@ -104,8 +104,10 @@ export const declaredFiles = (messages: string): string[] =>
  */
 export const removedAliases = (removed: string): string[] =>
   // The group always takes part in a match, so String() only narrows its type.
+  // A comment in a list, `/* … */` or `// …` to the line's end, is no specifier.
   [...removed.matchAll(EXPORT_LIST)].flatMap((m) =>
     String(m[1])
+      .replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')
       .split(',')
       .map((spec) => ALIASED.exec(spec.trim())?.[1])
       .filter((s): s is string => s !== undefined && s !== 'default'),

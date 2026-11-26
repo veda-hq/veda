@@ -189,9 +189,9 @@ have produced:
 
 - resolved: a commit id naming a commit here, or `ADR-NNNN` /
   `<adr-dir>/NNNN` naming an existing `NNNN-*.md` other than the claiming file
-  (default `docs/adr`). In `staged` mode the ADR must already be in `HEAD`, so
-  one the commit adds is no citation: an ADR and its first citation land in two
-  commits;
+  (default `docs/adr`). In `staged` mode the ADR must already be in `HEAD` and
+  still on disk, so one the commit adds is no citation: an ADR and its first
+  citation land in two commits;
 - shape-checked: an issue id with a `--issue-prefix` (`ABC-123`), a GitHub
   pull request or issue URL, or `PR #123`.
 

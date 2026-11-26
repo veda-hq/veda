@@ -187,6 +187,8 @@ describe('removedExports and usedOutsideComments', () => {
     assert.deepEqual(removedExports(diff), ['A', 'B']);
     assert.deepEqual(removedAliases("export {\n  a as A,\n} from './a.js';\nexport { b as B }"), ['A', 'B']);
     assert.deepEqual(removedAliases('export {\0\n  a as A }'), []);
+    const commented = "export {\n  /** the public name */\n  a as A, // a note, with a comma\n  /*x*/ b as B /* y */,\n  c as C, // last\n} from './a.js';";
+    assert.deepEqual(removedAliases(commented), ['A', 'B', 'C']);
   });
 
   it('counts a code hit, not a comment', () => {

@@ -198,9 +198,10 @@ export const listAdrs = (root: string, adrDir: string): string[] => {
 
 /**
  * The ADRs staged mode counts: files directly under the ADR directory in HEAD
- * that are still on disk. An ADR the commit itself adds is not one, so a claim
- * and the ADR it cites cannot be written together. No HEAD (a first commit),
- * or no such directory in it, lists none: git's failure here only narrows.
+ * that are still on disk. An ADR the commit itself adds is not one, so a
+ * commit cannot add an ADR and its first citation together. No HEAD (a first
+ * commit), or no such directory in it, lists none: git's failure here only
+ * narrows.
  */
 export const committedAdrs = (git: Git, root: string, adrDir: string): string[] => {
   // `HEAD:` names HEAD's root tree, `HEAD:docs/adr` that directory's; `HEAD:.` names nothing.

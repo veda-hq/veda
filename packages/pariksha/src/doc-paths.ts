@@ -117,9 +117,14 @@ const resolverFor = (config: Config, snapshot: RepoSnapshot): Resolver => {
       if (typeof deps === 'object' && deps !== null && !Array.isArray(deps)) for (const name of Object.keys(deps)) dependencies.add(name);
     }
   }
+  const globs = new Map<string, boolean>();
   const globMatches = (glob: string): boolean => {
+    const cached = globs.get(glob);
+    if (cached !== undefined) return cached;
     const pattern = globToRegExp(glob);
-    return [...snapshot.files, ...snapshot.dirs].some((path) => pattern.test(path));
+    const found = [...snapshot.files, ...snapshot.dirs].some((path) => pattern.test(path));
+    globs.set(glob, found);
+    return found;
   };
   const exists = (path: string): boolean => snapshot.files.has(path) || snapshot.dirs.has(path);
   // A base above the root gives null, which names no directory.

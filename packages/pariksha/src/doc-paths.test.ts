@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { findPathProblems, pathRef } from './doc-paths.ts';
 import { CONFIG, createTestRepo, testConfig, type TestRepo } from './doc-references.fixture.test.ts';
 import type { Config } from './doc-references-config.ts';
-import { createSnapshot } from './doc-references.ts';
+import { createSnapshot, type RepoSnapshot } from './doc-references.ts';
 
 const SKILL = '.agents/skills/resolve-health/SKILL.md';
 const COLLECTOR = '.claude/scripts/collect-health-signals.ts';
@@ -187,6 +187,24 @@ describe('DOC-DRIFT-01 backticked path forms', () => {
       pathProblems(pathRepo('`apps/server/**/*.py` `apps/server/**/*.py` `apps/server/**/*.ts` `apps/server/**/*.ts`\n')).map((p) => p.ref),
       ['apps/server/**/*.py', 'apps/server/**/*.py'],
     );
+  });
+
+  it('scans the tree once for each glob, however often a doc names it', () => {
+    // A doc at the root, with no workspace: each glob is tried from the root only.
+    const snapshot = createTestRepo({ 'NOTES.md': '`apps/**/*.py` `apps/**/*.py` `apps/**/*.ts` `apps/**/*.ts`\n', 'apps/a.ts': '' }).snapshot();
+    let scans = 0;
+    class Counted extends Set<string> {
+      override [Symbol.iterator](): SetIterator<string> {
+        scans += 1;
+        return super[Symbol.iterator]();
+      }
+    }
+    const counted: RepoSnapshot = { ...snapshot, dirs: new Counted(snapshot.dirs) };
+    assert.deepEqual(
+      findPathProblems(CONFIG, counted, ['NOTES.md']).map((p) => p.ref),
+      ['apps/**/*.py', 'apps/**/*.py'],
+    );
+    assert.equal(scans, 2);
   });
 
   it('anchors a ./ or ../ directory at the repository root with no workspaces', () => {

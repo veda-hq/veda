@@ -15,8 +15,15 @@ permissions:
 jobs:
   niyam-guard:
     name: niyam-guard
+    # Not on an edit of Mergify's queue draft that changes no title or base: its head's runs stand (veda-hq/niyam#685).
+    if: >-
+      ${{ !(github.event.action == 'edited' && !github.event.changes.title && !github.event.changes.base &&
+      github.event.pull_request.user.login == 'mergify[bot]' && github.event.pull_request.user.type == 'Bot' &&
+      startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !contains(github.event.pull_request.title, ' pull requests ahead')) }}
     permissions:
       contents: read
       pull-requests: read
       issues: read
-    uses: veda-hq/niyam/.github/workflows/shared-guard.yml@v0.7.20
+    uses: veda-hq/niyam/.github/workflows/shared-guard.yml@v0.7.22

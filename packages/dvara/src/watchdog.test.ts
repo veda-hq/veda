@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, it, mock } from "node:test";
@@ -29,7 +39,11 @@ import {
   parsePs,
   resolveWatchdogConfig,
   type ClassifiedFd,
+  type Clock,
   type Exec,
+  type ExecResult,
+  type RunWatchdog,
+  type WatchdogConfig,
   type LsofFd,
   type Observation,
   type PsRow,
@@ -2054,5 +2068,1019 @@ describe("createWatchdog", () => {
     watchdog.stop();
     assert.deepEqual(kills, []);
     assert.equal(psCalls(), before);
+  });
+});
+
+/**
+ * The watchdog driven step by step through a strict `exec`: every command
+ * must carry exactly the arguments and options the watchdog is meant to
+ * send, and anything else throws, which the watchdog records as a warning.
+ * Each case asserts whole values: the commands in order, the signals, the
+ * log lines, the summary and the diagnostics files.
+ *
+ * The tree is synthetic: a node root (40467) under the supervisor (40375),
+ * a bash leaf (40479) on a socketpair with the root, and an idle cat leaf
+ * (40480) that holds nothing. The root also holds a pipe whose other end is
+ * the supervisor's, so the supervisor's own listing decides whether it is
+ * inherited.
+ */
+describe("createWatchdog, step by step", () => {
+  const START = Date.UTC(2026, 8, 13, 12, 0, 0);
+  const dirs: string[] = [];
+  afterEach(() => {
+    mock.timers.reset();
+    mock.restoreAll();
+    for (const dir of dirs.splice(0))
+      rmSync(dir, { recursive: true, force: true });
+  });
+
+  const STEP_MS = 50;
+  const advance = async (ms: number): Promise<void> => {
+    for (let elapsed = 0; elapsed < ms; elapsed += STEP_MS) {
+      mock.timers.tick(STEP_MS);
+      await new Promise((done) => setImmediate(done));
+    }
+  };
+
+  const ok = (stdout: string): ExecResult => ({ ok: true, stdout, stderr: "" });
+  const times = (n: number, call: string): string[] =>
+    Array.from({ length: n }, () => call);
+  const psLine = (
+    pid: number,
+    ppid: number,
+    pgid: number,
+    comm: string,
+    { state = "S", time = "0:00.00" } = {},
+  ): string =>
+    `${pid} ${ppid} ${pgid} ${state}      ${time} Sun Sep 13 17:16:29 2026     ${comm}`;
+  const psOf = (...rows: string[]): string => `${rows.join("\n")}\n`;
+
+  /** The synthetic deadlock's rows and listings. */
+  function fixture() {
+    const supervisor = psLine(40375, 40365, 40351, "node", { time: "0:00.03" });
+    const root = psLine(40467, 40375, 40351, "node", { time: "0:00.03" });
+    const leaf = psLine(40479, 40467, 40351, "bash");
+    const idle = psLine(40480, 40467, 40351, "cat");
+    const supLsof =
+      "p40375\nf0\ntCHR\nd0x10\nn/dev/ttys001\nf1\ntPIPE\nd0x11\nn->0x12\n";
+    const treeLsof =
+      "p40467\nf1\ntPIPE\nd0x12\nn->0x11\nf5\ntunix\nd0xa1\nn->0xb1\n" +
+      "p40479\nf0\ntunix\nd0xb1\nn->0xa1\n" +
+      "p40480\n";
+    return {
+      supervisor,
+      root,
+      leaf,
+      idle,
+      ps: psOf(supervisor, root, leaf, idle),
+      supLsof,
+      treeLsof,
+      wideLsof: `${supLsof}${treeLsof}p1\nf3\ntunix\nd0xf1\nn->0xf2\n`,
+    };
+  }
+
+  type Responder = (call: number) => ExecResult | Promise<ExecResult>;
+  interface Script {
+    readonly mode?: "enforce" | "report" | "off" | "unsupported";
+    readonly reason?: string;
+    readonly config?: Partial<WatchdogConfig>;
+    readonly ps?: Responder;
+    readonly supervisor?: Responder;
+    readonly tree?: Responder;
+    readonly wide?: Responder;
+    readonly sample?: (pid: string) => Promise<ExecResult>;
+    readonly hangsDir?: string;
+    readonly stageFile?: string;
+    readonly clock?: Clock;
+    readonly treePids?: string;
+    /** Real timers, the default clock and the default log. */
+    readonly realTime?: boolean;
+  }
+
+  function watch(script: Script = {}) {
+    const f = fixture();
+    if (!script.realTime) {
+      mock.timers.reset();
+      mock.timers.enable({
+        apis: ["setInterval", "setTimeout", "Date"],
+        now: START,
+      });
+    }
+    const base = mkdtempSync(join(tmpdir(), "watchdog-627-"));
+    dirs.push(base);
+    const hangsDir = script.hangsDir ?? join(base, "hangs");
+    const runDir = join(hangsDir, "run-627");
+    const calls: string[] = [];
+    const kills: [number, string][] = [];
+    const logs: string[] = [];
+    const counts = { ps: 0, supervisor: 0, tree: 0, wide: 0 };
+    const lsof = ["-nP", "-w", "-F", "pftdinT"];
+    const exec: Exec = async (command, args, options) => {
+      if (command === "ps") {
+        assert.deepEqual(args, [
+          "-axo",
+          "pid=,ppid=,pgid=,state=,time=,lstart=,comm=",
+        ]);
+        assert.deepEqual(Object.keys(options).sort(), ["env", "timeout"]);
+        assert.equal(options.timeout, 10_000);
+        assert.equal(options.env?.["LC_ALL"], "C");
+        assert.equal(options.env?.["PATH"], process.env["PATH"]);
+        calls.push("ps");
+        return (script.ps ?? (() => ok(f.ps)))(++counts.ps);
+      }
+      if (command === "lsof") {
+        assert.deepEqual(options, { timeout: 20_000 });
+        if (args.length === 4) {
+          assert.deepEqual(args, lsof);
+          calls.push("lsof wide");
+          return (script.wide ?? (() => ok(f.wideLsof)))(++counts.wide);
+        }
+        if (args[5] === "40375") {
+          assert.deepEqual(args, [...lsof, "-p", "40375"]);
+          calls.push("lsof supervisor");
+          return (script.supervisor ?? (() => ok(f.supLsof)))(
+            ++counts.supervisor,
+          );
+        }
+        assert.deepEqual(args, [
+          ...lsof,
+          "-p",
+          script.treePids ?? "40467,40479,40480",
+        ]);
+        calls.push("lsof tree");
+        return (script.tree ?? (() => ok(f.treeLsof)))(++counts.tree);
+      }
+      if (command === "sample") {
+        const pid = String(args[0]);
+        assert.deepEqual(args, [
+          pid,
+          "1",
+          "-mayDie",
+          "-file",
+          join(runDir, `sample-${pid}.txt`),
+        ]);
+        assert.deepEqual(options, { timeout: 10_000 });
+        calls.push(`sample ${pid}`);
+        return (script.sample ?? (async () => ok("")))(pid);
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    const watchdog = createWatchdog({
+      rootPid: 40467,
+      supervisorPid: 40375,
+      stageFile: script.stageFile ?? join(base, "no-stage-file"),
+      hangsDir,
+      runId: "run-627",
+      config: {
+        mode: script.mode ?? "enforce",
+        reason: script.reason ?? "explicit",
+        idleMs: 5000,
+        externalIdleMs: 60_000,
+        sampleMs: 1000,
+        graceMs: 500,
+        cpuQuietMs: 1000,
+        ...script.config,
+      },
+      exec,
+      kill: (pid, signal) => {
+        kills.push([pid, signal]);
+      },
+      ...(script.realTime
+        ? {}
+        : {
+            clock: script.clock ?? {
+              now: () => Date.now() - START,
+              wall: () => Date.now(),
+            },
+            log: (message: string) => {
+              logs.push(message);
+            },
+          }),
+    });
+    return { f, base, hangsDir, runDir, calls, kills, logs, watchdog };
+  }
+
+  /** The commands of a deadlock found at ~6 s, confirmed at ~11 s and acted on. */
+  const confirmed = (): string[] => [
+    ...times(6, "ps"),
+    "lsof supervisor",
+    "lsof tree",
+    "lsof wide",
+    ...times(5, "ps"),
+    "lsof tree",
+    "lsof wide",
+    "sample 40479",
+    "sample 40467",
+  ];
+  const term = (): [number, string][] => [
+    [-40467, "SIGTERM"],
+    [40467, "SIGTERM"],
+    [40479, "SIGTERM"],
+    [40480, "SIGTERM"],
+  ];
+  const withdrawnByActivity =
+    "verdict withdrawn: activity resumed before termination";
+  const withdrawnByChannels =
+    "verdict withdrawn: the deadlock's channels changed before termination";
+
+  it("stops a deadlock found twice: these commands, signals, words and files", async () => {
+    const base = mkdtempSync(join(tmpdir(), "watchdog-627-nested-"));
+    dirs.push(base);
+    // The hangs folder's parent does not exist yet: diagnostics create both.
+    const hangsDir = join(base, "missing", "hangs");
+    const { f, runDir, calls, kills, logs, watchdog } = watch({ hangsDir });
+    await advance(11_600);
+    watchdog.stop();
+    assert.deepEqual(calls, [
+      ...confirmed(),
+      "ps",
+      "lsof tree",
+      "lsof wide",
+      "ps",
+    ]);
+    assert.deepEqual(kills, [
+      ...term(),
+      [-40467, "SIGKILL"],
+      [40467, "SIGKILL"],
+      [40479, "SIGKILL"],
+      [40480, "SIGKILL"],
+    ]);
+    assert.deepEqual(logs, [
+      `\n❌ Hook watchdog: no progress for 0 min, and the stuck processes are waiting only on each other (40467 node, 40479 bash).\n` +
+        `   This is a hang in the gate, not a test failure. Diagnostics: ${runDir}\n` +
+        `   Stopping the hook; re-run it.\n`,
+    ]);
+    assert.deepEqual(watchdog.summary(), {
+      mode: "enforce",
+      reason: "explicit",
+      idleMs: 5000,
+      verdict: {
+        kind: "internal-deadlock",
+        quietMs: 10_000,
+        core: { leaf: 40479, peers: [40467] },
+      },
+      acted: true,
+      diagnostics: runDir,
+      warnings: [],
+    });
+    assert.equal(watchdog.enforced(), true);
+    assert.equal(statSync(runDir).mode & 0o777, 0o700);
+    assert.deepEqual(readdirSync(runDir).sort(), [
+      "lsof.txt",
+      "ps.txt",
+      "verdict.json",
+    ]);
+    assert.equal(readFileSync(join(runDir, "ps.txt"), "utf8"), f.ps);
+    assert.equal(readFileSync(join(runDir, "lsof.txt"), "utf8"), f.treeLsof);
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(runDir, "verdict.json"), "utf8")),
+      {
+        verdict: {
+          kind: "internal-deadlock",
+          core: { leaf: 40479, peers: [40467] },
+          quietMs: 10_000,
+        },
+        tree: [
+          { pid: 40467, ppid: 40375, pgid: 40351, state: "S", cpuMs: 30, comm: "node" },
+          { pid: 40479, ppid: 40467, pgid: 40351, state: "S", cpuMs: 0, comm: "bash" },
+          { pid: 40480, ppid: 40467, pgid: 40351, state: "S", cpuMs: 0, comm: "cat" },
+        ],
+      },
+    );
+  });
+
+  it("prunes diagnostics older than fourteen days by the wall clock, and only those", async () => {
+    const base = mkdtempSync(join(tmpdir(), "watchdog-627-prune-"));
+    dirs.push(base);
+    const hangsDir = join(base, "hangs");
+    // The verdict, and so the pruning, comes at 11 s on the wall clock.
+    const pruneAt = START + 11_000;
+    const fourteenDays = 1_209_600_000;
+    const expired = join(hangsDir, "expired");
+    mkdirSync(expired, { recursive: true });
+    writeFileSync(join(expired, "ps.txt"), "old\n");
+    utimesSync(expired, (pruneAt - fourteenDays - 1000) / 1000, (pruneAt - fourteenDays - 1000) / 1000);
+    writeFileSync(join(hangsDir, "boundary"), "kept\n");
+    utimesSync(join(hangsDir, "boundary"), (pruneAt - fourteenDays) / 1000, (pruneAt - fourteenDays) / 1000);
+    writeFileSync(join(hangsDir, "fresh"), "kept\n");
+    utimesSync(join(hangsDir, "fresh"), pruneAt / 1000, pruneAt / 1000);
+    const { watchdog } = watch({ hangsDir, mode: "report" });
+    await advance(11_000);
+    watchdog.stop();
+    assert.equal(watchdog.summary().verdict?.kind, "internal-deadlock");
+    assert.deepEqual(readdirSync(hangsDir).sort(), [
+      "boundary",
+      "fresh",
+      "run-627",
+    ]);
+  });
+
+  it("only reports in report mode, says when diagnostics fail, and times how the hook ended", async () => {
+    const { calls, kills, logs, watchdog } = watch({
+      mode: "report",
+      sample: async () => {
+        throw new Error("sample refused");
+      },
+    });
+    await advance(13_000);
+    watchdog.stop();
+    assert.deepEqual(calls, [...confirmed(), "ps", "ps"]);
+    assert.deepEqual(kills, []);
+    assert.deepEqual(logs, [
+      "\n⚠️  Hook watchdog (report): internal-deadlock after 0 min quiet. Diagnostics: unavailable\n",
+    ]);
+    assert.deepEqual(watchdog.summary(), {
+      mode: "report",
+      reason: "explicit",
+      idleMs: 5000,
+      verdict: {
+        kind: "internal-deadlock",
+        quietMs: 10_000,
+        core: { leaf: 40479, peers: [40467] },
+      },
+      acted: false,
+      diagnostics: null,
+      warnings: ["diagnostics unavailable: sample refused"],
+      resolvedAfterMs: 2000,
+    });
+    assert.equal(watchdog.enforced(), false);
+  });
+
+  it("still stops the deadlock when its diagnostics fail, and says they are unavailable", async () => {
+    const { kills, logs, watchdog } = watch({
+      sample: async () => {
+        throw new Error("sample refused");
+      },
+    });
+    await advance(11_600);
+    watchdog.stop();
+    assert.deepEqual(kills.slice(0, 4), term());
+    assert.deepEqual(logs, [
+      `\n❌ Hook watchdog: no progress for 0 min, and the stuck processes are waiting only on each other (40467 node, 40479 bash).\n` +
+        `   This is a hang in the gate, not a test failure. Diagnostics: unavailable\n` +
+        `   Stopping the hook; re-run it.\n`,
+    ]);
+    assert.deepEqual(watchdog.summary().warnings, [
+      "diagnostics unavailable: sample refused",
+    ]);
+  });
+
+  it("withdraws the verdict when ps fails at the re-check, whatever it printed", async () => {
+    const { f, calls, kills, watchdog } = watch({
+      ps: (call) =>
+        call === 12
+          ? { ok: false, stdout: f.ps, stderr: "ps: interrupted\n" }
+          : ok(f.ps),
+    });
+    await advance(11_600);
+    watchdog.stop();
+    assert.deepEqual(calls, [...confirmed(), "ps"]);
+    assert.deepEqual(kills, []);
+    assert.equal(watchdog.summary().verdict, null);
+    assert.deepEqual(watchdog.summary().warnings, [withdrawnByActivity]);
+  });
+
+  it("withdraws the verdict as activity when disarmed during its diagnostics", async () => {
+    const { calls, kills, watchdog } = watch({
+      sample: async (pid) => {
+        if (pid === "40479") watchdog.disarm();
+        return ok("");
+      },
+    });
+    await advance(16_000);
+    watchdog.stop();
+    assert.deepEqual(calls, [...confirmed(), "ps"]);
+    assert.deepEqual(kills, []);
+    assert.equal(watchdog.summary().verdict, null);
+    assert.deepEqual(watchdog.summary().warnings, [withdrawnByActivity]);
+  });
+
+  it("withdraws the verdict when the re-check finds a different core", async () => {
+    // At the re-check the leaf's socketpair leads to the cat leaf instead of
+    // the root: a deadlock still, but not the one the verdict named.
+    const moved =
+      "p40467\nf1\ntPIPE\nd0x12\nn->0x11\n" +
+      "p40479\nf0\ntunix\nd0xb1\nn->0xc1\n" +
+      "p40480\nf0\ntunix\nd0xc1\nn->0xb1\n";
+    const { f, calls, kills, watchdog } = watch({
+      tree: (call) => ok(call === 3 ? moved : f.treeLsof),
+    });
+    await advance(11_600);
+    watchdog.stop();
+    assert.deepEqual(calls, [...confirmed(), "ps", "lsof tree", "lsof wide"]);
+    assert.deepEqual(kills, []);
+    assert.deepEqual(watchdog.summary().warnings, [withdrawnByChannels]);
+  });
+
+  it("withdraws the verdict when the root spent CPU after the confirming check", async () => {
+    const { f, kills, watchdog } = watch({
+      ps: (call) =>
+        ok(
+          call === 12
+            ? psOf(f.supervisor, psLine(40467, 40375, 40351, "node", { time: "0:00.06" }), f.leaf, f.idle)
+            : f.ps,
+        ),
+    });
+    await advance(11_600);
+    watchdog.stop();
+    assert.deepEqual(kills, []);
+    assert.deepEqual(watchdog.summary().warnings, [withdrawnByChannels]);
+  });
+
+  it("withdraws the verdict when the re-check measures less than an idle window of quiet", async () => {
+    // The clock steps back 6 s just before the re-check: by its own reading
+    // the tree has been quiet 4 s, short of the 5 s window.
+    let back = 0;
+    const { f, kills, watchdog } = watch({
+      clock: {
+        now: () => Date.now() - START - back,
+        wall: () => Date.now() - back,
+      },
+      ps: (call) => {
+        if (call === 12) back = 6000;
+        return ok(f.ps);
+      },
+    });
+    await advance(11_600);
+    watchdog.stop();
+    assert.deepEqual(kills, []);
+    assert.deepEqual(watchdog.summary().warnings, [withdrawnByChannels]);
+  });
+
+  it("measures each check's CPU from the check before it, not from the root's zero", async () => {
+    // The root spends 30 ms between the first and second checks: not a
+    // deadlock at the second, then two quiet checks after it are.
+    const { f, kills, watchdog } = watch({
+      ps: (call) =>
+        ok(
+          call >= 11
+            ? psOf(f.supervisor, psLine(40467, 40375, 40351, "node", { time: "0:00.06" }), f.leaf, f.idle)
+            : f.ps,
+        ),
+    });
+    await advance(14_000);
+    assert.deepEqual(kills, []);
+    assert.equal(watchdog.summary().verdict, null);
+    await advance(7600);
+    watchdog.stop();
+    assert.deepEqual(kills.slice(0, 4), term());
+    assert.deepEqual(watchdog.summary().warnings, []);
+  });
+
+  it("forgets the core it saw once when the window restarts", async () => {
+    // The leaf runs at the 7th sample: the window restarts, and the core it
+    // saw at the first check must be seen twice again.
+    const { f, kills, watchdog } = watch({
+      ps: (call) =>
+        ok(
+          call === 7
+            ? psOf(f.supervisor, f.root, psLine(40479, 40467, 40351, "bash", { state: "R" }), f.idle)
+            : f.ps,
+        ),
+    });
+    await advance(14_000);
+    assert.deepEqual(kills, []);
+    assert.equal(watchdog.summary().verdict, null);
+    await advance(3600);
+    watchdog.stop();
+    assert.deepEqual(kills.slice(0, 4), term());
+    assert.deepEqual(watchdog.summary().warnings, []);
+  });
+
+  it("forgets the core it saw once when a check in between finds none", async () => {
+    // The second check's tree listing fails: no verdict there, so the core
+    // seen at the first check needs two more sightings.
+    const { f, calls, kills, watchdog } = watch({
+      tree: (call) =>
+        call === 2 ? { ok: false, stdout: f.treeLsof, stderr: "" } : ok(f.treeLsof),
+    });
+    await advance(19_000);
+    assert.deepEqual(kills, []);
+    assert.equal(watchdog.summary().verdict, null);
+    assert.deepEqual(watchdog.summary().warnings, []);
+    assert.deepEqual(calls.slice(0, 16), [
+      ...times(6, "ps"),
+      "lsof supervisor",
+      "lsof tree",
+      "lsof wide",
+      ...times(5, "ps"),
+      "lsof tree",
+      "ps",
+    ]);
+    await advance(2600);
+    watchdog.stop();
+    assert.deepEqual(kills.slice(0, 4), term());
+  });
+
+  it("decides an outside wait at exactly the external ceiling, sampling at most four processes", async () => {
+    const rows = [40481, 40482, 40483, 40484, 40485].map((pid) =>
+      psLine(pid, 40467, 40351, "cat"),
+    );
+    const { f, calls, kills, logs, runDir, watchdog } = watch({
+      config: { idleMs: 7000 },
+      ps: () => ok(psOf(f.supervisor, f.root, ...rows)),
+      treePids: "40467,40481,40482,40483,40484,40485",
+      tree: () => ({ ok: false, stdout: "p40467\n", stderr: "lsof: gone\n" }),
+    });
+    await advance(61_000);
+    watchdog.stop();
+    assert.deepEqual(watchdog.summary().verdict, {
+      kind: "idle-external",
+      quietMs: 60_000,
+      core: null,
+    });
+    assert.deepEqual(
+      calls.filter((call) => call.startsWith("sample")),
+      ["sample 40467", "sample 40481", "sample 40482", "sample 40483"],
+    );
+    assert.equal(calls.includes("lsof wide"), false);
+    assert.deepEqual(kills, []);
+    assert.deepEqual(logs, [
+      `\n⚠️  Hook watchdog (enforce): idle-external after 1 min quiet. Diagnostics: ${runDir}\n`,
+    ]);
+    assert.equal(
+      readFileSync(join(runDir, "lsof.txt"), "utf8"),
+      "p40467\nlsof: gone\n",
+    );
+    assert.deepEqual(watchdog.summary().warnings, []);
+  });
+
+  it("decides a core shared with an outside process at exactly the external ceiling", async () => {
+    const { f, kills, watchdog } = watch({
+      config: { idleMs: 7000 },
+      wide: () => ok(`${f.wideLsof}p77777\nf5\ntunix\nd0xa1\nn->0x1\n`),
+    });
+    await advance(61_000);
+    watchdog.stop();
+    assert.deepEqual(watchdog.summary().verdict, {
+      kind: "idle-external",
+      quietMs: 60_000,
+      core: null,
+    });
+    assert.deepEqual(kills, []);
+    assert.deepEqual(watchdog.summary().warnings, []);
+  });
+
+  it("without the supervisor's listing decides nothing but the ceiling, and keeps lsof's words", async () => {
+    const { calls, runDir, kills, watchdog } = watch({
+      config: { idleMs: 7000 },
+      supervisor: () => ({ ok: false, stdout: "", stderr: "lsof: denied\n" }),
+    });
+    await advance(61_000);
+    watchdog.stop();
+    assert.deepEqual(watchdog.summary().verdict, {
+      kind: "idle-external",
+      quietMs: 60_000,
+      core: null,
+    });
+    assert.equal(calls.includes("lsof tree"), false);
+    assert.equal(calls.filter((call) => call === "lsof supervisor").length, 9);
+    assert.equal(
+      readFileSync(join(runDir, "lsof.txt"), "utf8"),
+      "lsof: denied\n",
+    );
+    assert.deepEqual(kills, []);
+    assert.deepEqual(watchdog.summary().warnings, []);
+  });
+
+  it("asks for the supervisor's listing again after one failure, then keeps it", async () => {
+    const { f, calls, kills, watchdog } = watch({
+      supervisor: (call) =>
+        call === 1 ? { ok: false, stdout: f.supLsof, stderr: "" } : ok(f.supLsof),
+    });
+    await advance(14_000);
+    assert.deepEqual(kills, []);
+    assert.deepEqual(calls, [
+      ...times(6, "ps"),
+      "lsof supervisor",
+      ...times(5, "ps"),
+      "lsof supervisor",
+      "lsof tree",
+      "lsof wide",
+      ...times(3, "ps"),
+    ]);
+    await advance(2600);
+    watchdog.stop();
+    assert.deepEqual(kills.slice(0, 4), term());
+    assert.equal(calls.filter((call) => call === "lsof supervisor").length, 2);
+  });
+
+  it("kills a child the root spawned during the grace period, once", async () => {
+    const { f, kills, watchdog } = watch({
+      ps: (call) =>
+        ok(call >= 13 ? psOf(f.supervisor, f.root, f.leaf, f.idle, psLine(40490, 40467, 40351, "sh")) : f.ps),
+    });
+    await advance(11_600);
+    watchdog.stop();
+    assert.deepEqual(kills, [
+      ...term(),
+      [-40467, "SIGKILL"],
+      [40467, "SIGKILL"],
+      [40479, "SIGKILL"],
+      [40480, "SIGKILL"],
+      [40490, "SIGKILL"],
+    ]);
+  });
+
+  it("kills only the survivors by pid once the root is gone", async () => {
+    const { f, kills, watchdog } = watch({
+      ps: (call) => ok(call >= 13 ? psOf(f.supervisor, f.leaf, f.idle) : f.ps),
+    });
+    await advance(11_600);
+    watchdog.stop();
+    assert.deepEqual(kills, [
+      ...term(),
+      [40479, "SIGKILL"],
+      [40480, "SIGKILL"],
+    ]);
+    assert.deepEqual(watchdog.summary().warnings, []);
+  });
+
+  it("signals the hook's group, not its members, while a survivor still belongs to it", async () => {
+    const { f, kills, watchdog } = watch({
+      ps: (call) => {
+        const leaf = psLine(40479, 40467, 40467, "bash");
+        return ok(
+          call >= 13
+            ? psOf(f.supervisor, leaf, f.idle)
+            : psOf(f.supervisor, f.root, leaf, f.idle),
+        );
+      },
+    });
+    await advance(11_600);
+    watchdog.stop();
+    assert.deepEqual(kills, [
+      [-40467, "SIGTERM"],
+      [40467, "SIGTERM"],
+      [40480, "SIGTERM"],
+      [-40467, "SIGKILL"],
+      [40480, "SIGKILL"],
+    ]);
+  });
+
+  it("retries ps after the grace period, 250 ms apart, three times in all", async () => {
+    const failing = { ok: false, stdout: "", stderr: "ps: busy\n" };
+    const twice = watch({
+      ps: (call) => (call === 13 || call === 14 ? failing : ok(twice.f.ps)),
+    });
+    await advance(12_400);
+    twice.watchdog.stop();
+    assert.deepEqual(twice.calls, [
+      ...confirmed(),
+      "ps",
+      "lsof tree",
+      "lsof wide",
+      "ps",
+      "ps",
+      "ps",
+    ]);
+    assert.deepEqual(twice.kills, [
+      ...term(),
+      [-40467, "SIGKILL"],
+      [40467, "SIGKILL"],
+      [40479, "SIGKILL"],
+      [40480, "SIGKILL"],
+    ]);
+    assert.deepEqual(twice.watchdog.summary().warnings, []);
+    const thrice = watch({
+      ps: (call) => (call >= 13 && call <= 15 ? failing : ok(thrice.f.ps)),
+    });
+    await advance(12_400);
+    thrice.watchdog.stop();
+    assert.deepEqual(thrice.kills, term());
+    assert.deepEqual(thrice.watchdog.summary().warnings, [
+      "post-grace ps unavailable: SIGKILL escalation skipped, process identity unverifiable",
+    ]);
+  });
+
+  it("starts no tick while the previous one is still waiting on ps", async () => {
+    let release = (): void => {};
+    const { f, calls, watchdog } = watch({
+      ps: () =>
+        new Promise<ExecResult>((done) => {
+          release = () => done(ok(f.ps));
+        }),
+    });
+    await advance(3500);
+    assert.deepEqual(calls, ["ps"]);
+    watchdog.stop();
+    release();
+  });
+
+  it("records a tick that throws as a warning, and decides nothing from it", async () => {
+    const { calls, kills, watchdog } = watch({
+      ps: () => {
+        throw new Error("ps refused");
+      },
+    });
+    await advance(2000);
+    watchdog.stop();
+    assert.deepEqual(calls, ["ps", "ps"]);
+    assert.deepEqual(kills, []);
+    assert.equal(watchdog.summary().verdict, null);
+    assert.deepEqual(watchdog.summary().warnings, [
+      "watchdog tick failed: ps refused",
+      "watchdog tick failed: ps refused",
+    ]);
+  });
+
+  it("does nothing with a snapshot that does not hold the root", async () => {
+    const { f, calls, watchdog } = watch({ ps: () => ok(psOf(f.supervisor)) });
+    await advance(16_000);
+    watchdog.stop();
+    assert.deepEqual(calls, times(16, "ps"));
+    assert.deepEqual(watchdog.summary().warnings, []);
+    assert.equal(watchdog.summary().verdict, null);
+  });
+
+  it("restarts the window when the stage file grows", async () => {
+    const base = mkdtempSync(join(tmpdir(), "watchdog-627-stage-"));
+    dirs.push(base);
+    const stageFile = join(base, "stage");
+    writeFileSync(stageFile, "test\n");
+    const { f, kills, watchdog } = watch({
+      stageFile,
+      ps: (call) => {
+        if (call === 7) appendFileSync(stageFile, "lint\n");
+        return ok(f.ps);
+      },
+    });
+    await advance(14_000);
+    assert.deepEqual(kills, []);
+    assert.equal(watchdog.summary().verdict, null);
+    await advance(3600);
+    watchdog.stop();
+    assert.deepEqual(kills.slice(0, 4), term());
+  });
+
+  it("reads a stage file that appears empty as no stage marker, like no file", async () => {
+    const base = mkdtempSync(join(tmpdir(), "watchdog-627-stage-"));
+    dirs.push(base);
+    const stageFile = join(base, "stage");
+    const { f, kills, watchdog } = watch({
+      stageFile,
+      ps: (call) => {
+        if (call === 7) writeFileSync(stageFile, "");
+        return ok(f.ps);
+      },
+    });
+    await advance(11_600);
+    watchdog.stop();
+    assert.deepEqual(kills.slice(0, 4), term());
+  });
+
+  it("decides nothing when disarmed while a check reads the tree's files", async () => {
+    const { f, calls, kills, watchdog } = watch({
+      tree: (call) => {
+        if (call === 2) watchdog.disarm();
+        return ok(f.treeLsof);
+      },
+    });
+    await advance(16_000);
+    watchdog.stop();
+    assert.deepEqual(calls, [
+      ...times(6, "ps"),
+      "lsof supervisor",
+      "lsof tree",
+      "lsof wide",
+      ...times(5, "ps"),
+      "lsof tree",
+    ]);
+    assert.deepEqual(kills, []);
+    assert.equal(watchdog.summary().verdict, null);
+    assert.deepEqual(watchdog.summary().warnings, []);
+  });
+
+  it("decides nothing when disarmed while a check reads every process's files", async () => {
+    const { f, calls, kills, watchdog } = watch({
+      wide: (call) => {
+        if (call === 2) watchdog.disarm();
+        return ok(f.wideLsof);
+      },
+    });
+    await advance(16_000);
+    watchdog.stop();
+    assert.deepEqual(calls, [
+      ...times(6, "ps"),
+      "lsof supervisor",
+      "lsof tree",
+      "lsof wide",
+      ...times(5, "ps"),
+      "lsof tree",
+      "lsof wide",
+    ]);
+    assert.deepEqual(kills, []);
+    assert.equal(watchdog.summary().verdict, null);
+    assert.deepEqual(watchdog.summary().warnings, []);
+  });
+
+  it("begins no kill when stopped while a check is in flight", async () => {
+    const { f, kills, watchdog } = watch({
+      tree: (call) => {
+        if (call === 2) watchdog.stop();
+        return ok(f.treeLsof);
+      },
+    });
+    await advance(16_000);
+    assert.deepEqual(kills, []);
+    assert.equal(watchdog.summary().verdict, null);
+  });
+
+  it("checks on a monotonic clock whose readings are negative", async () => {
+    const { kills, watchdog } = watch({
+      clock: {
+        now: () => Date.now() - START - 100_000,
+        wall: () => Date.now(),
+      },
+    });
+    await advance(11_600);
+    watchdog.stop();
+    assert.deepEqual(kills.slice(0, 4), term());
+  });
+
+  it("runs nothing when off or unsupported, and says so", async () => {
+    for (const [mode, reason] of [
+      ["off", "explicit"],
+      ["unsupported", "non-darwin"],
+    ] as const) {
+      const { calls, kills, watchdog } = watch({ mode, reason });
+      await advance(16_000);
+      watchdog.disarm();
+      watchdog.stop();
+      assert.equal(watchdog.mode, mode);
+      assert.equal(watchdog.enforced(), false);
+      assert.deepEqual(watchdog.summary(), {
+        mode,
+        reason,
+        idleMs: 5000,
+        verdict: null,
+        acted: false,
+        diagnostics: null,
+        warnings: [],
+      });
+      assert.deepEqual(calls, []);
+      assert.deepEqual(kills, []);
+    }
+  });
+
+  it("samples on an unreferenced interval, and stop() clears it", () => {
+    const realSetInterval = globalThis.setInterval;
+    const timers: { delay: number | undefined; timer: NodeJS.Timeout }[] = [];
+    mock.method(
+      globalThis,
+      "setInterval",
+      (callback: () => void, delay?: number) => {
+        const timer = realSetInterval(callback, delay);
+        timers.push({ delay, timer });
+        return timer;
+      },
+    );
+    const cleared = mock.method(globalThis, "clearInterval");
+    let watchdog: RunWatchdog | undefined;
+    try {
+      watchdog = createWatchdog({
+        rootPid: 40467,
+        supervisorPid: 40375,
+        stageFile: join(tmpdir(), "watchdog-627-no-stage-file"),
+        hangsDir: join(tmpdir(), "watchdog-627-no-hangs"),
+        runId: "run-627",
+        config: {
+          mode: "enforce",
+          reason: "explicit",
+          idleMs: 5000,
+          externalIdleMs: 60_000,
+          sampleMs: 3_600_000,
+          graceMs: 500,
+          cpuQuietMs: 1000,
+        },
+        exec: async () => {
+          throw new Error("no command expected");
+        },
+        kill: () => {
+          throw new Error("no signal expected");
+        },
+      });
+      assert.equal(timers.length, 1);
+      assert.equal(timers[0]?.delay, 3_600_000);
+      assert.equal(timers[0]?.timer.hasRef(), false);
+      assert.equal(cleared.mock.callCount(), 0);
+      watchdog.stop();
+      assert.equal(cleared.mock.callCount(), 1);
+      assert.equal(cleared.mock.calls[0]?.arguments[0], timers[0]?.timer);
+    } finally {
+      for (const { timer } of timers) clearInterval(timer);
+    }
+  });
+
+  it("by default reads the clocks and writes to stderr", { timeout: 15_000 }, async () => {
+    const base = mkdtempSync(join(tmpdir(), "watchdog-627-defaults-"));
+    dirs.push(base);
+    const hangsDir = join(base, "hangs");
+    const expired = join(hangsDir, "expired");
+    mkdirSync(expired, { recursive: true });
+    const old = (Date.now() - 15 * 24 * 60 * 60 * 1000) / 1000;
+    utimesSync(expired, old, old);
+    const written: string[] = [];
+    const write = process.stderr.write.bind(process.stderr);
+    mock.method(process.stderr, "write", (chunk: string | Uint8Array, ...rest: never[]) => {
+      written.push(String(chunk));
+      return write(chunk, ...rest);
+    });
+    const { runDir, watchdog } = watch({
+      realTime: true,
+      mode: "report",
+      hangsDir,
+      config: { idleMs: 100, sampleMs: 20, graceMs: 20 },
+    });
+    try {
+      const deadline = performance.now() + 5000;
+      while (watchdog.summary().verdict === null && performance.now() < deadline)
+        await new Promise((done) => setTimeout(done, 10));
+    } finally {
+      watchdog.stop();
+      mock.restoreAll();
+    }
+    const quietMs = watchdog.summary().verdict?.quietMs ?? Number.NaN;
+    assert.ok(Number.isFinite(quietMs) && quietMs >= 200, `quietMs ${quietMs}`);
+    assert.ok(
+      written.includes(
+        `\n⚠️  Hook watchdog (report): internal-deadlock after 0 min quiet. Diagnostics: ${runDir}\n`,
+      ),
+    );
+    assert.deepEqual(readdirSync(hangsDir), ["run-627"]);
+  });
+
+  it("by default runs ps, lsof and sample from PATH, and signals with process.kill", { timeout: 15_000 }, async () => {
+    // Stand-ins earlier on PATH than the real commands. ps prints the tree
+    // only in the C locale, padded past 256 bytes; lsof prints one listing
+    // for every query. process.kill is a spy: nothing is really signalled.
+    const base = mkdtempSync(join(tmpdir(), "watchdog-627-path-"));
+    dirs.push(base);
+    const bin = join(base, "bin");
+    mkdirSync(bin);
+    const f = fixture();
+    const supLsof = f.supLsof.replace("p40375", `p${process.pid}`);
+    writeFileSync(
+      join(base, "ps.txt"),
+      `${psOf(f.root, f.leaf, f.idle)}${" ".repeat(300)}\n`,
+    );
+    writeFileSync(join(base, "lsof.txt"), `${supLsof}${f.treeLsof}`);
+    writeFileSync(
+      join(bin, "ps"),
+      `#!/bin/sh\n[ "$LC_ALL" = C ] || exit 3\ncat '${join(base, "ps.txt")}'\n`,
+      { mode: 0o755 },
+    );
+    writeFileSync(join(bin, "lsof"), `#!/bin/sh\ncat '${join(base, "lsof.txt")}'\n`, {
+      mode: 0o755,
+    });
+    writeFileSync(join(bin, "sample"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const kills: [number, string][] = [];
+    mock.method(process, "kill", (pid: number, signal?: string | number) => {
+      kills.push([pid, String(signal)]);
+      return true;
+    });
+    const path = process.env["PATH"];
+    const locale = process.env["LC_ALL"];
+    process.env["PATH"] = `${bin}:${path ?? ""}`;
+    process.env["LC_ALL"] = "en_US.UTF-8";
+    const watchdog = createWatchdog({
+      rootPid: 40467,
+      stageFile: join(base, "no-stage-file"),
+      hangsDir: join(base, "hangs"),
+      runId: "run-627",
+      config: {
+        mode: "enforce",
+        reason: "explicit",
+        idleMs: 150,
+        externalIdleMs: 60_000,
+        sampleMs: 25,
+        graceMs: 25,
+        cpuQuietMs: 1000,
+      },
+      log: () => {},
+    });
+    try {
+      const deadline = performance.now() + 8000;
+      while (
+        !kills.some(([, signal]) => signal === "SIGKILL") &&
+        performance.now() < deadline
+      )
+        await new Promise((done) => setTimeout(done, 10));
+    } finally {
+      watchdog.stop();
+      if (path === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = path;
+      if (locale === undefined) delete process.env["LC_ALL"];
+      else process.env["LC_ALL"] = locale;
+      mock.restoreAll();
+    }
+    assert.deepEqual(watchdog.summary().warnings, []);
+    assert.deepEqual(kills, [
+      ...term(),
+      [-40467, "SIGKILL"],
+      [40467, "SIGKILL"],
+      [40479, "SIGKILL"],
+      [40480, "SIGKILL"],
+    ]);
   });
 });

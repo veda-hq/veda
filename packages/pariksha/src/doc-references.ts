@@ -6,7 +6,7 @@
 // A reference resolves against the SNAPSHOT being committed or pushed, never
 // the worktree: a doc naming a file that exists on disk but is not staged
 // would pass a worktree check and land broken.
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
 import { join, posix, resolve } from 'node:path';
 import type { Config } from './doc-references-config.ts';
@@ -49,26 +49,26 @@ export interface RepoSnapshot {
 /** Every git read, a whole-tree `cat-file --batch` included, fits in this. */
 const MAX_BUFFER = 1 << 30;
 
-const execGit = (root: string, args: readonly string[], input?: string): Buffer =>
-  execFileSync('git', [...PINNED, ...args], {
+const gitOptions = (root: string) =>
+  ({
     cwd: root,
     env: gitEnv(process.env),
     maxBuffer: MAX_BUFFER,
-    ...(input === undefined ? {} : { input }),
     // Captured, not inherited: a failure's stderr travels on the error.
     stdio: 'pipe',
-  });
+  }) as const;
 
 /** Git's stdout as text; throws (stderr on the error) when git exits non-zero. */
-export const git = (root: string, args: readonly string[]): string => execGit(root, args).toString('utf8');
+export const git = (root: string, args: readonly string[]): string => execFileSync('git', [...PINNED, ...args], gitOptions(root)).toString('utf8');
 
 /** Git's stdout, or undefined when git exits non-zero. */
 export const gitOrUndefined = (root: string, args: readonly string[]): string | undefined => {
   try {
     return git(root, args);
   } catch {
-    return undefined;
+    // A non-zero exit reads as nothing.
   }
+  return undefined;
 };
 
 const listFiles = (root: string, source: SnapshotSource): string[] =>
@@ -78,20 +78,19 @@ const listFiles = (root: string, source: SnapshotSource): string[] =>
 const blobIds = (root: string, source: SnapshotSource): Map<string, string> => {
   const ids = new Map<string, string>();
   const output = source.kind === 'ref' ? git(root, ['ls-tree', '-r', '-z', source.ref]) : git(root, ['ls-files', '-s', '-z']);
-  for (const entry of output.split('\0')) {
-    const tab = entry.indexOf('\t');
-    if (tab === -1) continue;
-    const meta = entry.slice(0, tab).split(' ');
+  // Each entry is its metadata, a tab, and its path.
+  for (const [, fields, path] of output.matchAll(/([^\0\t]*)\t([^\0]*)/g)) {
+    const meta = String(fields).split(' ');
     if (meta[0] === '160000') continue;
     // ls-tree: mode type oid; ls-files -s: mode oid stage
-    ids.set(entry.slice(tab + 1), String(source.kind === 'ref' ? meta[2] : meta[1]));
+    ids.set(String(path), String(source.kind === 'ref' ? meta[2] : meta[1]));
   }
   return ids;
 };
 
 /** Contents of `oids` from one `git cat-file --batch`, in order. */
 export const catFileBatch = (root: string, oids: readonly string[]): string[] => {
-  const buffer = execGit(root, ['cat-file', '--batch'], `${oids.join('\n')}\n`);
+  const buffer = execFileSync('git', [...PINNED, 'cat-file', '--batch'], { ...gitOptions(root), input: `${oids.join('\n')}\n` });
   const out: string[] = [];
   let offset = 0;
   for (let i = 0; i < oids.length; i += 1) {
@@ -127,8 +126,9 @@ export const createSnapshot = (root: string, source: SnapshotSource): RepoSnapsh
   let dirty: Set<string> | undefined;
   const fromDisk = (path: string): boolean => {
     if (source.kind === 'worktree') return true;
-    // Named, not defaulted: only the index compares with no revision.
-    dirty ??= new Set(git(root, ['diff', '--name-only', '-z', '--no-renames', '--no-ext-diff', ...(source.kind === 'index' ? [] : [source.ref]), '--']).split('\0').filter(Boolean));
+    // Named, not defaulted: only the index compares with no revision. The
+    // last NUL leaves an empty name, which no tracked path is.
+    dirty ??= new Set(git(root, ['diff', '--name-only', '-z', '--no-renames', '--no-ext-diff', ...(source.kind === 'index' ? [] : [source.ref]), '--']).split('\0'));
     return !dirty.has(path);
   };
   const diskRead = (path: string): string | undefined => {
@@ -137,8 +137,8 @@ export const createSnapshot = (root: string, source: SnapshotSource): RepoSnapsh
       return lstatSync(full).isSymbolicLink() ? readlinkSync(full) : readFileSync(full, 'utf8');
     } catch {
       // An unreadable disk copy falls back to the git blob below.
-      return undefined;
     }
+    return undefined;
   };
 
   // path → content; undefined when a tracked path has nothing to read (a
@@ -147,13 +147,13 @@ export const createSnapshot = (root: string, source: SnapshotSource): RepoSnapsh
   let oids: Map<string, string> | undefined;
   const blobId = (path: string): string | undefined => (oids ??= blobIds(root, source)).get(path);
   const readMany = (paths: readonly string[]): Map<string, string> => {
-    const viaGit: string[] = [];
-    for (const path of paths.filter((p) => files.has(p) && !cache.has(p))) {
+    const unread = paths.filter((p) => files.has(p) && !cache.has(p));
+    for (const path of unread) {
       const content = fromDisk(path) ? diskRead(path) : undefined;
       // A worktree snapshot has no blob behind its files: absent is absent.
-      if (content === undefined && source.kind !== 'worktree') viaGit.push(path);
-      else cache.set(path, content);
+      if (content !== undefined || source.kind === 'worktree') cache.set(path, content);
     }
+    const viaGit = unread.filter((path) => !cache.has(path));
     const wanted = viaGit.flatMap((path) => {
       const oid = blobId(path);
       return oid === undefined ? [] : [{ path, oid }];
@@ -176,7 +176,7 @@ export const createSnapshot = (root: string, source: SnapshotSource): RepoSnapsh
 
   let rules: IgnoreRules | undefined;
   const ignored = (paths: readonly string[]): Set<string> => {
-    rules ??= ignoreRules(files, readMany);
+    rules ??= ignoreRules(dirs, readMany);
     const matcher = rules;
     return new Set(paths.filter((path) => isIgnored(matcher, path)));
   };
@@ -201,32 +201,32 @@ interface IgnoreRule {
 
 type IgnoreRules = readonly IgnoreRule[];
 
-const ignoreRules = (files: ReadonlySet<string>, readMany: (paths: readonly string[]) => Map<string, string>): IgnoreRules => {
+/** One line of the `.gitignore` in `base`; null for a blank line or a `#` comment, which hold no rule. */
+const ignoreRule = (base: string, raw: string): IgnoreRule | null => {
+  let line = raw.replace(/(?<!\\)\s+$/, '');
+  if (!/^[^#]/.test(line)) return null;
+  const negated = line.startsWith('!');
+  if (negated) line = line.slice(1);
+  const dirOnly = line.endsWith('/');
+  if (dirOnly) line = line.slice(0, -1);
+  const anchored = line.includes('/');
+  if (line.startsWith('/')) line = line.slice(1);
+  const body = globToRegExp(line.replace(/\\(.)/g, '$1')).source.slice(1, -1);
+  return { base, pattern: new RegExp(anchored ? `^${body}$` : `^(?:.*/)?${body}$`), negated, dirOnly };
+};
+
+const ignoreRules = (dirs: ReadonlySet<string>, readMany: (paths: readonly string[]) => Map<string, string>): IgnoreRules => {
   // Lexical order puts every directory before its descendants, so a nested
-  // file's rules come later and override.
-  const bases = [...files]
-    .filter((file) => /(?:^|\/)\.gitignore$/.test(file))
-    .map((file) => (file === '.gitignore' ? '' : posix.dirname(file)))
-    .sort();
-  const texts = readMany(bases.map((base) => (base === '' ? '.gitignore' : `${base}/.gitignore`)));
-  const rules: IgnoreRule[] = [];
-  for (const [source, text] of texts) {
+  // file's rules come later and override. A folder with no tracked
+  // `.gitignore` reads as nothing.
+  const texts = readMany([...dirs].sort().map((dir) => (dir === '' ? '.gitignore' : `${dir}/.gitignore`)));
+  return [...texts].flatMap(([source, text]) => {
     const base = posix.dirname(source) === '.' ? '' : posix.dirname(source);
-    for (const raw of text.split('\n')) {
-      let line = raw.replace(/(?<!\\)\s+$/, '');
-      // Blank lines and `#` comments hold no rule.
-      if (!/^[^#]/.test(line)) continue;
-      const negated = line.startsWith('!');
-      if (negated) line = line.slice(1);
-      const dirOnly = line.endsWith('/');
-      if (dirOnly) line = line.slice(0, -1);
-      const anchored = line.includes('/');
-      if (line.startsWith('/')) line = line.slice(1);
-      const body = globToRegExp(line.replace(/\\(.)/g, '$1')).source.slice(1, -1);
-      rules.push({ base, pattern: new RegExp(anchored ? `^${body}$` : `^(?:.*/)?${body}$`), negated, dirOnly });
-    }
-  }
-  return rules;
+    return text
+      .split('\n')
+      .map((raw) => ignoreRule(base, raw))
+      .filter((rule) => rule !== null);
+  });
 };
 
 /** Whether `path` (a trailing `/` marks a directory) is ignored. */
@@ -264,8 +264,8 @@ export const docKind = (config: Config, path: string): DocKind | null => {
   return null;
 };
 
-/** Every tracked file a reference check reads. */
-export const referenceFiles = (config: Config, snapshot: RepoSnapshot): string[] => [...snapshot.files].filter((path) => docKind(config, path) !== null).sort();
+/** Every tracked file a reference check reads, in git's order, which sorts them. */
+export const referenceFiles = (config: Config, snapshot: RepoSnapshot): string[] => [...snapshot.files].filter((path) => docKind(config, path) !== null);
 
 // ── Markdown structure ──────────────────────────────────────────────────────
 
@@ -287,7 +287,7 @@ export interface DocLine {
  * backtick fence's info string holds no backtick, and a closer carries
  * nothing after its marker but spaces.
  */
-const FENCE = /^\s{0,3}(`{3,}|~{3,})\s*(\S*)([\s\S]*)$/;
+const FENCE = /^\s{0,3}(`{3,}|~{3,})\s*(\S*)([\s\S]*)/;
 
 /** The first `<!--` in `text` outside every code span, or -1. */
 const commentOpener = (text: string): number => {
@@ -315,7 +315,8 @@ export const scanMarkdown = (content: string, exemptMarker: RegExp): DocLine[] =
   const out: DocLine[] = [];
   let fence: { marker: string; info: string; block: number } | null = null;
   let blocks = 0;
-  let frontmatter = lines[0]?.trim() === '---';
+  // `split` gives at least one line.
+  let frontmatter = String(lines[0]).trim() === '---';
   let comment = false;
 
   lines.forEach((raw, index) => {
@@ -330,11 +331,10 @@ export const scanMarkdown = (content: string, exemptMarker: RegExp): DocLine[] =
       if (index > 0) out.push({ number, text: raw, fence: null, block: null, frontmatter: true, exempt });
       return;
     }
-    const opener = FENCE.exec(raw);
-    const marker = opener?.[1] ?? '';
-    const info = opener?.[2] ?? '';
+    // The marker, the info word, and the rest of the line.
+    const opener = FENCE.exec(raw) as unknown as [string, string, string, string] | null;
     if (fence !== null) {
-      if (opener !== null && marker[0] === fence.marker[0] && marker.length >= fence.marker.length && info === '') {
+      if (opener !== null && opener[1].charAt(0) === fence.marker.charAt(0) && opener[1].length >= fence.marker.length && opener[2] === '') {
         fence = null;
         return;
       }
@@ -342,9 +342,9 @@ export const scanMarkdown = (content: string, exemptMarker: RegExp): DocLine[] =
       return;
     }
     // A fence line inside an HTML comment is part of the comment.
-    if (opener !== null && !comment && !(marker[0] === '`' && `${info}${opener[3] ?? ''}`.includes('`'))) {
+    if (opener !== null && !comment && !(opener[1].charAt(0) === '`' &&`${opener[2]}${opener[3]}`.includes('`'))) {
       blocks += 1;
-      fence = { marker, info: info.toLowerCase(), block: blocks };
+      fence = { marker: opener[1], info: opener[2].toLowerCase(), block: blocks };
       return;
     }
     // HTML comments, possibly spanning lines, carry no references.
@@ -466,8 +466,9 @@ export const parseBaseline = (text: string, where: string): Baseline => {
     const entry: Partial<Record<CheckId, number>> = {};
     for (const [check, count] of Object.entries(counts)) {
       if (!(CHECK_IDS as readonly string[]).includes(check)) throw new Error(`${where}: ${file} names unknown check ${check}`);
-      if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 1) throw new Error(`${where}: ${file} ${check} must be a positive integer`);
-      entry[check as CheckId] = count;
+      // Only a number is a safe integer.
+      if (!Number.isSafeInteger(count) || (count as number) < 1) throw new Error(`${where}: ${file} ${check} must be a positive integer`);
+      entry[check as CheckId] = count as number;
     }
     files[file] = entry;
   }
@@ -547,12 +548,12 @@ export const baselineGrowth = (previous: Baseline, next: Baseline): string[] => 
 
 // ── a merge in progress ─────────────────────────────────────────────────────
 
-const names = (root: string, args: readonly string[]): string[] => git(root, args).split('\0').filter(Boolean);
+/** NUL-separated names; the last NUL leaves an empty name, which no path is. */
+const names = (root: string, args: readonly string[]): string[] => git(root, args).split('\0');
 
 /** Every commit MERGE_HEAD names, one per merged head of an octopus merge; empty outside a merge. */
 export const mergeHeads = (root: string): string[] => {
-  const status = spawnSync('git', [...PINNED, 'rev-parse', '-q', '--verify', 'MERGE_HEAD^{commit}'], { cwd: root, env: gitEnv(process.env), stdio: 'ignore' }).status;
-  if (status !== 0) return [];
+  if (gitOrUndefined(root, ['rev-parse', '-q', '--verify', 'MERGE_HEAD^{commit}']) === undefined) return [];
   const file = git(root, ['rev-parse', '--git-path', 'MERGE_HEAD']).trim();
   return readFileSync(resolve(root, file), 'utf8').split('\n').filter(Boolean);
 };
@@ -579,7 +580,7 @@ const CLASS = /\[([\s\S][^\]]*)\]/y;
 export const globToRegExp = (glob: string): RegExp => {
   let out = '';
   for (let i = 0; i < glob.length; i += 1) {
-    const char = glob.charAt(i);
+    const char = glob[i] as string;
     if (char === '*') {
       if (glob[i + 1] === '*') {
         i += 1;

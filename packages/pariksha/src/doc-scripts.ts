@@ -102,7 +102,8 @@ export const scriptBodies = (manifests: readonly string[], read: ManifestReader)
 /** Half-open [start, end) ranges of every inline code span on a line, between its delimiters. */
 export const spanRanges = (line: string): Array<readonly [number, number]> => markdownCodeSpans(line).map((span) => [span.start, span.end] as const);
 
-const FENCE_OPEN = /^( {0,3})(`{3,}|~{3,})(.*)$/;
+/** An opening fence: its marker, then its info string (`.*` reads to the end of a line with no line break). */
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})(.*)/;
 
 export type FenceRole = 'prose' | 'fence' | 'code';
 
@@ -119,10 +120,11 @@ export const fenceRoles = (lines: readonly string[]): FenceRole[] => {
   for (const raw of lines) {
     const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
     if (fence === null) {
-      const open = FENCE_OPEN.exec(line);
-      const marker = open?.[2] ?? '';
-      if (open !== null && !(marker.startsWith('`') && String(open[3]).includes('`'))) {
-        fence = { char: marker.charAt(0), length: marker.length };
+      const open = FENCE_OPEN.exec(line) as unknown as [string, string, string] | null;
+      // A marker is one character repeated.
+      const char = open?.[1].charAt(0);
+      if (open !== null && !(char === '`' && open[2].includes('`'))) {
+        fence = { char: String(char), length: open[1].length };
         roles.push('fence');
       } else {
         roles.push('prose');

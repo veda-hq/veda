@@ -7,7 +7,7 @@ import { after, describe, it } from 'node:test';
 import type { LinkRunner } from './doc-links.ts';
 import type { Config } from './doc-references-config.ts';
 import { formatReport, hunkLines, introducedFailures, parseNameStatus, referrers, removedFlags, removedIdentifiers, runChecks, runGate, type GateMode, type GateReport } from './doc-references-gate.ts';
-import { CHECK_IDS, type CheckId, type ReferenceProblem } from './doc-references.ts';
+import { CHECK_IDS, type CheckId, type ReferenceProblem, type RepoSnapshot } from './doc-references.ts';
 import { CONFIG, CONFIG_JSON, createTestRepo, fakeLinks, noLinks, testConfig, type TestRepo } from './doc-references.fixture.test.ts';
 
 const STAGED: CheckId[] = ['DOC-DRIFT-01', 'DOC-DRIFT-02'];
@@ -653,20 +653,20 @@ describe('referrers', () => {
   };
 
   it('finds a removed identifier in docs only, even with nothing else removed', () => {
-    assert.deepEqual(referrers(CONFIG, snapshot(), [], [], new Set(['runTool'])), ['docs/api.md']);
+    assert.deepEqual(referrers(CONFIG, snapshot(), [], [], new Set(['runTool']), []), ['docs/api.md']);
   });
 
   it('finds a name:line citation of the changed file only', () => {
     const snap = snapshot();
-    assert.deepEqual(referrers(CONFIG, snap, [], ['scripts/tool.ts'], new Set()), []);
-    assert.deepEqual(referrers(CONFIG, snap, [], ['lib/other.ts'], new Set()), ['docs/cite.md']);
+    assert.deepEqual(referrers(CONFIG, snap, [], ['scripts/tool.ts'], new Set(), []), []);
+    assert.deepEqual(referrers(CONFIG, snap, [], ['lib/other.ts'], new Set(), []), ['docs/cite.md']);
   });
 
   it('finds a removed path by its basename and a removed term anywhere, and nothing when nothing was removed', () => {
     const snap = snapshot();
-    assert.deepEqual(referrers(CONFIG, snap, ['lib/other.ts'], [], new Set()), ['docs/cite.md']);
+    assert.deepEqual(referrers(CONFIG, snap, ['lib/other.ts'], [], new Set(), []), ['docs/cite.md']);
     assert.deepEqual(referrers(CONFIG, snap, [], [], new Set(), ['runTool']), ['docs/api.md', 'scripts/tool.ts']);
-    assert.deepEqual(referrers(CONFIG, snap, [], [], new Set()), []);
+    assert.deepEqual(referrers(CONFIG, snap, [], [], new Set(), []), []);
   });
 });
 
@@ -884,5 +884,136 @@ describe('formatReport', () => {
     assert.equal(slackOnly.out.length, 2);
     const growing = format({ ...clean, growth: ['x'], exitCode: 1 }, { kind: 'all' });
     assert.deepEqual(growing, { ok: false, out: [], err: [`${P} ${BASELINE}: x`] });
+  });
+
+  it('counts the files the failures are in, and names no config it was not given', () => {
+    const report: GateReport = {
+      ...clean,
+      changed: ['a.md'],
+      failures: [
+        { check: 'DOC-DRIFT-01', file: 'a.md', line: 1, ref: 'x.ts', reason: 'gone' },
+        { check: 'DOC-DRIFT-01', file: 'b.md', line: 1, ref: 'y.ts', reason: 'gone' },
+      ],
+      slack: [{ file: 'a.md', check: 'DOC-DRIFT-01', baseline: 2, actual: 1 }],
+      exitCode: 1,
+    };
+    assert.deepEqual(formatReport(report, { config: CONFIG, mode: { kind: 'staged' }, checks: STAGED }, undefined).err.slice(2), [
+      `${P} 2 unresolved reference(s) in 2 file(s). Fix each; one that names something absent on purpose (a quoted finding, a deleted or planned file) ends its line with <!-- doc-ref-ok: <why> --> (in code, a comment holding doc-ref-ok: <why>).`,
+      `${P} ${BASELINE}: a.md DOC-DRIFT-01: baseline 2, now 1; lower it: pariksha doc-references --all --update-baseline`,
+    ]);
+  });
+});
+
+describe('the gate as each change and doc writes it', () => {
+  it('runs only the checks it is given, after one batched read of every file', () => {
+    const repo = createTestRepo({
+      'package.json': JSON.stringify({ scripts: {} }),
+      'docs/all.md': 'Run `pnpm nope`. See `scripts/gone.ts`. Call `missingThing()`.\n',
+    });
+    const real = repo.snapshot();
+    const batches: string[][] = [];
+    const snapshot: RepoSnapshot = {
+      ...real,
+      readMany: (paths) => {
+        batches.push([...paths]);
+        return real.readMany(paths);
+      },
+    };
+    const only = (check: CheckId): string[][] => runChecks(CONFIG, snapshot, ['docs/all.md'], [check], noLinks).map((p) => [p.check, p.ref]);
+    assert.deepEqual(only('DOC-DRIFT-01'), [['DOC-DRIFT-01', 'scripts/gone.ts']]);
+    assert.deepEqual(batches[0], ['docs/all.md']);
+    assert.deepEqual(only('DOC-DRIFT-02'), [['DOC-DRIFT-02', 'nope']]);
+    assert.deepEqual(only('DOC-DRIFT-04'), [['DOC-DRIFT-04', 'missingThing()']]);
+  });
+
+  it('keeps only whole identifier-shaped words a diff removed', () => {
+    const hunk = ['@@ -1 +0,0 @@', '-MAX_RETRY_COUNT fooBarBaz FooBarBaz x_FOO_BAR FOO_BARx'].join('\n');
+    assert.deepEqual([...removedIdentifiers(hunk)], ['MAX_RETRY_COUNT', 'fooBarBaz', 'FooBarBaz']);
+  });
+
+  it('reads a hunk whose header names the function it is in', () => {
+    assert.deepEqual(hunkLines('@@ -3 +3 @@ function runTool() {\n-  return 1;\n+  return 2;'), ['-  return 1;', '+  return 2;']);
+  });
+
+  it('reads no file when nothing was removed', () => {
+    const real = createTestRepo({ 'docs/a.md': 'x\n' }).snapshot();
+    const snapshot: RepoSnapshot = { ...real, readMany: () => assert.fail('a file was read') };
+    assert.deepEqual(referrers(CONFIG, snapshot, [], [], new Set(), []), []);
+  });
+
+  it('a commit re-checks no doc citing a changed file by line: a push does', () => {
+    const repo = base();
+    repo.write('docs/cite.md', 'See `tool.ts:2`.\n');
+    repo.commit('cite');
+    repo.write('scripts/tool.ts', 'export function runTool() {\n  return 2;\n}\n');
+    repo.git('add', '-A');
+    assert.deepEqual(staged(repo).checked, ['scripts/tool.ts']);
+  });
+
+  it('a push re-checks no doc citing by line a file the push only added', () => {
+    const repo = base();
+    repo.write('docs/cite.md', 'See `extra.ts:1`.\n');
+    const from = repo.commit('cite');
+    repo.write('scripts/extra.ts', 'export {};\n');
+    repo.commit('add');
+    assert.deepEqual(pushed(repo, from).checked, ['scripts/extra.ts']);
+  });
+
+  it('leaves out of the diff what diffExclude names: a word a doc lost strands no other doc', () => {
+    const repo = base();
+    repo.write('docs/a.md', 'Call `oldThing` first.\n');
+    repo.write('docs/b.md', 'Mentions oldThing too.\n');
+    const from = repo.commit('docs');
+    repo.write('docs/a.md', 'Call it first.\n');
+    repo.commit('edit');
+    assert.deepEqual(pushed(repo, from).checked, ['docs/a.md']);
+  });
+
+  it('re-checks every reference when a .gitignore changes beside other files', () => {
+    const repo = base();
+    repo.write('.gitignore', 'node_modules/\n.tmp/\ndist/\n');
+    repo.write('docs/new.md', 'New.\n');
+    repo.git('add', '-A');
+    assert.deepEqual(staged(repo).checked, ['docs/guide.md', 'docs/new.md', 'scripts/tool.ts']);
+  });
+
+  it('lists what it checks in order, referrers among the changed docs', () => {
+    const repo = base();
+    repo.write('docs/z.md', 'Z.\n');
+    repo.commit('z');
+    repo.write('docs/z.md', 'Zed.\n');
+    repo.git('rm', '-q', 'scripts/tool.ts');
+    repo.git('add', '-A');
+    assert.deepEqual(staged(repo).checked, ['docs/guide.md', 'docs/z.md']);
+  });
+
+  it('strands the docs of a script a workspace manifest removed, and only of the removed ones', () => {
+    const repo = base();
+    repo.write('apps/web/package.json', JSON.stringify({ name: 'web', scripts: { keep: 'echo', drop: 'echo' } }));
+    repo.write('docs/keep.md', 'Mentions keep.\n');
+    repo.write('docs/drop.md', 'Mentions drop.\n');
+    repo.commit('web');
+    repo.write('apps/web/package.json', JSON.stringify({ name: 'web', scripts: { keep: 'echo' } }));
+    repo.git('add', '-A');
+    assert.deepEqual(staged(repo).checked, ['docs/drop.md']);
+  });
+
+  it('reads a manifest with no scripts object, before or after, as naming none', () => {
+    const repo = base();
+    repo.write('apps/web/package.json', JSON.stringify({ name: 'web', scripts: ['drop'] }));
+    repo.write('docs/drop.md', 'Mentions 0 and drop.\n');
+    repo.commit('web');
+    repo.write('apps/web/package.json', JSON.stringify({ name: 'web' }));
+    repo.git('add', '-A');
+    assert.deepEqual(staged(repo).checked, []);
+  });
+
+  it('writes a baseline with no failure, slack or growth', () => {
+    const repo = base();
+    repo.write('docs/old.md', 'See `scripts/gone.ts`.\n');
+    repo.write(BASELINE, baseline({}));
+    repo.commit('legacy');
+    const report = all(repo, 'write');
+    assert.deepEqual([report.failures, report.slack, report.growth, report.wrote], [[], [], [], 1]);
   });
 });

@@ -450,9 +450,15 @@ export const supervise = async (
     if (quiet) report(code, ended - started);
     if (refusal !== null) stderr(`${refusal}\n`);
     if (warning !== null) stderr(`⚠️  ${warning}\n`);
-    const { pushed, declared, proof, proofDiagnostics } = parseRecords(
-      readOrNull(records),
-    );
+    const {
+      pushed,
+      declared,
+      proof,
+      proofDiagnostics,
+      failed,
+      held,
+      skipped,
+    } = parseRecords(readOrNull(records));
     const verdict = (last: boolean) =>
       imposed
         ? imposed.status
@@ -499,6 +505,9 @@ export const supervise = async (
           stages,
           proof,
           proofDiagnostics,
+          failed,
+          held,
+          skipped,
           node: process.version,
           platform: process.platform,
           arch: process.arch,

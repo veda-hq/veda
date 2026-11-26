@@ -288,9 +288,34 @@ describe("supervise", () => {
     assert.equal(await supervise([hook], opts), 0);
     const [row] = rows(root);
     assert.deepEqual(
-      [row?.failed, row?.held, row?.skipped, row?.proof, row?.proofDiagnostics],
-      [[], [], [], [], []],
+      [row?.failed, row?.held, row?.skipped, row?.proof, row?.proofDiagnostics, row?.turns],
+      [[], [], [], [], [], []],
     );
+  });
+
+  it("carries each stage's heavy-work turn into the row", async () => {
+    const { root, hook } = repo(
+      [
+        "dvara_stage mutation",
+        `printf 'turn\\tmutation\\tgate\\tpush\\tshared\\trecord\\t0\\t4000\\t0\\t0\\n' >> "$DVARA_RECORD_FILE"`,
+      ].join("\n"),
+    );
+    const { opts } = options(root);
+    assert.equal(await supervise([hook], opts), 0);
+    const [row] = rows(root);
+    assert.deepEqual(row?.turns, [
+      {
+        stage: "mutation",
+        label: "gate",
+        class: "push",
+        width: "shared",
+        mode: "record",
+        waitedMs: 0,
+        wouldWaitMs: 4000,
+        ranAnyway: false,
+        nested: false,
+      },
+    ]);
   });
 
   it("counts the runtime selection in the total and offsets the stages", async () => {

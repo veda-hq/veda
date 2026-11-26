@@ -31,6 +31,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { defaultLivenessSystem } from "./liveness.ts";
+import { queuedPids, turnDirectory } from "./turn.ts";
 
 /** Quiet this long before the deadlock check runs: twice a 300 s test timeout. */
 export const DEFAULT_IDLE_MS = 600_000;
@@ -616,7 +618,9 @@ export type Verdict =
  * The verdict for a quiet tree, or null.
  *
  * - `internal-deadlock`: quiet for `idleMs`, a hang core exists, no leaf
- *   holds an external channel, and no exempt command is in the tree.
+ *   holds an external channel, no exempt command is in the tree, and no
+ *   process in it is waiting in the heavy-work queue (`queued`; RFC-0060 S7):
+ *   a queued request waits on other processes' turns, an outside wait.
  * - `idle-external`: quiet for `externalIdleMs`, whatever the fds say (or if
  *   `lsof` failed).
  */
@@ -626,15 +630,17 @@ export function decide({
   cpuDeltaByPid,
   quietMs,
   config,
+  queued = false,
 }: {
   readonly tree: readonly PsRow[];
   readonly classes: ReadonlyMap<number, readonly ClassifiedFd[]> | null;
   readonly cpuDeltaByPid: ReadonlyMap<number, number>;
   readonly quietMs: number;
   readonly config: Pick<WatchdogConfig, "idleMs" | "externalIdleMs">;
+  readonly queued?: boolean;
 }): Verdict | null {
   if (quietMs < config.idleMs) return null;
-  if (classes) {
+  if (classes && !queued) {
     const parents = new Set(tree.map((row) => row.ppid));
     const leafHoldsExternal = tree.some(
       (row) =>
@@ -769,7 +775,13 @@ export interface WatchdogOptions {
   readonly clock?: Clock;
   readonly log?: (message: string) => void;
   readonly kill?: (pid: number, signal: NodeJS.Signals) => void;
+  /** Whether any of these processes waits in the heavy-work queue; the machine's queue by default. */
+  readonly queued?: (pids: readonly number[]) => boolean;
 }
+
+/** The machine's heavy-work queue, read for its waiter entries. */
+const machineQueued = (pids: readonly number[]): boolean =>
+  queuedPids(turnDirectory(process.env), pids, defaultLivenessSystem);
 
 /** The watchdog attached to one run. */
 export interface RunWatchdog {
@@ -805,6 +817,7 @@ export function createWatchdog({
   clock = { now: () => performance.now(), wall: () => Date.now() },
   log = (message) => process.stderr.write(message),
   kill = (pid, signal) => process.kill(pid, signal),
+  queued = machineQueued,
 }: WatchdogOptions): RunWatchdog {
   const summary: WatchdogRunSummary = {
     mode: config.mode,
@@ -1078,6 +1091,7 @@ export function createWatchdog({
         ),
         quietMs: settled.lastAt - settled.quietSince,
         config,
+        queued: queued(again.tree.map((row) => row.pid)),
       }),
       again.tree,
       fresh.classes,
@@ -1198,6 +1212,7 @@ export function createWatchdog({
           cpuDeltaByPid,
           quietMs,
           config,
+          queued: queued(snapshot.tree.map((row) => row.pid)),
         }),
         snapshot.tree,
         inspection.classes,

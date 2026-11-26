@@ -37,6 +37,11 @@ file in your repository; dvara runs it.
 - **One slot per machine.** `dvara slot` runs a command with extra
   environment only while it holds a machine-wide slot, and without it
   otherwise, never waiting (below).
+- **Turns for heavy work.** `dvara turn` runs a command in its turn in one
+  machine-wide queue: two turns, pushes first, a ⏳ line naming the holders
+  while it waits, never refusing (below). Record-only by default: nothing
+  waits, and every request is a line to replay. Each turn a hook's stage asks
+  for is in its row's `turns`.
 
 - **A stage list, if you keep one.** `stages`, or the JSON file `stageList`
   names (inside an installed package, say), gives each hook's stage names in
@@ -355,6 +360,86 @@ commands share the machine until the first ends. Each start is a JSON line in `s
 beside it. A forwarded SIGINT or SIGTERM decides the exit status, a command
 that cannot start is 127, and bad arguments are 2.
 
+## Turns for heavy work: `dvara turn`
+
+Heavy work (an emulator run, a mutation gate, a check suite) slows down
+beside other heavy work, in any repository on the machine. `dvara turn`
+makes it take turns through one machine-wide queue, beside `dvara slot`,
+which still never waits:
+
+```sh
+dvara turn [--exclusive] [--class push|other] [--label <text>] -- <command> [args…]
+```
+
+- **Turns.** The machine has two (`DVARA_TURNS`, or `"turns"` in the
+  settings file). A request takes one; `--exclusive` takes them all.
+- **Order.** `--class push` (pass it from a push hook) is served before
+  `other`, the default; within a class, first come first served. Nothing
+  overtakes the head of the line, so a queued exclusive request holds back
+  the requests behind it and is never starved.
+- **Waiting says so.** A request that waits prints, when it starts and every
+  minute after:
+
+  ```text
+  ⏳ Waiting for a heavy-work turn (2 of 2 in use, you are 1st in line); waited 3 min of up to 30.
+     athya-rules  pnpm check     for 6 min  (worktree brave-curie)
+     athya_mono   mutation gate  for 2 min  (branch claude/w-58-hooks)
+  ```
+
+  `--label` names the request there (default: the command).
+- **Bounded, never refusing.** At the bound, 30 minutes (`DVARA_TURN_WAIT_MINUTES`,
+  or `"waitMinutes"`), the command runs anyway with a warning. The exit
+  status is always the command's: a forwarded SIGINT or SIGTERM decides it
+  (also while waiting), a command that cannot start is 127, bad arguments 2.
+- **Modes.** `record`, the default, runs every command at once and keeps the
+  line only virtually, to record who it found and when it would have been
+  served. `enforce` waits. `off` runs the command directly and records
+  nothing; so does CI, always. `DVARA_TURN_MODE` wins over `"mode"` in the
+  settings file. No date switches the mode: enforcing is a settings change.
+- **Nesting.** The command gets `DVARA_TURN_HELD`, and so do its children: a
+  request made inside a held turn runs at once, without asking again. It is
+  never upgraded, so a nested `--exclusive` under a shared turn runs on the
+  shared turn rather than wait for itself: ask for the widest turn at the
+  outermost level. Take the turn before any lock inside it (an emulator slot,
+  a mutation lock), never while holding one.
+- **A queue failure is no failure.** If the queue's files cannot be used, the
+  command runs at once, and its line says why.
+
+The queue lives in `~/.dvara/turns/<hostname>/` (`DVARA_TURN_DIR` replaces
+the whole directory): `settings.json` (`{ "mode", "turns", "waitMinutes" }`,
+all optional), one ticket per request under `tickets/`, judged by its
+process's liveness and start time as the slot's lock is, so a dead holder or
+waiter frees its place with no cleanup step, and `dvara slot`'s lock
+`queue.lock` around each decision. A request waiting in enforce mode also
+writes `waiters/<pid>` (its start identity): the built-in watchdog never
+judges a hook with a live waiter a deadlock, only the external ceiling applies
+(RFC-0060 S7).
+
+Every request but a CI or `off` one appends a JSON line to `turns.jsonl`
+there: `id`, `pid`, `mode`, `turns`, `waitMinutes`, `class`, `exclusive`,
+`width`, `nested` and `outer` (the holder's id), `label`, `repo`, `worktree`,
+`branch`, `cwd`, `hook` and `stage` (inside a hook), `askedAt`, `grantedAt`
+(in record mode, when it would have been granted; null if never while it
+ran), `startedAt`, `endedAt` (milliseconds since the epoch), `waitedMs`,
+`wouldWaitMs`, `ranAnyway`, `ahead`, `holders` (each with its `heldMs`),
+`exitCode`, `signal` and `error`. Inside a hook, the request also writes a
+`turn` record, and the run's history row lists each in `turns`: `stage`,
+`label`, `class`, `width` (`shared` or `exclusive`), `mode`, `waitedMs`,
+`wouldWaitMs`, `ranAnyway` and `nested`. Every row has `turns`, empty when
+no stage asked.
+
+`dvara turn-replay` replays the log at any count, each outermost request
+arriving when it asked and running as long as its command ran:
+
+```sh
+dvara turn-replay [--count N]… [--wait-minutes M] [--since <ISO time>] [--file <turns.jsonl>]
+```
+
+It prints one JSON line per count (default 1, 2 and 3): `requests`,
+`waited`, `totalWaitMs`, `p50WaitMs`, `p95WaitMs`, `maxWaitMs` and
+`overBound`. A wrapper whose installed dvara has no `turn` runs its command
+as before.
+
 ## Commands
 
 ```sh
@@ -367,5 +452,7 @@ dvara trailers [--key KEY]… <commit-msg-file>  # refuse trailer lines git woul
 dvara exec-bits --staged [--refuse]  # warn on (or refuse) a dropped executable bit
 dvara review-size --cap N [--ignore GLOB]… [--base REF]  # warn over a reviewer's line cap
 dvara slot --name <name> [--dir <dir>] [--set NAME=VALUE]… [--unset NAME]… -- <command…>  # run with a machine-wide slot, or without it
+dvara turn [--exclusive] [--class push|other] [--label <text>] -- <command…>  # run heavy work in its turn
+dvara turn-replay [--count N]… [--wait-minutes M] [--since <ISO time>] [--file <turns.jsonl>]  # replay the log at a count
 dvara --version
 ```

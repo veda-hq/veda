@@ -9,7 +9,9 @@
 // of the claim:
 //
 //   resolved here:      an ADR number whose file exists (not the claiming file),
-//                       a commit id that names a commit in this repository
+//                       and in staged mode is already in HEAD, so an ADR the
+//                       commit adds is no citation; a commit id that names a
+//                       commit in this repository
 //   shape-checked only: an issue id with a configured prefix (ABC-123), a
 //                       GitHub pull request or issue URL, "PR #123"
 //
@@ -194,6 +196,25 @@ export const listAdrs = (root: string, adrDir: string): string[] => {
   return existsSync(dir) ? readdirSync(dir).filter((f) => statSync(join(dir, f)).isFile()).map((f) => `${adrDir}/${f}`) : [];
 };
 
+/**
+ * The ADRs staged mode counts: files directly under the ADR directory in HEAD
+ * that are still on disk. An ADR the commit itself adds is not one, so a claim
+ * and the ADR it cites cannot be written together. No HEAD (a first commit),
+ * or no such directory in it, lists none: git's failure here only narrows.
+ */
+export const committedAdrs = (git: Git, root: string, adrDir: string): string[] => {
+  // `HEAD:` names HEAD's root tree, `HEAD:docs/adr` that directory's; `HEAD:.` names nothing.
+  const listed = git.run(['ls-tree', '-z', `HEAD:${adrDir === '.' ? '' : adrDir}`]);
+  if (listed === undefined) return [];
+  const onDisk = listAdrs(root, adrDir);
+  // Each entry is `<mode> <type> <object>\t<name>`, the name unquoted under -z.
+  return nulList(listed).flatMap((entry) => {
+    const tab = entry.indexOf('\t');
+    const file = `${adrDir}/${entry.slice(tab + 1)}`;
+    return entry.split(' ')[1] === 'blob' && onDisk.includes(file) ? [file] : [];
+  });
+};
+
 /** A file's text, or undefined when it is not there (gone, or now a directory); any other failure throws. */
 export const readOrUndefined = (path: string): string | undefined => {
   try {
@@ -219,7 +240,7 @@ export const formatClaims = (claims: readonly Claim[], opts: Options): { ok: boo
     '',
     'An authority claim must anchor in something only that authority can produce. Cite one of:',
     '  a commit id                       (owner decision, f1a0da2d)',
-    `  an existing ADR                   ADR-0040, in ${opts.adrDir}/`,
+    `  a committed ADR                   ADR-0040, in ${opts.adrDir}/`,
     ...(opts.issuePrefixes.length > 0 ? [`  an issue id                       ${opts.issuePrefixes[0]}-447`] : []),
     '  a GitHub pull request or issue    PR #269, or its full URL',
     'A comment or a document an agent could have written is not a citation, and neither',

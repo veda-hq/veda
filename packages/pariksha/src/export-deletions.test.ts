@@ -9,6 +9,7 @@ import {
   declaredExports,
   declaredFiles,
   formatReport,
+  removedAliases,
   removedExports,
   usedOutsideComments,
 } from './export-deletions.ts';
@@ -110,6 +111,39 @@ describe('removedExports and usedOutsideComments', () => {
     assert.deepEqual(removedExports(diff), ['a', 'b', 'C', 'I', 'T', 'E', 'l', 'v', 'CE', 'd', 'gen', 'agen', 'N', 'enumLike']);
   });
 
+  it('finds the aliases an export list loses, never its bare names or `as default`', () => {
+    const diff = [
+      'diff --git a/src/index.ts b/src/index.ts',
+      '--- a/src/index.ts',
+      '+++ b/src/index.ts',
+      '@@ -1,2 +0,0 @@',
+      "-export { internal as publicApi } from './internal.js';",
+      "-  export type { Shape as PublicShape, bare } from './shape.js';",
+      '@@ -4 +2 @@',
+      "-export { type Raw as Cooked, default as Widget, kept,x  as  y, local as default } from './w.js';",
+      '+export { other };',
+      '@@ -9,4 +6,0 @@',
+      '-export {',
+      '-  first as One,',
+      '-  second,',
+      "-} from './many.js';",
+      '@@ -20 +18 @@',
+      '-// export { commented as Out }',
+      '-const notAList = 1; export { trailing as Late };',
+      '@@ -30 +28 @@',
+      '-  loose as Stray,',
+      '+  loose,',
+      "-export { last as Final } from './l.js';",
+    ].join('\n');
+    assert.deepEqual(removedExports(diff), ['publicApi', 'PublicShape', 'Cooked', 'Widget', 'y', 'One', 'Final']);
+  });
+
+  it('reads each run of removed lines once', () => {
+    const diff = ['@@ -1 +0,0 @@', "-export { a as A } from './a.js';", '@@ -3 +1 @@', "-export { b as B } from './b.js';"].join('\n');
+    assert.deepEqual(removedExports(diff), ['A', 'B']);
+    assert.deepEqual(removedAliases("export {\n  a as A,\n} from './a.js';\nexport { b as B }"), ['A', 'B']);
+  });
+
   it('counts a code hit, not a comment', () => {
     assert.equal(usedOutsideComments('HEAD:a.ts:3:  // old a\nHEAD:b.ts:1: * a\nHEAD:c.ts:2: /* a */'), false);
     assert.equal(usedOutsideComments('HEAD:a.ts:3:  // old a\nHEAD:b.ts:9:call(a);'), true);
@@ -135,6 +169,44 @@ describe('checkExportDeletions', () => {
     );
     const report = checkExportDeletions(gitAt(moved), 'main');
     assert.deepEqual(report.violations, [{ symbol: 'onlyComment', file: 'src/c.ts' }]);
+  });
+
+  it('refuses an export that only a test still names, at the root or nested, as .test or .spec', () => {
+    const root = branch(
+      {
+        'src/a.ts': 'export const a = 1;\nexport const b = 2;\nexport const c = 3;\nexport const d = 4;\nexport const moved = 5;\n',
+        'a.test.ts': 'import { a } from "./src/a.ts";\n',
+        'src/deep/b.test.mjs': 'b();\n',
+        'c.spec.js': 'c();\n',
+        'src/deep/d.spec.tsx': 'd();\n',
+        'src/testing.ts': 'export const moved = 5;\n',
+      },
+      { 'src/a.ts': '' },
+    );
+    assert.deepEqual(checkExportDeletions(gitAt(root), 'main').violations, [
+      { symbol: 'a', file: 'src/a.ts' },
+      { symbol: 'b', file: 'src/a.ts' },
+      { symbol: 'c', file: 'src/a.ts' },
+      { symbol: 'd', file: 'src/a.ts' },
+    ]);
+  });
+
+  it('refuses an aliased re-export whose alias no source names, quiet while one does', () => {
+    const root = branch(
+      {
+        'src/index.ts': "export { internal as publicApi } from './internal.js';\nexport { other as stillUsed } from './internal.js';\nexport { bare } from './internal.js';\n",
+        'src/internal.ts': 'export const internal = 1;\nexport const other = 2;\nexport const bare = 3;\n',
+        'src/user.ts': 'stillUsed();\n',
+      },
+      { 'src/index.ts': '' },
+    );
+    assert.deepEqual(checkExportDeletions(gitAt(root), 'main').violations, [{ symbol: 'publicApi', file: 'src/index.ts' }]);
+    const declared = branch(
+      { 'src/index.ts': "export { internal as publicApi } from './internal.js';\n", 'src/internal.ts': 'export const internal = 1;\n' },
+      { 'src/index.ts': '' },
+      'drop\n\nRemoves-Export: publicApi — no longer public',
+    );
+    assert.deepEqual(checkExportDeletions(gitAt(declared), 'main').declared, [{ symbol: 'publicApi', file: 'src/index.ts' }]);
   });
 
   it('accepts a Removes-Export trailer for the symbol', () => {

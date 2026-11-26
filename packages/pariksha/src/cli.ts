@@ -11,7 +11,7 @@ import { DEFAULT_MASKED_CONFIG, findMaskedExits, formatMasked, parseMaskedConfig
 import { checkNonSyncedResources, DEFAULT_GUIDANCE as NON_SYNCED_GUIDANCE } from './non-synced-resources.ts';
 import { ALL_CHECKS as SHELL_CHECKS, type CheckName as ShellCheckName, parseGatesConfig, runShellGates, shellcheckRunner, type Mode as ShellMode, type ShellcheckRunner } from './shell-gates.ts';
 import { checkPnpmSettings, DEFAULT_PNPM_CONFIG, formatParity, parsePnpmConfig } from './pnpm-settings.ts';
-import { adrDirOf, DEFAULTS, findUncited, formatClaims, listAdrs, readOrUndefined, stagedSource, treeSource, type Options } from './authority-citations.ts';
+import { adrDirOf, committedAdrs, DEFAULTS, findUncited, formatClaims, listAdrs, readOrUndefined, stagedSource, treeSource, type Options } from './authority-citations.ts';
 import { findDenied, hash, isText, parseDenyList, type TrackedFile } from './boundary.ts';
 import { DEFAULT_CONFIG, entries, findGaps, formatGaps, listedPaths, parseConfig, treePaths, type Config } from './coverage-by-type.ts';
 import { checkBuild, checkPackage, checkVitest, formatViolations, loaderFailure, loadVitestExclude, missingConfigs, ownedBy, parseConfig as parseExemptions } from './coverage-exemptions.ts';
@@ -567,8 +567,11 @@ const authorityCitations = (f: Map<string, string>, io: Io, env: NodeJS.ProcessE
   };
   let result: ReturnType<typeof formatClaims>;
   try {
-    const source = mode === 'tree' ? treeSource(git, root, readOrUndefined) : stagedSource(git, env, readOrUndefined);
-    result = formatClaims(findUncited(source, opts, git, listAdrs(root, opts.adrDir)), opts);
+    const tree = mode === 'tree';
+    const source = tree ? treeSource(git, root, readOrUndefined) : stagedSource(git, env, readOrUndefined);
+    // Staged mode counts only ADRs HEAD already holds: one the commit adds is no citation.
+    const adrs = tree ? listAdrs(root, opts.adrDir) : committedAdrs(git, root, opts.adrDir);
+    result = formatClaims(findUncited(source, opts, git, adrs), opts);
   } catch (e) {
     io.err(`pariksha authority-citations: ${(e as Error).message}; nothing was checked, so this is not a pass`);
     return 2;

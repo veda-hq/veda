@@ -189,7 +189,9 @@ have produced:
 
 - resolved: a commit id naming a commit here, or `ADR-NNNN` /
   `<adr-dir>/NNNN` naming an existing `NNNN-*.md` other than the claiming file
-  (default `docs/adr`);
+  (default `docs/adr`). In `staged` mode the ADR must already be in `HEAD`, so
+  one the commit adds is no citation: an ADR and its first citation land in two
+  commits;
 - shape-checked: an issue id with a `--issue-prefix` (`ABC-123`), a GitHub
   pull request or issue URL, or `PR #123`.
 
@@ -202,8 +204,9 @@ Prisma, shell and Markdown files are read, outside `node_modules`, `dist`,
 
 `staged` (the default, for a pre-commit or pre-merge-commit hook) judges only
 the lines the commit adds; on a merge, only lines new against every parent,
-so text a merged branch already carried is not judged again. `tree` judges
-every tracked file. When git cannot read the change it exits 2.
+so text a merged branch already carried is not judged again, and an ADR only
+the merged branch carries is not in `HEAD`. `tree` judges every tracked file
+and reads the ADR folder on disk. When git cannot read the change it exits 2.
 
 ## `boundary`
 
@@ -919,9 +922,10 @@ An agent that removes a public function can remove its callers and their
 tests too: everything typechecks and passes, so only a statement of intent
 tells a correct removal from a coherent mistake. This check compares
 `<base>...HEAD` and refuses an exported declaration (`export const`,
-`function`, `class`, `interface`, `type`, `enum`) that is gone from every
-TypeScript and JavaScript file at HEAD, unless a commit body in the range
-declares it:
+`function`, `class`, `interface`, `type`, `enum`), or an alias an export list
+loses (`export { internal as publicApi } from './internal.js'` exports
+`publicApi`), that is gone from every TypeScript and JavaScript file at HEAD
+but the tests, unless a commit body in the range declares it:
 
 ```text
 Removes-Export: <symbol> — <why it is safe to remove>
@@ -934,9 +938,12 @@ line covers a module's exports and the commit body stays short; anything else
 declares its first word only, so a word in the reason never declares a
 symbol. `Removes-File` covers every export of a file that no longer exists at HEAD.
 A symbol still used anywhere (a move, a rename with its callers, a re-export)
-is never reported; a mention in a comment does not count as a use. Bare
-`export { a, b }` lists and files under `node_modules`, `dist`, `build`,
-`coverage` and `generated` are not read. Without `--base`, the base is the
+is never reported; a mention in a comment, or in a test (`*.test.*`,
+`*.spec.*`), does not count as a use, so a test asserting the export is gone
+keeps nothing quiet. The bare names of an `export { a, b }` list,
+`x as default`, an alias on a line dropped from a multi-line list that stays,
+and files under `node_modules`, `dist`, `build`, `coverage` and `generated` are not
+read. Without `--base`, the base is the
 first of `origin/main`, `origin/develop`, `origin/master` and `main` that
 exists. It reads the whole repository from any directory inside it, and
 renames, colour, external diff tools and textconv in a user's git config

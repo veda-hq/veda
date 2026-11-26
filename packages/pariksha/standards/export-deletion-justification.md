@@ -19,10 +19,12 @@ applies_to: ['apps', 'packages', 'scripts']
 
 When a branch removes an exported declaration (`export` then `const`, `let`,
 `var`, `function`, `class`, `interface`, `type`, `enum`, `const enum` or
-`namespace`, with `default`, `declare`, `async` or `abstract` allowed between)
-and its name appears in **no source file of the post-change tree** (build
-output, vendored code, docs and comment lines do not count), the removal MUST
-be declared with a trailer in any commit body on the branch:
+`namespace`, with `default`, `declare`, `async` or `abstract` allowed between),
+or an alias from an export list (`export { internal as publicApi } from
+'./internal.js'` exports `publicApi`), and its name appears in **no source file
+of the post-change tree** (build output, vendored code, tests, docs and comment
+lines do not count), the removal MUST be declared with a trailer in any commit
+body on the branch:
 
 ```
 Removes-Export: clearGiftSelection — superseded by resetCart(); no
@@ -46,18 +48,17 @@ tree, so those refactors are silent. A rename is not: the old name is gone, so
 it needs a `Removes-Export:` naming it, even with every call site updated. The
 presence search covers source files only and skips comment lines — otherwise a
 changelog entry or a `// removed clearGiftSelection` note would read as
-"still present" and suppress the very finding this check exists to raise. Bare
-re-export lists (`export { a, b }`) are out of scope — they shuffle constantly
-and name nothing new.
+"still present" and suppress the very finding this check exists to raise. It
+skips tests (`*.test.*`, `*.spec.*`) too: a test asserting the export's absence
+was the incident's own last step, and a test is no consumer of a public API. So
+an export that only tests used, moved from one test file to another, needs a
+trailer as well.
 
-Two known gaps follow from this:
-
-- Removing `export { internal as publicApi } from './internal.js'` goes
-  unreported even when `publicApi` leaves the public surface.
-- Test files are source files, so a test that still names the removed symbol,
-  such as one asserting its absence, keeps it "still present" and the check
-  stays silent. That is the incident's own last step, so read a new test that
-  names a removed export as you would an undeclared deletion.
+Bare re-export lists (`export { a, b }`) are out of scope — they shuffle
+constantly and name nothing new. An alias does name something new, so each
+`x as y` in a removed list counts as removing `y` (`as default` is left out).
+A list is read when the branch removes it whole, on one line or several; a
+line dropped from a multi-line list that stays is not read.
 
 ## Rationale
 
@@ -114,7 +115,7 @@ remaining callers (ABC-447)
   silent. A rename pays one trailer.
 - A symbol deleted together with its only consumer in the same branch still
   requires the trailer. That is intended — it is the incident's exact shape,
-  unless a test still names the symbol (see the known gaps above).
+  and a test that still names the symbol does not change it.
 - A symbol that never existed on the base branch is not covered: it was never
   public, so its removal is a within-branch edit, not an API change.
 

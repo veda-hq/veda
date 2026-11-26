@@ -2079,7 +2079,7 @@ describe('run authority-citations', () => {
     '',
     'An authority claim must anchor in something only that authority can produce. Cite one of:',
     '  a commit id                       (owner decision, f1a0da2d)',
-    `  an existing ADR                   ADR-0040, in ${adrDir}/`,
+    `  a committed ADR                   ADR-0040, in ${adrDir}/`,
     ...(prefix === undefined ? [] : [`  an issue id                       ${prefix}-447`]),
     '  a GitHub pull request or issue    PR #269, or its full URL',
     'A comment or a document an agent could have written is not a citation, and neither',

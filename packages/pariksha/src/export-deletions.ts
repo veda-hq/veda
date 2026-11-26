@@ -5,7 +5,9 @@
 // tests that used it: everything typechecks and passes, so nothing internal
 // tells a correct removal from a coherent mistake. Only a statement of intent
 // can, so the check asks for one, and stays quiet for anything that moved:
-// a symbol still named anywhere in the tree's source is not reported.
+// a symbol still named anywhere in the tree's source, tests aside, is not
+// reported. An aliased re-export (`export { internal as publicApi }`) exports
+// its alias, so removing it removes the alias.
 //
 //   Removes-Export: <symbol> — <why>     covers one symbol
 //   Removes-Export: <a>, <b> — <why>     covers each symbol listed
@@ -21,8 +23,15 @@ const SKIPPED_DIR = new RegExp(`(^|/)(${SKIPPED.join('|')})/`);
 const SKIPPED_PATHSPECS = SKIPPED.map((d) => `:(exclude,glob)**/${d}/**`);
 
 /**
+ * A test is no use of an export: one asserting the export's absence is the
+ * incident's own last step, so tests never count in the still-present search.
+ */
+const TEST_PATHSPECS = [':(exclude,glob)**/*.test.*', ':(exclude,glob)**/*.spec.*'] as const;
+
+/**
  * A removed named declaration on a `-` diff line. Bare re-export lists
- * (`export { a, b }`) are left out: they shuffle in refactors and name nothing new.
+ * (`export { a, b }`) are left out: they shuffle in refactors and name nothing
+ * new. An alias in a list does name something new; EXPORT_LIST reads those.
  */
 const EXPORT_DECL =
   /^-\s*export\s+(?:default\s+)?(?:declare\s+)?(?:async\s+)?(?:abstract\s+)?(?:const\s+enum|const|let|var|function|class|interface|type|enum|namespace)[\s*]+([A-Za-z_$][A-Za-z0-9_$]*)/;
@@ -32,6 +41,12 @@ const EXPORT_DECL =
  * `/*`) is a mention, not a use. Unanchored, so a colon in a path still matches.
  */
 const COMMENT_HIT = /:\d+:\s*(?:\/\/|\*|\/\*)/;
+
+/** An export list, `export { … }` or `export type { … }`, its braces' content captured; it may span lines. */
+const EXPORT_LIST = /(?:^|\n)\s*export\s+(?:type\s+)?\{([^}]*)\}/g;
+
+/** One aliased specifier of a list, `x as y` (`type x as y`, `default as y`): the alias. */
+const ALIASED = /^(?:type\s+)?[A-Za-z_$][\w$]*\s+as\s+([A-Za-z_$][\w$]*)$/;
 
 const unique = (xs: readonly string[]): string[] => [...new Set(xs)].sort();
 
@@ -76,12 +91,41 @@ export const declaredFiles = (messages: string): string[] =>
       .filter((s): s is string => s !== undefined && s !== ''),
   );
 
-/** The symbols a unified diff removes from export declarations. */
-export const removedExports = (diff: string): string[] =>
-  diff
-    .split('\n')
-    .map((line) => EXPORT_DECL.exec(line)?.[1])
-    .filter((s): s is string => s !== undefined);
+/**
+ * The aliases a run of removed lines (each `-` dropped) takes out of export
+ * lists: `y` of each `x as y`, never a bare name and never `as default`. A list
+ * is read only when the run holds it whole, so a line removed from a
+ * multi-line list that stays is not read.
+ */
+export const removedAliases = (removed: string): string[] =>
+  // The group always takes part in a match, so String() only narrows its type.
+  [...removed.matchAll(EXPORT_LIST)].flatMap((m) =>
+    String(m[1])
+      .split(',')
+      .map((spec) => ALIASED.exec(spec.trim())?.[1])
+      .filter((s): s is string => s !== undefined && s !== 'default'),
+  );
+
+/**
+ * The symbols a `-U0` diff removes: each removed export declaration, then each
+ * alias that a run of consecutive removed lines takes out of an export list.
+ */
+export const removedExports = (diff: string): string[] => {
+  const lines = diff.split('\n');
+  const declared = lines.map((line) => EXPORT_DECL.exec(line)?.[1]).filter((s): s is string => s !== undefined);
+  const runs: string[] = [];
+  let run: string[] = [];
+  // Any other line ends a run. A `--- a/file` header is a run of its own and holds no list.
+  for (const line of lines) {
+    if (line.startsWith('-')) run.push(line.slice(1));
+    else {
+      runs.push(run.join('\n'));
+      run = [];
+    }
+  }
+  runs.push(run.join('\n'));
+  return [...declared, ...runs.flatMap(removedAliases)];
+};
 
 /** True when some `git grep -n <sym> HEAD` hit is code rather than a comment. */
 export const usedOutsideComments = (hits: string): boolean =>
@@ -135,8 +179,8 @@ export const checkExportDeletions = (git: Git, base: string): Report => {
       let stillUsed = used.get(symbol);
       if (stillUsed === undefined) {
         // git grep exits 1 when nothing matches, so undefined here is "no hit".
-        // Skipped trees are excluded here too: a stale committed build naming the symbol is no use.
-        stillUsed = usedOutsideComments(git.run(['grep', '--no-color', '-nwF', '-e', symbol, 'HEAD', '--', ...SOURCE_GLOBS, ...SKIPPED_PATHSPECS]) ?? '');
+        // Skipped trees and tests are excluded here too: a stale committed build naming the symbol is no use.
+        stillUsed = usedOutsideComments(git.run(['grep', '--no-color', '-nwF', '-e', symbol, 'HEAD', '--', ...SOURCE_GLOBS, ...SKIPPED_PATHSPECS, ...TEST_PATHSPECS]) ?? '');
         used.set(symbol, stillUsed);
       }
       if (stillUsed) continue;
@@ -160,7 +204,7 @@ export const formatReport = (report: Report): { ok: boolean; out: string[]; err:
     `pariksha export-deletions: ${report.violations.length} export(s) removed from the whole tree since ${report.base} with no stated reason:`,
     ...report.violations.map((v) => `  ${v.symbol}   (removed from ${v.file})`),
     '',
-    'Each is gone from every source file, not moved or renamed. If the removal is intended,',
+    'Each is gone from every source file but the tests, not moved or renamed. If the removal is intended,',
     'say so in a commit body:',
     '',
     '  Removes-Export: <symbol> — <why it is safe to remove>',

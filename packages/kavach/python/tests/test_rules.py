@@ -445,7 +445,8 @@ class CheckoutDiscardsUncommitted(Repo):
 
 
 class CheckoutDuringAMerge(Repo):
-    """A stopped merge: c.txt in conflict (UU), a.txt with a local edit."""
+    """A stopped merge: c.txt in conflict (UU), d.txt added on both sides
+    (AA), a.txt with a local edit."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -453,11 +454,15 @@ class CheckoutDuringAMerge(Repo):
         git(self.repo, "add", "c.txt")
         git(self.repo, "commit", "-q", "-m", "c")
         git(self.repo, "checkout", "-q", "-b", "other")
-        Path(self.repo, "c.txt").write_text("theirs\n", encoding="utf-8")
-        git(self.repo, "commit", "-q", "-am", "theirs")
+        for name in ("c.txt", "d.txt"):
+            Path(self.repo, name).write_text("theirs\n", encoding="utf-8")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-q", "-m", "theirs")
         git(self.repo, "checkout", "-q", "-")
-        Path(self.repo, "c.txt").write_text("ours\n", encoding="utf-8")
-        git(self.repo, "commit", "-q", "-am", "ours")
+        for name in ("c.txt", "d.txt"):
+            Path(self.repo, name).write_text("ours\n", encoding="utf-8")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-q", "-m", "ours")
         subprocess.run(["git", "merge", "other"], cwd=self.repo, env=ENV, capture_output=True, check=False)
         Path(self.repo, "a.txt").write_text("changed\n", encoding="utf-8")
 
@@ -474,6 +479,7 @@ class CheckoutDuringAMerge(Repo):
             "git restore --ours c.txt",
             "git restore --source=HEAD --staged --worktree c.txt",
             "git checkout -- c.txt",
+            "git checkout --theirs -- c.txt d.txt",
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.find(command))
@@ -489,12 +495,18 @@ class CheckoutDuringAMerge(Repo):
                 found = self.find(command) or ""
                 self.assertIn(", and a.txt holds uncommitted changes that would be lost. A path in a merge", found)
                 self.assertNotIn("c.txt", found)
+                self.assertNotIn("d.txt", found)
 
     def test_every_unmerged_state_is_left_out(self) -> None:
         self.assertEqual(rules.UNMERGED, {"DD", "AU", "UD", "UA", "DU", "AA", "UU"})
         self.assertEqual(rules.uncommitted(["."], self.repo), ["a.txt"])
-        git(self.repo, "add", "c.txt")  # resolved: an ordinary staged change again
-        self.assertEqual(rules.uncommitted(["."], self.repo), ["a.txt", "c.txt"])
+        git(self.repo, "add", "c.txt", "d.txt")  # resolved: ordinary staged changes again
+        self.assertEqual(rules.uncommitted(["."], self.repo), ["a.txt", "c.txt", "d.txt"])
+
+    def test_a_one_letter_path_is_read_whole(self) -> None:
+        Path(self.repo, "e").write_text("one\n", encoding="utf-8")
+        git(self.repo, "add", "e")
+        self.assertEqual(rules.uncommitted(["e"], self.repo), ["e"])
 
 
 class CommitBodyRefLineLength(Repo):
@@ -553,6 +565,7 @@ class CommitBodyRefLineLength(Repo):
         ("http url", f"fix: title\n\n{LONG_REF} http://example.com/x\n", True),
         ("bare scheme", f"fix: title\n\n{LONG_REF} https://\n", False),
         ("scheme inside a word", f"fix: title\n\n{LONG_REF} xhttps://example.com\n", False),
+        ("scheme after an accented letter", f"fix: title\n\n{LONG_REF} éhttps://example.com\n", True),
         ("upper-case scheme", f"fix: title\n\n{LONG_REF} HTTPS://example.com\n", False),
         ("url on the next line", f"fix: title\n\n{LONG_REF}\nhttps://example.com/x\n", False),
         ("revert", f'Revert "fix: title"\n\n{LONG_REF}\n', True),
@@ -572,6 +585,7 @@ class CommitBodyRefLineLength(Repo):
         ("semver chore with a skip tag", f"chore(release): 1.2.3 [skip ci]\n\n{LONG_REF}\n", True),
         ("semver chore with a parenthesised tag", f"chore(release): 1.2.3 (ci skip)\n\n{LONG_REF}\n", True),
         ("semver chore with a dashed tag", f"chore: 1.2.3 [ci-skip]\n\n{LONG_REF}\n", True),
+        ("semver with a non-ASCII digit", f"1١.2.3\n\n{LONG_REF}\n", False),
         ("semver missing a part", f"1.2\n\n{LONG_REF}\n", False),
         ("semver with a leading zero", f"01.2.3\n\n{LONG_REF}\n", False),
         ("semver prerelease with a leading zero", f"1.2.3-alpha.01\n\n{LONG_REF}\n", False),
@@ -582,6 +596,7 @@ class CommitBodyRefLineLength(Repo):
         ("semver in the body", f"fix: title\n\n1.2.3\n{LONG_REF}\n", False),
         ("semver at the largest safe major", f"9007199254740991.0.0\n\n{LONG_REF}\n", True),
         ("semver past the largest safe major", f"9007199254740992.0.0\n\n{LONG_REF}\n", False),
+        ("semver far past the largest safe major", f"99999999999999999999.0.0\n\n{LONG_REF}\n", False),
         ("semver past the largest safe minor", f"1.9007199254740992.0\n\n{LONG_REF}\n", False),
         ("semver past the largest safe patch", f"1.0.9007199254740992\n\n{LONG_REF}\n", False),
         ("semver of 256 characters", f"1.0.0+{'a' * 250}\n\n{LONG_REF}\n", True),
@@ -616,10 +631,11 @@ class CommitBodyRefLineLength(Repo):
 
     def test_a_commit_whose_subject_git_writes_passes(self) -> None:
         for command in (
-            f'git commit --fixup=HEAD -m "{LONG_REF}"',
-            f'git commit --fixup HEAD -m "{LONG_REF}"',
-            f'git commit --squash=HEAD -m "{LONG_REF}"',
-            f'git commit --squash HEAD -m "{LONG_REF}"',
+            # git puts its own subject above every -m, so the first is body too.
+            f'git commit --fixup=HEAD -m "note" -m "{LONG_REF}"',
+            f'git commit --fixup HEAD -m "note" -m "{LONG_REF}"',
+            f'git commit --squash=HEAD -m "note" -m "{LONG_REF}"',
+            f'git commit --squash HEAD -m "note" -m "{LONG_REF}"',
             f'git commit -m "fixup! fix: title" -m "{LONG_REF}"',
         ):
             with self.subTest(command=command):

@@ -498,7 +498,7 @@ def uncommitted(paths: Sequence[str], cwd: str) -> list[str]:
     )
     if done.returncode != 0:
         raise RuntimeError("git status failed")
-    return [entry[3:] for entry in done.stdout.split("\0") if len(entry) > 3 and entry[:2] not in UNMERGED]
+    return [path for entry in done.stdout.split("\0") if (path := entry[3:]) and entry[:2] not in UNMERGED]
 
 
 def checkout_discards_uncommitted(call: Call) -> str | None:

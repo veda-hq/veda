@@ -639,6 +639,9 @@ describe("EVIDENCE-01: commit identity", () => {
     const pad = "x ".repeat(500_000);
     const page = `<p>${pad}merged abc1234d ${pad}git ${pad}--oneline ${pad}https://github.com/octo/tools/commit/${UNKNOWN_2}</p>`;
     const found = check(`${page}\n`, "docs/research/0001-a/review.html");
+    // The count first: a mutant that finds a token in every pad word fails
+    // here, before assert prints and diffs half a million findings (veda#469).
+    assert.equal(found.length, 1);
     assert.deepEqual(
       found.map((f) => f.check),
       ["abbreviated-id"],

@@ -481,8 +481,8 @@ export const serializeBaseline = (baseline: Baseline): string => {
     const counts = baseline.files[file] ?? {};
     const entry: Partial<Record<CheckId, number>> = {};
     for (const check of CHECK_IDS) {
-      const count = counts[check];
-      if (count !== undefined && count > 0) entry[check] = count;
+      const count = counts[check] ?? 0;
+      if (count > 0) entry[check] = count;
     }
     if (Object.keys(entry).length > 0) sorted[file] = entry;
   }

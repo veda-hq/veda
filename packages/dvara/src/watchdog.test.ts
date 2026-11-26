@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {
+import fs, {
   appendFileSync,
   mkdirSync,
   mkdtempSync,
@@ -10,8 +10,9 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { afterEach, describe, it, mock } from "node:test";
 import {
   DEFAULT_EXTERNAL_IDLE_MS,
@@ -281,6 +282,7 @@ describe("classifyFds", () => {
     const classes = classifyFds(
       lsof,
       tree.map((row) => row.pid),
+      [],
     );
     const clientTcp = classesOf(classes, client).find(
       (fd) => fd.type === "IPv4",
@@ -300,6 +302,7 @@ describe("classifyFds", () => {
     const classes = classifyFds(
       lsof,
       tree.map((row) => row.pid),
+      [],
     );
     const tcp = classesOf(classes, info.rootPid).find(
       (fd) => fd.type === "IPv4",
@@ -312,6 +315,7 @@ describe("classifyFds", () => {
     const classes = classifyFds(
       lsof,
       tree.map((row) => row.pid),
+      [],
     );
     const socket = classesOf(classes, info.rootPid).find(
       (fd) => fd.type === "unix",
@@ -344,7 +348,7 @@ describe("classifyFds", () => {
   for (const [label, shape, expected] of shapes)
     it(`classifies ${label} as ${expected}`, () => {
       const fd: LsofFd = { fd: "5", device: "0xabc", inode: null, ...shape };
-      const classes = classifyFds(new Map([[1, [fd]]]), [1]);
+      const classes = classifyFds(new Map([[1, [fd]]]), [1], []);
       assert.equal(classesOf(classes, 1)[0]?.class, expected);
     });
 });
@@ -424,11 +428,12 @@ describe("decide", () => {
 
   it("spares a tree containing an exempt command such as sleep", () => {
     const withSleep = (tree: PsRow[]): PsRow[] => {
-      const [root, reader] = tree;
-      if (!root || !reader) throw new Error("the deadlock tree has two rows");
+      const [, reader] = tree;
+      if (!reader) throw new Error("the deadlock tree has two rows");
+      // Under no member of the core, so only the exemption can spare it.
       return [
         ...tree,
-        { ...reader, pid: 999_991, ppid: root.pid, comm: "sleep", key: "sleep" },
+        { ...reader, pid: 999_991, ppid: 999_990, comm: "sleep", key: "sleep" },
       ];
     };
     assert.equal(verdictFor("deadlock", config.idleMs, withSleep), null);
@@ -550,15 +555,15 @@ describe("resolveWatchdogConfig", () => {
       "enforce",
     );
     assert.equal(
-      resolveWatchdogConfig({ DVARA_WATCHDOG: "off" }, "darwin").mode,
+      resolveWatchdogConfig({ DVARA_WATCHDOG: "off" }, "darwin", []).mode,
       "off",
     );
   });
 
   it("is unsupported off macOS unless switched off", () => {
-    assert.equal(resolveWatchdogConfig({}, "linux").mode, "unsupported");
+    assert.equal(resolveWatchdogConfig({}, "linux", []).mode, "unsupported");
     assert.equal(
-      resolveWatchdogConfig({ DVARA_WATCHDOG: "off" }, "linux").mode,
+      resolveWatchdogConfig({ DVARA_WATCHDOG: "off" }, "linux", []).mode,
       "off",
     );
   });
@@ -566,7 +571,7 @@ describe("resolveWatchdogConfig", () => {
   for (const raw of [undefined, "", "0", "-1", "abc", "1.5"])
     it(`keeps the default idle window rather than removing it for ${String(JSON.stringify(raw))}`, () => {
       assert.equal(
-        resolveWatchdogConfig({ DVARA_WATCHDOG_IDLE_MS: raw }, "darwin").idleMs,
+        resolveWatchdogConfig({ DVARA_WATCHDOG_IDLE_MS: raw }, "darwin", []).idleMs,
         DEFAULT_IDLE_MS,
       );
     });
@@ -576,6 +581,7 @@ describe("resolveWatchdogConfig", () => {
       resolveWatchdogConfig(
         { DVARA_WATCHDOG_IDLE_MS: String(2 ** 40) },
         "darwin",
+        [],
       ).idleMs,
       MAX_TIMER_MS,
     );
@@ -589,6 +595,7 @@ describe("resolveWatchdogConfig", () => {
           DVARA_WATCHDOG_EXTERNAL_IDLE_MS: "1000",
         },
         "darwin",
+        [],
       ).externalIdleMs,
       5000,
     );
@@ -1039,7 +1046,7 @@ describe("classifyFds by shape", () => {
       [99, [lsofFd("4", { type: "REG" })]],
     ]);
     assert.deepEqual(
-      classifyFds(lsof, [1]),
+      classifyFds(lsof, [1], []),
       new Map([[1, [{ ...keep, class: "ignored", peerPid: null }]]]),
     );
   });
@@ -1061,7 +1068,7 @@ describe("classifyFds by shape", () => {
     ];
     const fds = types.map((type, i) => lsofFd(String(i), { type, name: "x" }));
     assert.deepEqual(
-      classesOf(classifyFds(new Map([[1, fds]]), [1]), 1).map((fd) => fd.class),
+      classesOf(classifyFds(new Map([[1, fds]]), [1], []), 1).map((fd) => fd.class),
       types.map(() => "ignored"),
     );
   });
@@ -1082,7 +1089,7 @@ describe("classifyFds by shape", () => {
       lsofFd(String(i), { type: "IPv6", name: "a:1->b:2", tcpState }),
     );
     assert.deepEqual(
-      classesOf(classifyFds(new Map([[1, fds]]), [1]), 1).map((fd) => fd.class),
+      classesOf(classifyFds(new Map([[1, fds]]), [1], []), 1).map((fd) => fd.class),
       [
         "ignored",
         "ignored",
@@ -1102,7 +1109,7 @@ describe("classifyFds by shape", () => {
       lsofFd(String(i), { type, name: "a:1->b:2", tcpState: "CLOSE_WAIT" }),
     );
     assert.deepEqual(
-      classesOf(classifyFds(new Map([[1, fds]]), [1]), 1).map((fd) => fd.class),
+      classesOf(classifyFds(new Map([[1, fds]]), [1], []), 1).map((fd) => fd.class),
       ["external", "external", "external", "ignored"],
     );
   });
@@ -1114,7 +1121,7 @@ describe("classifyFds by shape", () => {
       tcpState: "ESTABLISHED",
     });
     const clientClass = (peer: LsofFd) =>
-      classesOf(classifyFds(new Map([[1, [client]], [2, [peer]]]), [1, 2]), 1);
+      classesOf(classifyFds(new Map([[1, [client]], [2, [peer]]]), [1, 2], []), 1);
     for (const type of ["XIPv4", "IPv4x", "IPv5", "unix"])
       assert.deepEqual(
         clientClass(lsofFd("3", { type, name: "b:2->a:1" })),
@@ -1147,7 +1154,7 @@ describe("classifyFds by shape", () => {
       const client = lsofFd("3", { type: "IPv4", name, tcpState: "ESTABLISHED" });
       assert.deepEqual(
         classesOf(
-          classifyFds(new Map([[1, [client]], [2, [server]]]), [1, 2]),
+          classifyFds(new Map([[1, [client]], [2, [server]]]), [1, 2], []),
           1,
         ),
         [{ ...client, class: "external", peerPid: null }],
@@ -1166,7 +1173,7 @@ describe("classifyFds by shape", () => {
       const client = lsofFd("3", { type: "IPv4", name: "a:1->b:2", tcpState });
       assert.deepEqual(
         classesOf(
-          classifyFds(new Map([[1, [client]], [2, [server]]]), [1, 2]),
+          classifyFds(new Map([[1, [client]], [2, [server]]]), [1, 2], []),
           1,
         ),
         [{ ...client, class: "external", peerPid: null }],
@@ -1183,7 +1190,7 @@ describe("classifyFds by shape", () => {
       new Map([[1, [{ ...socket, class: "ignored", peerPid: null }]]]),
     );
     assert.deepEqual(
-      classifyFds(new Map([[1, [socket]]]), [1]),
+      classifyFds(new Map([[1, [socket]]]), [1], []),
       new Map([[1, [{ ...socket, class: "external", peerPid: null }]]]),
     );
   });
@@ -1197,7 +1204,7 @@ describe("classifyFds by shape", () => {
       "->0x10",
     ].map((name, i) => lsofFd(String(i), { type: "unix", name }));
     assert.deepEqual(
-      classesOf(classifyFds(new Map([[1, fds]]), [1]), 1).map((fd) => fd.class),
+      classesOf(classifyFds(new Map([[1, fds]]), [1], []), 1).map((fd) => fd.class),
       ["ignored", "ignored", "ignored", "external", "external"],
     );
   });
@@ -1208,7 +1215,7 @@ describe("classifyFds by shape", () => {
       lsofFd("4", { type: "unix", name: "/var/run/docker.sock" }),
     ];
     assert.deepEqual(
-      classesOf(classifyFds(new Map([[1, fds]]), [1]), 1).map((fd) => fd.class),
+      classesOf(classifyFds(new Map([[1, fds]]), [1], []), 1).map((fd) => fd.class),
       ["ignored", "external"],
     );
   });
@@ -1220,7 +1227,7 @@ describe("classifyFds by shape", () => {
     );
     assert.deepEqual(
       classesOf(
-        classifyFds(new Map([[1, fds], [2, [holder]]]), [1, 2]),
+        classifyFds(new Map([[1, fds], [2, [holder]]]), [1, 2], []),
         1,
       ).map((fd) => [fd.class, fd.peerPid]),
       [
@@ -1249,7 +1256,7 @@ describe("classifyFds by shape", () => {
         ],
       ],
     ]);
-    const classes = classifyFds(lsof, [1, 2, 3]);
+    const classes = classifyFds(lsof, [1, 2, 3], []);
     const peers = (pid: number) =>
       classesOf(classes, pid).map((fd) => [fd.class, fd.peerPid]);
     assert.deepEqual(peers(1), [
@@ -1281,7 +1288,7 @@ describe("classifyFds by shape", () => {
         ],
       ],
     ]);
-    const classes = classifyFds(lsof, [1, 2]);
+    const classes = classifyFds(lsof, [1, 2], []);
     const peers = (pid: number) =>
       classesOf(classes, pid).map((fd) => [fd.class, fd.peerPid]);
     assert.deepEqual(peers(1), [
@@ -1316,7 +1323,7 @@ describe("findHangCore by shape", () => {
   });
 
   it("follows only internal channels with a peer", () => {
-    const tree = [psRow(1, 0), psRow(2, 1), psRow(3, 1)];
+    const tree = [psRow(1, 0), psRow(2, 1), psRow(3, 0)];
     const classes = new Map([
       [
         1,
@@ -1397,7 +1404,7 @@ describe("coreSharedOutside by shape", () => {
 describe("decide by shape", () => {
   it("spares a core when another leaf holds an external channel", () => {
     const config = { idleMs: 1000, externalIdleMs: 5000 };
-    const tree = [psRow(1, 0), psRow(2, 1), psRow(3, 1)];
+    const tree = [psRow(1, 0), psRow(2, 1), psRow(3, 0)];
     const classes = new Map([
       [1, [classified("internal", 2)]],
       [2, [classified("internal", 1)]],
@@ -1458,7 +1465,7 @@ describe("exitDisposition's shapes", () => {
 describe("resolveWatchdogConfig's reasons", () => {
   it("says an explicit mode is explicit", () => {
     assert.deepEqual(
-      resolveWatchdogConfig({ DVARA_WATCHDOG: "report" }, "darwin"),
+      resolveWatchdogConfig({ DVARA_WATCHDOG: "report" }, "darwin", []),
       {
         mode: "report",
         reason: "explicit",
@@ -1472,7 +1479,7 @@ describe("resolveWatchdogConfig's reasons", () => {
   });
 
   it("says why it is unsupported off macOS", () => {
-    assert.partialDeepStrictEqual(resolveWatchdogConfig({}, "linux"), {
+    assert.partialDeepStrictEqual(resolveWatchdogConfig({}, "linux", []), {
       mode: "unsupported",
       reason: "non-darwin",
     });
@@ -1593,7 +1600,7 @@ describe("createWatchdog", () => {
       hangsDir,
       runId: "run-under-test",
       config: {
-        ...resolveWatchdogConfig({ DVARA_WATCHDOG: mode }, "darwin"),
+        ...resolveWatchdogConfig({ DVARA_WATCHDOG: mode }, "darwin", []),
         idleMs: 5000,
         externalIdleMs: 60_000,
         sampleMs: 1000,
@@ -2079,8 +2086,9 @@ describe("createWatchdog", () => {
  * log lines, the summary and the diagnostics files.
  *
  * The tree is synthetic: a node root (40467) under the supervisor (40375),
- * a bash leaf (40479) on a socketpair with the root, and an idle cat leaf
- * (40480) that holds nothing. The root also holds a pipe whose other end is
+ * a bash leaf (40479) on a socketpair with the root, and a zombie cat leaf
+ * (40480) that holds nothing: an exited child wakes no parent, so the core
+ * stays closed. The root also holds a pipe whose other end is
  * the supervisor's, so the supervisor's own listing decides whether it is
  * inherited.
  */
@@ -2120,7 +2128,7 @@ describe("createWatchdog, step by step", () => {
     const supervisor = psLine(40375, 40365, 40351, "node", { time: "0:00.03" });
     const root = psLine(40467, 40375, 40351, "node", { time: "0:00.03" });
     const leaf = psLine(40479, 40467, 40351, "bash");
-    const idle = psLine(40480, 40467, 40351, "cat");
+    const idle = psLine(40480, 40467, 40351, "cat", { state: "Z" });
     const supLsof =
       "p40375\nf0\ntCHR\nd0x10\nn/dev/ttys001\nf1\ntPIPE\nd0x11\nn->0x12\n";
     const treeLsof =
@@ -2343,7 +2351,7 @@ describe("createWatchdog, step by step", () => {
         tree: [
           { pid: 40467, ppid: 40375, pgid: 40351, state: "S", cpuMs: 30, comm: "node" },
           { pid: 40479, ppid: 40467, pgid: 40351, state: "S", cpuMs: 0, comm: "bash" },
-          { pid: 40480, ppid: 40467, pgid: 40351, state: "S", cpuMs: 0, comm: "cat" },
+          { pid: 40480, ppid: 40467, pgid: 40351, state: "Z", cpuMs: 0, comm: "cat" },
         ],
       },
     );
@@ -2373,6 +2381,49 @@ describe("createWatchdog, step by step", () => {
       "fresh",
       "run-627",
     ]);
+  });
+
+  it("times nothing when it stops without a verdict", async () => {
+    const { watchdog } = watch();
+    await advance(1000);
+    watchdog.stop();
+    assert.equal(watchdog.summary().verdict, null);
+    assert.equal(Object.hasOwn(watchdog.summary(), "resolvedAfterMs"), false);
+  });
+
+  it("prunes every expired entry when one vanishes between its stat and its removal", async () => {
+    const base = mkdtempSync(join(tmpdir(), "watchdog-627-prune-"));
+    dirs.push(base);
+    const hangsDir = join(base, "hangs");
+    const expiredAt = (START + 11_000 - 1_209_600_000 - 1000) / 1000;
+    for (const name of ["expired-a", "expired-b"]) {
+      mkdirSync(join(hangsDir, name), { recursive: true });
+      utimesSync(join(hangsDir, name), expiredAt, expiredAt);
+    }
+    // The first expired entry stat-ed is removed right after, as another
+    // run's pruning would: its removal must not end the pruning.
+    const realStat = fs.statSync;
+    let vanished = "";
+    mock.method(fs, "statSync", (path: string) => {
+      const stats = realStat(path);
+      if (vanished === "" && basename(path).startsWith("expired-")) {
+        vanished = basename(path);
+        rmSync(path, { recursive: true });
+      }
+      return stats;
+    });
+    syncBuiltinESMExports();
+    try {
+      const { watchdog } = watch({ hangsDir, mode: "report" });
+      await advance(11_000);
+      watchdog.stop();
+      assert.equal(watchdog.summary().verdict?.kind, "internal-deadlock");
+      assert.match(vanished, /^expired-[ab]$/);
+      assert.deepEqual(readdirSync(hangsDir), ["run-627"]);
+    } finally {
+      mock.restoreAll();
+      syncBuiltinESMExports();
+    }
   });
 
   it("only reports in report mode, says when diagnostics fail, and times how the hook ended", async () => {
@@ -3082,5 +3133,148 @@ describe("createWatchdog, step by step", () => {
       [40479, "SIGKILL"],
       [40480, "SIGKILL"],
     ]);
+  });
+});
+
+describe("a core whose member still has a live child outside it", () => {
+  // The 2026-11-26 incident: a pre-push's pnpm (91855) ran sh (91890) and
+  // node (91869). sh reads a pipe only pnpm holds, so the two look closed.
+  // node was polling for a lock file another worktree's run held: a pid file
+  // made with `wx`, so it holds no fd on it, and only its exit could wake
+  // pnpm. ps and lsof rows are the captured ones, with private paths scrubbed.
+  const row = (
+    pid: number,
+    ppid: number,
+    pgid: number,
+    comm: string,
+    state = "S",
+  ): PsRow => ({
+    pid,
+    ppid,
+    pgid,
+    state,
+    cpuMs: 0,
+    started: "Thu Nov 26 13:34:22 2026",
+    comm,
+    key: `${pid}@start`,
+  });
+  const bash = row(71035, 70683, 71035, "bash", "Ss");
+  const pnpm = row(91855, 71035, 71035, "pnpm");
+  const waiter = row(91869, 91855, 91869, "node");
+  const sh = row(91890, 91855, 91890, "sh");
+  const stdio = ["f0", "tPIPE", "d0xa33bcc12b81239e8", "n", "f1", "tREG", "n/tmp/out", "f2", "tREG", "n/tmp/out"];
+  const lsof = parseLsof(
+    [
+      "p71035", "fcwd", "tDIR", "n/repo", ...stdio, "f255", "tREG", "n/repo/pre-push",
+      "p91855", "fcwd", "tDIR", "n/repo", ...stdio,
+      "f3", "tKQUEUE", "ncount=0, state=0xa",
+      "f6", "tunix", "d0x84e3da3ac615990a", "n->0xd48a751a0f556f7",
+      "f7", "tunix", "d0xd48a751a0f556f7", "n->0x84e3da3ac615990a",
+      "f8", "tunix", "d0x84e3da3ac615990a", "n->0xd48a751a0f556f7",
+      "f10", "tPIPE", "d0xae6eae1251bf2818", "n->0xf79ddb45dd5536bf",
+      "p91869", "fcwd", "tDIR", "n/repo", ...stdio,
+      "f3", "tKQUEUE", "ncount=0, state=0x8",
+      "f4", "tPIPE", "d0x3b09fa9ffebd1e74", "n->0x145c55caea053ecc",
+      "f5", "tPIPE", "d0x145c55caea053ecc", "n->0x3b09fa9ffebd1e74",
+      "f6", "tDIR", "n/",
+      "f11", "tPIPE", "d0x3e9710632ae67bc3", "n->0x68d4116fb964f951",
+      "f12", "tPIPE", "d0x68d4116fb964f951", "n->0x3e9710632ae67bc3",
+      "p91890", "fcwd", "tDIR", "n/repo",
+      "f0", "tPIPE", "d0xf79ddb45dd5536bf", "n->0xae6eae1251bf2818",
+      "f1", "tCHR", "n/dev/null", "f2", "tCHR", "n/dev/null",
+    ].join("\n"),
+  );
+  const classesOf = (tree: readonly PsRow[]) =>
+    classifyFds(
+      lsof,
+      tree.map((r) => r.pid),
+      [],
+    );
+  const verdictOf = (tree: PsRow[]) =>
+    decide({
+      tree,
+      classes: classesOf(tree),
+      cpuDeltaByPid: zeroDeltas(tree),
+      quietMs: config.idleMs,
+      config,
+    });
+  const deadlock = {
+    kind: "internal-deadlock",
+    core: { leaf: sh.pid, peers: [pnpm.pid] },
+    quietMs: config.idleMs,
+  };
+
+  it("spares the incident: pnpm is woken when the lock waiter exits", () => {
+    const tree = [bash, pnpm, waiter, sh];
+    assert.equal(findHangCore(tree, classesOf(tree), zeroDeltas(tree)), null);
+    assert.equal(verdictOf(tree), null);
+  });
+
+  it("convicts the same pair once the waiter has gone, or is a zombie", () => {
+    assert.deepEqual(verdictOf([bash, pnpm, sh]), deadlock);
+    assert.deepEqual(
+      verdictOf([bash, pnpm, { ...waiter, state: "Z+" }, sh]),
+      deadlock,
+    );
+  });
+
+  it("counts only a member's own child: a live child of the core's parent does not spare it", () => {
+    const sibling = row(91900, 71035, 91900, "node");
+    assert.deepEqual(verdictOf([bash, pnpm, sibling, sh]), deadlock);
+  });
+});
+
+describe("the pure functions with a field or an entry missing", () => {
+  it("classifies an fd lsof gave no type as external", () => {
+    assert.deepEqual(classifyFds(new Map([[1, [lsofFd("3")]]]), [1], []), new Map([
+      [1, [{ ...lsofFd("3"), class: "external", peerPid: null }]],
+    ]));
+  });
+
+  it("shares no FIFO through fds that have no device", () => {
+    const classes = classifyFds(
+      new Map([
+        [1, [lsofFd("3", { type: "FIFO" })]],
+        [2, [lsofFd("4", { type: "FIFO" })]],
+      ]),
+      [1, 2],
+      [],
+    );
+    assert.deepEqual(
+      [...classes.values()].flat().map((fd) => [fd.class, fd.peerPid]),
+      [
+        ["external", null],
+        ["external", null],
+      ],
+    );
+  });
+
+  it("finds a core whose peer has no classified fds, past a leaf that has none", () => {
+    const tree = [psRow(1, 0), psRow(3, 0), psRow(2, 1)];
+    const classes = new Map([[2, [classified("internal", 1)]]]);
+    const core = { leaf: 2, peers: [1] };
+    assert.deepEqual(findHangCore(tree, classes, zeroDeltas(tree)), core);
+    assert.deepEqual(
+      decide({
+        tree,
+        classes,
+        cpuDeltaByPid: zeroDeltas(tree),
+        quietMs: 1000,
+        config: { idleMs: 1000, externalIdleMs: 5000 },
+      }),
+      { kind: "internal-deadlock", core, quietMs: 1000 },
+    );
+  });
+
+  it("shares nothing outside through a member with no classified fds, or a channel with no device or address", () => {
+    assert.equal(
+      coreSharedOutside(
+        { leaf: 2, peers: [1] },
+        new Map([[2, [classified("internal", 1)]]]),
+        new Map([[9, [lsofFd("3")]]]),
+        [1, 2],
+      ),
+      false,
+    );
   });
 });

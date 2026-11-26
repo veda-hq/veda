@@ -136,7 +136,11 @@ open descriptors with `lsof`. It acts only on positive evidence: a leaf
 process whose every open IPC channel leads to another idle process in the
 same tree, where no process outside the tree holds any of those channels.
 That last part is checked against an `lsof` of every process this user can
-read, taken only once such a core is found. Waiting on the outside world (a network peer, a daemon, a
+read, taken only once such a core is found. Every live child of those
+processes must be one of them too. A parent waits on its children's exit,
+which `lsof` never shows, so a core with a child still running outside it is
+spared. One such child is a run polling for a lock another process holds,
+which keeps no descriptor on the lock. Waiting on the outside world (a network peer, a daemon, a
 terminal) or on a timed wait (`sleep`) is spared, and a measurement it cannot
 read is never evidence. A timer is invisible to `ps` and `lsof`, so a kill
 also needs the same processes found that way twice, one quiet window apart,

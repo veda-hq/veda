@@ -94,6 +94,7 @@ scanning. Each lesson names the symptom and the fix.
   the PR looks green in `gh pr checks` and on its page. `niyam pr-signals` warns when no GitHub
   Actions run has reported; without it, confirm `gh run list --branch <branch>` is non-empty. A CI
   watcher must require a minimum check count and two consecutive settled polls.
+  <!-- when: command "\bgh pr checks\b" -->
 - **`workflow_dispatch` can dequeue a PR.** A dispatch run from a branch with an open PR posts
   every job's check on the head sha, including a required aggregate gate as skipped, which
   replaces the PR run's success. A merge queue's `check-success` then fails and dequeues the PR,

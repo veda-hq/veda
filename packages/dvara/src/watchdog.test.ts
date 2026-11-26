@@ -3161,7 +3161,7 @@ describe("a core whose member still has a live child outside it", () => {
   it("convicts the same pair once the waiter has gone, or is a zombie", () => {
     assert.deepEqual(verdictOf([bash, pnpm, sh]), deadlock);
     assert.deepEqual(
-      verdictOf([bash, pnpm, { ...waiter, state: "Z" }, sh]),
+      verdictOf([bash, pnpm, { ...waiter, state: "Z+" }, sh]),
       deadlock,
     );
   });

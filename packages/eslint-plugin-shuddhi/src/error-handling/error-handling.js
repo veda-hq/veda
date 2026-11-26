@@ -42,6 +42,12 @@ const FUNCTION_TYPES = new Set([
 
 const isFunction = node => Boolean(node) && FUNCTION_TYPES.has(node.type);
 
+/**
+ * Is `node` the identifier `name`? A private `#name` is not: it is a
+ * PrivateIdentifier with the same `name`.
+ */
+const isName = (node, name) => node.type === 'Identifier' && node.name === name;
+
 /** `x.catch(fn)` / `x?.catch(fn)` with an inline function: the function. */
 function catchCallback(call) {
   if (call.type !== 'CallExpression') return null;
@@ -49,8 +55,7 @@ function catchCallback(call) {
   if (
     callee.type !== 'MemberExpression' ||
     callee.computed ||
-    callee.property.type !== 'Identifier' ||
-    callee.property.name !== 'catch'
+    !isName(callee.property, 'catch')
   )
     return null;
   const handler = call.arguments[0];
@@ -68,8 +73,7 @@ function processErrorHandler(call) {
   const { callee } = call;
   if (
     callee.type !== 'MemberExpression' ||
-    callee.object.type !== 'Identifier' ||
-    callee.object.name !== 'process' ||
+    !isName(callee.object, 'process') ||
     callee.property.type !== 'Identifier' ||
     !['on', 'once', 'addListener', 'prependListener'].includes(
       callee.property.name,
@@ -110,36 +114,32 @@ function walkSameFunction(root, visit) {
 }
 
 const isMember = (node, object, property) =>
-  node?.type === 'MemberExpression' &&
+  node.type === 'MemberExpression' &&
   !node.computed &&
-  node.object.type === 'Identifier' &&
-  node.object.name === object &&
-  node.property.type === 'Identifier' &&
-  node.property.name === property;
+  isName(node.object, object) &&
+  isName(node.property, property);
 
 /** Is `fn` the executor of `new Promise(fn)`? */
 const isExecutor = fn =>
-  fn?.parent?.type === 'NewExpression' &&
-  fn.parent.callee.type === 'Identifier' &&
-  fn.parent.callee.name === 'Promise' &&
+  fn.parent.type === 'NewExpression' &&
+  isName(fn.parent.callee, 'Promise') &&
   fn.parent.arguments[0] === fn;
 
-/** Is `variable` the second parameter (`reject`) of a promise executor? */
+/**
+ * Is `variable` the second parameter (`reject`) of a promise executor? Only
+ * a parameter's definition is one of its function's `params`.
+ */
 const isExecutorReject = variable =>
-  Boolean(variable) &&
-  variable.defs.some(
-    def =>
-      def.type === 'Parameter' &&
-      isExecutor(def.node) &&
-      def.node.params[1] === def.name,
+  variable?.defs.some(
+    def => def.node.params?.[1] === def.name && isExecutor(def.node),
   );
 
 /** The function a variable is bound to (`function f`, `const f = () => …`). */
 function boundFunction(variable) {
-  for (const def of variable?.defs ?? []) {
+  for (const def of variable.defs) {
     if (def.type === 'FunctionName') return def.node;
-    if (def.type === 'Variable' && isFunction(def.node.init))
-      return def.node.init;
+    // Only a variable's definition has an `init`.
+    if (isFunction(def.node.init)) return def.node.init;
   }
   return null;
 }
@@ -150,8 +150,8 @@ function boundFunction(variable) {
  * executor which calls it (the settle-once `fail` wrapper).
  */
 function rejectsPromise(sourceCode, callee) {
-  if (callee.type !== 'Identifier') return false;
   const variable = resolve(sourceCode, callee);
+  if (!variable) return false;
   if (isExecutorReject(variable)) return true;
   const wrapper = boundFunction(variable);
   if (!wrapper) return false;
@@ -163,7 +163,6 @@ function rejectsPromise(sourceCode, callee) {
     wrapper.body,
     node =>
       node.type === 'CallExpression' &&
-      node.callee.type === 'Identifier' &&
       isExecutorReject(resolve(sourceCode, node.callee)),
   );
 }
@@ -173,12 +172,8 @@ function caughtWithin(node, root) {
   let child = node;
   let current = node.parent;
   while (current && child !== root) {
-    if (
-      current.type === 'TryStatement' &&
-      current.handler &&
-      child === current.block
-    )
-      return true;
+    // Only a TryStatement has a `handler` and a `block`.
+    if (current.handler && child === current.block) return true;
     child = current;
     current = current.parent;
   }
@@ -196,32 +191,30 @@ function propagates(sourceCode, body) {
     if (node.type === 'ThrowStatement') return !caughtWithin(node, body);
     if (node.type === 'CallExpression') {
       // Only a rejection the handler hands back: returned, awaited, or the
-      // arrow's value. A floating `Promise.reject(e)` resolves the chain and
-      // leaves an unhandled rejection behind.
+      // arrow's value (the arrow's expression body is the call itself). A
+      // floating `Promise.reject(e)` resolves the chain and leaves an
+      // unhandled rejection behind.
       // An awaited rejection inside a nested try/catch is taken back there.
       if (isMember(node.callee, 'Promise', 'reject'))
         return (
           node.parent.type === 'ReturnStatement' ||
           (node.parent.type === 'AwaitExpression' &&
             !caughtWithin(node, body)) ||
-          (node.parent.type === 'ArrowFunctionExpression' &&
-            node.parent.body === node)
+          node === body
         );
       if (rejectsPromise(sourceCode, node.callee)) return true;
       if (isMember(node.callee, 'process', 'exit')) {
-        // No argument exits with the current exit code, normally 0.
+        // No argument exits with the current exit code, normally 0. Only a
+        // literal has a `value`, so any other status counts as non-zero.
         const [status] = node.arguments;
-        return (
-          status !== undefined &&
-          !(status.type === 'Literal' && status.value === 0)
-        );
+        return status !== undefined && status.value !== 0;
       }
     }
     if (
       node.type === 'AssignmentExpression' &&
       isMember(node.left, 'process', 'exitCode')
     ) {
-      return !(node.right.type === 'Literal' && node.right.value === 0);
+      return node.right.value !== 0;
     }
     return false;
   });
@@ -232,8 +225,9 @@ function annotationComments(sourceCode, handler, body, anchor) {
   const comments = [...sourceCode.getCommentsBefore(handler)];
   if (anchor) {
     comments.push(...sourceCode.getCommentsBefore(anchor));
+    // The `.` (or `?.`) before `catch`: a comment may sit before it too.
     const dot = sourceCode.getTokenBefore(anchor);
-    if (dot) comments.push(...sourceCode.getCommentsBefore(dot));
+    comments.push(...sourceCode.getCommentsBefore(dot));
   }
   if (body.type === 'BlockStatement') {
     const first = body.body[0];
@@ -327,22 +321,23 @@ const DEFAULT_HELPER_SOURCE = '^\\.{1,2}/(?:.*/)?error-handling$';
 function unwrapValue(node) {
   let current = node;
   for (;;) {
-    if (
-      current?.type === 'LogicalExpression' &&
-      (current.operator === '??' || current.operator === '||')
-    )
+    // Only a LogicalExpression has the operator `??` or `||`.
+    if (current.operator === '??' || current.operator === '||')
       current = current.left;
     else if (
-      current?.type === 'TSNonNullExpression' ||
-      current?.type === 'TSAsExpression' ||
-      current?.type === 'ChainExpression'
+      current.type === 'TSNonNullExpression' ||
+      current.type === 'TSAsExpression' ||
+      current.type === 'ChainExpression'
     )
       current = current.expression;
     else return current;
   }
 }
 
-/** Resolves an identifier to its variable through the scope chain. */
+/**
+ * Resolves an identifier to its variable through the scope chain. A node
+ * with no name (a member, a call) resolves to null.
+ */
 function resolve(sourceCode, identifier) {
   let scope = sourceCode.getScope(identifier);
   while (scope) {
@@ -359,7 +354,6 @@ const isParameter = variable =>
 /** Is this object expression rooted in `this` or a function parameter? */
 function injectedRoot(sourceCode, node) {
   const object = unwrapValue(node);
-  if (!object) return false;
   if (object.type === 'ThisExpression') return true;
   if (object.type === 'Identifier')
     return isParameter(resolve(sourceCode, object));
@@ -399,13 +393,15 @@ function isInjectedSink(sourceCode, callee, sinkKind) {
     if (!variable) return false;
     if (isParameter(variable)) return true;
     // `const idleFillLog = state.idleFillLog ?? (() => {})` (OBS-03).
-    return variable.defs.some(
-      def =>
-        def.type === 'Variable' &&
-        def.node.init &&
-        unwrapValue(def.node.init)?.type === 'MemberExpression' &&
-        injectedRoot(sourceCode, unwrapValue(def.node.init).object),
-    );
+    // Only a variable's definition has an `init`.
+    return variable.defs.some(def => {
+      if (!def.node.init) return false;
+      const value = unwrapValue(def.node.init);
+      return (
+        value.type === 'MemberExpression' &&
+        injectedRoot(sourceCode, value.object)
+      );
+    });
   }
   if (
     callee.type === 'MemberExpression' &&
@@ -457,20 +453,20 @@ function enclosingCatchHandler(node) {
   return null;
 }
 
-/** Climbs from a call past `?.`, `await` and `void` to where its value goes. */
+/**
+ * Climbs from a call past `?.`, `await` and `void` to the node its value
+ * goes to.
+ */
 function valueHome(node) {
-  let child = node;
   let current = node.parent;
   while (
-    current &&
-    (current.type === 'ChainExpression' ||
-      current.type === 'AwaitExpression' ||
-      (current.type === 'UnaryExpression' && current.operator === 'void'))
-  ) {
-    child = current;
+    current.type === 'ChainExpression' ||
+    current.type === 'AwaitExpression' ||
+    // Only a UnaryExpression has the operator `void`.
+    current.operator === 'void'
+  )
     current = current.parent;
-  }
-  return { child, parent: current };
+  return current;
 }
 
 /**
@@ -479,16 +475,16 @@ function valueHome(node) {
  * decision) is part of the contract, not fire-and-forget telemetry.
  */
 function discarded(node) {
-  const { child, parent } = valueHome(node);
-  if (parent?.type === 'ExpressionStatement') return true;
-  // An arrow's expression body is its return value. Bound or returned
+  const home = valueHome(node);
+  if (home.type === 'ExpressionStatement') return true;
+  // An arrow's expression body is its return value (a call can be nothing
+  // else of an arrow's). Bound or returned
   // (`const decide = deps => deps.onDecide?.(1)`) that value is the contract;
   // passed as a callback (`setTimeout(() => deps.log(x))`) the callee drops it.
   return (
-    parent?.type === 'ArrowFunctionExpression' &&
-    parent.body === child &&
-    parent.parent?.type === 'CallExpression' &&
-    parent.parent.arguments.includes(parent)
+    home.type === 'ArrowFunctionExpression' &&
+    home.parent.type === 'CallExpression' &&
+    home.parent.arguments.includes(home)
   );
 }
 
@@ -498,14 +494,17 @@ const isAwaited = node => {
   return parent.type === 'AwaitExpression';
 };
 
-/** Is the call's value returned, awaited, or its arrow's expression body? */
+/**
+ * Is the call's value handed back to the wrapper: awaited, or its arrow's
+ * expression body? A returned value is never discarded, so the rule never
+ * asks about one.
+ */
 function handedBack(node) {
   const child = node.parent.type === 'ChainExpression' ? node.parent : node;
   const parent = child.parent;
   return (
-    parent.type === 'ReturnStatement' ||
     parent.type === 'AwaitExpression' ||
-    (parent.type === 'ArrowFunctionExpression' && parent.body === child)
+    parent.type === 'ArrowFunctionExpression'
   );
 }
 
@@ -516,14 +515,13 @@ function handedBack(node) {
  * `helperSourcePattern`.
  */
 function isSafeWrapper(sourceCode, callee, helperSource) {
-  if (callee.type !== 'Identifier') return false;
   const variable = resolve(sourceCode, callee);
   return Boolean(
     variable?.defs.some(
       def =>
-        def.type === 'ImportBinding' &&
+        // Only an import's definition has an ImportSpecifier node.
         def.node.type === 'ImportSpecifier' &&
-        helperSource.test(def.parent?.source?.value ?? '') &&
+        helperSource.test(def.parent.source.value) &&
         SAFE_WRAPPERS.has(
           def.node.imported.type === 'Identifier'
             ? def.node.imported.name
@@ -545,16 +543,13 @@ function guarded(sourceCode, node, synchronous, helperSource) {
   let child = node;
   let current = node.parent;
   while (current) {
-    if (
-      current.type === 'TryStatement' &&
-      child === current.block &&
-      current.handler
-    )
+    // Only a TryStatement has a `block` and a `handler`.
+    if (child === current.block && current.handler)
       return synchronous || isAwaited(node);
     if (isFunction(current)) {
       const call = current.parent;
       return (
-        call?.type === 'CallExpression' &&
+        call.type === 'CallExpression' &&
         isSafeWrapper(sourceCode, call.callee, helperSource) &&
         call.arguments.includes(current) &&
         // The wrapper absorbs only the rejection it is handed: an async sink
@@ -605,9 +600,9 @@ const safeLogRule = {
     },
   },
   create(context) {
-    const options = { ...SAFE_LOG_DEFAULTS, ...context.options[0] };
-    const helperSource = new RegExp(options.helperSourcePattern);
-    const helperModule = options.helperModule;
+    // ESLint merges meta.defaultOptions into what the project passes.
+    const { helperModule, helperSourcePattern } = context.options[0];
+    const helperSource = new RegExp(helperSourcePattern);
     const sourceCode = context.sourceCode;
     const jsx = /\.[jt]sx$/.test(context.filename);
     return {
@@ -618,8 +613,7 @@ const safeLogRule = {
             : node.callee;
         const isConsole =
           callee.type === 'MemberExpression' &&
-          callee.object.type === 'Identifier' &&
-          callee.object.name === 'console';
+          isName(callee.object, 'console');
         if (guarded(sourceCode, node, isConsole, helperSource)) return;
         const sinkKind = name => {
           if (SINK_NAME.test(name)) return 'any';
@@ -667,10 +661,9 @@ function landing(node) {
   let child = node;
   let current = node.parent;
   while (
-    current &&
-    (TRANSPARENT.has(current.type) ||
-      current.type === 'LogicalExpression' ||
-      (current.type === 'ConditionalExpression' && child !== current.test))
+    TRANSPARENT.has(current.type) ||
+    current.type === 'LogicalExpression' ||
+    (current.type === 'ConditionalExpression' && child !== current.test)
   ) {
     child = current;
     current = current.parent;
@@ -678,14 +671,14 @@ function landing(node) {
   return { child, parent: current };
 }
 
+/** A string or template literal. Only a literal has a `value`. */
 const isStringy = node =>
-  (node.type === 'Literal' && typeof node.value === 'string') ||
-  node.type === 'TemplateLiteral';
+  typeof node.value === 'string' || node.type === 'TemplateLiteral';
 
 /** Climbs past casts only (`e as Error`, `e!`). */
 function outerValue(node) {
   let value = node;
-  while (TRANSPARENT.has(value.parent?.type)) value = value.parent;
+  while (TRANSPARENT.has(value.parent.type)) value = value.parent;
   return value;
 }
 
@@ -693,19 +686,18 @@ function outerValue(node) {
 function explicitConversion(value) {
   const parent = value.parent;
   if (
-    parent?.type === 'CallExpression' &&
-    parent.callee.type === 'Identifier' &&
-    parent.callee.name === 'String' &&
+    parent.type === 'CallExpression' &&
+    isName(parent.callee, 'String') &&
     parent.arguments[0] === value
   )
     return parent;
+  // `value` is a reference, never a non-computed member's property, so a
+  // non-computed member parent has it as its object.
   if (
-    parent?.type === 'MemberExpression' &&
-    parent.object === value &&
+    parent.type === 'MemberExpression' &&
     !parent.computed &&
-    parent.property.type === 'Identifier' &&
-    parent.property.name === 'toString' &&
-    parent.parent?.type === 'CallExpression' &&
+    isName(parent.property, 'toString') &&
+    parent.parent.type === 'CallExpression' &&
     parent.parent.callee === parent
   )
     return parent.parent;
@@ -715,11 +707,10 @@ function explicitConversion(value) {
 /** Is this value used as text: a template slot or `'…' + value`? */
 function stringified(node) {
   const { child, parent } = landing(node);
-  if (!parent) return false;
   // A tagged template hands its tag the raw values, not their text.
   if (parent.type === 'TemplateLiteral')
     return (
-      parent.parent?.type !== 'TaggedTemplateExpression' &&
+      parent.parent.type !== 'TaggedTemplateExpression' &&
       parent.expressions.includes(child)
     );
   if (parent.type === 'BinaryExpression' && parent.operator === '+') {
@@ -752,10 +743,8 @@ const noRawErrorString = {
     },
   },
   create(context) {
-    const { helperModule } = {
-      ...RAW_ERROR_STRING_DEFAULTS,
-      ...context.options[0],
-    };
+    // ESLint merges meta.defaultOptions into what the project passes.
+    const { helperModule } = context.options[0];
     const sourceCode = context.sourceCode;
 
     const report = node =>
@@ -766,9 +755,10 @@ const noRawErrorString = {
       });
 
     // eslint-scope attaches a catch or parameter binding to its OWNER (the
-    // CatchClause or the function), not to the identifier.
+    // CatchClause or the function), not to the identifier. Only a plain
+    // identifier binding is a definition's name: a destructured, defaulted
+    // or missing binding finds no variable.
     const checkBinding = (owner, param) => {
-      if (param?.type !== 'Identifier') return;
       const variable = sourceCode
         .getDeclaredVariables(owner)
         .find(candidate => candidate.defs.some(def => def.name === param));
@@ -782,9 +772,10 @@ const noRawErrorString = {
           report(converted);
           continue;
         }
+        // As in explicitConversion: a non-computed member parent has the
+        // reference as its object.
         if (
-          parent?.type === 'MemberExpression' &&
-          parent.object === value &&
+          parent.type === 'MemberExpression' &&
           !parent.computed &&
           parent.property.type === 'Identifier'
         ) {
@@ -825,8 +816,8 @@ const ASYNC_CHILD_APIS = new Set(['spawn', 'exec', 'execFile']);
  */
 function staticKey(key, computed) {
   if (key.type === 'Identifier') return computed ? null : key.name;
-  if (key.type === 'Literal')
-    return typeof key.value === 'string' ? key.value : null;
+  // A number, regular expression or null names no API either.
+  if (key.type === 'Literal') return key.value;
   if (key.type === 'TemplateLiteral' && key.expressions.length === 0)
     return key.quasis[0].value.cooked;
   return null;
@@ -878,37 +869,34 @@ const noDirectChildProcess = {
     },
   },
   create(context) {
-    const { allow, runner, root } = {
-      ...CHILD_PROCESS_DEFAULTS,
-      ...context.options[0],
-    };
+    // ESLint merges meta.defaultOptions into what the project passes.
+    const { allow, runner, root } = context.options[0];
     // `allow` names files from the root, matched exactly: a suffix match
     // would also exempt any nested file of the same name.
     if (allow.includes(rootPath(root ?? context.cwd, context.filename)))
       return {};
 
     // Namespace bindings by variable, not name: a parameter `cp` that shadows
-    // `import * as cp from 'child_process'` is someone else's object.
+    // `import * as cp from 'child_process'` is someone else's object. Each
+    // declaration bound here (a declarator with a plain name, a default or
+    // namespace import) declares exactly one variable.
     const sourceCode = context.sourceCode;
     const namespaces = new Set();
-    const bindNamespace = (declaration, name) => {
-      for (const variable of sourceCode.getDeclaredVariables(declaration))
-        if (variable.name === name) namespaces.add(variable);
-    };
+    const bindNamespace = declaration =>
+      namespaces.add(sourceCode.getDeclaredVariables(declaration)[0]);
     const report = (node, name) =>
       context.report({ node, messageId: 'direct', data: { name, runner } });
 
+    // Only a literal argument has a `value`.
     const isChildProcessRequire = node =>
       node?.type === 'CallExpression' &&
-      node.callee.type === 'Identifier' &&
-      node.callee.name === 'require' &&
-      node.arguments[0]?.type === 'Literal' &&
-      CHILD_PROCESS_MODULES.has(node.arguments[0].value);
+      isName(node.callee, 'require') &&
+      CHILD_PROCESS_MODULES.has(node.arguments[0]?.value);
 
     const checkPattern = declarator => {
       const pattern = declarator.id;
       if (pattern.type === 'Identifier') {
-        bindNamespace(declarator, pattern.name);
+        bindNamespace(declarator);
         return;
       }
       if (pattern.type !== 'ObjectPattern') return;
@@ -953,7 +941,7 @@ const noDirectChildProcess = {
                 : specifier.imported.value;
             if (ASYNC_CHILD_APIS.has(name)) report(specifier, name);
           } else {
-            bindNamespace(specifier, specifier.local.name);
+            bindNamespace(specifier);
           }
         }
       },
@@ -965,7 +953,7 @@ const noDirectChildProcess = {
         if (isChildProcessRequire(init)) checkPattern(node);
         else if (
           init?.type === 'ImportExpression' &&
-          init.source.type === 'Literal' &&
+          // Only a literal source has a `value`.
           CHILD_PROCESS_MODULES.has(init.source.value)
         )
           checkPattern(node);
@@ -975,8 +963,8 @@ const noDirectChildProcess = {
         const name = staticKey(node.property, node.computed);
         if (!ASYNC_CHILD_APIS.has(name)) return;
         if (isChildProcessRequire(node.object)) report(node, name);
-        else if (node.object.type === 'Identifier')
-          members.push({ node, name });
+        // An object that is not a plain name resolves to no namespace.
+        else members.push({ node, name });
       },
     };
   },

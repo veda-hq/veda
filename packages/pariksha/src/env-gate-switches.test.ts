@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import type * as TS from 'typescript';
-import { DEFAULT_WORDS, formatReads, listFiles, parseConfig, readerFor, readGate, UnreadableGateFile, type Reads } from './env-gate-switches.ts';
+import { DEFAULT_WORDS, diskReads, formatReads, listFiles, needsTypescript, parseConfig, readerFor, readGate, UnreadableGateFile, type Reads } from './env-gate-switches.ts';
 import { loadTypescript, type Ts } from './typescript.ts';
 
 const loaded = loadTypescript();
@@ -1095,4 +1098,277 @@ describe('listFiles and readGate on symlinks', () => {
     assert.throws(() => readGate(reads, 'staged', { file: 'scripts/b.sh', symlink: true }), (e: unknown) => e instanceof UnreadableGateFile && e.message === 'scripts/b.sh is a symlink in the index; its target is unchecked');
     assert.throws(() => readGate(reads, 'tree', { file: 'scripts/b.sh', symlink: false }), (e: unknown) => e instanceof UnreadableGateFile && e.message === 'scripts/b.sh is a symlink in the working tree; its target is unchecked');
   });
+});
+
+describe('listFiles, by what git is asked', () => {
+  it('lists the tracked files for tree, dropping the empty name after the last NUL', () => {
+    const asked: string[][] = [];
+    const listed = listFiles({ git: { run: (args) => (asked.push([...args]), 'scripts/a.sh\0scripts/b.sh\0') }, read: () => '' }, 'tree');
+    assert.deepEqual(listed, [
+      { file: 'scripts/a.sh', symlink: false },
+      { file: 'scripts/b.sh', symlink: false },
+    ]);
+    assert.deepEqual(asked, [['ls-files', '-z']]);
+  });
+
+  it('asks the index for what it adds, copies, modifies, renames or retypes, plainly, for staged', () => {
+    const asked: string[][] = [];
+    listFiles({ git: { run: (args) => (asked.push([...args]), '') }, read: () => '' }, 'staged');
+    assert.deepEqual(asked, [['diff', '--no-renames', '--no-color', '--no-ext-diff', '--no-textconv', '--text', '--cached', '--raw', '-z', '--diff-filter=ACMRT']]);
+  });
+});
+
+describe('diskReads', () => {
+  it('reads a file under the root as text, refuses to follow a symlink, and closes what it opens', () => {
+    const root = mkdtempSync(join(tmpdir(), 'env-gate-switches-'));
+    try {
+      writeFileSync(join(root, 'a.sh'), 'echo "$A_SKIP"\n');
+      symlinkSync('a.sh', join(root, 'b.sh'));
+      const reads = diskReads(root);
+      assert.equal(reads.read('a.sh'), 'echo "$A_SKIP"\n');
+      assert.throws(() => reads.read('b.sh'), (e: unknown) => (e as NodeJS.ErrnoException).code === 'ELOOP');
+      const open = readdirSync('/dev/fd').length;
+      for (let n = 0; n < 20; n += 1) reads.read('a.sh');
+      assert.equal(readdirSync('/dev/fd').length, open);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('parseConfig, on notAGate paths', () => {
+  for (const path of ['.', '..', '../a', 'a/']) {
+    it(`refuses ${j(path)}: not a normalized root-relative path`, () => {
+      const text = JSON.stringify({ gatePaths: ['^a/'], notAGate: { X_SKIP: { files: [path], reason: 'r' } } });
+      assert.throws(() => parseConfig(text), { message: `notAGate.X_SKIP.files: "${path}" is not a normalized root-relative path` });
+    });
+  }
+});
+
+describe('needsTypescript and isGateCode, by extension', () => {
+  it('needs the compiler for a script only', () => {
+    assert.equal(needsTypescript('scripts/gate.ts'), true);
+    assert.equal(needsTypescript('scripts/gate.sh'), false);
+    assert.equal(needsTypescript('scripts/gate.json'), false);
+  });
+
+  it('owns no file whose name only contains a script or workflow extension', () => {
+    assert.equal(reader.isGateCode('scripts/gate.json'), false);
+    assert.equal(reader.isGateCode('.github/workflows/ci.yml.bak'), false);
+  });
+});
+
+describe('findSwitchReads on scripts, by script kind', () => {
+  // `<string>x` is a type assertion in TypeScript and a JSX tag in JavaScript and TSX.
+  const source = 'const skip = <string>process.env.A_SKIP;';
+  for (const [file, found] of [
+    ['scripts/gate.ts', ['A_SKIP']],
+    ['scripts/box.ts', ['A_SKIP']],
+    ['scripts/gate.js.ts', ['A_SKIP']],
+    ['scripts/gate.js', []],
+    ['scripts/gate.mjs', []],
+    ['scripts/gate.tsx', []],
+  ] as const) {
+    it(`reads ${file} as its kind`, () => {
+      assert.deepEqual(names(file, source), [...found]);
+    });
+  }
+});
+
+describe('findSwitchReads on scripts, at the edges of what names the environment', () => {
+  for (const [source, found] of [
+    // A template with a span nothing knows names nothing.
+    ['if (process.env[`${prefix}SKIP`]) {}', []],
+    ["if (process.env[`${'GATE_'}SKIP`]) {}", ['GATE_SKIP']],
+    // A namespace's `const`, reached through it, names its switch as a plain `const` does.
+    ["namespace keys { export const GATE = 'GATE_SKIP'; }\nif (process.env[keys.GATE]) {}", ['GATE_SKIP']],
+    // The checker's own `undefined` has no declaration.
+    ['if (process.env[undefined]) {}', []],
+    ['if (process.env[pick()]) {}', []],
+    ["const { 'A_SKIP': skip } = process.env;", ['A_SKIP']],
+    ['import proc from "node:process";\nif (other.env.A_SKIP) {}', []],
+    ['settings = process.env;\nif (other.A_SKIP) {}', []],
+    ['cfg.settings = process.env;\nif (other.A_SKIP) {}', []],
+    // The checker's own `arguments` has no declaration.
+    ['function gate() { return process.env[arguments]; }', []],
+    // A default that names the parameter itself holds nothing.
+    ['function gate(env: Options = env) { return env.A_SKIP; }', []],
+    ['function gate(env: Options = process.env) { return env.A_SKIP || env.B_SKIP; }', ['A_SKIP', 'B_SKIP']],
+    ['const e = process.env;\nconst o = {};\nif (o.A_SKIP) {}', []],
+    ['let rest;\n({ ...rest } = process);\nif (rest.A_SKIP) {}', []],
+    ["const p = load('node:process');\nif (p.env.A_SKIP) {}", []],
+    ['const p = require();\nif (p.env.A_SKIP) {}', []],
+    ["const p = require('fs');\nif (p.env.A_SKIP) {}", []],
+    ["const p = require('node:process', 1);\nif (p.env.A_SKIP) {}", []],
+    ['const p = require(name);\nif (p.env.A_SKIP) {}', []],
+    ["import 'node:process';\nif (process.env.A_SKIP) {}", ['A_SKIP']],
+    ["import { argv } from 'node:process';\nif (argv.A_SKIP) {}", []],
+    ["import p from 'fs';\nif (p.env.A_SKIP) {}", []],
+    ['const p = {};\nif (p.env.A_SKIP) {}', []],
+    ["import { env } from 'node:process';\nconst e = env;\nif (e.A_SKIP) {}", ['A_SKIP']],
+    ['let x;\nx = {};\nif (x.A_SKIP) {}', []],
+    ["const named = 'A_SKIP' || process.env;", []],
+    ['const { process: { env: { A_SKIP } } } = window;', []],
+    ['const { process: { env: { A_SKIP } } } = global;', ['A_SKIP']],
+    // A namespace's `let`, assigned the environment through the namespace, holds it.
+    ['namespace keys { export let settings: unknown; }\nkeys.settings = process.env;\nnamespace keys { if (settings.A_SKIP) {} }', ['A_SKIP']],
+    // So does a top-level `var`, assigned through `globalThis`.
+    ['var settings;\nglobalThis.settings = process.env;\nif (settings.A_SKIP) {}', ['A_SKIP']],
+    ['for (let i = 0; i < 1; i += 1) {}\nif (process.env.A_SKIP) {}', ['A_SKIP']],
+  ] as const) {
+    it(`${found.length > 0 ? 'reads' : 'does not read'} ${j(source)}`, () => {
+      assert.deepEqual(names('scripts/gate.ts', source), [...found]);
+    });
+  }
+
+  it('builds no checker for a file that binds nothing to the environment', () => {
+    const { seen, compiler } = watchedCompiler();
+    assert.deepEqual(names('scripts/gate.ts', 'if (settings.env.A_SKIP) {}', compiler), []);
+    assert.equal(seen.built, 0);
+  });
+});
+
+describe('findSwitchReads on shell, at the edges of control flow and quoting', () => {
+  // Each source starts at line 1; `lines` are the lines it reads a switch on.
+  for (const [source, lines] of [
+    ['if (( (PUSH_SKIP) + 1 )); then :; fi', [1]],
+    ['[[ PUSH_SKIP  -eq 1 ]] && exit 0', [1]],
+    ['[[ 1 -eq  PUSH_SKIP ]] && exit 0', [1]],
+    ['[[ -v A_SKIP || -v B_SKIP ]] && exit 0', [1, 1]],
+    // A keyword that opens nothing.
+    ['echo if\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
+    ['echo "x; if"\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
+    // Keywords that open a branch, however they are spaced.
+    ['true;if false; then\nGATE_SKIP=0\nfi\n[ "$GATE_SKIP" = 1 ]', [4]],
+    ['true; if false; then\nGATE_SKIP=0\nfi\n[ "$GATE_SKIP" = 1 ]', [4]],
+    ['if a; then if b; then :; fi\nGATE_SKIP=0\nfi\n[ "$GATE_SKIP" = 1 ]', [4]],
+    ['if a; then  if b; then :; fi\nGATE_SKIP=0\nfi\n[ "$GATE_SKIP" = 1 ]', [4]],
+    ['if a; then\n:\nfi;\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
+    // A `{ … }` group, opened at the line's start and closed however it is followed.
+    ['{ :\nGATE_SKIP=0\n}\n[ "$GATE_SKIP" = 1 ]', [4]],
+    ['{ :\n:; }\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
+    ['{ :\n:; } || true\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
+    ['{ :\n:; };\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
+    // A `( … )` subshell after `then`, however spaced, and closed before `;`.
+    ['if a; then ( :\n)\nGATE_SKIP=0\nfi\n[ "$GATE_SKIP" = 1 ]', [5]],
+    ['if a; then  ( :\n)\nGATE_SKIP=0\nfi\n[ "$GATE_SKIP" = 1 ]', [5]],
+    ['(\n:\n);\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
+    // A quoted value with a blank is one word.
+    ['GATE_SKIP="a b"\n[ "$GATE_SKIP" = 1 ]', []],
+    ["GATE_SKIP='a b'\n[ \"$GATE_SKIP\" = 1 ]", []],
+    // A list goes on past a line of blanks, and after `|` and trailing blanks.
+    ['false &&\n   \nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', [4]],
+    ['echo x |\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', [3]],
+    ['false &&  \nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', [3]],
+    // A trailing `\` joins the next line to this command.
+    ['echo x \\\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', [3]],
+    // An escaped character mid-line joins nothing; nor does a heredoc's delimiter.
+    ['echo \\$x\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
+    ['echo \\$\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
+    ['cat <<EOF\nx\nEOF\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
+    // A self-default reads on its own line, and leaves the later read a read.
+    ['X_SKIP="${X_SKIP:-0}"\n[ "$X_SKIP" = 1 ] && exit 0', [1, 2]],
+    // `$'…'` takes `\` escapes, a blank among them; a plain `'` left open does not.
+    ['echo $\'a\\ b\' "$GATE_SKIP"', [1]],
+    ['echo \'a\nb\\\' "$GATE_SKIP"', [2]],
+    // `\ ` in double quotes is two characters, and the name after it is not bare.
+    ['printenv "\\ PUSH_SKIP"', []],
+    // A double-quoted string over three lines.
+    ['echo "a\n$GATE_SKIP\nb"', [2]],
+    // `<<` in arithmetic opens no heredoc.
+    ['x=$(( 1 << 2 ))\nGATE_SKIP=0\n[ "$GATE_SKIP" = 1 ]', []],
+    // Only `<<-` strips tabs, every leading one, and only leading ones.
+    ["cat <<'EOF'\n\tEOF\n[ \"$GATE_SKIP\" = 1 ]\nEOF", []],
+    ["cat <<-'EOF'\n\t\tEOF\n[ \"$GATE_SKIP\" = 1 ]", [3]],
+    ["cat <<-'EOF'\nEOF\t\n[ \"$GATE_SKIP\" = 1 ]\nEOF", []],
+  ] as const) {
+    it(`reads ${j(source)} on line(s) ${j(lines.join(', '))}`, () => {
+      assert.deepEqual(
+        findSwitchReads('scripts/gate.sh', source).map((v) => v.line),
+        [...lines],
+      );
+    });
+  }
+});
+
+describe('findSwitchReads on workflows, at the edges of a comment', () => {
+  for (const source of ['run: echo "a\\ # b" ${{ env.CI_SKIP }}', "run: echo 'it # ${{ env.CI_SKIP }}"]) {
+    it(`reads ${j(source)}: its # is quoted`, () => {
+      assert.deepEqual(names('.github/workflows/ci.yml', source), ['CI_SKIP']);
+    });
+  }
+});
+
+describe('findSwitchReads on Python, at the edges of a token', () => {
+  for (const [source, found] of [
+    // A string's escape takes any one character, a backslash or a newline among them.
+    ['x = \'a\\\\\' + os.environ["A_SKIP"]', ['A_SKIP']],
+    ['x = \'a\\\n\' + os.environ["A_SKIP"]', ['A_SKIP']],
+    ['x = "a\\\\" + os.environ[\'A_SKIP\']', ['A_SKIP']],
+    ['x = "a\\\n" + os.environ[\'A_SKIP\']', ['A_SKIP']],
+    ["x = '''a\\\\''' + os.environ[\"A_SKIP\"]", ['A_SKIP']],
+    ["x = '''a\\\n''' + os.environ[\"A_SKIP\"]", ['A_SKIP']],
+    ['x = """a\\\\""" + os.environ[\'A_SKIP\']', ['A_SKIP']],
+    ['x = """a\\\n""" + os.environ[\'A_SKIP\']', ['A_SKIP']],
+    // A triple-quoted string holds all its text, however it starts.
+    ['x = \'\'\'os.environ["A_SKIP"]\'\'\'', []],
+    // A string left open ends at the line's end.
+    ['x = \'os.environ["A_SKIP"]', []],
+    ['x = "os.environ[\'A_SKIP\']', []],
+    // Only a prefix makes an f-string, an `r` before the `f` included.
+    ["print(\"if {os.environ['A_SKIP']}\")", []],
+    ["print(rf\"{os.environ['A_SKIP']}\")", ['A_SKIP']],
+  ] as const) {
+    it(`${found.length > 0 ? 'reads' : 'does not read'} ${j(source)}`, () => {
+      assert.deepEqual(names('.claude/hooks/guard.py', source), [...found]);
+    });
+  }
+});
+
+describe('findSwitchReads on Python, through other names, however spaced', () => {
+  for (const [source, found] of [
+    ["from  os import environ as snap\nsnap['A_SKIP']", ['A_SKIP']],
+    ["from os  import environ as snap\nsnap['A_SKIP']", ['A_SKIP']],
+    ["from os import environ  as snap\nsnap['A_SKIP']", ['A_SKIP']],
+    ["from os import environ as  snap\nsnap['A_SKIP']", ['A_SKIP']],
+    // A comment after a name in a parenthesized list leaves its alias an alias.
+    ["from os import (environ as snap  # the caller's\n)\nsnap['A_SKIP']", ['A_SKIP']],
+    ["from os import myenviron as snap\nsnap['A_SKIP']", []],
+    ["from os import getenv as snap\nsnap['A_SKIP']", []],
+    ["from os import environ as snap\nsnap('A_SKIP')", []],
+    ["cfg.snap = os.environ\nsnap['A_SKIP']", []],
+    ["snap=os.environ\nsnap['A_SKIP']", ['A_SKIP']],
+    ["from os import *\nsnap = environ\nsnap['A_SKIP']", ['A_SKIP']],
+    ["snap = os.environ.copy( )\nsnap['A_SKIP']", ['A_SKIP']],
+    ["snap = dict( os.environ)\nsnap['A_SKIP']", ['A_SKIP']],
+    ["from os import *\nsnap = dict(environ)\nsnap['A_SKIP']", ['A_SKIP']],
+    ["snap = dict(os.environ )\nsnap['A_SKIP']", ['A_SKIP']],
+    ["cfg.read = os.getenv\nread('A_SKIP')", []],
+    ["read = os.getenv('HOME')\nread('A_SKIP')", []],
+    ["read=os.getenv\nread('A_SKIP')", ['A_SKIP']],
+    ["from os import getenv\nread = getenv\nread('A_SKIP')", ['A_SKIP']],
+    ["read = os.getenv  # an alias\nread('A_SKIP')", ['A_SKIP']],
+    ["environment = os.environ\nenvironment['A_SKIP']", ['A_SKIP']],
+    ["my_environ = os.environ\nmy_environ['A_SKIP']", ['A_SKIP']],
+    // `environ` reassigned is still read once.
+    ["environ = os.environ.copy()\nenviron['A_SKIP']", ['A_SKIP']],
+  ] as const) {
+    it(`${found.length > 0 ? 'reads' : 'does not read'} ${j(source)}`, () => {
+      assert.deepEqual(names('.claude/hooks/guard.py', source), [...found]);
+    });
+  }
+});
+
+describe('findSwitchReads on Python, telling a write from a read', () => {
+  for (const [source, found] of [
+    ["x = os.environ['A_SKIP']; y[0] = 1", ['A_SKIP']],
+    ["os.environ['A_SKIP' ] = '1'", []],
+    ["os.environ['A_SKIP']='1'", []],
+    ["del cache\nif os.environ['A_SKIP']: pass", ['A_SKIP']],
+    ["del  os.environ['A_SKIP']", []],
+  ] as const) {
+    it(`${found.length > 0 ? 'reads' : 'does not read'} ${j(source)}`, () => {
+      assert.deepEqual(names('.claude/hooks/guard.py', source), [...found]);
+    });
+  }
 });

@@ -1855,3 +1855,402 @@ ruleTester.run(
     ],
   },
 );
+
+// ---------------------------------------------------------------------------
+// Decisions the mutation sweep pinned (veda#506)
+// ---------------------------------------------------------------------------
+
+/** Every message of `rule` over `code` as `filename`, linted as `files`. */
+function lintAs(
+  rule: string,
+  code: string,
+  filename: string,
+  files: string,
+): Linter.LintMessage[] {
+  return new Linter({ configType: 'flat' }).verify(
+    code,
+    [
+      {
+        files: [files],
+        languageOptions: { parser: tseslint.parser },
+        plugins: { shuddhi: plugin },
+        rules: { [`shuddhi/${rule}`]: 'error' },
+      },
+    ],
+    filename,
+  );
+}
+
+describe('test structure: decisions the mutation sweep pinned', () => {
+  it('fakes timers only through vi or jest', () => {
+    const ids = (code: string): string[] => messageIds('fake-timers-restored', code);
+    assert.deepEqual(ids(`it('a', () => { foo.useFakeTimers(); });`), []);
+    assert.deepEqual(ids(`it('a', () => { ns.vi.useFakeTimers(); });`), []);
+    assert.deepEqual(ids(`it('a', () => { useFakeTimers(); });`), []);
+    assert.deepEqual(ids(`it('a', () => { vi.useFakeTimers(); });`), ['leak']);
+    assert.deepEqual(ids(`foo({ toFake: ['setTimeout'] });`), []);
+    assert.deepEqual(ids(`vi.useFakeTimers({ toFake: [, 'setTimeout'] });`), ['unpaired']);
+    assert.deepEqual(ids(`vi.useFakeTimers({ toFake: [x, 'setTimeout'] });`), ['unpaired']);
+  });
+
+  it('restores only through useRealTimers', () => {
+    const ids = (code: string): string[] => messageIds('fake-timers-restored', code);
+    assert.deepEqual(
+      ids(`afterEach(() => { cleanup(); }); it('a', () => { vi.useFakeTimers(); });`),
+      ['leak'],
+    );
+    assert.deepEqual(
+      ids(`it('a', () => { vi.useFakeTimers(); try { run(); } finally { cleanup(); } });`),
+      ['leak'],
+    );
+    assert.deepEqual(
+      ids(`afterEach(() => { foo.useRealTimers(); }); it('a', () => { vi.useFakeTimers(); });`),
+      ['leak'],
+    );
+    assert.deepEqual(
+      ids(`try { run(); } finally { vi.useRealTimers(); } it('a', () => { vi.useFakeTimers(); });`),
+      ['leak'],
+    );
+  });
+
+  it('holds a module-level helper restored by no hook to a leak', () => {
+    assert.deepEqual(
+      messageIds(
+        'fake-timers-restored',
+        `const fake = () => { vi.useFakeTimers(); }; it('x', () => { fake(); });`,
+      ),
+      ['leak'],
+    );
+  });
+
+  it('reads a vi.hoisted value only off the vi binding', () => {
+    const ids = (code: string): string[] => messageIds('mock-factory-hoisted', code);
+    assert.deepEqual(ids(`const s = this.vi.hoisted(() => ({})); vi.mock('./a', () => ({ s }));`), [
+      'notHoisted',
+    ]);
+    assert.deepEqual(ids(`const s = vi.hoisted(() => ({})); vi.mock('./a', () => ({ s }));`), []);
+    assert.deepEqual(ids(`const s = {}; this.mock('./a', () => ({ s }));`), []);
+    assert.deepEqual(ids(`const s = {}; make().mock('./a', () => ({ s }));`), []);
+  });
+
+  it('passes over a global the factory reads, which has no declaration', () => {
+    const ids = (code: string): string[] => messageIds('mock-factory-hoisted', code);
+    assert.deepEqual(ids(`vi.mock('./a', () => ({ a: Array, b: Math }));`), []);
+  });
+
+  it('reports a registration nested in a test, not in a plain function', () => {
+    const ids = (code: string): string[] => messageIds('no-nested-test-blocks', code);
+    assert.deepEqual(ids(`function f() { it('a', () => { expect(run()).toBe(1); }); }`), []);
+    assert.deepEqual(
+      ids(`describe('s', () => { [1].forEach(() => { it('a', () => { expect(run()).toBe(1); }); }); });`),
+      [],
+    );
+    assert.deepEqual(
+      ids(`it('a', () => { [1].forEach(() => { it('b', () => { expect(run()).toBe(1); }); }); });`),
+      ['nested'],
+    );
+  });
+
+  it('renders each title cell the way Vitest does', () => {
+    const ids = (table: string, title: string): string[] =>
+      messageIds(
+        'each-title-unique',
+        `it.each(${table})(${title}, v => { expect(run(v)).toBe(1); });`,
+      );
+    // A row with fewer cells than placeholders is not known.
+    assert.deepEqual(ids(`[[1], [1]]`, `'case %s %s'`), []);
+    assert.deepEqual(ids('[[`x`], [`y`]]', `'case %s'`), []);
+    assert.deepEqual(ids(`[[undefined], [undefined]]`, `'case %d'`), ['duplicateTitle']);
+    assert.deepEqual(ids(`[[true], [1]]`, `'case %d'`), []);
+    assert.deepEqual(ids(`[[null], ['null']]`, `'case %s'`), ['duplicateTitle']);
+    assert.deepEqual(ids(`[[x.undefined], [x.undefined]]`, `'case %s'`), []);
+    assert.deepEqual(ids(`[1, 1]`, `'case %s'`), ['duplicateTitle']);
+    assert.deepEqual(ids(`[1, 2]`, `'case %s'`), []);
+    assert.deepEqual(ids(`[() => 1, () => 2]`, `'case %s'`), [
+      'functionInTitle',
+      'functionInTitle',
+    ]);
+    assert.deepEqual(ids(`[{ ...x, a: 1 }, { ...x, a: 1 }]`, `'case $a'`), ['duplicateTitle']);
+  });
+
+  it('judges a title only for a literal table and a literal title', () => {
+    const ids = (code: string): string[] => messageIds('each-title-unique', code);
+    assert.deepEqual(ids(`it.each([1, 2])();`), []);
+    assert.deepEqual(ids(`it.each([1, 2])(title, v => { expect(run(v)).toBe(1); });`), []);
+    assert.deepEqual(ids(`it.each(rows)('same', v => { expect(run(v)).toBe(1); });`), []);
+    assert.deepEqual(ids(`it.each([1])('same', v => { expect(run(v)).toBe(1); });`), []);
+    assert.deepEqual(ids(`it.each([1, 2])('same', v => { expect(run(v)).toBe(1); });`), [
+      'sameTitle',
+    ]);
+  });
+
+  it('reads a $name placeholder as a distinguishing field', () => {
+    const ids = (code: string): string[] => messageIds('each-title-unique', code);
+    assert.deepEqual(
+      ids(`it.each([{ a: 1 }, { a: 2 }])('case $a', v => { expect(run(v)).toBe(1); });`),
+      [],
+    );
+    assert.deepEqual(
+      ids(`it.each([{ a: 1 }, { a: 1 }])('case $a', v => { expect(run(v)).toBe(1); });`),
+      ['duplicateTitle'],
+    );
+  });
+
+  it('ignores a let declared inside the hook that reads it', () => {
+    assert.deepEqual(
+      messageIds(
+        'no-collection-time-skip-state',
+        `beforeAll(() => { let ready = true; it.runIf(ready)('t', () => { expect(run()).toBe(1); }); });`,
+      ),
+      [],
+    );
+    assert.deepEqual(
+      messageIds(
+        'no-collection-time-skip-state',
+        `var ready = false; beforeAll(() => { ready = true; }); it.runIf(ready)('t', () => { expect(run()).toBe(1); });`,
+      ),
+      ['hookState'],
+    );
+  });
+
+  it('reads an fs namespace call only off its own root', () => {
+    const ids = (code: string): string[] => messageIds('no-collection-time-io', code);
+    assert.deepEqual(ids(`import * as fs from 'node:fs'; const t = fs.a.b.readFileSync('x');`), [
+      'collectionIo',
+    ]);
+    assert.deepEqual(ids(`import * as fs from 'node:fs'; const t = make().readFileSync('x');`), []);
+    assert.deepEqual(ids(`import * as fs from 'node:fs'; const t = fs('x');`), []);
+    assert.deepEqual(ids(`import * as fs from 'node:fs'; const t = this.fs.readFileSync('x');`), []);
+  });
+
+  it('walks both sides of a sum, and no unary operator', () => {
+    const ids = (body: string): string[] =>
+      messageIds('guarded-marker-slice', `it('a', () => { ${body} });`);
+    assert.deepEqual(ids(`expect(hook.slice(1 + hook.indexOf('###'))).toContain('w');`), [
+      'inlineIndex',
+    ]);
+    assert.deepEqual(ids(`expect(hook.slice(-hook.indexOf('###'))).toContain('w');`), []);
+    assert.deepEqual(ids(`expect(hook.slice(1 - 2 - hook.indexOf('###'))).toContain('w');`), [
+      'inlineIndex',
+    ]);
+    assert.deepEqual(ids(`expect(hook.slice(...hook.indexOf('###'))).toContain('w');`), []);
+  });
+
+  it('takes a comparison in the middle of a sequence as discarded', () => {
+    const ids = (use: string): string[] =>
+      messageIds(
+        'guarded-marker-slice',
+        `it('a', () => { const start = hook.indexOf('###'); ${use} expect(hook.slice(start)).toContain('w'); });`,
+      );
+    assert.deepEqual(ids(`const found = (log(), start !== -1, log()); expect(found).toBe(true);`), [
+      'unguardedIndex',
+    ]);
+    assert.deepEqual(ids(`const found = (log(), log(), start !== -1); expect(found).toBe(true);`), []);
+  });
+
+  it('guards through expect or a Math method only', () => {
+    const ids = (use: string): string[] =>
+      messageIds(
+        'guarded-marker-slice',
+        `it('a', () => { const start = hook.indexOf('###'); ${use} expect(hook.slice(start)).toContain('w'); });`,
+      );
+    assert.deepEqual(ids(`Math(start);`), ['unguardedIndex']);
+    assert.deepEqual(ids(`expect(start).toBeGreaterThan(-1);`), []);
+    assert.deepEqual(ids(`Math.max(start, 0);`), []);
+    assert.deepEqual(ids(`Math.a.max(start, 0);`), []);
+    assert.deepEqual(ids(`ns.expect(start);`), ['unguardedIndex']);
+    assert.deepEqual(ids(`expect(0, start);`), ['unguardedIndex']);
+    assert.deepEqual(ids(`(start, 1) > 0;`), ['unguardedIndex']);
+  });
+
+  it('does not count the slice itself as the guard', () => {
+    assert.deepEqual(
+      messageIds(
+        'guarded-marker-slice',
+        `it('a', () => { const start = hook.indexOf('###'); expect(Math.slice(start)).toBe(1); });`,
+      ),
+      ['unguardedIndex'],
+    );
+  });
+
+  it('takes no null, number or regex literal as a marker', () => {
+    const ids = (marker: string): string[] =>
+      messageIds(
+        'guarded-marker-slice',
+        `it('a', () => { expect(hook.slice(hook.indexOf(${marker}))).toContain('w'); });`,
+      );
+    assert.deepEqual(ids('null'), []);
+    assert.deepEqual(ids('12345'), []);
+    assert.deepEqual(ids('/abcd/'), []);
+    assert.deepEqual(ids(`'###'`), ['inlineIndex']);
+  });
+
+  it('checks a marker slice at module scope against module-scope proof', () => {
+    const ids = (code: string): string[] => messageIds('guarded-marker-slice', code);
+    assert.deepEqual(ids(`const s = hook.slice(hook.indexOf('###'));`), ['inlineIndex']);
+    assert.deepEqual(ids(`expect(hook).toContain('###'); const s = hook.slice(hook.indexOf('###'));`), []);
+    assert.deepEqual(ids(`const s = hook.split('###')[1];`), ['splitIndex']);
+    assert.deepEqual(ids(`const s = hook.split('###').at(1);`), ['splitIndex']);
+  });
+
+  it('takes a toContain as proof only of the marker it names', () => {
+    const ids = (proof: string): string[] =>
+      messageIds(
+        'guarded-marker-slice',
+        `it('a', () => { ${proof} expect(hook.slice(hook.indexOf('###'))).toContain('w'); });`,
+      );
+    assert.deepEqual(ids(`expect(hook).toContain('xyz');`), ['inlineIndex']);
+    assert.deepEqual(ids(`expect(hook).toMatch('xyz');`), ['inlineIndex']);
+    assert.deepEqual(ids(`expect(hook).toContain('###');`), []);
+  });
+
+  it('takes the proof only from the function that slices', () => {
+    const ids = (code: string): string[] => messageIds('guarded-marker-slice', code);
+    assert.deepEqual(
+      ids(`it('a', () => { expect(hook).toContain('###'); }); it('b', () => { expect(hook.slice(hook.indexOf('###'))).toContain('w'); });`),
+      ['inlineIndex'],
+    );
+    assert.deepEqual(
+      ids(`expect(hook).toContain('###'); it('b', () => { expect(hook.slice(hook.indexOf('###'))).toContain('w'); });`),
+      ['inlineIndex'],
+    );
+  });
+
+  it('indexes a split only through a computed number', () => {
+    const ids = (body: string): string[] =>
+      messageIds('guarded-marker-slice', `it('a', () => { ${body} });`);
+    assert.deepEqual(ids(`expect(hook.split('###').length).toBe(2);`), []);
+    assert.deepEqual(ids(`expect(make().at(1)).toBe('w');`), []);
+    assert.deepEqual(ids(`expect(hook.split('###')[2]).toBe('w');`), ['splitIndex']);
+  });
+
+  it('holds only a shared let, of a plain name, to a reset', () => {
+    const ids = (code: string): string[] => messageIds('reset-shared-let', code);
+    assert.deepEqual(ids(`var n = 0; it('a', () => { n = 1; expect(n).toBe(1); });`), []);
+    assert.deepEqual(ids(`let { n } = x; it('a', () => { n = 1; expect(n).toBe(1); });`), []);
+    assert.deepEqual(ids(`let n = 0; it('a', () => { n = 1; expect(n).toBe(1); });`), ['notReset']);
+    assert.deepEqual(
+      ids(`describe('s', () => { for (let i = 0; i < 2; i += 1) { it('a', () => { i = 5; expect(i).toBe(5); }); } });`),
+      [],
+    );
+    assert.deepEqual(
+      ids(`it('o', () => { describe('s', () => { let n = 0; it('a', () => { expect(n).toBe(0); }); }); });`),
+      [],
+    );
+  });
+
+  it('holds ConfigService and ConfigModule to their own names', () => {
+    const ids = (code: string): string[] => messageIds('hermetic-config', code);
+    assert.deepEqual(ids(`new ns.ConfigService({});`), []);
+    assert.deepEqual(ids(`new ConfigService({});`), ['configService']);
+    assert.deepEqual(ids(`ConfigModule({});`), []);
+    assert.deepEqual(ids(`forRoot({});`), []);
+    assert.deepEqual(ids(`ConfigModule.a.forRoot({});`), ['configModule']);
+    assert.deepEqual(ids(`make().forRoot({});`), []);
+  });
+
+  it('names an e2e file only by its whole extension', () => {
+    const app = `import { AppModule } from '../src/app.module'; it('a', () => { expect(AppModule).toBe(1); });`;
+    const ids = (filename: string, files: string): (string | null)[] =>
+      lintAs('e2e-uses-supertest', app, filename, files).map(m => m.messageId ?? null);
+    assert.deepEqual(ids('app.e2e.test.js.ts', '**/*.ts'), []);
+    assert.deepEqual(ids('app.e2e.test.mts', '**/*.mts'), ['noHttp']);
+    assert.deepEqual(ids('app.e2e.test.cts', '**/*.cts'), ['noHttp']);
+    assert.deepEqual(ids('app.e2e.test.tsx', '**/*.tsx'), ['noHttp']);
+  });
+
+  it('takes a relative src import, to the folder or a file in it, as the app', () => {
+    const ids = (source: string): string[] =>
+      messageIds(
+        'e2e-uses-supertest',
+        `import { A } from '${source}'; it('a', () => { expect(A).toBe(1); });`,
+        'app.e2e.test.ts',
+      );
+    assert.deepEqual(ids('../src'), ['noHttp']);
+    assert.deepEqual(ids('../src/app.module'), ['noHttp']);
+    assert.deepEqual(ids('./src'), ['noHttp']);
+    assert.deepEqual(ids('../srcs/app'), []);
+    assert.deepEqual(ids('../my-src/app'), []);
+    assert.deepEqual(ids('.src/app'), []);
+  });
+
+  it('reports the missing supertest at the top of the file', () => {
+    const messages = lintAs(
+      'e2e-uses-supertest',
+      `\n\n  import { AppModule } from '../src/app.module';\nit('a', () => { expect(AppModule).toBe(1); });`,
+      'app.e2e.test.ts',
+      '**/*.ts',
+    );
+    assert.deepEqual(
+      messages.map(m => [m.messageId, m.line, m.column]),
+      [['noHttp', 1, 1]],
+    );
+  });
+
+  it('reports only a voided call of an async function', () => {
+    const ids = (code: string): string[] => messageIds('no-void-async-iife', code);
+    assert.deepEqual(ids(`!(async () => { await run(); })();`), []);
+    assert.deepEqual(ids(`void new (async function () {})();`), []);
+    assert.deepEqual(ids(`void x;`), []);
+    assert.deepEqual(ids(`void (async () => { await run(); })();`), ['voidIife']);
+  });
+
+  it('reads no path:line out of a number, regex or null literal', () => {
+    assert.deepEqual(
+      pathIds(`it('a', () => { expect(out).toBe(1); expect(re).toEqual(/x/); expect(n).toBe(null); });`, OUTSIDE_REPO_FILE, [
+        { root: REPO_ROOT },
+      ]),
+      [],
+    );
+  });
+
+  it('asks the disk when git cannot run in the root', () => {
+    assert.deepEqual(
+      pathIds(pinAt('scripts/run-validation.sh'), OUTSIDE_REPO_FILE, [
+        { root: '/no-such-root-for-shuddhi' },
+      ]),
+      [],
+    );
+  });
+
+  it('matches a top-level directory whose name holds a pattern character', () => {
+    const restoreGitEnv = maskProcessGitEnv();
+    const root = mkdtempSync(join(tmpdir(), 'test-lint-dotdir-'));
+    try {
+      mkdirSync(join(root, '.github'));
+      writeFileSync(join(root, '.github/ci.yml'), 'on: push\n');
+      mkdirSync(join(root, 'xgithub'));
+      writeFileSync(join(root, 'xgithub/ci.yml'), 'on: push\n');
+      assert.deepEqual(pathIds(pinAt('.github/ci.yml'), OUTSIDE_REPO_FILE, [{ root }]), [
+        'pinned',
+      ]);
+      assert.deepEqual(pathIds(pinAt('xgithub/ci.yml'), OUTSIDE_REPO_FILE, [{ root }]), []);
+    } finally {
+      removeFixtureRoot(root);
+      restoreGitEnv();
+    }
+  });
+
+  it('keeps the first root it found for a directory after a marker appears', () => {
+    const restoreGitEnv = maskProcessGitEnv();
+    const root = mkdtempSync(join(tmpdir(), 'test-lint-marker-'));
+    try {
+      mkdirSync(join(root, 'scripts'));
+      writeFileSync(join(root, 'scripts/late.sh'), 'echo\n');
+      const options = [{ rootMarker: '.shuddhi-sweep-506-marker' }];
+      const file = join(root, 'scripts/probe.test.ts');
+      const first = pathIds(pinAt('scripts/late.sh'), file, options);
+      writeFileSync(join(root, '.shuddhi-sweep-506-marker'), '');
+      const second = pathIds(pinAt('scripts/late.sh'), file, options);
+      const elsewhere = pathIds(
+        pinAt('scripts/late.sh'),
+        join(root, 'scripts/x/probe.test.ts'),
+        options,
+      );
+      assert.deepEqual([first, second, elsewhere], [[], [], ['pinned']]);
+    } finally {
+      removeFixtureRoot(root);
+      restoreGitEnv();
+    }
+  });
+});

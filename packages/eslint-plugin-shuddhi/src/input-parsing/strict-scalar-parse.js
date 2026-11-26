@@ -71,17 +71,13 @@ function isNumericLiteral(node) {
   );
 }
 
-const GUARDS = new Set(['isFinite', 'isInteger', 'isSafeInteger']);
+const GUARDS = ['isFinite', 'isInteger', 'isSafeInteger'];
 
 /** `Number.isFinite(...)` and kin, on the global `Number` only. */
 function isGuardCall(context, node) {
   return (
-    node?.type === 'CallExpression' &&
-    node.callee.type === 'MemberExpression' &&
-    !node.callee.computed &&
-    isIdentifier(node.callee.object, 'Number') &&
-    node.callee.property.type === 'Identifier' &&
-    GUARDS.has(node.callee.property.name) &&
+    node.type === 'CallExpression' &&
+    GUARDS.some(guard => isMember(node.callee, 'Number', guard)) &&
     isGlobalReference(context, node.callee.object)
   );
 }
@@ -187,19 +183,22 @@ function exits(statement) {
  * what each read of the flag protects; `seen` stops a flag read in its own
  * initialiser.
  */
-function protectedRanges(context, start, startPasses = true, seen = new Set()) {
-  const ranges = [];
+function* protectedRanges(
+  context,
+  start,
+  startPasses = true,
+  seen = new Set(),
+) {
   let node = climb(start);
   let passes = startPasses;
   for (;;) {
     const parent = node.parent;
-    if (parent.type === 'UnaryExpression' && parent.operator === '!') {
+    // Only a UnaryExpression has the `!` operator, and only a
+    // LogicalExpression `&&` or `||`.
+    if (parent.operator === '!') {
       passes = !passes;
-    } else if (
-      parent.type === 'LogicalExpression' &&
-      parent.operator === (passes ? '&&' : '||')
-    ) {
-      if (parent.left === node) ranges.push(parent.right.range);
+    } else if (parent.operator === (passes ? '&&' : '||')) {
+      if (parent.left === node) yield parent.right.range;
     } else {
       break;
     }
@@ -212,9 +211,10 @@ function protectedRanges(context, start, startPasses = true, seen = new Set()) {
     parent.test === node
   ) {
     const passed = passes ? parent.consequent : parent.alternate;
-    if (passed) ranges.push(passed.range);
-    if (!passes && parent.type === 'IfStatement' && exits(parent.consequent)) {
-      ranges.push([parent.range[1], parent.parent.range[1]]);
+    if (passed) yield passed.range;
+    // A conditional's consequent is an expression, which never exits.
+    if (!passes && exits(parent.consequent)) {
+      yield [parent.range[1], parent.parent.range[1]];
     }
   } else if (
     parent.type === 'VariableDeclarator' &&
@@ -224,12 +224,9 @@ function protectedRanges(context, start, startPasses = true, seen = new Set()) {
     seen.add(parent);
     const [flag] = context.sourceCode.getDeclaredVariables(parent);
     for (const reference of readsOf(flag)) {
-      ranges.push(
-        ...protectedRanges(context, reference.identifier, passes, seen),
-      );
+      yield* protectedRanges(context, reference.identifier, passes, seen);
     }
   }
-  return ranges;
 }
 
 /**
@@ -243,25 +240,27 @@ const SEARCH_RECEIVER = /params|query|search/i;
 
 /** The page-ish property name `node` reads (`x.page`, `x['ptPage']`), or null. */
 function pagePropertyName(node) {
-  if (node?.type !== 'MemberExpression') return null;
-  let name = null;
-  if (!node.computed && node.property.type === 'Identifier') {
-    name = node.property.name;
-  } else if (node.property.type === 'Literal') {
-    // Only a computed key is a Literal: a dotted one is an (Private)Identifier.
-    name = String(node.property.value);
-  }
-  return name !== null && PAGE_PARAM.test(name) ? name : null;
+  if (node.type !== 'MemberExpression') return null;
+  // A computed key names a page only as a literal (no other expression
+  // carries a `value`); a dotted one only as an Identifier, not `#page`.
+  const name = node.computed
+    ? node.property.value
+    : node.property.type === 'Identifier'
+      ? node.property.name
+      : null;
+  // A key that is no string is tested as its text (`null`, `undefined`,
+  // `1`), which no page name is.
+  return PAGE_PARAM.test(name) ? name : null;
 }
 
 /** Is `node` the argument of one of the configured page readers? */
 function readByPageReader(node, pageReaders) {
   const outer = climb(node);
   const parent = outer.parent;
+  // Only an Identifier callee has a `name`.
   return (
-    parent?.type === 'CallExpression' &&
+    parent.type === 'CallExpression' &&
     parent.arguments[0] === outer &&
-    parent.callee.type === 'Identifier' &&
     pageReaders.has(parent.callee.name)
   );
 }
@@ -346,7 +345,8 @@ const strictScalarParse = {
       const { object, property } = test.callee;
       if (property.type !== 'Identifier' || property.name !== 'test')
         return false;
-      if (object.type !== 'Literal' || !object.regex) return false;
+      // Only a regex Literal carries `regex`.
+      if (!object.regex) return false;
       const { pattern, flags } = object.regex;
       const body = pattern.slice(1, -1);
       return (
@@ -367,8 +367,8 @@ const strictScalarParse = {
     const isPresenceCheck = identifier => {
       const outer = climb(identifier);
       const parent = outer.parent;
+      // Only a BinaryExpression has these operators.
       return (
-        parent.type === 'BinaryExpression' &&
         ['===', '!==', '==', '!='].includes(parent.operator) &&
         isNullishOrEmpty(parent.left === outer ? parent.right : parent.left)
       );
@@ -393,19 +393,17 @@ const strictScalarParse = {
       }
       if (isGuardArgument(context, outer)) return true;
       const parent = outer.parent;
+      // An expression is a declarator's init, never its id, and an
+      // assignment's right side, never its target.
       let variable = null;
       if (
         parent.type === 'VariableDeclarator' &&
-        parent.init === outer &&
         parent.id.type === 'Identifier'
       ) {
         [variable] = context.sourceCode.getDeclaredVariables(parent);
-      } else if (
-        parent.type === 'AssignmentExpression' &&
-        parent.operator === '=' &&
-        parent.right === outer &&
-        parent.left.type === 'Identifier'
-      ) {
+      } else if (parent.operator === '=') {
+        // Only a plain assignment has the `=` operator, and a target that is
+        // no Identifier (`o.n = …`, `[n] = …`) has no variable (variableOf).
         variable = variableOf(context, parent.left);
       }
       if (!variable) return false;
@@ -416,9 +414,9 @@ const strictScalarParse = {
       const guards = reads.filter(reference =>
         isGuardArgument(context, reference.identifier),
       );
-      const ranges = guards.flatMap(reference =>
-        protectedRanges(context, climb(reference.identifier).parent),
-      );
+      const ranges = guards.flatMap(reference => [
+        ...protectedRanges(context, climb(reference.identifier).parent),
+      ]);
       return (
         guards.length > 0 &&
         reads.every(
@@ -453,17 +451,18 @@ const strictScalarParse = {
         return null;
       }
       const [argument] = node.arguments;
-      // Among expressions only a string Literal carries a string `value`.
-      if (typeof argument.value !== 'string') return null;
+      // Among expressions only a Literal carries a `value`, and one that is
+      // no string is tested as its text, which no page name is.
       if (!PAGE_PARAM.test(argument.value)) return null;
       const receiver = callee.object;
       if (types) {
         const symbol = types.typeOf(receiver).getSymbol();
         return symbol?.getName() === 'URLSearchParams' ? argument.value : null;
       }
+      // Only an Identifier receiver has a `name`; anything else tests as
+      // `undefined`, which reads as no search parameters.
       const searchLike =
-        (receiver.type === 'Identifier' &&
-          SEARCH_RECEIVER.test(receiver.name)) ||
+        SEARCH_RECEIVER.test(receiver.name) ||
         (receiver.type === 'MemberExpression' &&
           !receiver.computed &&
           receiver.property.type === 'Identifier' &&
@@ -475,8 +474,9 @@ const strictScalarParse = {
 
     /** A coercion of a page-ish field (`Number(filters.page)`): its name. */
     const coercedPageField = argument => {
+      // A page name is never empty, so a name is truthy.
       const name = pagePropertyName(argument);
-      return name !== null && coercesText(argument) ? name : null;
+      return name && coercesText(argument) ? name : null;
     };
 
     return {
@@ -493,9 +493,9 @@ const strictScalarParse = {
           }
           return;
         }
+        // Only an Identifier callee has a `name`.
         const coerced =
-          (callee.type === 'Identifier' &&
-            ['Number', 'parseInt', 'parseFloat'].includes(callee.name) &&
+          (['Number', 'parseInt', 'parseFloat'].includes(callee.name) &&
             isGlobalReference(context, callee)) ||
           isMember(callee, 'Number', 'parseInt') ||
           isMember(callee, 'Number', 'parseFloat');
@@ -514,7 +514,6 @@ const strictScalarParse = {
           return;
         }
         if (
-          callee.type === 'Identifier' &&
           (callee.name === 'parseInt' || callee.name === 'parseFloat') &&
           isGlobalReference(context, callee)
         ) {

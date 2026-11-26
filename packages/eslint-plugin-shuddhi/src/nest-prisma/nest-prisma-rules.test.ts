@@ -899,3 +899,94 @@ describe('no-unbound-test-app — every host, holder and spelling', () => {
     ],
   });
 });
+
+describe('no-unbound-test-app — what is an app, a holder and an init', () => {
+  const NEST = "import request from 'supertest';\n";
+  ruleTester.run('no-unbound-test-app', rules['no-unbound-test-app'] as never, {
+    valid: [
+      // Constructing something named createNestApplication builds no app.
+      { code: `${NEST}const app = new moduleRef.createNestApplication();\nawait app.listen(0);` },
+      // A field of another object is not the field on `this`.
+      {
+        code: `${NEST}class S { async start() { this.app = moduleRef.createNestApplication(); await other.app.listen(0); } }`,
+      },
+      // An app held in a pattern has no holder, and nor has a call's result:
+      // the two are not the same app.
+      { code: `${NEST}const { app } = moduleRef.createNestApplication();\nawait getApp().listen(0);` },
+      // Only an `init()` with no arguments is the bare init.
+      { code: `${NEST}const app = moduleRef.createNestApplication();\nawait app.close();` },
+      { code: `${NEST}const app = moduleRef.createNestApplication();\nawait app.init(adapter);` },
+    ],
+    invalid: [],
+  });
+});
+
+describe('no-raw-sql-interpolation — calls that only look Unsafe', () => {
+  ruleTester.run('no-raw-sql-interpolation', rules['no-raw-sql-interpolation'] as never, {
+    valid: [
+      // `.bind` runs nothing, whatever list it is handed.
+      { code: 'prisma.$queryRawUnsafe.bind(prisma, [`SELECT ${id}`]);' },
+      // `.apply` with no list passes no SQL.
+      { code: 'prisma.$queryRawUnsafe.apply(prisma);' },
+      // A `new` of something named concat concatenates nothing.
+      { code: 'prisma.$queryRawUnsafe(new prefix.concat(id));' },
+    ],
+    invalid: [],
+  });
+});
+
+describe('nest-param-pipe — which names, types and pipes count', () => {
+  ruleTester.run('nest-param-pipe', rules['nest-param-pipe'] as never, {
+    valid: [
+      // An id is `id`, `uuid` or a name ending in an id suffix, not any name
+      // that merely starts, ends or holds those letters.
+      { code: 'class C {\n  list(@Query("paid") paid: string) { return paid; }\n}' },
+      {
+        code: 'class C {\n  list(@Query("idempotencyKey") idempotencyKey: string) { return idempotencyKey; }\n}',
+      },
+      { code: 'class C {\n  list(@Query("sortIdx") sortIdx: string) { return sortIdx; }\n}' },
+      // One parsing pipe among the decorators is enough.
+      {
+        code: 'class C {\n  get(@Param("id", ParseUUIDPipe) @Trim id: string) { return id; }\n}',
+      },
+      // Only `Date` is the date case, not every named type.
+      { code: 'class C {\n  since(@Query("since") since: Moment) { return since; }\n}' },
+      // Only a string id is the UUID case.
+      { code: 'class C {\n  get(@Param("id") id: boolean) { return id; }\n}' },
+    ],
+    invalid: [],
+  });
+
+  it('reads a parameter with no decorators at all, as a JavaScript parser gives it', () => {
+    const messages = new Linter({ configType: 'flat' }).verify(
+      'class C { get(id) { return id; } }',
+      [
+        {
+          files: ['**/*.js'],
+          plugins: { shuddhi: { rules } as never },
+          rules: { 'shuddhi/nest-param-pipe': 'error' },
+        },
+      ],
+      { filename: 'plugin.test.js' },
+    );
+    assert.deepEqual(messages, []);
+  });
+});
+
+describe('the options each rule takes', () => {
+  it('defaults to no transaction wrappers', () => {
+    assert.deepEqual(rules['prisma-transaction-multiwrite'].meta.defaultOptions, [
+      { transactionWrappers: [] },
+    ]);
+  });
+
+  it('refuses options of the wrong shape', () => {
+    const refuses = (rule: RuleName, option: unknown, reason: RegExp) =>
+      assert.throws(() => messagesOf(rule, 'x;', [option]), reason);
+    refuses('prisma-transaction-multiwrite', { transactionWrappers: 'withClaim' }, /should be array/);
+    refuses('prisma-transaction-multiwrite', { transactionWrappers: [''] }, /shorter than 1 characters/);
+    refuses('prisma-transaction-multiwrite', { transactionWrappers: ['a', 'a'] }, /duplicate items/);
+    refuses('no-unbound-test-app', { loopbackHelper: '' }, /shorter than 1 characters/);
+    refuses('no-unbound-test-app', { loopbackHelperModule: 1 }, /should be string/);
+  });
+});

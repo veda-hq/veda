@@ -161,7 +161,12 @@ describe("git and tryGit", () => {
     const big = "x".repeat(200_000);
     r.write("big.txt", big);
     r.git("add", "big.txt");
-    assert.equal(tryGit(at, ["cat-file", "-p", ":big.txt"]), big);
+    // Compared as a boolean: when the answer is not this text (a Buffer, say),
+    // assert's message would print and diff 200,000 lines, and that diff took
+    // a 16 GB CI runner down (veda#469).
+    const answer = tryGit(at, ["cat-file", "-p", ":big.txt"]);
+    assert.equal(typeof answer, "string");
+    assert.equal(answer === big, true);
   });
 
   it("reads exit 1 as no and throws any other failure", () => {

@@ -586,6 +586,7 @@ describe('citations', () => {
     assert.deepEqual(listAdrs(root, 'docs/adr'), []);
     mkdirSync(join(root, 'docs', 'adr'), { recursive: true });
     writeFileSync(join(root, 'docs', 'adr', '0001-a.md'), '');
+    mkdirSync(join(root, 'docs', 'adr', '0002-dir.md'));
     assert.deepEqual(listAdrs(root, 'docs/adr'), ['docs/adr/0001-a.md']);
     assert.equal(readOrUndefined(join(root, 'missing.md')), undefined);
   });
@@ -603,6 +604,9 @@ describe('citations', () => {
     git(root, 'commit', '--quiet', '-m', 'adrs');
     rmSync(join(root, 'docs', 'adr', '0004-gone.md'));
     write(root, 'docs/adr/0005-new.md', ['# New']);
+    // HEAD holds a folder where the disk now has a file: that file is not committed.
+    rmSync(join(root, 'docs', 'adr', '0002-dir.md'), { recursive: true });
+    write(root, 'docs/adr/0002-dir.md', ['# Was a folder']);
     assert.deepEqual(committedAdrs(at, root, 'docs/adr'), ['docs/adr/0001-a.md']);
     assert.deepEqual(committedAdrs(at, root, '.'), ['./0006-root.md']);
     assert.deepEqual(committedAdrs(at, root, 'decisions'), [], 'no such folder in HEAD');

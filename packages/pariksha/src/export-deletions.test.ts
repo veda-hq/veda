@@ -81,6 +81,30 @@ describe('trailers', () => {
     assert.deepEqual(declaredExports(body), ['a.b', 'lone', 'one', 'p,q']);
   });
 
+  it('reads a list of longer names, a trailing space, a wider gap and doubled punctuation, and only a trailer that starts its line', () => {
+    const body = [
+      'Removes-Export: alpha, beta — gone',
+      'Removes-Export: m, n ',
+      'Removes-Export:  lone, because x',
+      '  Removes-Export: thing),',
+      'See-Removes-Export: nope',
+    ].join('\n');
+    assert.deepEqual(declaredExports(body), ['alpha', 'beta', 'lone', 'm', 'n', 'thing']);
+  });
+
+  it('reads a Removes-File path whole: indented, a trailing space, a comma inside, doubled punctuation, a bare dash reason', () => {
+    const body = [
+      '  Removes-File: src/in dented.ts — why',
+      'Removes-File: src/b.ts ',
+      'Removes-File: dir/a,b.ts — x',
+      'Removes-File: src/c.ts),',
+      'Removes-File: — no path',
+      'Removes-File:',
+      'See-Removes-File: nope.ts',
+    ].join('\n');
+    assert.deepEqual(declaredFiles(body), ['dir/a,b.ts', 'src/b.ts', 'src/c.ts', 'src/in dented.ts']);
+  });
+
   it('reads Removes-File paths up to the reason, spaces kept', () => {
     const body = ['Removes-File: src/a b.ts — gone', 'REMOVES-FILE: src/c.ts - also gone', 'Removes-File: src/d.ts;', 'Removes-File: '].join('\n');
     assert.deepEqual(declaredFiles(body), ['src/a b.ts', 'src/c.ts', 'src/d.ts']);
@@ -104,11 +128,18 @@ describe('removedExports and usedOutsideComments', () => {
       '-export async function *agen() {}',
       '-export namespace N {}',
       '-export const enumLike = 1;',
+      '-export  const wide = 1;',
+      '-export default  function dflt() {}',
+      '-export declare  const dcl: number;',
+      '-export async  function asy() {}',
+      '-export abstract  class Abs {}',
+      '-export const  enum WideEnum {}',
+      "+log('-export const fake = 1');",
       '-export { x, y };',
       '+export const added = 1;',
       '-const notExported = 1;',
     ].join('\n');
-    assert.deepEqual(removedExports(diff), ['a', 'b', 'C', 'I', 'T', 'E', 'l', 'v', 'CE', 'd', 'gen', 'agen', 'N', 'enumLike']);
+    assert.deepEqual(removedExports(diff), ['a', 'b', 'C', 'I', 'T', 'E', 'l', 'v', 'CE', 'd', 'gen', 'agen', 'N', 'enumLike', 'wide', 'dflt', 'dcl', 'asy', 'Abs', 'WideEnum']);
   });
 
   it('finds the aliases an export list loses, never its bare names or `as default`', () => {
@@ -134,19 +165,34 @@ describe('removedExports and usedOutsideComments', () => {
       '-  loose as Stray,',
       '+  loose,',
       "-export { last as Final } from './l.js';",
+      '-export  { wide as Wide };',
+      '-export type  { WideType as PublicWide, type  Inner as Outer, not valid as Bad, x as Y z };',
     ].join('\n');
-    assert.deepEqual(removedExports(diff), ['publicApi', 'PublicShape', 'Cooked', 'Widget', 'y', 'One', 'Final']);
+    assert.deepEqual(removedExports(diff), ['publicApi', 'PublicShape', 'Cooked', 'Widget', 'y', 'One', 'Final', 'Wide', 'PublicWide', 'Outer']);
   });
 
-  it('reads each run of removed lines once', () => {
-    const diff = ['@@ -1 +0,0 @@', "-export { a as A } from './a.js';", '@@ -3 +1 @@', "-export { b as B } from './b.js';"].join('\n');
+  it('reads a list only where removed lines hold it whole, never across a line the diff keeps or adds', () => {
+    const diff = [
+      '@@ -1 +0,0 @@',
+      "-export { a as A } from './a.js';",
+      '@@ -3,3 +1,2 @@',
+      '-export {',
+      '+  added as Added,',
+      '-  orphan as Orphan,',
+      '-}',
+      '+export { fresh as New };',
+      '-// a note',
+      "-export { b as B } from './b.js';",
+    ].join('\n');
     assert.deepEqual(removedExports(diff), ['A', 'B']);
     assert.deepEqual(removedAliases("export {\n  a as A,\n} from './a.js';\nexport { b as B }"), ['A', 'B']);
+    assert.deepEqual(removedAliases('export {\0\n  a as A }'), []);
   });
 
   it('counts a code hit, not a comment', () => {
     assert.equal(usedOutsideComments('HEAD:a.ts:3:  // old a\nHEAD:b.ts:1: * a\nHEAD:c.ts:2: /* a */'), false);
     assert.equal(usedOutsideComments('HEAD:a.ts:3:  // old a\nHEAD:b.ts:9:call(a);'), true);
+    assert.equal(usedOutsideComments('HEAD:a.ts:12:  // old a'), false);
     assert.equal(usedOutsideComments(''), false);
   });
 });
@@ -209,6 +255,36 @@ describe('checkExportDeletions', () => {
     assert.deepEqual(checkExportDeletions(gitAt(declared), 'main').declared, [{ symbol: 'publicApi', file: 'src/index.ts' }]);
   });
 
+  it('prints the whole of a pass and of a refusal', () => {
+    assert.deepEqual(formatReport({ base: 'main', violations: [], declared: [], declaredFiles: [] }), {
+      ok: true,
+      out: ['pariksha export-deletions: no undeclared export removals since main'],
+      err: [],
+    });
+    assert.deepEqual(formatReport({ base: 'origin/main', violations: [{ symbol: 'gone', file: 'src/a.ts' }, { symbol: 'publicApi', file: 'src/index.ts' }], declared: [], declaredFiles: ['src/old.ts'] }), {
+      ok: false,
+      out: ['pariksha export-deletions: src/old.ts deleted; a Removes-File trailer declares its exports'],
+      err: [
+        'pariksha export-deletions: 2 export(s) removed from the whole tree since origin/main with no stated reason:',
+        '  gone   (removed from src/a.ts)',
+        '  publicApi   (removed from src/index.ts)',
+        '',
+        'Each is gone from every source file but the tests, not moved or renamed. If the removal is intended,',
+        'say so in a commit body:',
+        '',
+        '  Removes-Export: <symbol> — <why it is safe to remove>',
+        '',
+        "One line can name several, so a module's exports fit a short commit body:",
+        '',
+        '  Removes-Export: <a>, <b>, <c> — <why they are safe to remove>',
+        '',
+        'A file deleted outright can be declared once, covering all its exports:',
+        '',
+        '  Removes-File: <path> — <why the file is gone>',
+      ],
+    });
+  });
+
   it('accepts a Removes-Export trailer for the symbol', () => {
     const root = branch({ 'src/a.ts': 'export const gone = 1;\nexport const x = 2;\n' }, { 'src/a.ts': 'export const x = 2;\n' }, 'drop\n\nRemoves-Export: gone — unused');
     const report = checkExportDeletions(gitAt(root), 'main');
@@ -239,6 +315,8 @@ describe('checkExportDeletions', () => {
     assert.match(formatReport(r1).out[0] ?? '', /src\/old.ts deleted; a Removes-File trailer declares its exports/);
     const kept = branch({ 'src/old.ts': 'export const a = 1;\nexport const b = 2;\n' }, { 'src/old.ts': 'export const b = 2;\n' }, 'drop\n\nRemoves-File: src/old.ts — shrunk');
     assert.deepEqual(checkExportDeletions(gitAt(kept), 'main').violations, [{ symbol: 'a', file: 'src/old.ts' }]);
+    const noExports = branch({ 'src/plain.ts': 'const a = 1;\n' }, { 'src/plain.ts': null }, 'drop\n\nRemoves-File: src/plain.ts — nothing exported');
+    assert.deepEqual(checkExportDeletions(gitAt(noExports), 'main').declaredFiles, [], 'a file that exported nothing has no exports to declare');
   });
 
   it('skips build output and non-source files', () => {

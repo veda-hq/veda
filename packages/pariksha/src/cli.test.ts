@@ -2136,6 +2136,21 @@ describe('run authority-citations', () => {
     assert.deepEqual(r, { code: 0, out: [`${P} every authority claim cites an anchor`], err: [] });
   });
 
+  it('counts only the ADRs HEAD holds in staged mode, and those on disk in tree mode', () => {
+    const root = temp();
+    git(root, 'init', '-q');
+    w2Put(root, { 'decisions/0001-rounding.md': '# Rounding\n' });
+    git(root, 'add', '-A');
+    w2Commit(root, 'base');
+    const fresh = 'Refunds are approved by Lee (ADR-0002).';
+    w2Put(root, { 'decisions/0002-refunds.md': '# Refunds\n', 'c.md': `${COMMITTED}\n`, 'd.md': `${fresh}\n` });
+    git(root, 'add', '-A');
+    const staged = cli(['authority-citations', '--authority', 'Lee', '--adr-dir', 'decisions', '--root', root]);
+    assert.deepEqual(staged, { code: 1, out: [], err: [`${P} uncited authority claim(s) in d.md:`, `  1: [approved by Lee] ${fresh}`, ...guidance('decisions'), '1 claim(s) across 1 file(s).'] });
+    const tree = cli(['authority-citations', '--mode', 'tree', '--authority', 'Lee', '--adr-dir', 'decisions', '--root', root]);
+    assert.deepEqual(tree, { code: 0, out: [`${P} every authority claim cites an anchor`], err: [] });
+  });
+
   it('exits 2 when the check cannot read what it must', () => {
     const r = cli(['authority-citations', '--mode', 'tree', '--adr-dir', 'a.md', '--root', citations()]);
     assert.deepEqual(r, { code: 2, out: [], err: [`${P} ENOTDIR: not a directory, scandir '${citations()}/a.md'; nothing was checked, so this is not a pass`] });

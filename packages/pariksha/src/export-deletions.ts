@@ -42,8 +42,12 @@ const EXPORT_DECL =
  */
 const COMMENT_HIT = /:\d+:\s*(?:\/\/|\*|\/\*)/;
 
-/** An export list, `export { … }` or `export type { … }`, its braces' content captured; it may span lines. */
-const EXPORT_LIST = /(?:^|\n)\s*export\s+(?:type\s+)?\{([^}]*)\}/g;
+/**
+ * An export list, `export { … }` or `export type { … }`, its braces' content
+ * captured. It may span lines, but not a NUL, which stands for a line the diff
+ * did not remove.
+ */
+const EXPORT_LIST = /(?:^|\n)\s*export\s+(?:type\s+)?\{([^}\0]*)\}/g;
 
 /** One aliased specifier of a list, `x as y` (`type x as y`, `default as y`): the alias. */
 const ALIASED = /^(?:type\s+)?[A-Za-z_$][\w$]*\s+as\s+([A-Za-z_$][\w$]*)$/;
@@ -64,12 +68,13 @@ const SYMBOL_LIST = /^[A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*$/;
 export const declaredExports = (messages: string): string[] =>
   unique(
     messages.split('\n').flatMap((line) => {
-      const value = /^\s*removes-export:\s*(.*)$/i.exec(line)?.[1];
+      // `.` stops at no character of a line split on '\n', so `.*` runs to its end.
+      const value = /^\s*removes-export:(.*)/i.exec(line)?.[1];
       if (value === undefined) return [];
-      const head = value.replace(/\s+(?:—|–|-)\s.*$/, '').trim();
+      const head = value.replace(/\s(?:—|–|-)\s.*/, '').trim();
       if (SYMBOL_LIST.test(head)) return head.split(',').map((s) => s.trim());
-      const first = /^(\S+)/.exec(value)?.[1]?.replace(/[,;()]+$/, '');
-      return first === undefined || first === '' ? [] : [first];
+      const first = (/\S+/.exec(value)?.[0] ?? '').replace(/[,;()]+$/, '');
+      return first === '' ? [] : [first];
     }),
   );
 
@@ -82,20 +87,20 @@ export const declaredFiles = (messages: string): string[] =>
     messages
       .split('\n')
       .map((line) =>
-        /^\s*removes-file:\s*(.*)$/i
-          .exec(line)?.[1]
-          ?.replace(/\s+(?:—|-)\s.*$/, '')
+        (/^\s*removes-file:(.*)/i.exec(line)?.[1] ?? '')
+          .replace(/\s(?:—|-)\s.*/, '')
           .trim()
           .replace(/[,;()]+$/, ''),
       )
-      .filter((s): s is string => s !== undefined && s !== ''),
+      .filter((s) => s !== ''),
   );
 
 /**
- * The aliases a run of removed lines (each `-` dropped) takes out of export
- * lists: `y` of each `x as y`, never a bare name and never `as default`. A list
- * is read only when the run holds it whole, so a line removed from a
- * multi-line list that stays is not read.
+ * The aliases removed lines take out of export lists: `y` of each `x as y`,
+ * never a bare name and never `as default`. `removed` holds the diff's removed
+ * lines, each `-` dropped, and a NUL line for each other line, so a list is
+ * read only when consecutive removed lines hold it whole: a line removed from
+ * a multi-line list that stays is not read.
  */
 export const removedAliases = (removed: string): string[] =>
   // The group always takes part in a match, so String() only narrows its type.
@@ -108,23 +113,14 @@ export const removedAliases = (removed: string): string[] =>
 
 /**
  * The symbols a `-U0` diff removes: each removed export declaration, then each
- * alias that a run of consecutive removed lines takes out of an export list.
+ * alias that consecutive removed lines take out of an export list. A
+ * `--- a/file` header reads as a removed line, and holds no list.
  */
 export const removedExports = (diff: string): string[] => {
   const lines = diff.split('\n');
   const declared = lines.map((line) => EXPORT_DECL.exec(line)?.[1]).filter((s): s is string => s !== undefined);
-  const runs: string[] = [];
-  let run: string[] = [];
-  // Any other line ends a run. A `--- a/file` header is a run of its own and holds no list.
-  for (const line of lines) {
-    if (line.startsWith('-')) run.push(line.slice(1));
-    else {
-      runs.push(run.join('\n'));
-      run = [];
-    }
-  }
-  runs.push(run.join('\n'));
-  return [...declared, ...runs.flatMap(removedAliases)];
+  const removed = lines.map((line) => (line.startsWith('-') ? line.slice(1) : '\0')).join('\n');
+  return [...declared, ...removedAliases(removed)];
 };
 
 /** True when some `git grep -n <sym> HEAD` hit is code rather than a comment. */
@@ -171,7 +167,7 @@ export const checkExportDeletions = (git: Git, base: string): Report => {
     const removed = removedExports(must(git, ['diff', ...PLAIN_DIFF, '-U0', `${base}...HEAD`, '--', spec]));
     if (removed.length === 0) continue;
     // A file trailer covers a file only once HEAD has nothing at its path.
-    if (files.has(file) && must(git, ['ls-tree', '--name-only', 'HEAD', '--', spec]).trim() === '') {
+    if (files.has(file) && must(git, ['ls-tree', '--name-only', 'HEAD', '--', spec]) === '') {
       coveredFiles.push(file);
       continue;
     }

@@ -116,6 +116,8 @@ export interface LaneDeps {
   /** The lane's reuse key, or null to run in full. */
   reuseKey: (lane: Lane) => string | null;
   now: () => number;
+  /** One line of the gate's output; the timeout retry pass writes its progress here as it goes. */
+  log: (line: string) => void;
 }
 
 export interface LaneResult {
@@ -281,6 +283,7 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
       return 'refusal' in retry && retry.trigger?.line === FAILED_INITIAL_RUN ? { refusal: flakyRetry(retry.trigger.failedTests), busy: false } : retry;
     },
     deps.now,
+    deps.log,
   );
   const judgement = judge(pass.mutants);
   const refusals = [...pass.refusals, ...judgement.unknown.map((u) => `unknown status: ${u}`)];

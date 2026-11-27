@@ -41,7 +41,7 @@ const folders = (raw: Raw, key: string, where: string): string[] => {
 };
 
 /** An optional object key: absent or null is none. */
-const optional = (raw: Raw, key: string): Raw | undefined => (raw[key] === undefined || raw[key] === null ? undefined : object(raw, key, ''));
+const optional = (raw: Raw, key: string, where = ''): Raw | undefined => (raw[key] === undefined || raw[key] === null ? undefined : object(raw, key, where));
 
 const PREFIX = /^(?:(?:[\w.-]+|\*)\/)+$/;
 
@@ -84,7 +84,7 @@ export const parseConfig = (source: string): Config => {
   if (hooks.length + workflows.length === 0) throw new Error('stageRoots: "hooks" and "workflows" are both empty, so no stage would be walked');
 
   const runnableRaw = object(raw, 'runnable', '');
-  onlyKeys(runnableRaw, ['prefixes', 'extensions', 'bin'], 'runnable: ');
+  onlyKeys(runnableRaw, ['prefixes', 'extensions', 'bin', 'programs'], 'runnable: ');
   const prefixes = list(runnableRaw, 'prefixes', 'runnable: ').map((p, i) => {
     if (typeof p !== 'string' || !PREFIX.test(p) || p.split('/').some((s) => s === '.' || s === '..')) {
       throw new Error(`runnable.prefixes[${i}]: ${JSON.stringify(p)} is not a folder path ending in "/" (a "*" segment is one folder)`);
@@ -98,6 +98,20 @@ export const parseConfig = (source: string): Config => {
   });
   if (extensions.length === 0) throw new Error('runnable: "extensions" is empty, so no command would name a script');
   const bin = runnableRaw['bin'] === undefined || runnableRaw['bin'] === null ? undefined : path(runnableRaw, 'bin', 'runnable: ');
+  // Optional: other paths that run a program, by the name a claim's config begins with.
+  const programs = new Map<string, string[]>();
+  const programsRaw = optional(runnableRaw, 'programs', 'runnable: ');
+  const runBy = new Map<string, string>();
+  for (const name of Object.keys(programsRaw ?? {})) {
+    if (!/^[A-Za-z0-9][\w.-]*$/.test(name)) throw new Error(`runnable.programs: ${JSON.stringify(name)} is not a program name`);
+    const listed = paths(programsRaw as Raw, name, 'runnable.programs: ');
+    for (const one of listed) {
+      const other = runBy.get(one);
+      if (other !== undefined) throw new Error(`runnable.programs: ${JSON.stringify(one)} runs both ${JSON.stringify(other)} and ${JSON.stringify(name)}`);
+      runBy.set(one, name);
+    }
+    programs.set(name, listed);
+  }
 
   const listRaw = object(raw, 'workspaceList', '');
   onlyKeys(listRaw, ['pnpm', 'turbo'], 'workspaceList: ');
@@ -117,6 +131,8 @@ export const parseConfig = (source: string): Config => {
     workflows,
     actions: folders(stages, 'actions', 'stageRoots: '),
     runnable: runnablePatterns(prefixes, extensions, bin),
+    bin,
+    programs,
     workspaceFile: path(listRaw, 'pnpm', 'workspaceList: '),
     turbo,
     testFile: regex(tests['file'], 'tests.file'),

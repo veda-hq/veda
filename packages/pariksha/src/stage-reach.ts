@@ -15,6 +15,12 @@
 //               nothing else is (a runner that spawns any command would make
 //               everything reachable); a `<bin>/<name>` binary in command
 //               position is reached the same way
+//   programs    a program call, `<bin>/<name> <word>` in command position or
+//               `<path> <word>` for a path `runnable.programs` lists, is
+//               recorded with its first argument: a claim whose config
+//               begins `<program> <subcommand>` is held to that subcommand,
+//               since a bin that runs for one subcommand proves nothing of
+//               another
 //   dispatcher  `<dispatcher> <target>` resolves to that target's case block
 //               only; the dispatcher FILE is never followed, since it names
 //               every target
@@ -81,6 +87,10 @@ export interface StageConfig {
   readonly actions: readonly string[];
   /** What a command can name: script paths, then (when configured) binaries in command position. */
   readonly runnable: readonly RegExp[];
+  /** The folder of installed binaries; a `<bin>/<name>` script is program `<name>`. */
+  readonly bin: string | undefined;
+  /** Other paths that run a program, by its name (`runnable.programs`). */
+  readonly programs: ReadonlyMap<string, readonly string[]>;
   /** The pnpm workspace file, whose `packages:` lists the workspaces. */
   readonly workspaceFile: string;
   /** The turbo config, read for `//#<task>`; undefined when the repository has none. */
@@ -96,12 +106,14 @@ export const ROOT_DIR = '.';
 
 const read = (root: string, path: string): string => readFileSync(posix.join(root, path), 'utf8');
 
-/** What the stages reach: files, and the package scripts they run. */
+/** What the stages reach: files, the package scripts they run, and the program calls they make. */
 export interface StageReach {
   readonly files: Set<string>;
   /** `<workspace dir>\t<script name>` → the script's command. */
   readonly scripts: Map<string, string>;
   readonly workspaces: readonly string[];
+  /** `<program path>\t<first argument>`, for each `<bin>/<name>` or listed program path a stage runs. */
+  readonly calls: Set<string>;
 }
 
 /** Drops comments and printed text, keeping the lines a shell or runner executes. */
@@ -229,6 +241,11 @@ export const dispatcherCase = (dispatch: string, target: string): string => {
 /** Every alias a dispatcher case line offers: `a|b)` offers both. */
 export const dispatcherTargets = (dispatch: string): Set<string> => new Set([...dispatch.matchAll(/^\s*([a-z][a-z0-9|-]*)\)/gm)].flatMap((line) => (line[1] as string).split('|')));
 
+// Before the command word a shell takes assignments and redirections in any
+// order (`FOO=1 2>/dev/null bin x`, `>out bin x`); a redirection's target is a
+// word of its own, so `> bin` writes to it and runs nothing.
+const COMMAND_START = `(?:^|[;&|(!]|\\b(?:if|elif|else|then|do|while|until|exec)\\b)[^\\S\\n]*(?:(?:\\w+=\\S*|\\d*(?:&>>?|<<<|<>|>>|<|>)&?[^\\S\\n]*[^\\s;&|<>]+)[^\\S\\n]+)*["']?`;
+
 /**
  * The patterns for what a command can name. `prefixes` are folder paths
  * ending in `/`, where a `*` segment is one folder name; `bin`, when set, is
@@ -246,14 +263,33 @@ export const runnablePatterns = (prefixes: readonly string[], extensions: readon
       .join('\\/');
   const alternatives = [...prefixes].sort((a, b) => b.length - a.length).map((p) => `${folder(p)}\\/`);
   const patterns = [new RegExp(`(?<![\\w./-])((?:\\.\\.?\\/)*(?:${alternatives.join('|')})[\\w./-]*[\\w-]\\.(?:${extensions.map(escape).join('|')}))(?![\\w])`, 'g')];
-  if (bin !== undefined) {
-    // Before the command word a shell takes assignments and redirections in
-    // any order (`FOO=1 2>/dev/null bin x`, `>out bin x`); a redirection's
-    // target is a word of its own, so `> bin` writes to it and runs nothing.
-    const prefix = `(?:(?:\\w+=\\S*|\\d*(?:&>>?|<<<|<>|>>|<|>)&?[^\\S\\n]*[^\\s;&|<>]+)[^\\S\\n]+)*`;
-    patterns.push(new RegExp(`(?:^|[;&|(!]|\\b(?:if|elif|else|then|do|while|until|exec)\\b)[^\\S\\n]*${prefix}["']?((?:\\.\\.?\\/)*${escape(bin)}\\/[\\w-]+)(?![\\w./-])`, 'gm'));
-  }
+  if (bin !== undefined) patterns.push(new RegExp(`${COMMAND_START}((?:\\.\\.?\\/)*${escape(bin)}\\/[\\w-]+)(?![\\w./-])`, 'gm'));
   return patterns;
+};
+
+/**
+ * A program's first argument: past spaces or a `\` line continuation, a
+ * lower-case word, quoted or not, that is not a path or an option.
+ */
+const FIRST_ARGUMENT = `["']?(?:[^\\S\\n]|\\\\\\n)+["']?([a-z][\\w-]*)(?![\\w./-])`;
+
+/**
+ * `<program path>\t<first argument>` for each program call in `text`, run
+ * from `cwd`: a `<bin>/<name>` binary in command position, or anywhere a
+ * path `programs` lists, such as `tsx <path> <subcommand>`. A path is resolved
+ * from `cwd` as `pathsIn` resolves it, so a listed path written from another
+ * folder names another file.
+ */
+export const programCalls = (text: string, cwd: string, bin: string | undefined, programs: ReadonlyMap<string, readonly string[]>): string[] => {
+  const listed = [...programs.values()].flat();
+  const patterns: RegExp[] = [];
+  if (bin !== undefined) patterns.push(new RegExp(`${COMMAND_START}((?:\\.\\.?\\/)*${escape(bin)}\\/[\\w-]+)${FIRST_ARGUMENT}`, 'gm'));
+  if (listed.length > 0) patterns.push(new RegExp(`(?<![\\w./-])((?:\\.\\.?\\/)*(?:${listed.map(escape).join('|')}))${FIRST_ARGUMENT}`, 'g'));
+  const calls: string[] = [];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) calls.push(`${posix.join(cwd, match[1] as string)}\t${match[2] as string}`);
+  }
+  return calls;
 };
 
 /** Root-relative paths a command names, resolved from the directory it runs in; a path that climbs out of the root is dropped. */
@@ -276,7 +312,7 @@ export const resolveStageReach = (root: string, config: StageConfig): StageReach
   const workspaces = workspaceDirs(root, config.workspaceFile);
   const turbo = config.turbo === undefined ? '' : read(root, config.turbo);
   const dispatch = config.dispatcher === undefined ? '' : read(root, config.dispatcher);
-  const reach: StageReach = { files: new Set(), scripts: new Map(), workspaces };
+  const reach: StageReach = { files: new Set(), scripts: new Map(), workspaces, calls: new Set() };
   const seen = new Set<string>();
   const runner = config.packageRunner;
   const runnerCall = new RegExp(`${escape(runner?.call ?? '')}\\s+"([\\w-]+)"`, 'g');
@@ -323,6 +359,7 @@ export const resolveStageReach = (root: string, config: StageConfig): StageReach
   const visitText = (raw: string, cwd: string): void => {
     const text = codeLines(raw);
     for (const path of pathsIn(text, cwd, config.runnable)) visitFile(path, cwd);
+    for (const call of programCalls(text, cwd, config.bin, config.programs)) reach.calls.add(call);
     if (config.dispatchCall !== undefined) {
       for (const match of text.matchAll(new RegExp(config.dispatchCall.source, 'g'))) {
         visitText(dispatcherCase(dispatch, match[1] as string), ROOT_DIR);
@@ -366,7 +403,17 @@ export const testFileRuns = (path: string, reach: StageReach, config: Pick<Stage
   return [...reach.scripts].some(([key, command]) => key.startsWith(`${owner}\t`) && config.testRunner.test(command));
 };
 
-/** Every live validator claim whose named scripts no stage reaches. */
+/** The program a claim's script is: a listed path's program, else `<name>` for a `<bin>/<name>` binary. */
+const programOf = (script: string, config: Pick<StageConfig, 'bin' | 'programs'>): string | undefined => {
+  for (const [name, paths] of config.programs) if (paths.includes(script)) return name;
+  return config.bin !== undefined && posix.dirname(script) === config.bin ? posix.basename(script) : undefined;
+};
+
+/**
+ * Every live validator claim whose named scripts no stage reaches, and every
+ * one whose config begins `<program> <subcommand>`, its script that program,
+ * whose subcommand no stage runs it with.
+ */
 export const findUncalledValidators = (root: string, standards: readonly Standard[], config: StageConfig, given?: StageReach): Problem[] => {
   const claims = standards.filter((s) => s.enforcement === 'validator' && !s.deprecated);
   // Walked only when some claim needs it: a corpus with no live validator
@@ -395,6 +442,16 @@ export const findUncalledValidators = (root: string, standards: readonly Standar
     const missing = named.filter((path) => !existsSync(posix.join(root, path)));
     for (const path of missing) report(path, 'does not exist');
     if (missing.length > 0) continue;
+    const script = posix.normalize(standard.enforcementScript);
+    const program = programOf(script, config);
+    const sub = program === undefined ? null : new RegExp(`^${escape(program)}[^\\S\\n]+([a-z][\\w-]*)(?![\\w./-])`).exec(standard.enforcementConfig);
+    if (program !== undefined && sub !== null) {
+      const runs = [...(config.bin === undefined ? [] : [`${config.bin}/${program}`]), ...(config.programs.get(program) ?? [])];
+      if (!runs.some((path) => reach.calls.has(`${path}\t${sub[1] as string}`))) {
+        report(`${program} ${sub[1] as string}`, 'is never run by a hook or workflow — the claim names a subcommand nothing calls');
+      }
+      continue;
+    }
     if (!named.some((path) => reach.files.has(path) || testFileRuns(path, reach, config))) {
       report(named.join(', '), 'is never run by a hook or workflow — the claim names a validator nothing calls');
     }

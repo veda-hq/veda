@@ -710,7 +710,12 @@ each claim to the repository's real configuration. The JSON `--config`
   "dispatcher": { "path": "scripts/run-validation.sh" },
   "packageRunner": { "path": "scripts/validate-package.sh", "call": "run_validator", "validatorsDir": "scripts/validators" },
   "stageRoots": { "hooks": [".husky"], "workflows": [".github/workflows"], "actions": [".github/actions"] },
-  "runnable": { "prefixes": ["scripts/", ".claude/scripts/", "apps/*/scripts/"], "extensions": ["sh", "ts", "mjs", "js"], "bin": "node_modules/.bin" },
+  "runnable": {
+    "prefixes": ["scripts/", ".claude/scripts/", "apps/*/scripts/"],
+    "extensions": ["sh", "ts", "mjs", "js"],
+    "bin": "node_modules/.bin",
+    "programs": { "tool": ["node_modules/@scope/tool/src/cli.ts", "node_modules/@scope/tool/dist/cli.js"] }
+  },
   "workspaceList": { "pnpm": "pnpm-workspace.yaml", "turbo": "turbo.json" },
   "tests": { "file": "\\.test\\.tsx?$", "runner": "\\bvitest\\b|\\s--test\\b" }
 }
@@ -723,7 +728,7 @@ YAML frontmatter is the contract:
 | --- | --- |
 | `id` | the standard's id, printed with its problems |
 | `enforcement` | `eslint-rule` and `validator` are checked; other values (`guidance`, …) claim no gate. A file with none is not a standard |
-| `enforcement_config` | for `eslint-rule`, the rules, comma-separated; for `validator`, may cite `<dispatcher file name> <target>` |
+| `enforcement_config` | for `eslint-rule`, the rules, comma-separated; for `validator`, may cite `<dispatcher file name> <target>`, or begin `<program> <subcommand>` |
 | `partial_gates` | rules that gate part of a standard, on any `enforcement`; checked like `enforcement_config` |
 | `applies_to` | workspace paths or prefixes, a list or one string |
 | `enforcement_script` | for `validator`, the script or test file the claim runs |
@@ -766,9 +771,28 @@ skipped, not counted.
   `echo`/`printf` lines are not calls. A cited test
   file (`tests.file`) counts as run when a reached script of its workspace
   matches `tests.runner`.
+- **A subcommand.** A bin with many subcommands is reached while any one of
+  them runs, so a claim on it would pass after its own subcommand stopped
+  running. When a validator claim's `enforcement_config` begins
+  `<program> <subcommand>` (`tool check, in pre-commit`) and its
+  `enforcement_script` is that program, the claim passes only when a reached
+  hook, script or workflow step runs the program with that subcommand as its
+  first argument; the refusal names the subcommand (`tool check`). The
+  program is `<name>` for a `<bin>/<name>` script, or the name
+  `runnable.programs` lists the script under. A program runs as `<bin>/<name> <subcommand>` in command
+  position, or as `<path> <subcommand>` anywhere on a line for a path
+  `runnable.programs` lists for it (`tsx <path> check`), resolved from the
+  caller's folder like any path. The first argument is a lower-case word,
+  quoted or not, after spaces or a `\` line continuation; an option before
+  it (`tool --x check`) hides the subcommand. A path behind a variable
+  (`"$DIR/cli.ts" check`) is not read. Any other claim keeps the file-level
+  check above.
 
 `id` is optional and only labels the output. `dispatcher`, `packageRunner`,
-`bin` and `turbo` are optional (absent or `null`: none, so less is reached).
+`bin`, `programs` and `turbo` are optional (absent or `null`: none, so less is
+reached). `programs` maps a program name (letters, digits, `.`, `_`, `-`, not
+starting with a symbol) to a non-empty list of root-relative paths, and one
+path runs one program.
 Without a `dispatcher`, a claim's `enforcement_config` is prose, and the
 claim is judged by its `enforcement_script` alone: a repository whose stages
 call each check directly names the binary or script they call there. Exit 0

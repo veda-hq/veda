@@ -458,6 +458,7 @@ export const supervise = async (
       failed,
       held,
       skipped,
+      turns,
     } = parseRecords(readOrNull(records));
     const verdict = (last: boolean) =>
       imposed
@@ -508,6 +509,7 @@ export const supervise = async (
           failed,
           held,
           skipped,
+          turns,
           node: process.version,
           platform: process.platform,
           arch: process.arch,

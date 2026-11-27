@@ -29,6 +29,7 @@ import {
 } from "./records/gate.ts";
 import { runner } from "./records/git.ts";
 import { slot, type SlotWiring } from "./slot.ts";
+import { turn, turnReplay, type TurnWiring } from "./turn.ts";
 import { listFor, readStageLists } from "./stages.ts";
 import { supervise, type Options } from "./supervisor.ts";
 import { GIT_TRAILER_KEYS, misplacedTrailers, refusal } from "./trailers.ts";
@@ -54,6 +55,10 @@ export const USAGE = [
   "                                            warn when the branch is over a reviewer's line cap (pre-push)",
   "       dvara slot --name <name> [--dir <dir>] [--set NAME=VALUE]… [--unset NAME]… -- <command> [args…]",
   "                                            run a command, with the variables set while it holds the machine's slot",
+  "       dvara turn [--exclusive] [--class push|other] [--label <text>] -- <command> [args…]",
+  "                                            run heavy work in its turn in the machine's queue (record-only by default)",
+  "       dvara turn-replay [--count N]… [--wait-minutes M] [--since <ISO time>] [--file <turns.jsonl>]",
+  "                                            the waits the logged requests would have had at each count",
   "       dvara --version",
 ].join("\n");
 
@@ -78,6 +83,8 @@ export interface Context {
   readonly options?: Partial<Options>;
   /** What `dvara slot` spawns and listens on, replaced in tests. */
   readonly slot?: SlotWiring;
+  /** What `dvara turn` spawns, sleeps and listens on, replaced in tests. */
+  readonly turn?: TurnWiring;
 }
 
 type CheckName = "records" | "frozen" | "trailers";
@@ -260,6 +267,10 @@ export const run = async (
   if (command === "review-size") return reviewSize(rest, context);
   if (command === "slot")
     return slot(rest, { ...context.slot, err: io.err, env, cwd });
+  if (command === "turn")
+    return turn(rest, { ...context.turn, err: io.err, env, cwd });
+  if (command === "turn-replay")
+    return turnReplay(rest, { out: io.out, err: io.err, env });
   if (
     (command === "run" && rest.length > 0) ||
     (command === "stages" && rest.length === 1)

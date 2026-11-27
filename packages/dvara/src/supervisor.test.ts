@@ -39,6 +39,21 @@ const it = (name: string, fn: (t: TestContext) => void | Promise<void>) =>
   test(name, { timeout: 5_000 }, fn);
 
 /**
+ * A run that never settles also never clears its sampling interval, so its
+ * test fails at 5 s but the process stays alive until Stryker's limit: five
+ * such retries outgrew the gate's 15-minute budget (veda#654). Once every
+ * test has ended, a process still alive 5 s later is held open by a handle
+ * nothing closed: it fails, and exits. The timer is unref'd, so it fires only
+ * then, and a healthy run ends as before; a leak in the real code fails too.
+ */
+after(() => {
+  setTimeout(() => {
+    process.stderr.write("supervisor.test.ts: still running 5 s after the last test; a handle was left open\n");
+    process.exit(1);
+  }, 5_000).unref();
+});
+
+/**
  * Git hermetic for the whole process: the fixtures' git and the hooks the
  * supervisor runs spawn git with this process's environment. A global trace2
  * event target (a daemon's socket) could otherwise write into a fixture's
@@ -288,9 +303,34 @@ describe("supervise", () => {
     assert.equal(await supervise([hook], opts), 0);
     const [row] = rows(root);
     assert.deepEqual(
-      [row?.failed, row?.held, row?.skipped, row?.proof, row?.proofDiagnostics],
-      [[], [], [], [], []],
+      [row?.failed, row?.held, row?.skipped, row?.proof, row?.proofDiagnostics, row?.turns],
+      [[], [], [], [], [], []],
     );
+  });
+
+  it("carries each stage's heavy-work turn into the row", async () => {
+    const { root, hook } = repo(
+      [
+        "dvara_stage mutation",
+        `printf 'turn\\tmutation\\tgate\\tpush\\tshared\\trecord\\t0\\t4000\\t0\\t0\\n' >> "$DVARA_RECORD_FILE"`,
+      ].join("\n"),
+    );
+    const { opts } = options(root);
+    assert.equal(await supervise([hook], opts), 0);
+    const [row] = rows(root);
+    assert.deepEqual(row?.turns, [
+      {
+        stage: "mutation",
+        label: "gate",
+        class: "push",
+        width: "shared",
+        mode: "record",
+        waitedMs: 0,
+        wouldWaitMs: 4000,
+        ranAnyway: false,
+        nested: false,
+      },
+    ]);
   });
 
   it("counts the runtime selection in the total and offsets the stages", async () => {

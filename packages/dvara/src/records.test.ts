@@ -58,13 +58,58 @@ describe("parseRecords", () => {
 
   it("has every list empty without records, as with no file at all", () => {
     for (const text of [null, "", "refs-source\tstdin"]) {
-      const { failed, held, skipped, proof, proofDiagnostics } =
+      const { failed, held, skipped, proof, proofDiagnostics, turns } =
         parseRecords(text);
       assert.deepEqual(
-        { failed, held, skipped, proof, proofDiagnostics },
-        { failed: [], held: [], skipped: [], proof: [], proofDiagnostics: [] },
+        { failed, held, skipped, proof, proofDiagnostics, turns },
+        { failed: [], held: [], skipped: [], proof: [], proofDiagnostics: [], turns: [] },
       );
     }
+  });
+
+  it("parses each heavy-work turn a stage asked for, in order", () => {
+    const records = parseRecords(
+      [
+        "turn\tmutation\tmutation gate\tpush\tshared\tenforce\t1200\t1200\t0\t0",
+        "turn\tandroid\tflows\tpush\texclusive\trecord\t0\t\t1\t1",
+        "turn",
+      ].join("\n"),
+    );
+    assert.deepEqual(records.turns, [
+      {
+        stage: "mutation",
+        label: "mutation gate",
+        class: "push",
+        width: "shared",
+        mode: "enforce",
+        waitedMs: 1200,
+        wouldWaitMs: 1200,
+        ranAnyway: false,
+        nested: false,
+      },
+      {
+        stage: "android",
+        label: "flows",
+        class: "push",
+        width: "exclusive",
+        mode: "record",
+        waitedMs: 0,
+        wouldWaitMs: null,
+        ranAnyway: true,
+        nested: true,
+      },
+      {
+        stage: "",
+        label: "",
+        class: "",
+        width: "",
+        mode: "",
+        waitedMs: null,
+        wouldWaitMs: null,
+        ranAnyway: false,
+        nested: false,
+      },
+    ]);
   });
 
   it("fills missing fields with empty text", () => {

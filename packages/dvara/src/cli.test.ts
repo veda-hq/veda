@@ -2,17 +2,19 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { after, describe, it } from "node:test";
+import { after, describe, it as test, type TestContext } from "node:test";
 import {
   entry,
   isEntry,
@@ -29,7 +31,28 @@ import { repo } from "./records/fixture.test.ts";
 const dirs: string[] = [];
 after(() => {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  // A run that never settles leaves the supervisor's sampling interval
+  // running: once every test has ended, a process still alive 5 s later is
+  // held open by a handle nothing closed, and fails, so the mutant is killed
+  // rather than timed out (veda#654). The timer is unref'd, so it fires only
+  // then; a healthy run ends as before, and a leak in the real code fails.
+  setTimeout(() => {
+    process.stderr.write("cli.test.ts: still running 5 s after the last test; a handle was left open\n");
+    process.exit(1);
+  }, 5_000).unref();
 });
+
+type Case = (t: TestContext) => void | Promise<void>;
+/**
+ * Every case fails at 30 s unless it sets its own limit: a mutant that keeps
+ * a supervised run from settling would otherwise hang it until Stryker's.
+ */
+function it(name: string, fn: Case): void;
+function it(name: string, options: { timeout: number }, fn: Case): void;
+function it(name: string, options: Case | { timeout: number }, fn?: Case): void {
+  if (typeof options === "function") void test(name, { timeout: 30_000 }, options);
+  else void test(name, options, fn as Case);
+}
 
 const scratch = (prefix: string): string => {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -187,6 +210,10 @@ describe("dvara", () => {
         "                                            warn when the branch is over a reviewer's line cap (pre-push)",
         "       dvara slot --name <name> [--dir <dir>] [--set NAME=VALUE]… [--unset NAME]… -- <command> [args…]",
         "                                            run a command, with the variables set while it holds the machine's slot",
+        "       dvara turn [--exclusive] [--class push|other] [--label <text>] -- <command> [args…]",
+        "                                            run heavy work in its turn in the machine's queue (record-only by default)",
+        "       dvara turn-replay [--count N]… [--wait-minutes M] [--since <ISO time>] [--file <turns.jsonl>]",
+        "                                            the waits the logged requests would have had at each count",
         "       dvara --version",
       ].join("\n"),
     ]);
@@ -586,6 +613,60 @@ describe("isEntry", () => {
   });
 });
 
+// The command's routing, held here: the mutation gate runs a source's own
+// suite, and exec-bits.test.ts does not judge cli.ts.
+describe("dvara exec-bits", () => {
+  const scripted = () => {
+    const r = repo("dvara-cli-exec-bits-");
+    dirs.push(r.root);
+    r.write("run.sh", "#!/bin/sh\necho hi\n");
+    chmodSync(join(r.root, "run.sh"), 0o755);
+    r.commit("init");
+    return r;
+  };
+
+  it("passes an index with no dropped bit, warns on one, and refuses it with --refuse", async () => {
+    const r = scripted();
+    const clean = capture();
+    assert.equal(await run(["exec-bits", "--staged"], { io: clean.io, cwd: r.root, env: r.env }), 0);
+    assert.deepEqual([clean.out, clean.err], [[], []]);
+    chmodSync(join(r.root, "run.sh"), 0o644);
+    r.git("add", "-A");
+    const warned = capture();
+    assert.equal(await run(["exec-bits", "--staged"], { io: warned.io, cwd: r.root, env: r.env }), 0);
+    assert.match(warned.err[0] ?? "", /^⚠ exec-bits: 1 staged file/);
+    assert.equal(warned.err[1], "  run.sh");
+    const refused = capture();
+    assert.equal(
+      await run(["exec-bits", "--staged", "--refuse"], { io: refused.io, cwd: r.root, env: r.env }),
+      1,
+    );
+    assert.match(refused.err[0] ?? "", /^❌ exec-bits: 1 staged file/);
+  });
+
+  it("exits 2 with its usage on bad arguments, and with git's error outside a repository", async () => {
+    const bad = capture();
+    assert.equal(await run(["exec-bits"], { io: bad.io, cwd: "/", env: {} }), 2);
+    assert.deepEqual(bad.err, [
+      "dvara exec-bits: give --staged",
+      "usage: dvara exec-bits --staged [--refuse]",
+    ]);
+    const r = scripted();
+    const outside = scratch("dvara-cli-exec-bits-outside-");
+    const broken = capture();
+    assert.equal(
+      await run(["exec-bits", "--staged"], {
+        io: broken.io,
+        cwd: outside,
+        env: { ...r.env, GIT_CEILING_DIRECTORIES: dirname(outside) },
+      }),
+      2,
+    );
+    assert.equal(broken.err.length, 1);
+    assert.match(broken.err[0] ?? "", /^dvara exec-bits: ./);
+  });
+});
+
 describe("dvara slot", () => {
   const cli = resolve(import.meta.dirname, "cli.ts");
   const GRANT = "GRANT_WORKERS";
@@ -749,6 +830,154 @@ describe("dvara slot", () => {
       } finally {
         process.off("exit", reap);
         reap();
+      }
+    },
+  );
+});
+
+describe("dvara turn", () => {
+  const cli = resolve(import.meta.dirname, "cli.ts");
+  /**
+   * The environment a real run gets: this machine's queue never, CI never, no
+   * outer turn or hook, and the mode and count each test sets.
+   */
+  const turnEnv = (dir: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv => {
+    const env: NodeJS.ProcessEnv = { ...process.env, CI: "", DVARA_TURN_DIR: dir, ...extra };
+    for (const name of [
+      "DVARA_TURN_HELD",
+      "DVARA_TURN_MODE",
+      "DVARA_TURNS",
+      "DVARA_TURN_WAIT_MINUTES",
+      "DVARA_MEASURED_HOOK",
+      "DVARA_STAGE_FILE",
+      "DVARA_RECORD_FILE",
+    ])
+      if (!(name in extra)) delete env[name];
+    return env;
+  };
+  const log = (dir: string): Array<Record<string, unknown>> =>
+    readFileSync(join(dir, "turns.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  it("lists both commands in its usage", () => {
+    assert.ok(USAGE.includes("dvara turn [--exclusive] [--class push|other] [--label <text>] -- <command> [args…]"));
+    assert.ok(USAGE.includes("dvara turn-replay [--count N]… [--wait-minutes M]"));
+  });
+
+  it("runs the turn on the wiring it is given", async () => {
+    const dir = scratch("dvara-cli-turn-");
+    const { io, err } = capture();
+    const status = await run(["turn", "--", "cmd"], {
+      io,
+      cwd: dir,
+      env: { DVARA_TURN_DIR: dir },
+      turn: {
+        git: () => null,
+        spawn: () => {
+          const child = Object.assign(new EventEmitter(), { kill: () => true });
+          setImmediate(() => child.emit("exit", 5, null));
+          return child;
+        },
+      },
+    });
+    assert.equal(status, 5);
+    assert.deepEqual(err, []);
+    assert.equal(log(dir)[0]?.["exitCode"], 5);
+  });
+
+  it("replays the machine's log", async () => {
+    const dir = scratch("dvara-cli-turn-");
+    writeFileSync(
+      join(dir, "turns.jsonl"),
+      `${JSON.stringify({ id: "a", nested: false, class: "other", exclusive: false, askedAt: 0, startedAt: 0, endedAt: 10 })}\n`,
+    );
+    const { io, out } = capture();
+    assert.equal(await run(["turn-replay", "--count", "1"], { io, cwd: dir, env: { DVARA_TURN_DIR: dir } }), 0);
+    assert.equal((JSON.parse(out[0] ?? "{}") as Record<string, unknown>)["requests"], 1);
+  });
+
+  it("passes a real command's exit status through and logs the request", () => {
+    const dir = scratch("dvara-cli-turn-");
+    const result = spawnSync(
+      process.execPath,
+      [cli, "turn", "--label", "exit 7", "--", process.execPath, "-e", "process.exit(7)"],
+      { encoding: "utf8", env: turnEnv(dir), timeout: 60_000, killSignal: "SIGKILL" },
+    );
+    assert.equal(result.status, 7, result.stderr);
+    const [line] = log(dir);
+    assert.equal(line?.["label"], "exit 7");
+    assert.equal(line?.["mode"], "record");
+    assert.equal(line?.["exitCode"], 7);
+  });
+
+  it(
+    "makes a third request wait behind two holders in enforce mode, naming them, then run",
+    { timeout: 90_000 },
+    async (t) => {
+      const dir = scratch("dvara-cli-turn-");
+      const env = turnEnv(dir, { DVARA_TURN_MODE: "enforce", DVARA_TURNS: "2" });
+      const release = join(dir, "release");
+      // Each holder waits for the release file, and ends itself after 30 s whatever happens.
+      const hold = (name: string) => [
+        process.execPath,
+        "-e",
+        [
+          `const fs = require('node:fs');`,
+          `fs.writeFileSync(${JSON.stringify(join(dir, name))}, '');`,
+          `const t = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) { clearInterval(t); process.exit(0); } }, 50);`,
+          `setTimeout(() => process.exit(0), 30000);`,
+        ].join(" "),
+      ];
+      const children: ReturnType<typeof spawn>[] = [];
+      const runTurn = (label: string, command: string[]) => {
+        const child = spawn(process.execPath, [cli, "turn", "--label", label, "--", ...command], {
+          env,
+          stdio: ["ignore", "ignore", "pipe"],
+        });
+        children.push(child);
+        let stderr = "";
+        child.stderr?.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+        const exited = new Promise<number | null>((done) => child.on("exit", (code) => done(code)));
+        return { exited, stderr: () => stderr };
+      };
+      const until = async (path: string): Promise<void> => {
+        const deadline = Date.now() + 30_000;
+        while (!existsSync(path) && Date.now() < deadline)
+          await new Promise((done) => setTimeout(done, 50));
+        assert.ok(existsSync(path), `${path} never appeared`);
+      };
+      try {
+        const first = runTurn("first holder", hold("a"));
+        await until(join(dir, "a"));
+        const second = runTurn("second holder", hold("b"));
+        await until(join(dir, "b"));
+        const third = runTurn("waiter", [process.execPath, "-e", "process.exit(3)"]);
+        const deadline = Date.now() + 30_000;
+        while (!third.stderr().includes("⏳") && Date.now() < deadline)
+          await new Promise((done) => setTimeout(done, 50));
+        writeFileSync(release, "");
+        assert.equal(await third.exited, 3);
+        assert.equal(await first.exited, 0);
+        assert.equal(await second.exited, 0);
+        t.diagnostic(third.stderr());
+        const lines = third.stderr().split("\n");
+        assert.match(
+          lines[0] ?? "",
+          /^⏳ Waiting for a heavy-work turn \(2 of 2 in use, you are 1st in line\); waited 0 min of up to 30\.$/,
+        );
+        assert.match(lines[1] ?? "", /^ {3}\S+ {2}first holder {3}for 0 min/);
+        assert.match(lines[2] ?? "", /^ {3}\S+ {2}second holder {2}for 0 min/);
+        const waiter = log(dir).find((line) => line["label"] === "waiter");
+        t.diagnostic(JSON.stringify(waiter));
+        assert.equal(waiter?.["mode"], "enforce");
+        assert.ok(Number(waiter?.["waitedMs"]) > 0);
+        assert.equal((waiter?.["holders"] as unknown[]).length, 2);
+        assert.equal(existsSync(join(dir, "waiters")) && readdirSync(join(dir, "waiters")).length, 0);
+        assert.deepEqual(readdirSync(join(dir, "tickets")), []);
+      } finally {
+        for (const child of children) child.kill("SIGKILL");
       }
     },
   );

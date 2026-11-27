@@ -387,6 +387,31 @@ describe("decide", () => {
     });
   });
 
+  it("finds no deadlock in a tree waiting in the heavy-work queue, until the external ceiling", () => {
+    const { lsof, tree, supervisorFds } = scenario("deadlock");
+    const classes = classifyFds(
+      lsof,
+      tree.map((row) => row.pid),
+      supervisorFds,
+    );
+    const at = (quietMs: number, queued?: boolean) =>
+      decide({
+        tree,
+        classes,
+        cpuDeltaByPid: zeroDeltas(tree),
+        quietMs,
+        config,
+        ...(queued === undefined ? {} : { queued }),
+      });
+    assert.equal(at(config.idleMs, true), null);
+    assert.equal(at(config.idleMs, false)?.kind, "internal-deadlock");
+    assert.equal(at(config.idleMs)?.kind, "internal-deadlock");
+    assert.deepEqual(at(config.externalIdleMs, true), {
+      kind: "idle-external",
+      quietMs: config.externalIdleMs,
+    });
+  });
+
   it("does not decide anything a moment before the window ends", () => {
     assert.equal(verdictFor("deadlock", config.idleMs - 1), null);
   });
@@ -1535,6 +1560,8 @@ describe("createWatchdog", () => {
     } = {},
     /** Awaited by each `sample` call: the diagnostics step of a verdict. */
     sample: () => Promise<void> = async () => {},
+    /** The heavy-work queue's answer; the machine's queue when left out. */
+    queued?: (pids: readonly number[]) => boolean,
   ) {
     // A case may build a second harness; the first one's interval is stopped.
     mock.timers.reset();
@@ -1613,6 +1640,7 @@ describe("createWatchdog", () => {
       kill: (pid, signal) => {
         kills.push([pid, signal]);
       },
+      ...(queued ? { queued } : {}),
     });
     return {
       fixture,
@@ -1624,6 +1652,79 @@ describe("createWatchdog", () => {
       psEnvs,
     };
   }
+
+  describe("a hook waiting in the heavy-work queue (RFC-0060 S7)", () => {
+    it("is never stopped as a deadlock, and the queue is asked about the tree's processes", async () => {
+      const asked: number[][] = [];
+      const { fixture, kills, watchdog } = harness(
+        "deadlock",
+        "enforce",
+        undefined,
+        {},
+        {},
+        undefined,
+        (pids) => {
+          asked.push([...pids]);
+          return true;
+        },
+      );
+      await advance(16_000);
+      watchdog.stop();
+      assert.deepEqual(kills, []);
+      assert.equal(watchdog.summary().verdict, null);
+      assert.ok(asked.length > 0);
+      assert.deepEqual(
+        asked[0]?.toSorted((a, b) => a - b),
+        fixture.tree.map((row) => row.pid).toSorted((a, b) => a - b),
+      );
+    });
+
+    it("withdraws a verdict when the hook starts waiting before the kill", async () => {
+      let checks = 0;
+      const [, reader] = pair(scenario("deadlock").info);
+      // Only the re-check before the kill finds the waiter, and only among the tree's own processes.
+      const { kills, watchdog } = harness(
+        "deadlock",
+        "enforce",
+        undefined,
+        {},
+        {},
+        undefined,
+        (pids) => ++checks > 2 && pids.includes(reader),
+      );
+      await advance(16_000);
+      watchdog.stop();
+      assert.deepEqual(kills, []);
+      assert.ok(
+        watchdog
+          .summary()
+          .warnings.includes(
+            "verdict withdrawn: the deadlock's channels changed before termination",
+          ),
+        JSON.stringify(watchdog.summary().warnings),
+      );
+    });
+
+    it("reads the machine's queue by default, from DVARA_TURN_DIR", async () => {
+      const queue = mkdtempSync(join(tmpdir(), "watchdog-turns-"));
+      dirs.push(queue);
+      const saved = process.env["DVARA_TURN_DIR"];
+      process.env["DVARA_TURN_DIR"] = queue;
+      try {
+        mkdirSync(join(queue, "waiters"));
+        // An entry with no start identity: spared without asking `ps`.
+        const [, reader] = pair(scenario("deadlock").info);
+        writeFileSync(join(queue, "waiters", String(reader)), "");
+        const { kills, watchdog } = harness("deadlock", "enforce");
+        await advance(16_000);
+        watchdog.stop();
+        assert.deepEqual(kills, []);
+      } finally {
+        if (saved === undefined) delete process.env["DVARA_TURN_DIR"];
+        else process.env["DVARA_TURN_DIR"] = saved;
+      }
+    });
+  });
 
   it("stops the incident deadlock: TERM, then KILL, with diagnostics saved", async () => {
     const { fixture, hangsDir, kills, calls, watchdog } = harness(

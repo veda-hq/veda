@@ -38,6 +38,26 @@ export interface NotRun {
   readonly reason: string;
 }
 
+/** One heavy-work turn a stage asked for (`dvara turn`). */
+export interface Turn {
+  /** The hook stage it was asked in; empty when none had been marked. */
+  readonly stage: string;
+  readonly label: string;
+  readonly class: string;
+  /** `shared` or `exclusive`. */
+  readonly width: string;
+  /** `record` or `enforce`. */
+  readonly mode: string;
+  /** How long the command waited before it started. */
+  readonly waitedMs: number | null;
+  /** When it would have been granted, from its asking; null when it never was while it ran. */
+  readonly wouldWaitMs: number | null;
+  /** It waited the bound and ran anyway. */
+  readonly ranAnyway: boolean;
+  /** It ran inside a turn already held, without asking again. */
+  readonly nested: boolean;
+}
+
 export interface Records {
   /** null: the hook wrote no records file at all. */
   readonly pushed: Pushed | null;
@@ -48,6 +68,8 @@ export interface Records {
   readonly failed: string[];
   readonly held: NotRun[];
   readonly skipped: NotRun[];
+  /** Each heavy-work turn the hook's stages asked for, in order. */
+  readonly turns: Turn[];
 }
 
 /**
@@ -65,9 +87,10 @@ export const recordedMs = (text: string | undefined): number | null => {
  * `ref <local> <remote>`, `stage-input <stage> <kind> <digest>`,
  * `proof <check> <outcome> <ms>`,
  * `proof-reason <check> <reason> <waitMs> <executionMs> <previousExecutionMs>`,
- * and keep-going mode's `failed <stage>`, `held <check> <reason>` and
- * `skipped <check> <reason>`, whose reason is free text: a tab in it stays.
- * Anything else is ignored.
+ * keep-going mode's `failed <stage>`, `held <check> <reason>` and
+ * `skipped <check> <reason>`, whose reason is free text: a tab in it stays,
+ * and `dvara turn`'s `turn <stage> <label> <class> <width> <mode> <waitedMs>
+ * <wouldWaitMs> <ranAnyway 0|1> <nested 0|1>`. Anything else is ignored.
  */
 export const parseRecords = (text: string | null): Records => {
   const declared = new Map<string, Input>();
@@ -76,7 +99,8 @@ export const parseRecords = (text: string | null): Records => {
   const failed: string[] = [];
   const held: NotRun[] = [];
   const skipped: NotRun[] = [];
-  const lists = { proof, proofDiagnostics, failed, held, skipped };
+  const turns: Turn[] = [];
+  const lists = { proof, proofDiagnostics, failed, held, skipped, turns };
   if (text === null) return { pushed: null, declared, ...lists };
   const pushed: Pushed = { source: "none", refs: [] };
   const notRun = ([check = "", ...reason]: string[]): NotRun => ({
@@ -109,6 +133,18 @@ export const parseRecords = (text: string | null): Records => {
     else if (type === "failed") failed.push(f[0] ?? "");
     else if (type === "held") held.push(notRun(f));
     else if (type === "skipped") skipped.push(notRun(f));
+    else if (type === "turn")
+      turns.push({
+        stage: f[0] ?? "",
+        label: f[1] ?? "",
+        class: f[2] ?? "",
+        width: f[3] ?? "",
+        mode: f[4] ?? "",
+        waitedMs: recordedMs(f[5]),
+        wouldWaitMs: recordedMs(f[6]),
+        ranAnyway: f[7] === "1",
+        nested: f[8] === "1",
+      });
   }
   return { pushed, declared, ...lists };
 };

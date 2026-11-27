@@ -114,11 +114,18 @@ const jobRequest = (job: Job): Request => ({
  * Replay the logged requests through a queue of `count` turns and a bound of
  * `boundMs`: each arrives when it asked and, once granted, runs as long as
  * its command ran. Returns each one's wait, in the order given.
+ *
+ * Each loop pass is a step, and a replay that takes more than `maxSteps`
+ * throws. The default never binds: n requests change state at no more than
+ * 3n moments (an arrival, a bound, an end each), and each moment takes one
+ * pass of the outer loop and one pass of the inner loop beyond its grants,
+ * which number n in all: 3n + 1 outer passes, 3n + n inner, 7n + 1 together.
  */
 export const replay = (
   lines: readonly Logged[],
   count: number,
   boundMs: number,
+  maxSteps = 7 * lines.length + 1,
 ): Replayed[] => {
   const jobs: Job[] = lines.map((logged) => ({
     logged,
@@ -126,8 +133,14 @@ export const replay = (
     grantedAt: null,
     endAt: Number.POSITIVE_INFINITY,
   }));
+  let steps = 0;
+  const step = (): true => {
+    steps += 1;
+    if (steps > maxSteps) throw new Error(`replay did not settle in ${maxSteps} steps`);
+    return true;
+  };
   let now = Number.NEGATIVE_INFINITY;
-  for (;;) {
+  while (step()) {
     const unfinished = jobs.filter((job) => job.endAt > now);
     if (unfinished.length === 0) break;
     // The next moment anything changes, each strictly later than now: an
@@ -142,7 +155,7 @@ export const replay = (
       ),
     );
     // Grant until nothing changes: a run of no length frees its turn at the moment it got it.
-    for (;;) {
+    while (step()) {
       const present = unfinished.filter((job) => job.logged.askedAt <= now && job.endAt > now);
       const byId = new Map(present.map((job) => [job.logged.id, job]));
       const granted = grants(present.map(jobRequest), count, now, boundMs);

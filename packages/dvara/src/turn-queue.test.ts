@@ -213,6 +213,20 @@ describe("replay", () => {
     assert.deepEqual(waits([logged("a", 0, 0), logged("b", 0, 0), logged("c", 0, 0)], 1), [0, 0, 0]);
   });
 
+  it("counts each loop pass as a step, and throws past its limit", () => {
+    // One request: arrival (grant, then a pass with nothing to grant), its end
+    // (a pass with nothing), then the pass that finds nothing left: 6 steps.
+    const one = [logged("a", 0, 100)];
+    assert.deepEqual(waits(one, 1), [0]);
+    assert.deepEqual(
+      replay(one, 1, BOUND, 6).map((entry) => entry.waitMs),
+      [0],
+    );
+    assert.throws(() => replay(one, 1, BOUND, 5), /^Error: replay did not settle in 5 steps$/);
+    assert.deepEqual(replay([], 1, BOUND, 1), []);
+    assert.throws(() => replay([], 1, BOUND, 0), /^Error: replay did not settle in 0 steps$/);
+  });
+
   it("replays nothing to nothing", () => {
     assert.deepEqual(replay([], 2, BOUND), []);
   });

@@ -457,8 +457,11 @@ describe("sleepFor", () => {
 
 describe("underQueueLock", () => {
   const sleeps: number[] = [];
+  // A try past the last fails the test: a mutant that never stops trying
+  // would otherwise spin on this sleep, which never yields to the timeout.
   const sleep = async (ms: number): Promise<void> => {
     sleeps.push(ms);
+    if (sleeps.length > LOCK_TRIES) throw new Error("slept past the last try");
   };
   beforeEach(() => {
     sleeps.length = 0;

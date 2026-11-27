@@ -348,7 +348,7 @@ export function spawnStryker(
   markers: readonly string[] = MARKERS,
   unset: readonly string[] = [],
 ): LaneDeps['runStryker'] {
-  return (cwd, args, env) =>
+  return (cwd, args, env, stopAfterMs) =>
     new Promise((done) => {
       // Short, under the gate's own tmpdir(): a Unix socket a test opens under it stays inside macOS's 104-byte limit.
       const scratch = mkdtempSync(join(tmpdir(), SCRATCH_TMP_PREFIX));
@@ -359,6 +359,15 @@ export function spawnStryker(
         stdio: ['inherit', 'pipe', 'pipe'],
       });
       children.add(child);
+      // At the timeout retry's wall, stop Stryker and say so; the pass keeps what it finished.
+      let stopped = false;
+      const stop =
+        stopAfterMs === undefined
+          ? undefined
+          : setTimeout(() => {
+              stopped = true;
+              child.kill('SIGTERM');
+            }, stopAfterMs);
       const seen = new Set<string>();
       const failed = failedTestReader();
       const flushes: (() => void)[] = [];
@@ -399,13 +408,15 @@ export function spawnStryker(
         removeScratchTmp(scratch);
         done({ code: 127, seen: [] });
       });
+      // A spawn that fails emits 'close' after 'error', so this clears the stop for both.
       child.on('close', (code) => {
+        clearTimeout(stop);
         children.delete(child);
         flushes.forEach((flush) => flush());
         const vanished = !existsSync(scratch);
         removeScratchTmp(scratch);
         const failedTests = failed.names();
-        const result = { code: code ?? 1, seen: [...seen], ...(failedTests.length > 0 ? { failedTests } : {}) };
+        const result = { code: code ?? 1, seen: [...seen], ...(failedTests.length > 0 ? { failedTests } : {}), ...(stopped ? { stopped } : {}) };
         done(vanished ? { ...result, refusal: scratchVanished(scratch) } : result);
       });
     });

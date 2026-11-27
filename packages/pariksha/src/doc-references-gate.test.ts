@@ -931,7 +931,7 @@ describe('diff reading', () => {
   });
 
   it('keeps only identifier-shaped words: SCREAMING_CASE, camelCase and PascalCase', () => {
-    // Whole words only: `xMAX_SIZE` and `MAX_SIZEx` are neither shape; every shape repeats its humps.
+    // Just whole words count: `xMAX_SIZE` and `MAX_SIZEx` are neither shape; every shape repeats its humps.
     const hunk = ['@@ -1 +0,0 @@', '-MAX_SIZE fooBar FooBar plain Plain X_ ab xMAX_SIZE MAX_SIZEx MAX_FILE_SIZE fooBarBaz FooBarBaz'].join('\n');
     assert.deepEqual([...removedIdentifiers(hunk)], ['MAX_SIZE', 'fooBar', 'FooBar', 'MAX_FILE_SIZE', 'fooBarBaz', 'FooBarBaz']);
   });

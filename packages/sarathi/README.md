@@ -74,7 +74,17 @@ that cannot be read refuses `PreToolUse` and only warns on other events.
 `sarathi check --settings .claude/settings.json` proves the settings run
 sarathi for every event the list names, with a matcher that lets every
 handler fire and a timeout at least the longest handler's. Run it in the
-project's tests.
+project's tests. An event may have more than one settings entry that runs
+sarathi, each held to that timeout, but no tool two of them cover: sarathi
+would run twice. A handler's regular expression is covered only by an entry
+with that same matcher, or one with none, since whether one pattern covers
+another cannot be proved. So a handler matched by suffix gets an entry of its
+own beside the plain names:
+
+```json
+{ "matcher": "^mcp__.+__(publish_version|publish_files|edit_version)$",
+  "hooks": [{ "type": "command", "command": "npx --no-install sarathi hook PreToolUse", "timeout": 70 }] }
+```
 
 ### Handlers it carries
 
@@ -96,6 +106,7 @@ folder, which holds handlers any TypeScript repository can list:
 | `researcher-report.sh` | PreToolUse `SubagentHandback`; SubagentStop `^sarathi:researcher$` | Sends the plugin's `sarathi:researcher` report back when it has no Verdict line, a Settled or Conflicting verdict with no claims, or a claim without its source and read date ("The researcher's report"). |
 | `lessons.sh` | PreToolUse `Bash\|Edit\|Write\|Agent\|Task\|mcp__ccd_session__start_session`; PostToolUseFailure | Shows a lesson whose `when` line matches the call ("Lessons at their moment"). Never blocks. |
 | `autofix-watch.sh` | PostToolUse `Bash\|mcp__ccd_pr__set_monitor\|mcp__ccd_pr__get_status\|mcp__ccd_turn__wrap_up`; PostToolUseFailure `mcp__ccd_pr__set_monitor` | Lists every pull request the session opens and tells the model, in its context, about each open one that Auto-fix is not on for ("Auto-fix for every pull request"). Never blocks. |
+| `action-box.sh` | PreToolUse `^mcp__.+__(publish_version\|publish_files\|edit_version)$` | Refuses a session's direct claude.ai publish whose page has no whole action box ("Pages"). List it with `"failClosed": true`. |
 | `worktree-archive.sh` | PreToolUse `ExitWorktree` (and Codex's `set_thread_archived`) | Denies removing or archiving the session's worktree while `sarathi worktree archive-check` finds work that would be lost ("Worktrees"). List it with `"failClosed": true`. |
 | `services-reap.sh` | SessionStart | Starts `sarathi services reap` detached, output discarded, when `docker` is on PATH: deleted worktrees' services go ("Services"). Never blocks; always exits 0. |
 | `worktree-hooks-path.sh` | SessionStart | Clears a worktree-scoped `core.hooksPath` in the session's checkout, which tools that create worktrees write as an absolute path to another checkout's hooks, so the repository's shared value applies again ("Worktrees"). Acts only when `extensions.worktreeConfig` is on, since without it there is no scoped value. Clears an empty value too: under `hooksPath =` git runs no hooks at all. Says what it cleared, or, when the key is still there after the clear, warns with its value and the `config.worktree` path; always exits 0. |
@@ -527,10 +538,10 @@ matcher is anchored for an exact match, as the hooks reference advises
 ([SubagentStart](https://code.claude.com/docs/en/hooks#subagentstart)). It
 widens its settings' `PreToolUse` matcher to include `SubagentHandback`. It
 also gives the settings a `SubagentStop` entry that runs
-`npx --no-install sarathi hook SubagentStop`, with no matcher and a timeout
-of at least 10 s: `sarathi check` cannot prove that a narrower settings
-matcher covers a regular expression, so it refuses one. `sarathi check` says
-when either entry is missing or too narrow.
+`npx --no-install sarathi hook SubagentStop`, with no matcher or
+`^sarathi:researcher$` itself, and a timeout of at least 10 s: `sarathi check`
+counts a regular expression covered only by an entry with that same matcher,
+or none. `sarathi check` says when either entry is missing or too narrow.
 
 ### Auto-fix for every pull request
 
@@ -709,6 +720,21 @@ saying what happens if they do nothing. A link that opens a GitHub list (a
 search, a label, a project board) stands only beside links marked
 `data-action-item`, one per item. A page without a whole box is refused
 before any session starts.
+
+**Publishing directly.** A session that carries the claude-artifacts tools
+can publish without `sarathi page`, and their `base_version` gives it the
+compare-and-set `sarathi page` lacks. The `action-box.sh` handler holds those
+calls to the same box. It matches the tools by suffix
+(`^mcp__.+__(publish_version|publish_files|edit_version)$`), since a server's
+id can change when it reconnects. It judges `publish_version`'s `content`,
+and each file `publish_files` serves as `index.html`, read from its `path`; a
+republish that sends no `index.html` passes, and one it cannot read is
+refused. `edit_version` never carries the live page, so on the page (no
+`path`, or `index.html`) it refuses only an edit that takes out a
+`data-action-box`, `data-action-link` or `data-if-silent`: one that keeps
+every marker but empties the link passes, and so does an edit to a page that
+had no box. A refusal names what is missing, as `sarathi page` does, and a
+fault refuses too.
 
 **When the account is at its usage limit**, a publish prints `NOT PUBLISHED`
 and a local file URL of the page to open in the browser, and exits 0; a read, comments or reply exits 1

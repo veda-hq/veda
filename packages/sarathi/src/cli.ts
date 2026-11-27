@@ -26,7 +26,7 @@
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-import { ConfigError, compileMatcher, entriesFor, forbiddenSet, loadConfig, longestTimeout, settingsMatcher, type Config } from './config.ts';
+import { ConfigError, compileMatcher, entriesFor, forbiddenSet, loadConfig, handlerMatchers, longestTimeout, matchesAll, type Config } from './config.ts';
 import { merge } from './merge.ts';
 import { autofixCommand } from './hooks/autofix.ts';
 import { main as page } from './page/page.ts';
@@ -244,29 +244,44 @@ export function runsSarathiFor(command: string, event: string): boolean {
   return /\bsarathi\b/.test(command) && new RegExp(`(?:^|[\\s"'])${event}(?:$|[\\s"'])`).test(command);
 }
 
-/** The settings' problems in running `config`: a missing event, a matcher that hides a handler, a timeout shorter than one. */
+/**
+ * The settings' problems in running `config`: a missing event, a matcher that
+ * hides a handler, a tool two settings entries both run sarathi for, a timeout
+ * shorter than a handler's. An event may have several settings entries that
+ * run sarathi. A handler's regular expression is covered only by an entry
+ * with that same matcher, or one that matches every tool: whether one pattern
+ * covers another cannot be proved.
+ */
 export function settingsProblems(config: Config, settings: Map<string, SettingsHook[]>): string[] {
   const problems: string[] = [];
   for (const [event, list] of Object.entries(config.hooks)) {
     if (list.length === 0) continue;
-    const runner = settings.get(event)?.find(item => runsSarathiFor(item.command, event));
-    if (runner === undefined) {
+    const runners = settings.get(event)?.filter(item => runsSarathiFor(item.command, event)) ?? [];
+    if (runners.length === 0) {
       problems.push(`${event}: no settings hook runs \`sarathi hook ${event}\``);
       continue;
     }
-    const needed = settingsMatcher(config, event);
-    const covers = compileMatcher(runner.matcher);
-    if (needed === undefined) {
-      if (runner.matcher !== undefined && runner.matcher !== '' && runner.matcher !== '*') {
-        problems.push(`${event}: a handler matches every tool, so the settings entry needs no matcher (has "${runner.matcher}")`);
-      }
-    } else {
-      const hidden = needed.split('|').filter(name => name !== '' && !covers(name));
-      if (hidden.length > 0) problems.push(`${event}: the settings matcher leaves out ${hidden.join(', ')}`);
+    const needed = handlerMatchers(config, event);
+    const catchAll = runners.some(runner => matchesAll(runner.matcher));
+    if (needed.all && !catchAll) {
+      const has = runners.map(runner => `"${runner.matcher}"`).join(', ');
+      problems.push(`${event}: a handler matches every tool, so the settings entry needs no matcher (has ${has})`);
     }
+    for (const pattern of needed.patterns) {
+      if (!catchAll && !runners.some(runner => runner.matcher === pattern)) {
+        problems.push(`${event}: no settings entry runs sarathi under the matcher "${pattern}", which a handler uses`);
+      }
+    }
+    const covers = runners.map(runner => compileMatcher(runner.matcher));
+    const hidden = needed.names.filter(name => !covers.some(cover => cover(name)));
+    if (hidden.length > 0) problems.push(`${event}: the settings matcher leaves out ${hidden.join(', ')}`);
+    const twice = needed.names.filter(name => covers.filter(cover => cover(name)).length > 1);
+    if (twice.length > 0) problems.push(`${event}: more than one settings entry runs sarathi for ${twice.join(', ')}, so its handlers would run twice`);
     const longest = longestTimeout(config, event);
-    if (runner.timeout === undefined || runner.timeout < longest) {
-      problems.push(`${event}: the settings timeout must be at least ${longest} s, the longest handler's (has ${runner.timeout ?? 'none'})`);
+    for (const runner of runners) {
+      if (runner.timeout === undefined || runner.timeout < longest) {
+        problems.push(`${event}: the settings timeout must be at least ${longest} s, the longest handler's (has ${runner.timeout ?? 'none'})`);
+      }
     }
   }
   return problems;

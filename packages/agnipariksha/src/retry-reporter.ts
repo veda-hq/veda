@@ -84,7 +84,10 @@ export class RetryReporter {
       endLine: end.line,
       endColumn: end.column,
     });
-    this.io.print(`agnipariksha retry: ${file}:${start.line}:${start.column} ${result.mutatorName}: ${result.status} in ${((at - this.last) / 1000).toFixed(1)} s`);
+    // An ignored mutant (one nested in a retried span, or of a mutator the round leaves out) ran nothing: no line.
+    if (result.status !== 'Ignored') {
+      this.io.print(`agnipariksha retry: ${file}:${start.line}:${start.column} ${result.mutatorName}: ${result.status} in ${((at - this.last) / 1000).toFixed(1)} s`);
+    }
     this.last = at;
   }
 }

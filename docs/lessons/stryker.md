@@ -45,8 +45,9 @@ without suppressing them, and the traps of a gate scoped to a diff.
   exits at once, but its `child-process-proxy-worker` and the test run inside it (a
   `node --test` the tap runner started) keep going, to the end of a hung mutant's wait. To stop
   a run from code, spawn Stryker with `detached: true` and signal its group,
-  `process.kill(-child.pid, 'SIGTERM')`. Then a gate that exits on a signal must stop the group
-  too, since the terminal's Ctrl-C no longer reaches it. agnipariksha does both (`stopGroup` in
+  `process.kill(-child.pid, 'SIGTERM')`. A detached run no longer dies with its parent's group
+  (Ctrl-C, a hook supervisor's SIGKILL), so detach only the runs you will stop, and stop their
+  groups on exit too. agnipariksha detaches only its timeout retry rounds (`stopGroup` in
   `src/cli.ts`, veda#706). Check with `pgrep -fl child-process-proxy-worker` after a stop.
 - **The step summary overflows in CI.** Under GitHub Actions, Vitest adds its github-actions
   reporter and appends to the step summary on every run, which under Stryker means once per
@@ -155,8 +156,8 @@ without suppressing them, and the traps of a gate scoped to a diff.
   mutant reads Killed, not Timeout. veda#654 did both, and bounded the loops in `replay`, after
   two such hangs cost its dvara lane two full retries. The bullet above has the per-test
   `timeout` agnipariksha's own `src/cli.test.ts` sets.
-- **List a lane's timeouts.** From the agnipariksha release that carries veda#706 (0.9.0 by the
-  README's version rule), a lane's timeout retry rounds write their own report,
+- **List a lane's timeouts.** From the first agnipariksha release after 0.8.13, which carries
+  veda#706, a lane's timeout retry rounds write their own report,
   `reports/agnipariksha/<lane>.retry.json`, so `<lane>.json` keeps the lane's whole run,
   Timeouts included, and CI's `mutation-*` artifact (uploaded on a failed lane) lists them.
   agnipariksha 0.8.13 and earlier (veda's root pins 0.8.11 until its bump) ran each retry with

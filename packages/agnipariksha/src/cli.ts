@@ -357,8 +357,10 @@ export function spawnStryker(
         cwd,
         env: { ...inheritedEnv(process.env, unset), ...env, ...scratchTmpEnv(scratch) },
         stdio: ['inherit', 'pipe', 'pipe'],
-        // Its own process group, so a stop reaches the workers and test runs under it (`stopGroup`).
-        detached: true,
+        // A run that may be stopped (a timeout retry round) is its own process group, so a stop reaches
+        // the workers and test runs under it (`stopGroup`). Every other run stays in the gate's group,
+        // so whatever ends the gate's group (Ctrl-C, dvara's watchdog, SIGKILL) ends it too.
+        detached: stopAfterMs !== undefined,
       });
       children.add(child);
       // At the timeout retry's wall, stop Stryker and say so; the pass keeps what it finished.
@@ -510,15 +512,16 @@ export interface EntryProcess {
 /**
  * Stop a Stryker run and every process under it. Signalled alone, Stryker
  * 10.1.1 exits and leaves its workers and their test runs behind (SIGTERM and
- * SIGINT alike, tried by hand on 2026-11-27), so each run is its own process
- * group and the whole group is signalled. A group already gone has nothing
- * left to stop.
+ * SIGINT alike, tried by hand on 2026-11-27), so a run that may be stopped is
+ * its own process group, and the whole group is signalled. A run in the
+ * gate's own group has no group of its own to signal, so it alone is.
  */
 export function stopGroup(child: ChildProcess, kill: (pid: number, signal: NodeJS.Signals) => unknown = process.kill): void {
   try {
     kill(-(child.pid ?? Number.NaN), 'SIGTERM');
   } catch {
-    // fail-open: the group has exited (ESRCH), or never started; either way nothing of it runs.
+    // fail-open: no such group (the run shares the gate's, or has exited): signal the run itself, which a gone one ignores.
+    child.kill('SIGTERM');
   }
 }
 

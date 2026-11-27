@@ -698,6 +698,17 @@ const alive = (pid: number): boolean => {
     return false;
   }
 };
+/** Whether process `pid` is gone within 5 s: a busy machine can be slow to reap it. */
+const gone = async (pid: number): Promise<boolean> => {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (!alive(pid)) return true;
+    await delay(50);
+  }
+  return !alive(pid);
+};
+/** A process's group id, as ps gives it. */
+const groupOf = (pid: number): number => Number(execFileSync('ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' }).trim());
 /** A run that starts a grandchild (as Stryker starts its workers), writes its pid to `OUT`, and waits a minute. */
 const PARENT = `const c = require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' }); require('node:fs').writeFileSync(process.env.OUT, String(c.pid)); setTimeout(() => {}, 60000);`;
 
@@ -711,8 +722,7 @@ test('spawnStryker stops a run at stopAfterMs, with every process under it, and 
     assert.ok(Date.now() - begun < 10_000, 'stopped long before its own end');
     assert.equal(children.size, 0);
     const grandchild = Number(readFileSync(join(out, 'pid'), 'utf8'));
-    await delay(200);
-    assert.equal(alive(grandchild), false, 'the stop reaches the process the run started');
+    assert.equal(await gone(grandchild), true, 'the stop reaches the process the run started');
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
@@ -720,20 +730,39 @@ test('spawnStryker stops a run at stopAfterMs, with every process under it, and 
   assert.deepEqual(await spawnStryker([node, '-e', 'process.exit(0)'], children)('.', [], {}, 60_000), { code: 0, seen: [] });
 });
 
-test("stopGroup signals the run's whole process group, and a group that is gone, or never started, is nothing to stop", () => {
+test("stopGroup signals the run's whole process group, and the run alone when it has no group of its own", () => {
   const sent: [number, string][] = [];
+  const own: string[] = [];
+  const child = (pid?: number) => ({ ...(pid === undefined ? {} : { pid }), kill: (signal: string) => own.push(signal) }) as unknown as ChildProcess;
   const record = (pid: number, signal: NodeJS.Signals) => void sent.push([pid, signal]);
-  stopGroup({ pid: 4321 } as ChildProcess, record);
-  stopGroup({} as ChildProcess, record);
+  stopGroup(child(4321), record);
+  stopGroup(child(), record);
   assert.deepEqual(sent, [
     [-4321, 'SIGTERM'],
     [Number.NaN, 'SIGTERM'],
   ]);
-  assert.doesNotThrow(() =>
-    stopGroup({ pid: 4321 } as ChildProcess, () => {
-      throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
-    }),
-  );
+  assert.deepEqual(own, [], 'a group signal that goes through signals nothing else');
+  stopGroup(child(4321), () => {
+    throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+  });
+  assert.deepEqual(own, ['SIGTERM'], 'no such group: the run itself is signalled');
+});
+
+test("only a run that may be stopped is a process group of its own; any other shares the gate's", HANG, async () => {
+  const children = new Set<ChildProcess>();
+  const out = mkdtempSync(join(tmpdir(), 'agnipariksha-test-'));
+  try {
+    const script = `require('node:fs').writeFileSync(process.env.OUT, String(process.pid)); setTimeout(() => {}, 1000);`;
+    const plain = spawnStryker([node, '-e', script], children)('.', [], { OUT: join(out, 'plain') });
+    const plainPid = Number(await written(join(out, 'plain')));
+    assert.equal(groupOf(plainPid), groupOf(process.pid), "a lane run dies with whatever ends the gate's group");
+    const stoppable = spawnStryker([node, '-e', script], children)('.', [], { OUT: join(out, 'stoppable') }, 60_000);
+    const stoppablePid = Number(await written(join(out, 'stoppable')));
+    assert.equal(groupOf(stoppablePid), stoppablePid, 'a round leads its own group');
+    await Promise.all([plain, stoppable]);
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
 });
 
 test('each Stryker run gets its own fresh temp directory, which no lane env can override, removed afterwards', HANG, async () => {
@@ -903,13 +932,12 @@ test('stopAll stops a live run and removes its temp directory; a finished run is
     assert.equal(result.refusal, scratchVanished(tmp));
     assert.equal(children.size, 0, 'a closed child is let go');
 
-    // A run's own children go with it.
-    const parent = spawnStryker([node, '-e', PARENT], children)('.', [], { OUT: join(out, 'pid') });
+    // A round's own children go with it.
+    const parent = spawnStryker([node, '-e', PARENT], children)('.', [], { OUT: join(out, 'pid') }, 60_000);
     const grandchild = Number(await written(join(out, 'pid')));
     stopAll(children);
     await parent;
-    await delay(200);
-    assert.equal(alive(grandchild), false, 'stopAll reaches the process the run started');
+    assert.equal(await gone(grandchild), true, 'stopAll reaches the process the round started');
 
     // Done, the run is no longer live: a directory at its old path is someone else's now.
     mkdirSync(tmp);

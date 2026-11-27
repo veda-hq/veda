@@ -131,11 +131,12 @@ runs the repository's own `node_modules/.bin/stryker`.
   start and initial test runs, the mutants that timed out again, and the
   rest. It leads with the largest. For hangs it names them and says a re-run
   will not pass. For the initial test runs it says to make the owning suites
-  start faster. Only a dry run that times out says the machine is busy. Each
-  Stryker run is its own process group, and a stop, at the wall or when the
-  gate exits, signals the whole group: signalled alone, Stryker leaves its
-  workers and their test runs behind. A stopped Stryker leaves its sandbox
-  in `.stryker-tmp/`.
+  start faster. Only a dry run that times out says the machine is busy. A
+  round's Stryker is its own process group, and a stop, at the wall or when
+  the gate exits, signals the whole group: signalled alone, Stryker leaves
+  its workers and their test runs behind. Every other Stryker run stays in
+  the gate's group, so it ends with whatever ends the gate's. A stopped
+  Stryker leaves its sandbox in `.stryker-tmp/`.
 - **A round that cannot run** refuses its mutants, and the next round runs.
   A round whose dry run times out finds the machine busy; that stops the
   pass, which refuses once and names every mutant it left unretried. A round

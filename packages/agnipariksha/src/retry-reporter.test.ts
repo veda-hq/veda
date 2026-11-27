@@ -44,10 +44,13 @@ test('the reporter appends the dry run and each mutant as one JSON line, and pri
   reporter.onMutantTested(result());
   clock.t = 202_250;
   reporter.onMutantTested(result({ status: 'Timeout', mutatorName: 'BlockStatement', replacement: '{}' }));
+  // An ignored mutant ran nothing: its event is written, and no line is printed.
+  reporter.onMutantTested(result({ status: 'Ignored', mutatorName: 'ConditionalExpression', replacement: 'true' }));
   assert.deepEqual(appended, [
     ['/r/events.jsonl', '{"kind":"dry-run","at":16000}\n'],
     ['/r/events.jsonl', '{"kind":"mutant","at":22250,"file":"src/a.ts","status":"Killed","mutator":"StringLiteral","replacement":"\\"\\"","line":3,"column":5,"endLine":4,"endColumn":9}\n'],
     ['/r/events.jsonl', '{"kind":"mutant","at":202250,"file":"src/a.ts","status":"Timeout","mutator":"BlockStatement","replacement":"{}","line":3,"column":5,"endLine":4,"endColumn":9}\n'],
+    ['/r/events.jsonl', '{"kind":"mutant","at":202250,"file":"src/a.ts","status":"Ignored","mutator":"ConditionalExpression","replacement":"true","line":3,"column":5,"endLine":4,"endColumn":9}\n'],
   ]);
   assert.deepEqual(printed, ['agnipariksha retry: src/a.ts:3:5 StringLiteral: Killed in 6.3 s', 'agnipariksha retry: src/a.ts:3:5 BlockStatement: Timeout in 180.0 s']);
 });

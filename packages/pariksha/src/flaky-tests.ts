@@ -294,7 +294,8 @@ export const runFlakyTests = (config: Config, runs: number, mode: string, projec
   const results = new Map<string, FlakyTestResult>();
   const byRoot = groupByRoot(config, files);
   const runOutcomes: RunOutcome[] = [];
-  for (let i = 1; i <= runs; i++) {
+  // Run numbers from an array, not a counter, so no mutant of the loop can spin.
+  for (const i of Array.from({ length: runs }, (_, k) => k + 1)) {
     let runSuccess = true;
     let runEmptyFailure = false;
     let groupErrors = '';

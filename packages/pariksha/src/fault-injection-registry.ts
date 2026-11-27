@@ -243,8 +243,10 @@ export const checkConsumers = (ts: Ts, root: string, config: Config): string[] =
     if (!importsModule(consumer.test, imports, harness.module) && !harness.imports.some((s) => importsPackage(imports, s))) out.push(`${what}: ${consumer.test} does not import the harness (${[harness.module, ...harness.imports].join(' or ')})`);
     if (!importsModule(consumer.test, imports, consumer.source)) out.push(`${what}: ${consumer.test} does not import ${consumer.source}`);
     for (const check of consumer.checks) {
-      const fn = harness.checks[check] ?? '';
-      if (!suite.includes(`${fn}(`)) out.push(`${what}: ${consumer.test} declares ${check} but never calls ${fn}(`);
+      const fn = harness.checks[check];
+      // parseConfig refuses such an id; a Config built by hand may still carry one.
+      if (fn === undefined) out.push(`${what}: ${consumer.test} declares ${check}, which harness.checks does not name`);
+      else if (!suite.includes(`${fn}(`)) out.push(`${what}: ${consumer.test} declares ${check} but never calls ${fn}(`);
     }
     // Registered means held to zero violations, not merely explored.
     if (!suite.includes(`${harness.heldBy}(`)) out.push(`${what}: ${consumer.test} never calls ${harness.heldBy}(, so no run is held to zero violations`);
@@ -258,9 +260,15 @@ export const checkConsumers = (ts: Ts, root: string, config: Config): string[] =
 /** Every finding: harness, consumers, examples, accounting against the baseline, and growth. */
 export const findings = (ts: Ts, root: string, config: Config, found: Baseline, baseline: Baseline, grown: readonly string[]): string[] => {
   const { unaccounted, stale } = audit(expectedBaseline(found, config), baseline);
-  const exemptable = new Set(config.exemptIn.flatMap((g) => found[g] ?? []));
+  const exemptable = new Set(
+    Object.entries(found)
+      .filter(([group]) => config.exemptIn.includes(group))
+      .flatMap(([, sources]) => sources),
+  );
   const callsCheck = (id: string, body: string): string[] => {
-    const fn = config.harness.checks[id] ?? '';
+    const fn = config.harness.checks[id];
+    // parseConfig refuses such an id; a Config built by hand may still carry one.
+    if (fn === undefined) return [`the ${id} example has no check in harness.checks`];
     return body.includes(`${fn}(`) ? [] : [`the ${id} example suite never calls ${fn}(`];
   };
   return [

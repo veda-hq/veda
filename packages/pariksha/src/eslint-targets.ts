@@ -81,7 +81,7 @@ const isDir = (path: string): boolean => existsSync(path) && statSync(path).isDi
 
 /** Lint targets: `.`, and each workspace with a config and the lint script. */
 export const lintTargets = (root: string, config: Config): string[] => {
-  const workspaces = config.workspaces.flatMap((group) => (isDir(join(root, group)) ? readdirSync(join(root, group)).map((name) => `${group}/${name}`) : []));
+  const workspaces = config.workspaces.filter((group) => isDir(join(root, group))).flatMap((group) => readdirSync(join(root, group)).map((name) => `${group}/${name}`));
   const linted = workspaces.filter((dir) => {
     const manifest = join(root, dir, 'package.json');
     if (!existsSync(manifest)) return false;
@@ -111,11 +111,10 @@ export const configInputs = (root: string, target: string): Set<string> => {
   const prefix = target === '.' ? '' : `${target}/`;
   const inputs = new Set<string>([...CONFIG_NAMES.map((name) => prefix + name), `${prefix}eslint-suppressions.json`]);
   if (target !== '.') for (const name of readdirSync(join(root, target))) if (TSCONFIG.test(name)) inputs.add(prefix + name);
-  const queue = CONFIG_NAMES.map((name) => prefix + name).filter((file) => existsSync(join(root, file)));
-  const seen = new Set<string>();
-  for (let file = queue.pop(); file !== undefined; file = queue.pop()) {
-    if (seen.has(file)) continue;
-    seen.add(file);
+  // A Set's loop visits what is added while it runs, and adding a file it
+  // holds is a no-op, so each file reached is read once, cycles included.
+  const reached = new Set(CONFIG_NAMES.map((name) => prefix + name).filter((file) => existsSync(join(root, file))));
+  for (const file of reached) {
     inputs.add(file);
     if (!SCRIPT_FILE.test(file)) continue;
     const text = readFileSync(join(root, file), 'utf8');
@@ -123,7 +122,7 @@ export const configInputs = (root: string, target: string): Set<string> => {
     const specs = [...text.matchAll(RELATIVE_SPECIFIER), ...text.matchAll(DIRNAME_SPECIFIER)].map((m) => m[1] as string);
     for (const spec of specs) {
       const { found, candidates } = resolveSpecifier(root, here, spec);
-      if (found) queue.push(found);
+      if (found) reached.add(found);
       else for (const candidate of candidates) inputs.add(candidate);
     }
   }
@@ -143,12 +142,12 @@ export const affectedTargets = (root: string, config: Config, changed: readonly 
 
 /** Whether a unified diff adds or removes a line naming one of `packages`. */
 export const lintPackagesMoved = (diff: string, packages: readonly string[]): boolean =>
-  packages.length > 0 && diff.split('\n').some((line) => /^[+-](?!\+\+ |-- )/.test(line) && packages.some((name) => line.includes(name)));
+  diff.split('\n').some((line) => /^[+-](?!\+\+ |-- )/.test(line) && packages.some((name) => line.includes(name)));
 
 /** The targets `range` reaches: every target when it moves a lint package, else those its changed paths touch. */
 export const rangeTargets = (git: Git, root: string, config: Config, range: string): string[] => {
-  const pins = config.lintPackages.length === 0 ? '' : must(git, ['diff', '--no-color', '--no-ext-diff', range, '--', ...config.pinFiles]);
-  if (lintPackagesMoved(pins, config.lintPackages)) return lintTargets(root, config);
+  // With no lint package named, the pinning files are not read at all.
+  if (config.lintPackages.length > 0 && lintPackagesMoved(must(git, ['diff', '--no-color', '--no-ext-diff', range, '--', ...config.pinFiles]), config.lintPackages)) return lintTargets(root, config);
   const changed = must(git, ['diff', '--name-only', '-z', '--no-renames', range, '--']).split('\0').filter(Boolean);
   return affectedTargets(root, config, changed);
 };

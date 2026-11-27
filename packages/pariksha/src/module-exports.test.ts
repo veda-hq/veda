@@ -41,6 +41,30 @@ describe('resolveRelative', () => {
     assert.equal(resolveRelative(root, 'src/m.ts', '../top'), 'top.ts');
   });
 
+  it('tries each source extension, by stem and as a folder index', () => {
+    const exts = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.jsx'];
+    const r = repo(Object.fromEntries(exts.flatMap((e, i) => [[`f${String(i)}${e}`, ''], [`d${String(i)}/index${e}`, '']])));
+    assert.deepEqual(
+      exts.map((_, i) => resolveRelative(r, 'm.ts', `./f${String(i)}`)),
+      ['f0.ts', 'f1.tsx', 'f2.mts', 'f3.cts', 'f4.js', 'f5.mjs', 'f6.cjs', 'f7.jsx'],
+    );
+    assert.deepEqual(
+      exts.map((_, i) => resolveRelative(r, 'm.ts', `./d${String(i)}`)),
+      ['d0/index.ts', 'd1/index.tsx', 'd2/index.mts', 'd3/index.cts', 'd4/index.js', 'd5/index.mjs', 'd6/index.cjs', 'd7/index.jsx'],
+    );
+  });
+
+  it('reads `.mjs` as naming `.mts`, and `.js` only as the whole extension', () => {
+    const r = repo({ 'a.mts': '', 'b.json.ts': '' });
+    assert.equal(resolveRelative(r, 'm.ts', './a.mjs'), 'a.mts');
+    assert.equal(resolveRelative(r, 'm.ts', './b.json'), 'b.json.ts');
+  });
+
+  it('follows no file outside the root, even one that is there', () => {
+    const parent = repo({ 'outside.ts': '', 'in/m.ts': '' });
+    assert.equal(resolveRelative(join(parent, 'in'), 'm.ts', '../outside'), undefined);
+  });
+
   it('follows no package specifier, no missing file, and nothing outside the root', () => {
     assert.equal(resolveRelative(root, 'src/m.ts', '@acme/a'), undefined);
     assert.equal(resolveRelative(root, 'src/m.ts', 'a'), undefined);
@@ -163,6 +187,61 @@ describe('moduleExports', () => {
       exports: { fn: 'function', namedFn: 'function', arrow: 'function', cls: 'value', local: 'function', later: 'function', obj: 'value', list: 'function', eq: 'unresolved', imported: 'function', pkg: 'unresolved' },
       unfollowed: ["m.ts: '@acme/pkg'"],
     });
+  });
+
+  it('exports only what is exported, and resolves a list to each local by its kind', () => {
+    const source = [
+      'const hidden = 1;',
+      'let bare;',
+      'export let open;',
+      'class Hidden {}',
+      'class C {}',
+      'enum E { A }',
+      'interface HiddenI {}',
+      'interface I {}',
+      'type T = 1;',
+      'function f() {}',
+      "import { missing } from './x';",
+      "import { type Ty } from './x';",
+      "import type { Ty2 } from './x';",
+      "import './side-effect';",
+      'export { C, E, I, T, bare, missing, Ty, Ty2 };',
+      "export type * from './x';",
+      'export class {}',
+    ].join('\n');
+    assert.deepEqual(of({ 'm.ts': source, 'x.ts': 'export const shown = 1;\nexport type Ty = 1;\nexport type Ty2 = 2;\n', 'side-effect.ts': '' }).exports, {
+      open: 'value',
+      C: 'value',
+      E: 'value',
+      I: 'type',
+      T: 'type',
+      bare: 'value',
+      missing: 'unresolved',
+      Ty: 'type',
+      Ty2: 'type',
+    });
+    assert.deepEqual(of({ 'm.ts': 'export default class {}\nclass K {}\nexport { K };\n' }).exports, { default: 'value', K: 'value' });
+    assert.deepEqual(of({ 'm.ts': 'const a = 1;\nexport { a };\n' }).exports, { a: 'value' });
+  });
+
+  it('parses each module once, however often and however circularly it is reached', () => {
+    const parsed: string[] = [];
+    const counting: Ts = {
+      ...ts,
+      createSourceFile: (...args: Parameters<Ts['createSourceFile']>) => {
+        if (parsed.includes(args[0])) throw new Error(`${args[0]} parsed twice`);
+        parsed.push(args[0]);
+        return ts.createSourceFile(...args);
+      },
+    };
+    const root = repo({
+      'm.ts': "export * from './b';\nexport * from './c';\n",
+      'b.ts': "export * from './d';\nexport * from './m';\n",
+      'c.ts': "export * from './d';\n",
+      'd.ts': 'export const d = 1;\n',
+    });
+    assert.deepEqual(Object.fromEntries(moduleExports(counting, root, 'm.ts').exports), { d: 'value' });
+    assert.deepEqual(parsed.sort(), ['b.ts', 'c.ts', 'd.ts', 'm.ts']);
   });
 
   it('reads a module that does not exist as one exporting nothing', () => {

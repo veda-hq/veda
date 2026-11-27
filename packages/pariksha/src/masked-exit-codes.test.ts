@@ -24,6 +24,7 @@ import {
   handlerStarts,
   isPipefailScoped,
   type MaskedConfig,
+  type MaskedExit,
   parseMaskedConfig,
   readerFor,
   readWorkingTree,
@@ -913,4 +914,236 @@ describe('a status saved for a later line', () => {
       assert.equal(masked(text), 0);
     });
   }
+});
+
+/** The problems in one file holding `body`, read from memory under the product's config. */
+const scan = (body: string, path = 'gate.sh'): MaskedExit[] => findMaskedExits('/', [path], () => body, PRODUCT);
+
+describe('the whole problem each shape reports', () => {
+  const discards = (line: number, snippet: string): MaskedExit => ({ file: 'gate.sh', line, snippet, reason: '`eslint` is a gate, but `|| true` discards its exit status — the check reports success whatever it found' });
+  const handler = (line: number, snippet: string): MaskedExit => ({ file: 'gate.sh', line, snippet, reason: '`eslint` fails into an `||` handler that does not exit non-zero — the script carries on as if it passed' });
+  const stderr = (line: number, snippet: string): MaskedExit => ({ file: 'gate.sh', line, snippet, reason: '`eslint` has its stderr discarded and its status unchecked — a crash is indistinguishable from a pass' });
+
+  const cases: Array<[string, string, MaskedExit[]]> = [
+    ['a `|| true` glued to its operator', 'eslint . ||true', [discards(1, 'eslint . ||true')]],
+    ['an indented `|| true`, trimmed', '  eslint . || true  ', [discards(1, 'eslint . || true')]],
+    ['an indented echo handler, trimmed', '  eslint . || echo x', [handler(1, 'eslint . || echo x')]],
+    ['an indented discarded stderr, trimmed', '  eslint . 2>/dev/null', [stderr(1, 'eslint . 2>/dev/null')]],
+    ['a discarded stderr after a space', 'eslint . 2> /dev/null', [stderr(1, 'eslint . 2> /dev/null')]],
+    ['a discarded stderr beside a list that propagates', 'eslint . 2>/dev/null; eslint . || exit 1', [stderr(1, 'eslint . 2>/dev/null; eslint . || exit 1')]],
+    ['a discarded stderr in an if condition, which branches on it', 'if eslint . 2>/dev/null; then :; fi', []],
+    // The handler a failure reaches first, past any `|| false`.
+    ['a `|| true` before a `|| false`', 'eslint . || true || false', [discards(1, 'eslint . || true || false')]],
+    ['a glued `|| false` before a `|| true`', 'eslint . ||false || true', [discards(1, 'eslint . ||false || true')]],
+    ['a `|| false` before a `|| true`', 'eslint . || false || true', [discards(1, 'eslint . || false || true')]],
+    ['a `|| false` before a brace exit', 'eslint . || false || { exit 1; }', []],
+    // Exit statuses: a number must be non-zero, a variable set from `$?`.
+    ['an exit of a variable ending in a digit', 'eslint . || exit $rc1', [handler(1, 'eslint . || exit $rc1')]],
+    ['an exit 12', 'eslint . || exit 12', []],
+    ['an exit "12"', 'eslint . || exit "12"', []],
+    ['an exit 10', 'eslint . || exit 10', []],
+    ['an exit 01', 'eslint . || exit 01', []],
+    ['an exit 00', 'eslint . || exit 00', [handler(1, 'eslint . || exit 00')]],
+    ['a brace exit of a variable opened by a stray quote', 'eslint . || { status=$?; exit "$status; }', [handler(1, 'eslint . || { status=$?; exit "$status; }')]],
+    ['a brace exit of a variable closed by a stray quote', 'eslint . || { status=$?; exit $status"; }', [handler(1, 'eslint . || { status=$?; exit $status"; }')]],
+    ['a brace exit of a stray-quoted status beside a variable named undefined', 'eslint . || { undefined=$?; exit "$?; }', [handler(1, 'eslint . || { undefined=$?; exit "$?; }')]],
+    // A capture is exempt only at the start of the line.
+    // Its `|| true` sits inside the substitution, past the top-level handlers.
+    ['a capture inside an argument', 'echo X=$(eslint . || true)\nif [ -n "$X" ]; then exit 1; fi', [handler(1, 'echo X=$(eslint . || true)')]],
+  ];
+  for (const [label, body, expected] of cases) {
+    it(`reports ${label} as it is`, () => {
+      assert.deepEqual(scan(body), expected);
+    });
+  }
+
+  // Each gate the line names is judged on the line itself: a gate run in the
+  // background list after a lone `&` is not seen there, so nothing reports it.
+  it('judges only the gates the line itself is seen to run', () => {
+    assert.deepEqual(scan('true & eslint . || true'), []);
+  });
+});
+
+describe('a saved status, judged by the lines after it', () => {
+  const handler = (snippet: string): MaskedExit[] => [{ file: 'gate.sh', line: 1, snippet, reason: '`eslint` fails into an `||` handler that does not exit non-zero — the script carries on as if it passed' }];
+  const EXIT_ON_RC = 'if [ "$rc" -ne 0 ]; then exit 1; fi';
+
+  const cases: Array<[string, string, MaskedExit[]]> = [
+    ['a save behind a handler that succeeds', `eslint . || echo x || rc=$?\n${EXIT_ON_RC}`, handler('eslint . || echo x || rc=$?')],
+    ['a save that runs a command', `eslint . || rc=$? true\n${EXIT_ON_RC}`, handler('eslint . || rc=$? true')],
+    ['a save of more than the status', `eslint . || rc=$?x\n${EXIT_ON_RC}`, handler('eslint . || rc=$?x')],
+    ['a save glued to its operator', `eslint . ||rc=$?\n${EXIT_ON_RC}`, []],
+    ['a save into a longer name', 'eslint . || status=$?\nif [ "$status" -ne 0 ]; then exit 1; fi', []],
+    ['a quoted save', `eslint . || rc="$?"\n${EXIT_ON_RC}`, []],
+    ['a save ending an open group', `{ echo start; eslint . || rc=$?;\n${EXIT_ON_RC}`, []],
+    ['a save ending an open group after a space', `{ echo start; eslint . || rc=$? ;\n${EXIT_ON_RC}`, []],
+    ['a save followed by more in an open group', `{ echo start; eslint . || rc=$?;x\n${EXIT_ON_RC}`, handler('{ echo start; eslint . || rc=$?;x')],
+    // A block ends at its `fi`, at the line start or indented.
+    ['an exit after the failure branch closed', 'eslint . || rc=$?\nif [ "$rc" -ne 0 ]; then\n  echo bad\nfi\nexit 1', handler('eslint . || rc=$?')],
+    ['an exit after an indented fi', 'eslint . || rc=$?\nif [ "$rc" -ne 0 ]; then\n  echo bad\n  fi\nexit 1', handler('eslint . || rc=$?')],
+    ['a failure branch after an unrelated block', 'eslint . || rc=$?\nif [ -f x ]; then\n  :\nfi\nif [ "$rc" -ne 0 ]; then\n  exit 1\nfi', []],
+    // `else` counts only as the word that starts the line.
+    ['an echoed else in a success branch', 'eslint . || rc=$?\nif [ "$rc" -eq 0 ]; then\n  echo else\n  exit 1\nfi', handler('eslint . || rc=$?')],
+    ['an indented else of a success branch', 'eslint . || rc=$?\nif [ "$rc" -eq 0 ]; then\n  :\n  else\n  exit 1\nfi', []],
+    // A condition this reader does not judge leaves the next lines to decide.
+    ['an unconditional exit inside an untested if, before a reassignment', 'eslint . || rc=$?\nif [ -n "$rc" ]; then\n  exit "$rc"\n  rc=0\nfi', []],
+    // One-line tests: the operator right before the exit decides.
+    ['a failure test ended by `;`', 'eslint . || rc=$?\n[ "$rc" -ne 0 ]; exit "$rc"', handler('eslint . || rc=$?')],
+    ['a failure test whose last operator is `||`', 'eslint . || rc=$?\n[ "$rc" -ne 0 ] && echo bad || exit "$rc"', handler('eslint . || rc=$?')],
+    ['a failure test glued to its exit', 'eslint . || rc=$?\n[ "$rc" -ne 0 ] &&exit "$rc"', []],
+    ['a success test whose && exits', 'eslint . || rc=$?\n[ "$rc" -eq 0 ] && exit "$rc"', handler('eslint . || rc=$?')],
+  ];
+  for (const [label, body, expected] of cases) {
+    it(`judges ${label}`, () => {
+      assert.deepEqual(scan(body), expected);
+    });
+  }
+});
+
+describe('an exit 0 after a gate, as reported', () => {
+  const after = (line: number, snippet: string, gate = 'eslint'): MaskedExit[] => [{ file: 'gate.sh', line, snippet, reason: `unconditional \`exit 0\` right after \`${gate}\` — the script always succeeds, whatever the gate decided` }];
+
+  const cases: Array<[string, string, MaskedExit[]]> = [
+    ['an indented exit 0', 'eslint .\n  exit 0', after(2, 'eslint .  →  exit 0')],
+    ['an exit 0 with a trailing space', 'eslint .\nexit 0 ', after(2, 'eslint .  →  exit 0')],
+    ['an exit  0 with two spaces', 'eslint .\nexit  0', after(2, 'eslint .  →  exit  0')],
+    ['an indented gate', '  eslint .\nexit 0', after(2, 'eslint .  →  exit 0')],
+    ['the nearest gate of two', 'eslint .\ntsc\nexit 0', after(3, 'tsc  →  exit 0', 'tsc')],
+    ['an indented echo between', 'eslint .\n  echo done\nexit 0', after(3, 'eslint .  →  exit 0')],
+    ['a whitespace-only line between', 'eslint .\n   \nexit 0', after(3, 'eslint .  →  exit 0')],
+    ['an indented saved status between', 'eslint .\n  STATUS=$?\nexit 0', after(3, 'eslint .  →  exit 0')],
+    ['a saved status with a trailing space between', 'eslint .\nSTATUS=$? \nexit 0', after(3, 'eslint .  →  exit 0')],
+    ['an exit 0 after another command', 'eslint .\necho x; exit 0', []],
+    ['an exit 0 with a comment after it', 'eslint .\nexit 0 # ok', []],
+    ['a status assigned as an argument', 'eslint .\ntrue STATUS=$?\nexit 0', []],
+    ['a status assignment that runs a command', 'eslint .\nSTATUS=$? true\nexit 0', []],
+    ['a gate in an if', 'if eslint .; then echo ok; fi\nexit 0', []],
+    ['a gate before an exit  1 with two spaces', 'eslint . ; exit  1\nexit 0', []],
+    ['a gate before an exit 1', 'eslint . ; exit 1\nexit 0', []],
+  ];
+  for (const [label, body, expected] of cases) {
+    it(`reports ${label} as it is`, () => {
+      assert.deepEqual(scan(body), expected);
+    });
+  }
+});
+
+describe('an early-exit feed, as reported', () => {
+  const FEED = 'a variable piped into a reader that stops early: under pipefail the writer can hit EPIPE after the match, and the check reads it as a miss. Feed it a here-string: `grep -q … <<<"$VAR"`';
+  const feed = (line: string): MaskedExit[] => [{ file: '.husky/pre-commit', line: 1, snippet: line.trim(), reason: FEED }];
+
+  const cases: Array<[string, boolean]> = [
+    ['echo "$X" |grep -q a', true],
+    ['  echo "$X" | grep -q a', true],
+    ['echo "$X" | grep --files-with-matches a', true],
+    ['echo "$X" | grep --regexp=a -q', true],
+    ['echo "$X" | grep ---regexp -q', true],
+    ['echo "$X" | grep --color -q', true],
+    ['echo "$X" | grep -i -q a', true],
+    ['echo "$X" | grep -iq a', true],
+    ['echo "$X" | grep -e-f -q', true],
+    ['echo "$X" | grep -ea -q', true],
+    ['echo "$X" | grep ---quiet a', false],
+    ['echo "$X" | grep -e  -q', false],
+    ['echo "$X" | grep -e-q a', false],
+    ['echo "$X" | grep -ie -q', false],
+    ['  # echo "$X" | grep -q a', false],
+  ];
+  for (const [line, reported] of cases) {
+    it(`${reported ? 'reports' : 'leaves'} ${JSON.stringify(line)}`, () => {
+      assert.deepEqual(scan(line, '.husky/pre-commit'), reported ? feed(line) : []);
+    });
+  }
+});
+
+describe('the scripts a line runs, in full', () => {
+  const cases: Array<[string, string[]]> = [
+    ['bash -c', ['bash -c']],
+    ['bash run.sh', ['bash run.sh']],
+    ['X=1', ['X=1']],
+    ["fish -c 'eslint . || true'", ["fish -c 'eslint . || true'"]],
+    ["shfmt -c 'eslint . || true'", ["shfmt -c 'eslint . || true'"]],
+    ["grep -c 'eslint . || true' f", ["grep -c 'eslint . || true' f"]],
+    ["bash '-c' 'eslint . || true'", ["bash '-c' 'eslint . || true'"]],
+    ["bash -c '-o' 'eslint . || true'", ["bash -c '-o' 'eslint . || true'", '-o']],
+    ["bash -c.x 'eslint . || true'",["bash -c.x 'eslint . || true'"]],
+    ["bash -oc 'eslint . || true'", ["bash -oc 'eslint . || true'", 'eslint . || true']],
+    ["bash -ec 'eslint . || true'", ["bash -ec 'eslint . || true'", 'eslint . || true']],
+    ["bash -c -e 'eslint . || true'", ["bash -c -e 'eslint . || true'", 'eslint . || true']],
+    ["bash -o -o -c 'eslint . || true'", ["bash -o -o -c 'eslint . || true'", 'eslint . || true']],
+    ["bash -c a-o x 'eslint . || true'", ["bash -c a-o x 'eslint . || true'", 'a-o']],
+    ["bash -c x-c 'eslint . || true'", ["bash -c x-c 'eslint . || true'", 'x-c']],
+    ["e(val 'eslint . || true'", ["e(val 'eslint . || true'"]],
+    ["((eval 'eslint . || true'", ["((eval 'eslint . || true'", 'eslint . || true']],
+    ["-x=1 eval 'eslint . || true'", ["-x=1 eval 'eslint . || true'"]],
+    ["X=1 eval 'eslint . || true'", ["X=1 eval 'eslint . || true'", 'eslint . || true']],
+    ["XY=1 eval 'eslint . || true'", ["XY=1 eval 'eslint . || true'", 'eslint . || true']],
+    ["echo 'eslint . || true' | X=/bin/sh", ["echo 'eslint . || true' | X=/bin/sh"]],
+    ["echo 'eslint . || true'; sh", ["echo 'eslint . || true'; sh"]],
+    ['X=1 | sh', ['X=1 | sh']],
+    ['cat f | sh', ['cat f | sh']],
+    ['printf %d eslint | sh', ['printf %d eslint | sh']],
+    ["printf '%d' 'eslint . || true' | sh", ["printf '%d' 'eslint . || true' | sh", '%d', 'eslint . || true']],
+    ['echo -n | sh', ['echo -n | sh', '', '']],
+    ["echo -nE 'eslint . || true' | sh", ["echo -nE 'eslint . || true' | sh", 'eslint . || true', 'eslint . || true']],
+  ];
+  for (const [line, texts] of cases) {
+    it(`reads ${JSON.stringify(line)}`, () => {
+      assert.deepEqual(executedTexts(line), texts);
+    });
+  }
+});
+
+describe('printf over its arguments', () => {
+  const cases: Array<[string[], string]> = [
+    [['x', 'a'], 'x'],
+    [['%s', 'a', 'b'], 'ab'],
+    [['%s%s\\n', 'a', 'b', 'c'], 'ab\nc\n'],
+    [['%b', 'a\\cb', 'c'], 'a'],
+  ];
+  for (const [words, written] of cases) {
+    it(`writes ${JSON.stringify(written)} for ${JSON.stringify(words)}`, () => {
+      assert.equal(renderPrintf(words), written);
+    });
+  }
+});
+
+describe('the edges of the smaller readers', () => {
+  it('reads an escaped bracket as text', () => {
+    assert.deepEqual(handlerStarts('a \\( || b'), [5]);
+  });
+
+  it('continues a line only at a trailing backslash, spaces after it allowed', () => {
+    assert.deepEqual(foldContinuations(['echo a\\b', 'x']), [
+      { text: 'echo a\\b', line: 1 },
+      { text: 'x', line: 2 },
+    ]);
+    assert.deepEqual(foldContinuations(['a \\  ', 'b']), [{ text: 'a  b', line: 1 }]);
+    assert.deepEqual(foldContinuations(['a\\b \\', 'c']), [{ text: 'a\\b  c', line: 1 }]);
+  });
+
+  it('scopes the default pipefail to a top-level hook directory', () => {
+    assert.equal(isPipefailScoped('a/.husky/x'), false);
+  });
+
+  const refusals: Array<[string, string]> = [
+    ['null', 'the config must be a JSON object'],
+    ['"x"', 'the config must be a JSON object'],
+    ['{"id": " "}', '"id" must be a non-empty string'],
+    ['{"gateCommands": [" "]}', '"gateCommands" must be a list of commands'],
+    ['{"pipefailScope": [1]}', '"pipefailScope" must be a list of regexes'],
+  ];
+  for (const [text, message] of refusals) {
+    it(`refuses ${text} with its own message`, () => {
+      assert.throws(() => parseMaskedConfig(text), { name: 'Error', message });
+    });
+  }
+
+  it('lists a file under any of several hook directories, and no blank path', () => {
+    const { root } = fixture({ '.husky/pre-commit': 'echo hook\n', 'lib/b.ts': 'export {};\n', 'c.md': '# c\n' });
+    execFileSync('git', ['init', '-q'], { cwd: root, env: ENV });
+    execFileSync('git', ['add', '-f', '--', '.husky/pre-commit', 'lib/b.ts', 'c.md'], { cwd: root, env: ENV });
+    assert.deepEqual(shellFiles(root, { ...PRODUCT, hookDirs: ['.husky/', 'lib/'] }).sort(), ['.husky/pre-commit', 'lib/b.ts']);
+    assert.deepEqual(shellFiles(root, { ...PRODUCT, hookDirs: [''] }).sort(), ['.husky/pre-commit', 'c.md', 'lib/b.ts']);
+  });
 });

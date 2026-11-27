@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { parseDocConfig } from './doc-files.ts';
-import { basenameOf, checkDoc, checkNonSyncedResources, DEFAULT_GUIDANCE, dirnameOf, linkPath, linkTargets, nameOnDisk } from './non-synced-resources.ts';
+import { basenameOf, checkDoc, checkNonSyncedResources, DEFAULT_GUIDANCE, dirnameOf, exists, isDir, linkPath, linkTargets, nameOnDisk, sizeOf } from './non-synced-resources.ts';
 
 const temps: string[] = [];
 after(() => {
@@ -33,6 +34,10 @@ describe('linkTargets', () => {
     assert.deepEqual(linkTargets('[w](https://a.b) [h](http://a) [m](mailto:a@b) [#](#top) [t](ftp://x)\n[a\n](b.md) [c](\nd.md)'), ['ftp://x']);
   });
 
+  it('drops a link only by how it starts', () => {
+    assert.deepEqual(linkTargets('[a](x.md#s) [b](d/mailto:b.md) [c](see-http://x.md)'), ['x.md#s', 'd/mailto:b.md', 'see-http://x.md']);
+  });
+
   it('reads a bracket inside the text, adjacent links, and needs a destination', () => {
     assert.deepEqual(linkTargets('[a [b](c.md)[d](e.md) [](f.md) [g]()'), ['c.md', 'e.md', 'f.md']);
   });
@@ -51,6 +56,7 @@ describe('linkPath', () => {
     assert.equal(linkPath('<a>b>'), 'a');
     assert.equal(linkPath('<a b.md'), '<a');
     assert.equal(linkPath('<a#b>'), '<a');
+    assert.equal(linkPath('<abc'), '<abc');
   });
 
   it('can leave nothing', () => {
@@ -67,6 +73,8 @@ describe('dirnameOf and basenameOf', () => {
       ['/r/d/./', '/r/d', '.'],
       ['/r/d/../', '/r/d', '..'],
       ['d//a.md', 'd', 'a.md'],
+      ['d///a.md', 'd', 'a.md'],
+      ['d/a.md//', 'd', 'a.md'],
       ['/a', '/', 'a'],
       ['/', '/', '/'],
       ['//', '/', '/'],
@@ -76,6 +84,20 @@ describe('dirnameOf and basenameOf', () => {
       assert.equal(dirnameOf(path), dir, `dirname ${path}`);
       assert.equal(basenameOf(path), base, `basename ${path}`);
     }
+  });
+});
+
+describe('isDir, exists and sizeOf', () => {
+  it('read what stat finds, and nothing as false or 0', () => {
+    const r = tree({ 'f.png': 'abc' });
+    mkdirSync(join(r, 'd.png'));
+    symlinkSync('f.png', join(r, 'link.png'));
+    execFileSync('mkfifo', [join(r, 'pipe.png')]);
+    const paths = ['f.png', 'd.png', 'link.png', 'pipe.png', 'gone.png'].map((p) => join(r, p));
+    assert.deepEqual(paths.map(isDir), [false, true, false, false, false]);
+    assert.deepEqual(paths.map(exists), [true, true, true, false, false]);
+    // A symlink's size is the link's own: the five bytes of `f.png`.
+    assert.deepEqual(paths.map(sizeOf), [3, 0, 5, 0, 0]);
   });
 });
 
@@ -167,6 +189,37 @@ describe('checkDoc', () => {
 
   it('skips a link left empty once its fragment goes', () => {
     assert.deepEqual(checkDoc(root, 'docs/a.md', '[x](?q)\n'), { refused: false, out: [] });
+    // Even from a document whose folder is gone, where an empty link would name that folder.
+    assert.deepEqual(checkDoc(root, 'nodir/a.md', '[x](?q)\n'), { refused: false, out: [] });
+  });
+
+  it('refuses a link to a folder that is not there on its own', () => {
+    assert.deepEqual(checkDoc(root, 'docs/a.md', '[g](./nodir/x.md)\n').refused, true);
+  });
+
+  it('says whole what a name whose case differs, or that is missing, finds', () => {
+    const r = tree({ 'docs/lower.md': '' });
+    const caseBlind = existsSync(join(r, 'docs/LOWER.md'));
+    const head = caseBlind ? '❌ Error: Reference whose case differs from the file on disk in docs/forms.md:' : '❌ Error: Reference to non-existent file in docs/forms.md:';
+    assert.deepEqual(checkDoc(r, 'docs/forms.md', 'See [lower](./LOWER.md).\n'), { refused: true, out: [head, '   Link: ./LOWER.md', '   Expected path: docs/LOWER.md', ''] });
+  });
+
+  it('refuses a FIFO, which is neither file nor folder', () => {
+    const r = tree({});
+    execFileSync('mkfifo', [join(r, 'pipe.md')]);
+    assert.deepEqual(checkDoc(r, 'a.md', '[p](./pipe.md)\n'), {
+      refused: true,
+      out: ['❌ Error: Reference to non-existent file in a.md:', '   Link: ./pipe.md', '   Expected path: pipe.md', ''],
+    });
+  });
+
+  it('sizes images only, by the whole extension, from 1 MiB and one byte, and a missing one as nothing', () => {
+    const r = tree({ 'big.md': 'x'.repeat(1_048_577), 'big.png.md': 'x'.repeat(1_048_577), 'edge.png': 'x'.repeat(1_048_576) });
+    assert.deepEqual(checkDoc(r, 'a.md', '[m](./big.md) [p](./big.png.md) ![e](./edge.png)\n'), { refused: false, out: [] });
+    assert.deepEqual(checkDoc(r, 'a.md', '![g](./ghost.png)\n'), {
+      refused: true,
+      out: ['❌ Error: Reference to non-existent file in a.md:', '   Link: ./ghost.png', '   Expected path: ghost.png', ''],
+    });
   });
 });
 

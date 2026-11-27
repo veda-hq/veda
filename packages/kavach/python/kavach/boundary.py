@@ -19,7 +19,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path, PurePath
-from typing import Any, Mapping, NamedTuple, Protocol, Sequence
+from typing import Any, Mapping, NamedTuple, Optional, Protocol, Sequence
 
 
 # Admission to this set means one thing: NO invocation of the command mutates
@@ -663,7 +663,7 @@ def session_record(app: Path, host: str) -> dict[str, Any] | None:
     return record
 
 
-def recorded_folder(session_id: object, environ: Mapping[str, str]) -> Path | None:
+def recorded_folder(session_id: object, environ: Mapping[str, str]) -> Optional[Path]:
     """The folder the desktop app's record of this session names, or ``None``.
 
     The record counts only when the hook's environment names the app session
@@ -694,7 +694,7 @@ def recorded_folder(session_id: object, environ: Mapping[str, str]) -> Path | No
     return path
 
 
-def session_worktree(session_id: object, own: Any, environ: Mapping[str, str]) -> Path | None:
+def session_worktree(session_id: object, own: Any, environ: Mapping[str, str]) -> Optional[Path]:
     """The worktree the desktop app records as this session's, or ``None``.
 
     The record's folder (``recorded_folder``) counts only when it is the root
@@ -717,7 +717,7 @@ def session_worktree(session_id: object, own: Any, environ: Mapping[str, str]) -
         return None
 
 
-def session_main_checkout(session_id: object, own: Any, environ: Mapping[str, str]) -> Path | None:
+def session_main_checkout(session_id: object, own: Any, environ: Mapping[str, str]) -> Optional[Path]:
     """The main checkout the desktop app records as this session's, or
     ``None`` (veda#641).
 

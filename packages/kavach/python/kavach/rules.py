@@ -61,7 +61,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 def parse(command: str) -> list[Any]:
     """git_safety.py's reading of a script, loaded only when a rule needs it:
@@ -344,7 +344,7 @@ def recorded_worktree(call: Call) -> str | None:
     return str(found) if found is not None else None
 
 
-def recorded_main_checkout(call: Call) -> str | None:
+def recorded_main_checkout(call: Call) -> Optional[str]:
     """The main checkout the desktop app's record names as this session's
     (``boundary.session_main_checkout``: a scheduled task's, veda#641), or
     ``None``."""
@@ -358,7 +358,7 @@ def recorded_main_checkout(call: Call) -> str | None:
     return str(found) if found is not None else None
 
 
-def main_checkout_way_out(target: str, root: str, started: str) -> tuple[str, bool] | None:
+def main_checkout_way_out(target: str, root: str, started: str) -> Optional[tuple[str, bool]]:
     """Where a ``cd`` to ``target`` leads a session whose record names the
     main checkout ``started``, when it is the way out of worktree ``root``
     (veda#641), and whether the session owns it there; else ``None``.

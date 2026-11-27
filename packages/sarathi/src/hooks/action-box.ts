@@ -103,6 +103,7 @@ export function decide(event: ToolEvent, read: (path: string) => string): string
       }
     }
   } catch (error) {
+    // fail-open: the error becomes the refusal's reason, so the call is refused.
     return detail(error);
   }
   return undefined;

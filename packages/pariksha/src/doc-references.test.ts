@@ -3,7 +3,7 @@
 // Markdown reader, the per-file baseline, the path helpers and the merge a
 // staged run may be in the middle of.
 import assert from 'node:assert/strict';
-import { symlinkSync } from 'node:fs';
+import { renameSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, mock } from 'node:test';
 import { CONFIG, CONFIG_JSON, createTestRepo, testConfig, type TestRepo } from './doc-references.fixture.test.ts';
@@ -687,6 +687,110 @@ describe('takenFromMerge and mergeHeads', () => {
     r.git('add', '-A');
     assert.equal(mergeInProgress(r.root), false);
     assert.deepEqual(stagedToJudge(r.root, ['a.md']), ['a.md']);
+  });
+});
+
+describe('doc-references as the docs, the ignore rules and git write their text', () => {
+  it('opens a fence only at a marker that starts the line, with any info and rest after it', () => {
+    assert.deepEqual(
+      scan(['text ``` x', '`docs/a.md`', '```sh run it', 'pnpm x', '```'].join('\n')).map((l) => [l.number, l.fence]),
+      [
+        [1, null],
+        [2, null],
+        [4, 'sh'],
+      ],
+    );
+  });
+
+  it('reads a backtick line with a backtick anywhere after its marker as prose', () => {
+    assert.deepEqual(
+      scan(['```js x`y', '`docs/a.md`'].join('\n')).map((l) => [l.number, l.fence]),
+      [
+        [1, null],
+        [2, null],
+      ],
+    );
+  });
+
+  it('closes a fence only at a marker of its own character, at least as long, with no info', () => {
+    assert.deepEqual(
+      scan(['````', '~~~~', '```', '````js', 'inside', '`````', 'after'].join('\n')).map((l) => [l.number, l.text, l.fence]),
+      [
+        [2, '~~~~', ''],
+        [3, '```', ''],
+        [4, '````js', ''],
+        [5, 'inside', ''],
+        [7, 'after', null],
+      ],
+    );
+  });
+
+  it('opens frontmatter at a first line that is `---` with blanks around it', () => {
+    assert.deepEqual(
+      scan(['---\r', 'see: docs/a.md\r', '---\r', 'body'].join('\n')).map((l) => [l.number, l.frontmatter]),
+      [
+        [2, true],
+        [4, false],
+      ],
+    );
+  });
+
+  it('keeps a `-->` that comes before a comment opens', () => {
+    assert.deepEqual(
+      scan('a --> b <!-- c --> d').map((l) => l.text),
+      ['a --> b  d'],
+    );
+  });
+
+  it('gives a span the text between its delimiters, trimmed', () => {
+    assert.deepEqual(
+      codeSpans('see ` a b ` and `c`').map((s) => s.content),
+      ['a b', 'c'],
+    );
+  });
+
+  it('reads a JSDoc line that ends a comment as a comment', () => {
+    assert.equal(commentText(CONFIG.files.hashComments, 'a.ts', ' * see `docs/a.md` */'), ' see `docs/a.md` */');
+  });
+
+  it('holds a checked file with no problems and no entry to nothing', () => {
+    const baseline = emptyBaseline();
+    baseline.files['a.md'] = { 'DOC-DRIFT-01': 1 };
+    assert.deepEqual(applyBaseline([], baseline, ['a.md', 'b.md'], ['DOC-DRIFT-01']), { failures: [], slack: [{ file: 'a.md', check: 'DOC-DRIFT-01', baseline: 1, actual: 0 }] });
+  });
+
+  it('is empty in a repository with no commit yet', () => {
+    const repo = createTestRepo({ 'a.md': 'a\n' });
+    repo.git('add', '-A');
+    assert.deepEqual(mergeHeads(repo.root), []);
+    assert.deepEqual(takenFromMerge(repo.root), new Set());
+  });
+
+  it('holds the root directory in a snapshot with no file', () => {
+    const repo = createTestRepo({ 'a.md': 'a\n' });
+    const empty = createSnapshot(repo.root, { kind: 'ref', ref: '4b825dc642cb6eb9a060e54bf8d69288fbee4904' });
+    assert.deepEqual(empty.files, new Set());
+    assert.deepEqual(empty.dirs, new Set(['']));
+  });
+
+  it('reads a glob class that starts with a blank, and a `!` past its first character as itself', () => {
+    assert.equal(globToRegExp('[ x]y').test(' y'), true);
+    assert.equal(globToRegExp('[a!]').test('!'), true);
+    assert.equal(globToRegExp('[a!]').test('b'), false);
+  });
+
+  it('reads a rule with a blank inside it whole, and a `#` line as a comment', () => {
+    const repo = createTestRepo({ 'docs/.gitignore': 'my file.txt\n#gone.md\n', 'rules.txt': 'other.md\n' });
+    assert.deepEqual([...repo.snapshot('index').ignored(['docs/my file.txt', 'docs/file.txt', 'docs/#gone.md', 'other.md'])], ['docs/my file.txt']);
+  });
+
+  it('reads an unchanged file from disk with no git once it knows what changed', () => {
+    const repo = createTestRepo({ 'a.md': 'a\n', 'b.md': 'b\n' });
+    const head = repo.commit();
+    const snapshot = createSnapshot(repo.root, { kind: 'ref', ref: head });
+    assert.equal(snapshot.read('a.md'), 'a\n');
+    renameSync(join(repo.root, '.git'), join(repo.root, 'moved.git'));
+    assert.equal(snapshot.read('b.md'), 'b\n');
   });
 });
 

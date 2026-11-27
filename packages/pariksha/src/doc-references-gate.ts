@@ -27,6 +27,7 @@ import { findPathProblems } from './doc-paths.ts';
 import type { Config } from './doc-references-config.ts';
 import { applyBaseline, baselineGrowth, CHECK_IDS, createSnapshot, docKind, emptyBaseline, git, gitOrUndefined, parseBaseline, referenceFiles, serializeBaseline, takenFromMerge, type Baseline, type CheckId, type ReferenceProblem, type RepoSnapshot, type Slack } from './doc-references.ts';
 import { definedScripts, findScriptProblems, scriptBodies, scriptScopes } from './doc-scripts.ts';
+import { isRecord } from './registry-ratchet.ts';
 
 export type GateMode = { readonly kind: 'staged' } | { readonly kind: 'range'; readonly base: string; readonly head: string } | { readonly kind: 'all' };
 
@@ -55,6 +56,8 @@ export interface GateReport {
 
 /** Runs `checks` over `files` in `snapshot`; one finding once. */
 export const runChecks = (config: Config, snapshot: RepoSnapshot, files: readonly string[], checks: readonly CheckId[], links: LinkRunner): ReferenceProblem[] => {
+  // One batched read: an index or ref snapshot otherwise spawns a git process per file.
+  snapshot.readMany(files);
   const problems: ReferenceProblem[] = [];
   const read = (path: string): string | undefined => snapshot.read(path);
   if (checks.includes('DOC-DRIFT-01')) problems.push(...findPathProblems(config, snapshot, files), ...findLinkProblems(config, snapshot, files, links));
@@ -106,18 +109,15 @@ export interface Change {
 
 /** `git diff --name-status -z` entries. */
 export const parseNameStatus = (output: string): Change[] => {
-  const fields = output.split('\0').filter(Boolean);
+  // One iterator for the statuses and their paths, so every read moves past a field.
+  const fields = output.split('\0').filter(Boolean)[Symbol.iterator]();
   const changes: Change[] = [];
-  for (let i = 0; i < fields.length; ) {
+  for (const field of fields) {
     // A rename or copy carries a score (`R100`) and two paths; the rest one path.
-    const status = String(fields[i]).charAt(0);
-    if (status === 'R' || status === 'C') {
-      changes.push({ status, from: String(fields[i + 1]), path: String(fields[i + 2]) });
-      i += 3;
-    } else {
-      changes.push({ status, path: String(fields[i + 1]), from: String(fields[i + 1]) });
-      i += 2;
-    }
+    const status = field.charAt(0);
+    const from = String(fields.next().value);
+    const path = status === 'R' || status === 'C' ? String(fields.next().value) : from;
+    changes.push({ status, path, from });
   }
   return changes;
 };
@@ -143,7 +143,8 @@ export const referrers = (config: Config, snapshot: RepoSnapshot, removedPaths: 
       out.push(file);
       continue;
     }
-    if (docKind(config, file) === 'markdown') {
+    // No removed word: no Markdown file is read word by word.
+    if (removedWords.size !== 0 && docKind(config, file) === 'markdown') {
       for (const match of text.matchAll(IDENTIFIER_WORD)) {
         if (removedWords.has(match[0])) {
           out.push(file);
@@ -157,12 +158,12 @@ export const referrers = (config: Config, snapshot: RepoSnapshot, removedPaths: 
 
 const readBaseline = (text: string | undefined, where: string): Baseline => (text === undefined ? emptyBaseline() : parseBaseline(text, where));
 
-/** Script names a manifest change removed (`pnpm <name>` now runs nothing); an unparsable manifest names none. */
+/** Script names a manifest change removed (`pnpm <name>` now runs nothing); an absent or unparsable manifest names none. */
 const removedScripts = (before: string | undefined, after: string | undefined): string[] => {
   const names = (text: string | undefined): Set<string> => {
     // An absent manifest (one added, or deleted) reads as `undefined`: no JSON, no script.
     const scripts = manifestObject(String(text))['scripts'];
-    return new Set(Object.keys(typeof scripts === 'object' && scripts !== null && !Array.isArray(scripts) ? scripts : {}));
+    return new Set(Object.keys(isRecord(scripts) ? scripts : {}));
   };
   const now = names(after);
   return [...names(before)].filter((name) => !now.has(name));
@@ -324,8 +325,6 @@ export const runGate = (options: GateOptions): GateReport => {
   // --all reads the worktree, where a baseline being written is not yet
   // tracked; every other mode reads the snapshot it checks.
   const current = readBaseline(mode.kind === 'all' && existsSync(join(root, baselineFile)) ? String(readFileSync(join(root, baselineFile))) : snapshot.read(baselineFile), baselineFile);
-  // One batched read: an index or ref snapshot otherwise spawns a git process per file.
-  snapshot.readMany(checked);
   const problems = runChecks(config, snapshot, checked, checks, links);
 
   if (mode.kind === 'all' && options.baseline !== undefined) {
@@ -369,9 +368,13 @@ export const runGate = (options: GateOptions): GateReport => {
         excusable,
         (files) => {
           const base = createSnapshot(root, { kind: 'ref', ref: baseRef });
-          const present = files.filter((file) => base.files.has(file));
-          base.readMany(present);
-          return runChecks(config, base, present, failed, links);
+          return runChecks(
+            config,
+            base,
+            files.filter((file) => base.files.has(file)),
+            failed,
+            links,
+          );
         },
         baseOf,
       ),

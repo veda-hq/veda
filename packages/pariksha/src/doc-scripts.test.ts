@@ -343,6 +343,10 @@ describe('fenceRoles', () => {
       'fence',
     ]);
   });
+
+  it('closes a fence only at a marker that starts the line, indented at most three spaces, with only blanks after it', () => {
+    assert.deepEqual(fenceRoles(['```', '    ```', '``` x', 'a ```', '```']), ['fence', 'code', 'code', 'code', 'fence']);
+  });
 });
 
 describe('spanRanges', () => {
@@ -484,6 +488,28 @@ describe('DOC-DRIFT-02 command positions', () => {
   it('skips a script family and a tilde fence’s info string', () => {
     assert.deepEqual(problems('`pnpm dev:*` and `pnpm test:<name>`\n'), []);
     assert.deepEqual(problems('~~~ `pnpm validate:prds`\n~~~\n'), []);
+  });
+
+  it('names a family only right after the script, not from a later argument', () => {
+    assert.deepEqual(
+      problems("`pnpm gone-g --files 'src/*.ts'` and `pnpm gone-h <dir>`\n").map((p) => p.script),
+      ['gone-g', 'gone-h'],
+    );
+  });
+
+  it('reads `run`, a `--filter` target and the script across any run of blanks', () => {
+    const doc = ['`pnpm  gone-a`', '`pnpm run  gone-b`', '`pnpm run gone-c`', '`pnpm --filter web gone-d`', '`pnpm --filter web  gone-e`', '`pnpm --filter=web gone-f`', ''].join('\n');
+    assert.deepEqual(
+      problems(doc).map((p) => [p.line, p.script]),
+      [
+        [1, 'gone-a'],
+        [2, 'gone-b'],
+        [3, 'gone-c'],
+        [4, 'gone-d'],
+        [5, 'gone-e'],
+        [6, 'gone-f'],
+      ],
+    );
   });
 
   it('starts a command after a separator, a prompt, env assignments or a builtin lead word', () => {

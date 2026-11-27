@@ -7,7 +7,7 @@ import { after, describe, it } from 'node:test';
 import type { LinkRunner } from './doc-links.ts';
 import type { Config } from './doc-references-config.ts';
 import { formatReport, hunkLines, introducedFailures, parseNameStatus, referrers, removedFlags, removedIdentifiers, runChecks, runGate, withoutFiles, type GateMode, type GateReport } from './doc-references-gate.ts';
-import { CHECK_IDS, type CheckId, type ReferenceProblem } from './doc-references.ts';
+import { CHECK_IDS, type CheckId, type ReferenceProblem, type RepoSnapshot } from './doc-references.ts';
 import { CONFIG, CONFIG_JSON, createTestRepo, fakeLinks, noLinks, testConfig, type TestRepo } from './doc-references.fixture.test.ts';
 
 const STAGED: CheckId[] = ['DOC-DRIFT-01', 'DOC-DRIFT-02'];
@@ -1202,5 +1202,97 @@ describe('formatReport', () => {
     assert.equal(slackOnly.out.length, 2);
     const growing = format({ ...clean, growth: ['x'], exitCode: 1 }, { kind: 'all' });
     assert.deepEqual(growing, { ok: false, out: [], err: [`${P} ${BASELINE}: x`] });
+  });
+
+  it('names no config in its "lower it" line when it was given none', () => {
+    const report: GateReport = {
+      ...clean,
+      changed: ['a.md'],
+      failures: [
+        { check: 'DOC-DRIFT-01', file: 'a.md', line: 1, ref: 'x.ts', reason: 'gone' },
+        { check: 'DOC-DRIFT-01', file: 'b.md', line: 1, ref: 'y.ts', reason: 'gone' },
+      ],
+      slack: [{ file: 'a.md', check: 'DOC-DRIFT-01', baseline: 2, actual: 1 }],
+      exitCode: 1,
+    };
+    assert.deepEqual(formatReport(report, { config: CONFIG, mode: { kind: 'staged' }, checks: STAGED }, undefined).err.slice(2), [
+      `${P} 2 unresolved reference(s) in 2 file(s). Fix each; one that names something absent on purpose (a quoted finding, a deleted or planned file) ends its line with <!-- doc-ref-ok: <why> --> (in code, a comment holding doc-ref-ok: <why>).`,
+      `${P} ${BASELINE}: a.md DOC-DRIFT-01: baseline 2, now 1; lower it: pariksha doc-references --all --update-baseline`,
+    ]);
+  });
+});
+
+describe('the gate as each change and doc writes it', () => {
+  it('runs only the checks it is given, after one batched read of every file', () => {
+    const repo = createTestRepo({
+      'package.json': JSON.stringify({ scripts: {} }),
+      'docs/all.md': 'Run `pnpm nope`. See `scripts/gone.ts`. Call `missingThing()`.\n',
+    });
+    const real = repo.snapshot();
+    const batches: string[][] = [];
+    const snapshot: RepoSnapshot = {
+      ...real,
+      readMany: (paths) => {
+        batches.push([...paths]);
+        return real.readMany(paths);
+      },
+    };
+    const only = (check: CheckId): string[][] => runChecks(CONFIG, snapshot, ['docs/all.md'], [check], noLinks).map((p) => [p.check, p.ref]);
+    assert.deepEqual(only('DOC-DRIFT-01'), [['DOC-DRIFT-01', 'scripts/gone.ts']]);
+    assert.deepEqual(batches[0], ['docs/all.md']);
+    assert.deepEqual(only('DOC-DRIFT-02'), [['DOC-DRIFT-02', 'nope']]);
+    assert.deepEqual(only('DOC-DRIFT-04'), [['DOC-DRIFT-04', 'missingThing()']]);
+  });
+
+  it('keeps only whole identifier-shaped words a diff removed', () => {
+    const hunk = ['@@ -1 +0,0 @@', '-MAX_RETRY_COUNT fooBarBaz FooBarBaz x_FOO_BAR FOO_BARx'].join('\n');
+    assert.deepEqual([...removedIdentifiers(hunk)], ['MAX_RETRY_COUNT', 'fooBarBaz', 'FooBarBaz']);
+  });
+
+  it('reads a hunk whose header names the function it is in', () => {
+    assert.deepEqual(hunkLines('@@ -3 +3 @@ function runTool() {\n-  return 1;\n+  return 2;'), ['-  return 1;', '+  return 2;']);
+  });
+
+  it('reads no doc word by word when no word was removed', () => {
+    const snapshot = createTestRepo({ 'docs/a.md': 'Call `runTool`.\n' }).snapshot();
+    const words: ReadonlySet<string> = { ...new Set<string>(), size: 0, has: () => assert.fail('a word was looked up') } as unknown as ReadonlySet<string>;
+    assert.deepEqual(referrers(CONFIG, snapshot, ['lib/gone.ts'], [], words, []), []);
+  });
+
+  it('re-checks every reference when a .gitignore changes beside other files', () => {
+    const repo = base();
+    repo.write('.gitignore', 'node_modules/\n.tmp/\ndist/\n');
+    repo.write('docs/new.md', 'New.\n');
+    repo.git('add', '-A');
+    assert.deepEqual(staged(repo).checked, ['docs/guide.md', 'docs/new.md', 'scripts/tool.ts']);
+  });
+
+  it('lists what it checks in order, referrers among the changed docs', () => {
+    const repo = base();
+    repo.write('docs/z.md', 'Z.\n');
+    repo.commit('z');
+    repo.write('docs/z.md', 'Zed.\n');
+    repo.git('rm', '-q', 'scripts/tool.ts');
+    repo.git('add', '-A');
+    assert.deepEqual(staged(repo).checked, ['docs/guide.md', 'docs/z.md']);
+  });
+
+  it('reads a manifest with no scripts object, before or after, as naming none', () => {
+    const repo = base();
+    repo.write('apps/web/package.json', JSON.stringify({ name: 'web', scripts: ['drop'] }));
+    repo.write('docs/drop.md', 'Mentions 0 and drop.\n');
+    repo.commit('web');
+    repo.write('apps/web/package.json', JSON.stringify({ name: 'web' }));
+    repo.git('add', '-A');
+    assert.deepEqual(staged(repo).checked, []);
+  });
+
+  it('writes a baseline with no failure, slack or growth', () => {
+    const repo = base();
+    repo.write('docs/old.md', 'See `scripts/gone.ts`.\n');
+    repo.write(BASELINE, baseline({}));
+    repo.commit('legacy');
+    const report = all(repo, 'write');
+    assert.deepEqual([report.failures, report.slack, report.growth, report.wrote], [[], [], [], 1]);
   });
 });

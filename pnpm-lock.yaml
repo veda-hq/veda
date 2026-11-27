@@ -185,8 +185,8 @@ importers:
         specifier: 0.8.11
         version: 0.8.11(@stryker-mutator/core@10.1.1(@types/node@24.19.2))
       '@veda-hq/dvara':
-        specifier: 0.8.15
-        version: 0.8.15(supports-color@7.2.0)
+        specifier: 0.8.20
+        version: 0.8.20(supports-color@7.2.0)
       '@veda-hq/eslint-plugin-shuddhi':
         specifier: 0.2.0
         version: 0.2.0(eslint@9.39.1(jiti@2.6.1)(supports-color@7.2.0))(typescript@5.9.3)
@@ -1042,8 +1042,8 @@ packages:
     peerDependencies:
       '@stryker-mutator/core': '>=10.1.1 <11'
 
-  '@veda-hq/dvara@0.8.15':
-    resolution: {integrity: sha512-lb6nszhRS0pWnGw949IXDfAa/vXj9w1RoRRVS+2TZ8rl/FYYUp7Z+2Q4tMPDNUq0ooo8FJl9lMU5msi3TnEvzQ==}
+  '@veda-hq/dvara@0.8.20':
+    resolution: {integrity: sha512-nSNo13euT3kuCHGUEXgoYdIoZSGlFbpEtiUBbrUobtU5qvuYixSDJa4VE/j/x8a6WWz/BteUNPKP4IdItuweJw==}
     engines: {node: '>=24.15'}
     hasBin: true
 
@@ -2815,7 +2815,7 @@ snapshots:
     dependencies:
       '@stryker-mutator/core': 10.1.1(@types/node@24.19.2)
 
-  '@veda-hq/dvara@0.8.15(supports-color@7.2.0)':
+  '@veda-hq/dvara@0.8.20(supports-color@7.2.0)':
     dependencies:
       mdast-util-from-markdown: 2.0.3(supports-color@7.2.0)
     transitivePeerDependencies:

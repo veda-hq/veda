@@ -40,10 +40,11 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "node ../../scripts/turn.mjs --label 'dvara typecheck' -- tsc -p tsconfig.json",
     "test": "node ../../scripts/fresh-tmpdir.mjs node --test --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 --test-coverage-exclude='src/**/*.test.ts' --test-coverage-include='src/**/*.ts' 'src/**/*.test.ts'",
     "smoke": "node dist/cli.js --version && node dist/cli.js shell stages",
-    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
+    "check": "node ../../scripts/turn.mjs --label 'dvara check' -- pnpm check:run",
+    "check:run": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

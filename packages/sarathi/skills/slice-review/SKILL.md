@@ -69,19 +69,33 @@ Find what is wrong, missing or unclear:
 - a **Why:** that does not justify this change, or that claims the owner
   asked without quoting where and when;
 - a guard file the work must change that **Guards:** does not name, or a
-  named path that does not exist;
+  named path that does not exist and that the slice does not say it
+  creates;
 - scope: work the slice implies but does not name, or names but does not
   need;
 - a cost, or what happens if the owner declines, left unsaid where it
-  matters.
+  matters;
+- a statement about how a file or the code works now that the file does
+  not bear out: a blocker, since every later reader inherits it;
+- a file, function, command or label the slice cites as existing that
+  does not exist. Check every one. Files the slice says it will create are
+  not findings.
 
 Read each named file whole before judging what the slice says about it.
-Change nothing, and read nothing outside this repository. Do not validate,
-summarise or praise. Report at most five findings, most serious first,
-each as one numbered line:
+Change nothing, and read nothing outside this repository. Do not validate
+or praise, and summarise only in the paraphrase below.
+
+First, in your own words, write two short sections of 2 to 5 sentences:
+**What this proposes** and **What exists now, per this slice**. The author
+compares them with what was meant, so a wrong paraphrase is itself a
+finding. A part you cannot paraphrase is a blocker finding.
+
+Then report at most five findings, most serious first, whichever check
+found them, each as one numbered line:
 [blocker|major|minor] "<the slice's words you attack>": what is wrong;
 what would fix it.
-If you find nothing, say "Nothing found" and list what you checked.
+If you find nothing, say "Nothing found" after the paraphrase, and list
+what you checked.
 
 CONTRACT
 - **You will see:** what the owner can see once the slice is merged
@@ -102,13 +116,35 @@ SLICE
 
 ## 3. Answer
 
-Re-read the slice against each finding; the reviewer can be wrong for want
-of context. For each one, fix the slice, or say why not: it misread the
-contract, the fact it lacked belongs in the slice (then add it), or fixing
-it costs more than it saves. Put the findings and your answer to each on
-the page `niyam propose --page` names, under "Fresh-eyes review", so the
-owner sees them; "Nothing found" goes there too. Then file or edit the
-slice and propose.
+Read the paraphrase against what you meant: where it is wrong, the slice
+says something you did not mean, so fix the slice. Then re-read the slice
+against each finding; the reviewer can be wrong for want of context. Give
+each finding exactly one answer [3]:
+
+- **FIX:** the finding holds; change the slice.
+- **CONTEST:** the finding is wrong. Cite evidence the reviewer could read:
+  a file and line, or the slice's own words.
+- **ESCALATE:** the finding is wrong, but the evidence is outside what the
+  reviewer could read, such as the owner's words in chat. Say so, for the
+  owner to judge.
+- **DECLINE:** a minor finding whose fix costs more than it saves. Say why.
+
+"It was intentional" is not evidence. Do not contest a gap a fresh reader
+could not follow: the slice is missing what that reader needed. Do not
+change a severity; if a blocker looks minor to you, contest it and say why.
+Add a fact to the slice when the owner needs it to judge the slice, not only
+to satisfy the reviewer. You wrote the slice, so wanting to contest is not
+evidence that the reviewer is wrong.
+
+Put the paraphrase, the findings and your answer to each on the page
+`niyam propose --page` names, under "Fresh-eyes review", so the owner sees
+them; "Nothing found" goes there too. Then file or edit the slice and
+propose.
+
+A reviewer that fails, times out or returns no report did not review [4].
+Run it once more; a run that returned no report was not a pass, so this is
+not a second pass. If it fails again, the page says "not run", never
+"Nothing found", and the proposal says the slice went unreviewed.
 
 Do not run the review again for a cleaner result: one pass is the step.
 Edits that answer its findings need no second pass. A second pass is for a
@@ -121,8 +157,16 @@ Read 2026-11-27.
 
 1. google/elephant-goldfish-model at 46933754e63c0424daa9c270d7e0734245d79560,
    `skills/egm-lite/SKILL.md` (stateless spec review) and
-   `agents/implementation_readiness.md` (Goldfish isolation):
+   `agents/implementation_readiness.md` (Goldfish isolation),
+   `agents/comprehension.md` (the paraphrase first) and
+   `agents/codebase_details.md` ("Contradicts the Code", "Non-Existent
+   References", "Proposed files are not findings"):
    https://github.com/google/elephant-goldfish-model
 2. addyosmani/agent-skills at e997ac5b9a74eab332d5e9793bb38a38c8cfdd74,
    `skills/doubt-driven-development/SKILL.md`:
    https://github.com/addyosmani/agent-skills/blob/main/skills/doubt-driven-development/SKILL.md
+3. google/elephant-goldfish-model at 46933754e63c0424daa9c270d7e0734245d79560,
+   `skills/egm-resolve/SKILL.md`, Step 2 (CONTEST, ESCALATE, PROPOSE FIX,
+   DECLINE, and the rules under them).
+4. google/elephant-goldfish-model at 46933754e63c0424daa9c270d7e0734245d79560,
+   `skills/egm-review-loop/SKILL.md`, Step 2.2, "Failed Reviewers".

@@ -119,16 +119,44 @@ describe('skills/slice-review/SKILL.md', () => {
     assert.match(flat, /Where a hook runs the call as a separate session instead/);
   });
 
+  const brief = /```text\n([\s\S]*?)\n```/.exec(text)?.[1]?.replace(/\s+/g, ' ') ?? '';
+
   it('holds an adversarial brief that asks for findings only, or says none were found', () => {
-    const brief = /```text\n([\s\S]*?)\n```/.exec(text)?.[1]?.replace(/\s+/g, ' ') ?? '';
-    for (const part of [/^Adversarial review\./, /Do not validate, summarise or praise/, /at most five findings/, /"Nothing found"/, /\*\*You will see:\*\*/, /\*\*Why:\*\*/, /\*\*Guards:\*\*/, /SLICE <title and body, verbatim>$/]) {
+    for (const part of [/^Adversarial review\./, /Do not validate or praise, and summarise only in the paraphrase below/, /at most five findings, most serious first, whichever check found them/, /"Nothing found" after the paraphrase/, /\*\*You will see:\*\*/, /\*\*Why:\*\*/, /\*\*Guards:\*\*/, /SLICE <title and body, verbatim>$/]) {
       assert.match(brief, part);
     }
   });
 
-  it('has the proposing agent answer each finding where the owner sees it', () => {
-    assert.match(flat, /For each one, fix the slice, or say why not/);
+  it('asks for a paraphrase of the slice before the findings', () => {
+    const paraphrase = brief.indexOf('**What this proposes** and **What exists now, per this slice**');
+    assert.ok(paraphrase >= 0, 'the brief names the two paraphrase sections');
+    assert.ok(paraphrase < brief.indexOf('at most five findings'), 'the paraphrase comes before the findings');
+    assert.match(brief, /a wrong paraphrase is itself a finding/);
+    assert.match(brief, /A part you cannot paraphrase is a blocker finding/);
+  });
+
+  it('checks what the slice says exists against the files, but not what it will create', () => {
+    assert.match(brief, /a statement about how a file or the code works now that the file does not bear out: a blocker/);
+    assert.match(brief, /a file, function, command or label the slice cites as existing that does not exist\. Check every one\. Files the slice says it will create are not findings/);
+    assert.match(brief, /a named path that does not exist and that the slice does not say it creates/);
+  });
+
+  it('has the proposing agent give each finding one named answer where the owner sees it', () => {
+    for (const answer of ['FIX', 'CONTEST', 'ESCALATE', 'DECLINE']) {
+      assert.match(flat, new RegExp(`- \\*\\*${answer}:\\*\\*`));
+    }
+    assert.match(flat, /Give each finding exactly one answer/);
+    assert.match(flat, /Cite evidence the reviewer could read/);
+    assert.match(flat, /"It was intentional" is not evidence/);
+    assert.match(flat, /Do not change a severity/);
     assert.match(flat, /on the page `niyam propose --page` names/);
+  });
+
+  it('records a reviewer that returned no report as not run, never as nothing found', () => {
+    assert.match(flat, /A reviewer that fails, times out or returns no report did not review/);
+    assert.match(flat, /Run it once more; a run that returned no report was not a pass, so this is not a second pass/);
+    assert.match(flat, /the page says "not run", never "Nothing found"/);
+    assert.match(flat, /one pass is the step/);
   });
 
   it('is the file veda tells its agents to use before proposing', () => {

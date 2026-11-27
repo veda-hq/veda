@@ -74,8 +74,7 @@ const outerLevel = (masked: string): string => {
  * `cmd | cat`, `|&` too) or a list sent to the background (`cmd &`).
  */
 const runsInChildShell = (code: string, start: number, end: number): boolean => {
-  // A `|` that is not half of `||`; a command never follows one that opens its line.
-  if (/[^|]\|&?\s*$/.test(code.slice(0, start))) return true;
+  if (/(?:^|[^|])\|&?\s*$/.test(code.slice(0, start))) return true;
   // The rest of its list (to `;` or a newline) and of its pipeline (to `&&`
   // or `||` too, which bind looser than `|`), read at this level only: a `;`
   // inside `"$(a; b)"` ends nothing.

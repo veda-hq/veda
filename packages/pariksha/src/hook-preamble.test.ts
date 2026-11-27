@@ -976,6 +976,8 @@ describe('SHELL-06 edges the mutation gate found unpinned', () => {
     // A pipeline earlier on the line is over by the time `.` runs.
     assert.deepEqual(rulesHit(hook('echo a | cat; . scripts/lib/select-node.sh', 'select_node || exit 1', 'node x')), []);
     assert.deepEqual(rulesHit(hook('echo a |  . scripts/lib/select-node.sh', 'select_node || exit 1', 'node x')), ['runtime-before-select-node']);
+    // A `|` that opens the line counts too.
+    assert.deepEqual(rulesHit(hook('| . scripts/lib/select-node.sh', 'select_node || exit 1', 'node x')), ['runtime-before-select-node']);
   });
 
   it('reads an opt-out whose exit and code are apart by more than one blank', () => {

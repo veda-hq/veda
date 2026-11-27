@@ -116,7 +116,7 @@ describe('skills/slice-review/SKILL.md', () => {
     );
     assert.match(flat, /no shell, where `Explore` has one/);
     assert.match(flat, /`omitClaudeMd: true` keeps the user, project and local `CLAUDE\.md` out when Claude Code spawns it as a subagent/);
-    assert.match(flat, /Where a hook runs the call as a separate session instead/);
+    assert.match(flat, /Where a hook runs the call as a separate session instead, that session loads `CLAUDE\.md`, the memory index and the user's instructions unless the hook honours the key too/);
   });
 
   const brief = /```text\n([\s\S]*?)\n```/.exec(text)?.[1]?.replace(/\s+/g, ' ') ?? '';

@@ -65,7 +65,8 @@ export const basenameOf = (path: string): string => {
   return trimmed === '/' ? '/' : trimmed.slice(trimmed.lastIndexOf('/') + 1);
 };
 
-const isDir = (path: string): boolean => {
+/** Whether a folder is there, as `[ -d ]` reads it: false for anything stat cannot read. */
+export const isDir = (path: string): boolean => {
   try {
     return statSync(path).isDirectory();
   } catch {
@@ -73,7 +74,8 @@ const isDir = (path: string): boolean => {
   }
 };
 
-const exists = (path: string): boolean => {
+/** Whether a file or folder is there: a FIFO or a socket is no resource a link can mean. */
+export const exists = (path: string): boolean => {
   try {
     const s = statSync(path);
     return s.isFile() || s.isDirectory();
@@ -92,13 +94,13 @@ export const nameOnDisk = (dir: string, name: string): boolean => {
   }
 };
 
-/** A regular file's size in bytes, the link itself for a symlink (as `stat` without `-L` reads it). */
-const sizeOf = (path: string): number | undefined => {
+/** A regular file's size in bytes, the link itself for a symlink (as `stat` without `-L` reads it); 0 for anything else. */
+export const sizeOf = (path: string): number => {
   try {
     const s = lstatSync(path);
-    return statSync(path).isFile() ? s.size : undefined;
+    return statSync(path).isFile() ? s.size : 0;
   } catch {
-    return undefined;
+    return 0;
   }
 };
 
@@ -142,8 +144,8 @@ export const checkDoc = (top: string, file: string, text: string): { readonly re
       out.push(`❌ Error: Reference whose case differs from the file on disk in ${file}:`, `   Link: ${link}`, `   Expected path: ${relative}`, '');
       refused = true;
     }
-    const size = IMAGE.test(target) ? sizeOf(target) : undefined;
-    if (size !== undefined && size > LARGE_IMAGE_BYTES) {
+    const size = IMAGE.test(target) ? sizeOf(target) : 0;
+    if (size > LARGE_IMAGE_BYTES) {
       out.push(
         `⚠️  Warning: Large image referenced in ${file}:`,
         `   Image: ${relative}`,

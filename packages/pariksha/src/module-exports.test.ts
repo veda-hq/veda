@@ -23,9 +23,22 @@ const repo = (files: Record<string, string>): string => {
   }
   return root;
 };
+/**
+ * TypeScript that refuses to parse a file twice, recording what it parsed:
+ * each module is read once, so a cycle that is not ended throws here at
+ * once rather than running on.
+ */
+const once = (parsed: string[] = []): Ts => ({
+  ...ts,
+  createSourceFile: (...args: Parameters<Ts['createSourceFile']>) => {
+    if (parsed.includes(args[0])) throw new Error(`${args[0]} parsed twice`);
+    parsed.push(args[0]);
+    return ts.createSourceFile(...args);
+  },
+});
 /** The exports of `m.ts` among these files, as a plain object. */
 const of = (files: Record<string, string>): { exports: Record<string, string>; unfollowed: readonly string[] } => {
-  const found = moduleExports(ts, repo(files), 'm.ts');
+  const found = moduleExports(once(), repo(files), 'm.ts');
   return { exports: Object.fromEntries(found.exports), unfollowed: found.unfollowed };
 };
 
@@ -39,6 +52,30 @@ describe('resolveRelative', () => {
     assert.equal(resolveRelative(root, 'src/m.ts', './b'), 'src/b/index.ts');
     assert.equal(resolveRelative(root, 'src/m.ts', './c.mjs'), 'src/c.mjs');
     assert.equal(resolveRelative(root, 'src/m.ts', '../top'), 'top.ts');
+  });
+
+  it('tries each source extension, by stem and as a folder index', () => {
+    const exts = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.jsx'];
+    const r = repo(Object.fromEntries(exts.flatMap((e, i) => [[`f${String(i)}${e}`, ''], [`d${String(i)}/index${e}`, '']])));
+    assert.deepEqual(
+      exts.map((_, i) => resolveRelative(r, 'm.ts', `./f${String(i)}`)),
+      ['f0.ts', 'f1.tsx', 'f2.mts', 'f3.cts', 'f4.js', 'f5.mjs', 'f6.cjs', 'f7.jsx'],
+    );
+    assert.deepEqual(
+      exts.map((_, i) => resolveRelative(r, 'm.ts', `./d${String(i)}`)),
+      ['d0/index.ts', 'd1/index.tsx', 'd2/index.mts', 'd3/index.cts', 'd4/index.js', 'd5/index.mjs', 'd6/index.cjs', 'd7/index.jsx'],
+    );
+  });
+
+  it('reads `.mjs` as naming `.mts`, and `.js` only as the whole extension', () => {
+    const r = repo({ 'a.mts': '', 'b.json.ts': '' });
+    assert.equal(resolveRelative(r, 'm.ts', './a.mjs'), 'a.mts');
+    assert.equal(resolveRelative(r, 'm.ts', './b.json'), 'b.json.ts');
+  });
+
+  it('follows no file outside the root, even one that is there', () => {
+    const parent = repo({ 'outside.ts': '', 'in/m.ts': '' });
+    assert.equal(resolveRelative(join(parent, 'in'), 'm.ts', '../outside'), undefined);
   });
 
   it('follows no package specifier, no missing file, and nothing outside the root', () => {
@@ -165,7 +202,64 @@ describe('moduleExports', () => {
     });
   });
 
+  it('exports only what is exported, and resolves a list to each local by its kind', () => {
+    const source = [
+      'const hidden = 1;',
+      'let bare;',
+      'export let open;',
+      'class Hidden {}',
+      'class C {}',
+      'enum E { A }',
+      'interface HiddenI {}',
+      'interface I {}',
+      'type T = 1;',
+      'function f() {}',
+      "import { missing } from './x';",
+      "import { type Ty } from './x';",
+      "import type { Ty2 } from './x';",
+      "import './side-effect';",
+      // A specifier that is no string names no module to follow.
+      'import y from z;',
+      'export { C, E, I, T, bare, missing, Ty, Ty2, y };',
+      "export type * from './x';",
+      'export class {}',
+    ].join('\n');
+    // Imported as types, Ty and Ty2 are types here, whatever x.ts holds.
+    assert.deepEqual(of({ 'm.ts': source, 'x.ts': 'export const shown = 1;\nexport const Ty = 1;\nexport const Ty2 = 2;\n', 'side-effect.ts': '' }), {
+      exports: {
+        open: 'value',
+        C: 'value',
+        E: 'value',
+        I: 'type',
+        T: 'type',
+        bare: 'value',
+        missing: 'unresolved',
+        Ty: 'type',
+        Ty2: 'type',
+        y: 'unresolved',
+      },
+      unfollowed: [],
+    });
+    assert.deepEqual(of({ 'm.ts': 'export default class {}\nclass K {}\nexport { K };\n' }).exports, { default: 'value', K: 'value' });
+    assert.deepEqual(of({ 'm.ts': 'const a = 1;\nexport { a };\n' }).exports, { a: 'value' });
+    // An import for its side effects re-exports nothing; nor does a star that names no module.
+    assert.deepEqual(of({ 'm.ts': "import './side';\nexport * ;\n", 'side.ts': 'export const s = 1;\n' }), { exports: {}, unfollowed: [] });
+  });
+
+  it('parses each module once, however often and however circularly it is reached', () => {
+    const parsed: string[] = [];
+    const counting = once(parsed);
+    const root = repo({
+      'm.ts': "export * from './b';\nexport * from './c';\n",
+      'b.ts': "export * from './d';\nexport * from './m';\n",
+      'c.ts': "export * from './d';\n",
+      'd.ts': 'export const d = 1;\n',
+    });
+    assert.deepEqual(Object.fromEntries(moduleExports(counting, root, 'm.ts').exports), { d: 'value' });
+    assert.deepEqual(parsed.sort(), ['b.ts', 'c.ts', 'd.ts', 'm.ts']);
+  });
+
   it('reads a module that does not exist as one exporting nothing', () => {
-    assert.deepEqual(moduleExports(ts, repo({}), 'gone.ts'), { exports: new Map(), unfollowed: [] });
+    assert.deepEqual(moduleExports(once(), repo({}), 'gone.ts'), { exports: new Map(), unfollowed: [] });
   });
 });

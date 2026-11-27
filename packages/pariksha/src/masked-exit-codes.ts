@@ -115,6 +115,9 @@ const isCommentary = (line: string): boolean => {
 /** An exit status word: digits, `$?` or a variable, quoted or not. */
 const EXIT_STATUS = String.raw`\d+|'\d+'|"\d+"|"?\$\?"?|"?\$\{?[A-Za-z_]\w*\}?"?`;
 
+/** A handler that is `false`, which fails on to the next handler. */
+const FALSE_HANDLER = /^\|\|\s*false\b/;
+
 /**
  * Whether this list hands the gate's failure onward rather than swallow it.
  * `|| exit 1`, `|| exit '1'` and a bare `|| exit` do; `|| exit 0` converts a
@@ -135,7 +138,7 @@ const propagatesFailure = (line: string, { falseKeeps = true }: { falseKeeps?: b
   for (const at of starts) {
     const match = handler.exec(line.slice(at));
     if (match === null) return false;
-    if (/^\|\|\s*false\b/.test(match[0])) {
+    if (FALSE_HANDLER.test(match[0])) {
       if (falseKeeps && at === starts.at(-1)) return true;
       continue;
     }
@@ -146,18 +149,23 @@ const propagatesFailure = (line: string, { falseKeeps = true }: { falseKeeps?: b
   return false;
 };
 
-/** The handler a failure reaches first (past any `|| false`), if any. */
-const firstHandler = (list: string): string | undefined =>
+/**
+ * The handler a failure reaches first (past any `|| false`), from its `||`
+ * to the end of the list: a list of one, or none when no handler is there.
+ */
+const firstHandler = (list: string): readonly string[] =>
   handlerStarts(list)
     .map((at) => list.slice(at))
-    .find((rest) => !/^\|\|\s*false\b/.test(rest));
+    .filter((rest) => !FALSE_HANDLER.test(rest))
+    .slice(0, 1);
 
 /**
  * One piece of an and-or list as `handlerStarts` reads it: an escaped
  * character, a quoted string (open to the end of the list when unclosed;
- * `\` escapes only inside double quotes), an `||`, or any other character.
+ * `\` escapes only inside double quotes), an `||`, or a bracket. Any other
+ * character opens no piece and is passed over.
  */
-const LIST_PIECE = /\\[\s\S]?|'[^']*'?|"(?:\\[\s\S]?|[^"\\])*"?|\|\||[\s\S]/g;
+const LIST_PIECE = /\\[^]|'[^']*'?|"(?:\\[^]|[^"\\])*"?|\|\||[(){}]/g;
 
 /**
  * Where each top-level `||` of an and-or list starts: outside quotes and
@@ -183,8 +191,10 @@ export const handlerStarts = (list: string): number[] => {
  * `$?` as its first command (`{ status=$?; echo failed; exit "$status"; }`).
  */
 const failingStatus = (status: string, { before, lastIsGate }: { before?: string; lastIsGate: boolean }): boolean => {
-  const bare = status.replace(/^(["'])(.*)\1$/, '$2');
-  if (/^\d+$/.test(bare)) return !/^0+$/.test(bare);
+  // A status word holds two quotes only as the pair around it, and one that
+  // starts with a digit is digits throughout.
+  const bare = status.replace(/(["'])(.*)\1/, '$2');
+  if (/^\d/.test(bare)) return !/^0+$/.test(bare);
   if (bare === '$?') return lastIsGate;
   const name = /^\$\{?(\w+)\}?$/.exec(bare)?.[1];
   if (name === undefined || before === undefined) return false;
@@ -198,9 +208,10 @@ const failingStatus = (status: string, { before, lastIsGate }: { before?: string
 /** The and-or list from the command that runs `gate` on, cut from the list's own text so its redirections stay as written. */
 const fromGate = (list: string, gate: string): string => {
   let cursor = 0;
+  // Each segment is the list's own text, trimmed: comments and heredoc
+  // bodies were cut before the list was, so it is always found.
   for (const segment of splitSegmentsWithSeparators(list)) {
     const at = list.indexOf(segment.text, cursor);
-    if (at < 0) return list;
     if (invokedAt(segment.text, gate)) return list.slice(at);
     cursor = at + segment.text.length;
   }
@@ -216,10 +227,8 @@ const braceHandlerPropagates = (list: string): boolean => {
   // hands on `$?`: the gate's own status when nothing ran before it.
   const group = new RegExp(String.raw`^\|\|\s*\{([^}]*)\b(?:exit|return)(?:\s+(${EXIT_STATUS}))?(?:\s+\d*[<>]{1,2}&?[^\s;}]+)*\s*;?\s*\}(?=\s*(?:$|;|&&|\|\||\)|\}|#))`);
   // The first handler that runs: past any `|| false`, which fails on.
-  for (const at of handlerStarts(list)) {
-    const rest = list.slice(at);
-    if (/^\|\|\s*false\b/.test(rest)) continue;
-    const match = group.exec(rest);
+  return firstHandler(list).some((handler) => {
+    const match = group.exec(handler);
     if (match === null) return false;
     const before = match[1] as string;
     const status = match[2];
@@ -229,8 +238,7 @@ const braceHandlerPropagates = (list: string): boolean => {
     // exits a pipeline subshell.
     if (!/(?:^|;)\s*$/.test(before)) return false;
     return failingStatus(status ?? '$?', { before, lastIsGate: before.trim() === '' });
-  }
-  return false;
+  });
 };
 
 /**
@@ -270,13 +278,32 @@ const fromCommand = (segment: string): ShellToken[] => {
 };
 
 /** A command word without its directory: `/bin/sh` is `sh`. */
-const commandName = (word: ShellToken): string => word.value.replace(/^.*\//, '');
+// Up to the last `/`. A word whose `/` follows a line break keeps that break
+// either way, so it names none of the commands read here.
+const commandName = (word: ShellToken): string => word.value.replace(/.*\//, '');
+
+/**
+ * What a shell given these words after its name runs: the first operand
+ * under `-c`, nothing for a script file (later operands are `$0`, `$1`), and
+ * 'stdin' when no operand follows the options.
+ */
+const shellRuns = (words: readonly ShellToken[], command: boolean): string[] | 'stdin' => {
+  const [word, ...rest] = words;
+  if (word === undefined) return command ? [] : 'stdin';
+  if (!word.quoted && /^[-+]o$/.test(word.value)) {
+    // `-o pipefail`: the option's value is no operand.
+    const [, ...after] = rest;
+    return shellRuns(after, command);
+  }
+  if (!word.quoted && /^[-+][a-zA-Z]+$/.test(word.value)) return shellRuns(rest, command || (word.value.startsWith('-') && word.value.includes('c')));
+  return command ? [word.value] : [];
+};
 
 /**
  * The scripts this command runs as shell text, or 'stdin' for a shell that
  * reads its program from a pipe. `eval` runs its arguments joined by spaces;
- * `sh -c` runs its first operand only (later ones are `$0`, `$1`); a shell
- * given a file runs committed code this check reads on its own.
+ * `sh -c` runs its first operand only; a shell given a file runs committed
+ * code this check reads on its own.
  */
 const scriptsOf = (words: readonly ShellToken[]): string[] | 'stdin' => {
   const [head, ...rest] = words;
@@ -285,21 +312,7 @@ const scriptsOf = (words: readonly ShellToken[]): string[] | 'stdin' => {
   const name = commandName(head);
   if (name === 'eval') return [rest.map((word) => word.value).join(' ')];
   if (!SHELL.test(name)) return [];
-  let command = false;
-  for (let index = 0; index < rest.length; index += 1) {
-    const word = rest[index] as ShellToken;
-    if (!word.quoted && /^[-+]o$/.test(word.value)) {
-      index += 1; // `-o pipefail`: the option's value is no operand
-      continue;
-    }
-    if (!word.quoted && /^[-+][a-zA-Z]+$/.test(word.value)) {
-      if (word.value.startsWith('-') && word.value.includes('c')) command = true;
-      continue;
-    }
-    // The first operand: the program under -c, otherwise a script file.
-    return command ? [word.value] : [];
-  }
-  return command ? [] : 'stdin';
+  return shellRuns(rest, false);
 };
 
 /** The value of digits a pattern already matched in base `radix`. */
@@ -356,6 +369,27 @@ const printfEscapes = (text: string, where: 'format' | 'argument'): { text: stri
   return { text: out + text.slice(last), stop: false };
 };
 
+/** One pass of a printf format: what it writes, the arguments it leaves, and whether a `\c` ended all output. */
+interface PrintfPass {
+  readonly text: string;
+  readonly rest: readonly string[];
+  readonly stop: boolean;
+}
+
+/** The format's `pieces` written once, each `%s` or `%b` taking the next of `args` ('' when none is left). */
+// A fold over the pieces, not a recursion: a fixed list, so no mutant can spin it.
+const printfPass = (pieces: readonly string[], args: readonly string[]): PrintfPass =>
+  pieces.reduce<PrintfPass>(
+    (pass, piece) => {
+      if (pass.stop) return pass;
+      if (piece !== '%s' && piece !== '%b') return { ...pass, text: pass.text + (piece === '%%' ? '%' : printfEscapes(piece, 'format').text) };
+      const [arg = '', ...more] = pass.rest;
+      const value = piece === '%s' ? { text: arg, stop: false } : printfEscapes(arg, 'argument');
+      return { text: pass.text + value.text, rest: more, stop: value.stop };
+    },
+    { text: '', rest: args, stop: false },
+  );
+
 /**
  * What `printf FORMAT ARGS…` writes, for `%s`, `%b` and `%%` with every
  * escape decoded; null for any other directive, which the caller reads word
@@ -370,26 +404,18 @@ export const renderPrintf = (words: readonly string[]): string | null => {
   // this reader does not render. An escape writes `%` (`\045`) as text.
   const pieces = format.split(/(%[sb%])/);
   if (pieces.some((piece, index) => index % 2 === 0 && piece.includes('%'))) return null;
-  let rest = [...args];
-  let out = '';
-  for (;;) {
-    let used = 0;
-    for (const piece of pieces) {
-      if (piece === '%%') out += '%';
-      else if (piece === '%s') {
-        out += rest[used] ?? '';
-        used += 1;
-      } else if (piece === '%b') {
-        const value = printfEscapes(rest[used] ?? '', 'argument');
-        used += 1;
-        out += value.text;
-        if (value.stop) return out;
-      } else out += printfEscapes(piece, 'format').text;
-    }
-    rest = rest.slice(used);
-    if (used === 0 || rest.length === 0) break;
-  }
-  return out;
+  // The format is reused while arguments remain, and one that takes none runs
+  // once. Each pass but the last takes an argument, so the arguments and one
+  // more bound the passes: a fold over that many, which no mutant can spin.
+  const runs = Array.from({ length: args.length + 1 });
+  return runs.reduce<{ readonly text: string; readonly left: readonly string[]; readonly done: boolean }>(
+    (state) => {
+      if (state.done) return state;
+      const once = printfPass(pieces, state.left);
+      return { text: state.text + once.text, left: once.rest, done: once.stop || once.rest.length === 0 || once.rest.length === state.left.length };
+    },
+    { text: '', left: args, done: false },
+  ).text;
 };
 
 /**
@@ -398,7 +424,8 @@ export const renderPrintf = (words: readonly string[]): string | null => {
  * since `sh`'s own echo (dash, or bash under xpg_echo) decodes them unasked.
  */
 const renderEcho = (words: readonly string[]): string => {
-  const text = words.join(' ').replace(/^(?:-[neE]+(?: |$))*/, '');
+  // The pattern matches the empty string, so its first match is at the start.
+  const text = words.join(' ').replace(/(?:-[neE]+(?: |$))*/, '');
   return `${text}\n${printfEscapes(text, 'argument').text}`;
 };
 
@@ -416,7 +443,7 @@ export const executedTexts = (line: string, depth = 0): string[] => {
   const scripts = segments.flatMap((segment, index) => {
     const run = scriptsOf(fromCommand(segment.text));
     if (run !== 'stdin') return run;
-    const source = index === 0 ? undefined : segments[index - 1];
+    const source = segments[index - 1];
     if (source === undefined || source.next !== '|') return [];
     const [head, ...words] = fromCommand(source.text);
     if (head === undefined) return [];
@@ -433,10 +460,9 @@ export const executedTexts = (line: string, depth = 0): string[] => {
   });
   // A substitution's body is judged as part of the line (so a capture the
   // line then branches on stays exempt), but the scripts it hands a shell run
-  // too: `echo $(printf … | sh)` and `x=$(sh -c '…')`.
-  const nested = substitutionBodies(line)
-    .filter((body) => body !== line)
-    .flatMap((body) => executedTexts(body, depth + 1).slice(1));
+  // too: `echo $(printf … | sh)` and `x=$(sh -c '…')`. A body is shorter
+  // than the line holding it.
+  const nested = substitutionBodies(line).flatMap((body) => executedTexts(body, depth + 1).slice(1));
   return [line, ...scripts.flatMap((text) => executedTexts(text, depth + 1)), ...nested];
 };
 
@@ -507,31 +533,26 @@ const EARLY_EXIT_LONG = /^--(?:quiet|silent|max-count|files-with(?:out)?-match(?
 const VALUE_LONG = /^--(?:regexp|file|max-count|context|after-context|before-context)$/;
 
 /**
+ * A cluster of short flags that stops early: `q`, `m`, `l` or `L` before its
+ * first value-taking flag, after which the rest is that flag's value
+ * (`-emissing`). A lone `-` (stdin) has no flags at all.
+ */
+const EARLY_EXIT_SHORT = /^-[^efABC]*[qmlL]/;
+
+/** A cluster whose first value-taking flag ends it, so the next token is the value (`-e -missing`). */
+const VALUE_NEXT_SHORT = /^-[^efABC]*[efABC]$/;
+
+/**
  * Whether this grep stops at its first match. Options are read the way GNU
  * grep permutes them, so `grep a --quiet` counts, but an option's value is
- * skipped: `grep -e -missing` has the pattern `-missing`, not `-m`.
+ * skipped: `grep -e -missing` has the pattern `-missing`, not `-m`. Blank
+ * tokens, at either end, are no option.
  */
-const grepStopsEarly = (args: string): boolean => {
-  const tokens = args.trim().split(/\s+/).filter(Boolean);
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index] as string;
-    if (token === '--') return false;
-    if (token.startsWith('--')) {
-      if (EARLY_EXIT_LONG.test(token)) return true;
-      if (VALUE_LONG.test(token)) index += 1;
-      continue;
-    }
-    if (!token.startsWith('-')) continue;
-    // A cluster's flags run up to its first value-taking flag; what follows
-    // is that flag's value (`-emissing`), or, when nothing does, the next
-    // token is (`-e -missing`). A lone `-` (stdin) has no flags at all.
-    const flags = token.slice(1);
-    const valueFlag = flags.search(/[efABC]/);
-    const own = valueFlag < 0 ? flags : flags.slice(0, valueFlag);
-    if (/[qmlL]/.test(own)) return true;
-    if (valueFlag >= 0 && valueFlag === flags.length - 1) index += 1;
-  }
-  return false;
+const grepStopsEarly = (tokens: readonly string[]): boolean => {
+  const [token, ...rest] = tokens;
+  if (token === undefined || token === '--') return false;
+  if (token.startsWith('--')) return EARLY_EXIT_LONG.test(token) || grepStopsEarly(VALUE_LONG.test(token) ? rest.slice(1) : rest);
+  return EARLY_EXIT_SHORT.test(token) || grepStopsEarly(VALUE_NEXT_SHORT.test(token) ? rest.slice(1) : rest);
 };
 
 /**
@@ -543,10 +564,12 @@ const grepStopsEarly = (args: string): boolean => {
  * on; any other condition (`(( rc ))`, a `case`) is not read, and reports;
  * a reassignment of the variable ends the search.
  */
-const savesStatusThenBranches = (list: string, later: readonly string[]): boolean => {
-  const handler = firstHandler(list);
-  if (handler === undefined) return false;
-  const saved = /^\|\|\s*([A-Za-z_]\w*)=(["']?)\$[?]\2\s*(?:;\s*)?$/.exec(handler);
+const savesStatusThenBranches = (list: string, later: readonly string[]): boolean => firstHandler(list).some((handler) => savedThenBranches(handler, later));
+
+/** Whether `handler` saves the status in a variable that a line of `later` exits on, only on failure. */
+const savedThenBranches = (handler: string, later: readonly string[]): boolean => {
+  // The list is trimmed, so a `;` can end it only as the last character.
+  const saved = /^\|\|\s*([A-Za-z_]\w*)=(["']?)\$[?]\2\s*;?$/.exec(handler);
   if (saved === null) return false;
   const name = saved[1] as string;
   const referenced = new RegExp(`\\$\\{?${name}\\b`);
@@ -594,7 +617,7 @@ const savesStatusThenBranches = (list: string, later: readonly string[]): boolea
 const isEarlyExitFeed = (line: string): boolean => {
   const feed = VARIABLE_FEED.exec(withoutQuotedText(line));
   if (feed === null) return false;
-  return feed[1] === 'head' || grepStopsEarly(feed[2] as string);
+  return feed[1] === 'head' || grepStopsEarly((feed[2] as string).split(/\s+/));
 };
 
 /**
@@ -680,12 +703,7 @@ export const findMaskedExits = (root: string, files: readonly string[], read: So
         .filter((list) => !savesStatusThenBranches(list, later));
       // `|| true` on a gate discards its verdict outright, as the handler a
       // failure reaches, not inside a handler's own group.
-      if (
-        own.some((list) => {
-          const handler = firstHandler(list);
-          return handler !== undefined && /^\|\|\s*true\b/.test(handler);
-        })
-      ) {
+      if (own.some((list) => firstHandler(list).some((handler) => /^\|\|\s*true\b/.test(handler)))) {
         problems.push({ file: relative, line: lineNumber, snippet: line.trim(), reason: `\`${gate}\` is a gate, but \`|| true\` discards its exit status — the check reports success whatever it found` });
         return true;
       }
@@ -711,7 +729,6 @@ export const findMaskedExits = (root: string, files: readonly string[], read: So
       // Every gate on the line is judged: `eslint . || exit 1; tsc || true`
       // still masks tsc.
       const gates = config.gateCommands.filter((command) => invokedAt(line, command));
-      if (gates.length === 0) return false;
       const later = logical.slice(index + 1).map((entry) => entry.text);
       // The verdict survives in a variable the script goes on to test.
       if (isCaptureThenBranch(line, later)) return false;
@@ -719,36 +736,31 @@ export const findMaskedExits = (root: string, files: readonly string[], read: So
     };
 
     logical.forEach(({ text: whole, line: lineNumber }, index) => {
-      // Only a comment is skipped whole: `echo start; eslint . || true`
-      // masks its gate, and `invokedAt` already refuses a gate that is only
-      // echo's argument.
-      if (whole.trim().startsWith('#')) return;
       // The line as written, then any quoted script it runs; one report each.
-      for (const line of executedTexts(whole)) {
-        if (maskOn(line, lineNumber, index)) return;
-      }
+      // A comment line holds no and-or list, so it masks nothing, and
+      // `invokedAt` refuses a gate that is only echo's argument:
+      // `echo start; eslint . || true` still masks its gate.
+      executedTexts(whole).some((line) => maskOn(line, lineNumber, index));
     });
 
     // An `exit 0` on the line after a gate, with nothing branching on the
     // result: the script always succeeds, whatever the gate decided.
     lines.forEach((line, index) => {
       if (!/^\s*exit\s+0\s*$/.test(line)) return;
-      for (let back = index - 1; back >= 0 && back >= index - 4; back--) {
-        const previous = lines[back] as string;
-        if (previous.trim() === '' || isCommentary(previous)) continue;
-        // A bare `STATUS=$?` records the status without acting on it, so the
-        // gate above it is still the thing being masked.
-        if (/^\s*\w+=\$\?\s*$/.test(previous)) continue;
-        const gate = config.gateCommands.find((command) => invokedAt(previous, command));
-        if (gate !== undefined && !/\|\||&&|if\s|\$\?|exit\s+1/.test(previous)) {
-          problems.push({
-            file: relative,
-            line: index + 1,
-            snippet: `${previous.trim()}  →  ${line.trim()}`,
-            reason: `unconditional \`exit 0\` right after \`${gate}\` — the script always succeeds, whatever the gate decided`,
-          });
-        }
-        break;
+      // The nearest of the four lines above that does something: a blank,
+      // an echo or a comment does not, and neither does a bare `STATUS=$?`,
+      // which records the status without acting on it, so the gate above it
+      // is still the thing being masked.
+      const previous = lines.slice(Math.max(0, index - 4), index).findLast((above) => above.trim() !== '' && !isCommentary(above) && !/^\s*\w+=\$\?\s*$/.test(above));
+      if (previous === undefined) return;
+      const gate = config.gateCommands.find((command) => invokedAt(previous, command));
+      if (gate !== undefined && !/\|\||&&|if\s|\$\?|exit\s+1/.test(previous)) {
+        problems.push({
+          file: relative,
+          line: index + 1,
+          snippet: `${previous.trim()}  →  ${line.trim()}`,
+          reason: `unconditional \`exit 0\` right after \`${gate}\` — the script always succeeds, whatever the gate decided`,
+        });
       }
     });
   }

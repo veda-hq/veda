@@ -36,8 +36,10 @@ const isFunctionInit = (ts: Ts, init: TS.Expression | undefined): boolean => {
   return e !== undefined && (ts.isArrowFunction(e) || ts.isFunctionExpression(e));
 };
 
-const hasExport = (ts: Ts, node: TS.Node): boolean => ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
-const hasDefault = (ts: Ts, node: TS.Node): boolean => ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some((m) => m.kind === ts.SyntaxKind.DefaultKeyword);
+/** Whether a declaration carries the modifier: every statement read here can carry modifiers, and one with none has no list. */
+const hasModifier = (ts: Ts, node: TS.HasModifiers, kind: TS.SyntaxKind): boolean => ts.getModifiers(node)?.some((m) => m.kind === kind) === true;
+const hasExport = (ts: Ts, node: TS.HasModifiers): boolean => hasModifier(ts, node, ts.SyntaxKind.ExportKeyword);
+const hasDefault = (ts: Ts, node: TS.HasModifiers): boolean => hasModifier(ts, node, ts.SyntaxKind.DefaultKeyword);
 
 type Local = { kind: ExportKind } | { from: string | undefined; specifier: string; name: string };
 
@@ -52,10 +54,13 @@ export const moduleExports = (ts: Ts, root: string, file: string): ModuleExports
     if (cached !== undefined) return cached;
     const out = new Map<string, ExportKind>();
     // A cycle reads as no further exports; the outer visit fills the rest.
+    // A module once started is cached when it ends, so only a cycle finds it here.
     if (visiting.has(at)) return out;
     visiting.add(at);
-    const source = readText(root, at) ?? '';
-    const tree = ts.createSourceFile(at, source, ts.ScriptTarget.Latest, true);
+    // Only the module asked for can be missing: a followed specifier names a file.
+    const source = readText(root, at);
+    if (source === undefined) return out;
+    const tree = ts.createSourceFile(at, source, ts.ScriptTarget.Latest);
     const locals = new Map<string, Local>();
     const follow = (specifier: string): string | undefined => {
       const target = resolveRelative(root, at, specifier);
@@ -77,7 +82,8 @@ export const moduleExports = (ts: Ts, root: string, file: string): ModuleExports
         if (statement.name !== undefined) locals.set(statement.name.text, { kind: 'function' });
         // `export default function` exports `default`, a function, named or not.
         if (hasExport(ts, statement) && hasDefault(ts, statement)) out.set('default', 'function');
-        else if (hasExport(ts, statement) && statement.name !== undefined) out.set(statement.name.text, 'function');
+        // The parser names every other exported function, with '' when the name is missing.
+        else if (hasExport(ts, statement)) out.set((statement.name as TS.Identifier).text, 'function');
       } else if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
         // `export default <expression>`: a function expression, or a local resolved once every local is known.
         const e = statement.expression;
@@ -93,10 +99,10 @@ export const moduleExports = (ts: Ts, root: string, file: string): ModuleExports
         }
       } else if (ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) {
         // An enum always has a name; a default class may not.
-        const name = statement.name?.text;
-        if (name !== undefined) locals.set(name, { kind: 'value' });
+        const name = statement.name;
+        if (name !== undefined) locals.set(name.text, { kind: 'value' });
         if (hasExport(ts, statement) && hasDefault(ts, statement)) out.set('default', 'value');
-        else if (hasExport(ts, statement) && name !== undefined) out.set(name, 'value');
+        else if (hasExport(ts, statement) && name !== undefined) out.set(name.text, 'value');
       } else if (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) {
         locals.set(statement.name.text, { kind: 'type' });
         if (hasExport(ts, statement)) out.set(statement.name.text, 'type');
@@ -145,7 +151,6 @@ export const moduleExports = (ts: Ts, root: string, file: string): ModuleExports
       if (target === undefined) continue;
       for (const [name, kind] of exportsOf(target)) if (name !== 'default' && !out.has(name)) out.set(name, kind);
     }
-    visiting.delete(at);
     cache.set(at, out);
     return out;
   };

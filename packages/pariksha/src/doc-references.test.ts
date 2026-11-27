@@ -766,6 +766,13 @@ describe('doc-references as the docs, the ignore rules and git write their text'
     assert.deepEqual(takenFromMerge(repo.root), new Set());
   });
 
+  it('holds the root directory in a snapshot with no file', () => {
+    const repo = createTestRepo({ 'a.md': 'a\n' });
+    const empty = createSnapshot(repo.root, { kind: 'ref', ref: '4b825dc642cb6eb9a060e54bf8d69288fbee4904' });
+    assert.deepEqual(empty.files, new Set());
+    assert.deepEqual(empty.dirs, new Set(['']));
+  });
+
   it('reads a glob class that starts with a blank, and a `!` past its first character as itself', () => {
     assert.equal(globToRegExp('[ x]y').test(' y'), true);
     assert.equal(globToRegExp('[a!]').test('!'), true);

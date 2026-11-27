@@ -109,18 +109,15 @@ export interface Change {
 
 /** `git diff --name-status -z` entries. */
 export const parseNameStatus = (output: string): Change[] => {
-  const fields = output.split('\0').filter(Boolean);
+  // One iterator for the statuses and their paths, so every read moves past a field.
+  const fields = output.split('\0').filter(Boolean)[Symbol.iterator]();
   const changes: Change[] = [];
-  for (let i = 0; i < fields.length; ) {
+  for (const field of fields) {
     // A rename or copy carries a score (`R100`) and two paths; the rest one path.
-    const status = String(fields[i]).charAt(0);
-    if (status === 'R' || status === 'C') {
-      changes.push({ status, from: String(fields[i + 1]), path: String(fields[i + 2]) });
-      i += 3;
-    } else {
-      changes.push({ status, path: String(fields[i + 1]), from: String(fields[i + 1]) });
-      i += 2;
-    }
+    const status = field.charAt(0);
+    const from = String(fields.next().value);
+    const path = status === 'R' || status === 'C' ? String(fields.next().value) : from;
+    changes.push({ status, path, from });
   }
   return changes;
 };

@@ -109,11 +109,7 @@ export const createSnapshot = (root: string, source: SnapshotSource): RepoSnapsh
   const dirs = new Set<string>(['']);
   const byBasename = new Map<string, string[]>();
   for (const file of files) {
-    let dir = posix.dirname(file);
-    while (dir !== '.' && !dirs.has(dir)) {
-      dirs.add(dir);
-      dir = posix.dirname(dir);
-    }
+    for (const dir of ancestorDirs(file)) dirs.add(dir);
     const base = posix.basename(file);
     const list = byBasename.get(base);
     if (list === undefined) byBasename.set(base, [file]);
@@ -233,7 +229,9 @@ const ignoreRules = (dirs: ReadonlySet<string>, readMany: (paths: readonly strin
 const isIgnored = (rules: IgnoreRules, path: string): boolean => {
   const isDir = path.endsWith('/');
   const segments = path.replace(/\/$/, '').split('/');
-  for (let depth = 1; depth <= segments.length; depth += 1) {
+  // Git never looks inside an ignored directory, so nothing below it can be re-included.
+  return segments.some((_, index) => {
+    const depth = index + 1;
     const prefix = segments.slice(0, depth).join('/');
     const prefixIsDir = depth < segments.length || isDir;
     let verdict = false;
@@ -242,10 +240,8 @@ const isIgnored = (rules: IgnoreRules, path: string): boolean => {
       if (rule.base !== '' && !prefix.startsWith(`${rule.base}/`)) continue;
       if (rule.pattern.test(posix.relative(rule.base, prefix))) verdict = !rule.negated;
     }
-    // Git never looks inside an ignored directory, so nothing below it can be re-included.
-    if (verdict) return true;
-  }
-  return false;
+    return verdict;
+  });
 };
 
 // ── which tracked files carry references ────────────────────────────────────

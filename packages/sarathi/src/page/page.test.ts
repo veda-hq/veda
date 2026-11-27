@@ -24,6 +24,7 @@ import {
   main,
   opensList,
   outcome,
+  PAGE_MODEL,
   parseArgs,
   parseRecord,
   parseStream,
@@ -863,22 +864,57 @@ describe('claudeArgs', () => {
       jobTools(jobOf(['--reply', URL, '--thread', 't', '--text-file', 'r'])),
     ).toEqual(['Read', 'ArtifactComments']);
     expect(jobTools(jobOf(['p.html']))).toEqual(['Read', 'Artifact']);
-    expect(claudeArgs('go', ['Artifact']).slice(-4)).toEqual([
+  });
+
+  // The tool list each job's session starts with, measured on 2026-11-27:
+  // Artifact alone brings ArtifactComments and ArtifactData, and naming
+  // ArtifactComments in --tools gives no tool at all.
+  it('starts a read with Artifact alone', () => {
+    expect(claudeArgs('go', ['Artifact']).slice(-6)).toEqual([
+      '--tools',
+      'Artifact',
       '--allowedTools',
       'Artifact',
       '--disallowedTools',
-      'Read,ArtifactComments',
-    ]);
-    // Denying Artifact by name would drop ArtifactComments with it.
-    expect(claudeArgs('go', ['ArtifactComments']).slice(-4)).toEqual([
-      '--allowedTools',
-      'ArtifactComments',
-      '--disallowedTools',
-      'Read',
+      'ArtifactData,ArtifactComments',
     ]);
   });
 
-  it('runs one streamed print turn with only the publishing tools pre-approved', () => {
+  it('starts a comments job with Artifact and ArtifactComments, never denying Artifact', () => {
+    expect(claudeArgs('go', ['ArtifactComments']).slice(-6)).toEqual([
+      '--tools',
+      'Artifact',
+      '--allowedTools',
+      'ArtifactComments',
+      '--disallowedTools',
+      'ArtifactData',
+    ]);
+  });
+
+  it('starts a reply with Read, Artifact and ArtifactComments', () => {
+    expect(claudeArgs('go', ['Read', 'ArtifactComments']).slice(-6)).toEqual([
+      '--tools',
+      'Read,Artifact',
+      '--allowedTools',
+      'Read,ArtifactComments',
+      '--disallowedTools',
+      'ArtifactData',
+    ]);
+  });
+
+  it('starts a publish with Read and Artifact', () => {
+    expect(claudeArgs('go', ['Read', 'Artifact']).slice(-6)).toEqual([
+      '--tools',
+      'Read,Artifact',
+      '--allowedTools',
+      'Read,Artifact',
+      '--disallowedTools',
+      'ArtifactData,ArtifactComments',
+    ]);
+  });
+
+  it('runs one streamed print turn on Sonnet with only the publishing tools', () => {
+    expect(PAGE_MODEL).toBe('sonnet');
     expect(claudeArgs('go')).toEqual([
       '-p',
       'go',
@@ -886,8 +922,14 @@ describe('claudeArgs', () => {
       'stream-json',
       '--verbose',
       '--strict-mcp-config',
+      '--model',
+      'sonnet',
+      '--tools',
+      'Read,Artifact',
       '--allowedTools',
       'Read,Artifact,ArtifactComments',
+      '--disallowedTools',
+      'ArtifactData',
     ]);
   });
 });

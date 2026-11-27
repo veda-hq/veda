@@ -12,8 +12,8 @@
 //   - packages (`@acme/core`, `zod@4.1.0`) against workspaces and the
 //     lockfile (`identifiers.packages`).
 //
-// The code search reads the whole tree, so it runs at push and in CI, not at
-// commit.
+// The code search reads the whole tree once per run (`codeWords`), at a
+// commit from the index.
 import { posix } from 'node:path';
 import { load } from 'js-yaml';
 import type { Config } from './doc-references-config.ts';
@@ -209,14 +209,41 @@ const BINARY = /\.(png|jpe?g|gif|webp|ico|icns|ttf|otf|woff2?|jar|keystore|zip|g
 /** Tracked text that can define a name: everything but binaries, the baseline and the config's `searchExclude`. */
 export const isCode = (config: Config, path: string): boolean => !BINARY.test(path) && path !== config.baseline && !config.identifiers.searchExclude.some((p) => p.test(path));
 
+/** The text of every code file in the snapshot. */
+const codeTexts = (config: Config, snapshot: RepoSnapshot): Map<string, string> => snapshot.readMany([...snapshot.files].filter((path) => isCode(config, path)));
+
+const codeWordCache = new WeakMap<RepoSnapshot, WeakMap<Config, Set<string>>>();
+
+/**
+ * Every identifier-shaped word in the snapshot's code, from one tokenising
+ * pass, kept for the snapshot: a commit asks twice (which removed words no
+ * code holds, then what its docs name), and the second ask reads nothing.
+ */
+export const codeWords = (config: Config, snapshot: RepoSnapshot): Set<string> => {
+  let byConfig = codeWordCache.get(snapshot);
+  if (byConfig === undefined) {
+    byConfig = new WeakMap();
+    codeWordCache.set(snapshot, byConfig);
+  }
+  let words = byConfig.get(config);
+  if (words === undefined) {
+    words = new Set();
+    for (const text of codeTexts(config, snapshot).values()) for (const match of text.matchAll(/[A-Za-z_$][\w$]*/g)) words.add(match[0]);
+    byConfig.set(config, words);
+  }
+  return words;
+};
+
 /** Which of `words` occur as whole words in the snapshot's code. */
 export const wordsInCode = (config: Config, snapshot: RepoSnapshot, words: readonly string[]): Set<string> => {
   const wanted = new Set(words);
   const found = new Set<string>();
   if (wanted.size === 0) return found;
+  const known = codeWordCache.get(snapshot)?.get(config);
+  if (known !== undefined) return new Set(words.filter((word) => known.has(word)));
   // One tokenising pass over the code, in process: `git grep -F -w -f` with
   // thousands of patterns runs for minutes on a large tree.
-  for (const text of snapshot.readMany([...snapshot.files].filter((path) => isCode(config, path))).values()) {
+  for (const text of codeTexts(config, snapshot).values()) {
     for (const match of text.matchAll(/[A-Za-z_$][\w$]*/g)) {
       if (wanted.has(match[0])) {
         found.add(match[0]);
@@ -225,6 +252,28 @@ export const wordsInCode = (config: Config, snapshot: RepoSnapshot, words: reado
     }
   }
   return found;
+};
+
+/** Of `words`, the ones no code in the snapshot holds; it reads the code only for some word, and keeps it read. */
+export const wordsGoneFromCode = (config: Config, snapshot: RepoSnapshot, words: readonly string[]): string[] => {
+  if (words.length === 0) return [];
+  const code = codeWords(config, snapshot);
+  return words.filter((word) => !code.has(word));
+};
+
+/** Whether `text` holds `flag` whole: `--base` is not in `--baseline`. */
+const holdsFlag = (text: string, flag: string): boolean => {
+  for (let at = text.indexOf(flag); at !== -1; at = text.indexOf(flag, at + 1)) {
+    if (!/[\w-]/.test(text.charAt(at + flag.length))) return true;
+  }
+  return false;
+};
+
+/** Of `flags`, the ones no code file in the snapshot still holds. */
+export const flagsGoneFromCode = (config: Config, snapshot: RepoSnapshot, flags: readonly string[]): string[] => {
+  if (flags.length === 0) return [];
+  const texts = [...codeTexts(config, snapshot).values()];
+  return flags.filter((flag) => !texts.some((text) => holdsFlag(text, flag)));
 };
 
 interface Pending {

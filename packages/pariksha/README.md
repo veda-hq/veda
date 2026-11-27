@@ -552,17 +552,23 @@ A line ending in `<!-- doc-ref-ok: <why> -->` (in code, a comment holding
 something absent on purpose. Placeholders (`<id>`, `NNN`) and illustrative
 names (`src/foo.ts`) are never references.
 
-Modes. `--staged` (a commit) reads the index: staged docs and comments,
-and any doc naming a path the commit deletes or renames, under
-DOC-DRIFT-01 and -02. During a merge, what the merge took unchanged from the
-merged branch is that branch's to judge. `--base` (a push, CI) reads the
+Modes. `--staged` (a commit) reads the index against `HEAD`: staged docs
+and comments, and docs naming a path the commit deletes or renames, a
+script it removes, or an identifier or `--flag` it removes that no code in
+the index still holds, under all three checks. A name still in the code
+elsewhere pulls in no doc, which keeps a commit to seconds; the push
+re-checks those, and `name:line` citations. In a doc pulled in only for what
+the commit removed, a finding `HEAD` already had is not the commit's. During
+a merge, what the merge took unchanged from the merged branch is that
+branch's to judge. `--base` (a push, CI) reads the
 `--head` tree (default `HEAD`) against its merge base with `--base`: changed
 docs, and docs naming a deleted or renamed path, a changed file by
 `name:line`, or an identifier, script or `--flag` the diff removed, under
 all three checks; a finding the merge base already had is not this push's.
 `--all` reads every reference file in the worktree; it alone may lower the
 baseline (`--update-baseline`) or seed it (`--write-baseline`). `--checks`
-takes a comma-separated subset (`01,02`).
+takes a comma-separated subset (`01,02`). A finding the merge base or
+`HEAD` might excuse is looked up there under its own check only.
 
 The baseline is a JSON file of per-file counts, `{ "version": 1, "files":
 { "docs/old.md": { "DOC-DRIFT-01": 3 } } }`, for references that predate

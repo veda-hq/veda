@@ -16,6 +16,7 @@ import {
   overCutoff,
   planLane,
   RETRY_PLUGIN,
+  RETRY_REPORTER,
   retryConfig,
   wrapperConfig,
   type Lane,
@@ -111,19 +112,31 @@ interface Run {
   cwd: string;
   args: string[];
   env: Record<string, string>;
+  stopAfterMs?: number;
 }
 
-function fakeDeps(reports: (string | undefined)[], codes: { code: number; seen: string[]; refusal?: string; failedTests?: string[] }[] = [], key: string | null = 'k1') {
+type Code = { code: number; seen: string[]; refusal?: string; failedTests?: string[]; stopped?: boolean };
+
+/**
+ * Deps whose Stryker writes each run's report in turn: a retry round's to
+ * its own report, the rest to the lane's. A round also writes the next of
+ * `events`, the lines its reporter would have appended.
+ */
+function fakeDeps(reports: (string | undefined)[], codes: Code[] = [], key: string | null = 'k1', events: (string | undefined)[] = []) {
   const files = new Map<string, string>();
   const runs: Run[] = [];
   const logs: string[] = [];
   const deps: LaneDeps = {
     root: '/repo',
     reportsDir: '/repo/reports/agnipariksha',
-    runStryker: async (cwd, args, env) => {
-      runs.push({ cwd, args, env });
+    runStryker: async (cwd, args, env, stopAfterMs) => {
+      runs.push({ cwd, args, env, ...(stopAfterMs === undefined ? {} : { stopAfterMs }) });
+      const slug = `/repo/reports/agnipariksha/${plan.lane.name.replace(/[^A-Za-z0-9]+/g, '-')}`;
+      const round = args[1] === `${slug}.retry.stryker.config.mjs`;
       const report = reports.shift();
-      if (report !== undefined) files.set(`/repo/reports/agnipariksha/${plan.lane.name.replace(/[^A-Za-z0-9]+/g, '-')}.json`, report);
+      if (report !== undefined) files.set(`${slug}${round ? '.retry' : ''}.json`, report);
+      const lines = round ? events.shift() : undefined;
+      if (lines !== undefined) files.set(`${slug}.retry-events.jsonl`, lines);
       return codes.shift() ?? { code: 0, seen: [] };
     },
     readFile: (path) => files.get(path),
@@ -149,6 +162,11 @@ function fakeDeps(reports: (string | undefined)[], codes: { code: number; seen: 
 const webPlan: Plan = { lane: web, targets: ['apps/web/src/a.ts'], suites: ['apps/web/src/a.test.ts'], notJudged: [] };
 const report = (files: Record<string, unknown[]>) =>
   JSON.stringify({ files: Object.fromEntries(Object.entries(files).map(([path, mutants]) => [path, { mutants }])) });
+const twoTimeouts = () => report({ 'src/a.ts': [strykerMutant('Timeout'), strykerMutant('Timeout', 7)] });
+/** The two timeouts as a round's refusal names them. */
+const both = 'apps/web/src/a.ts:3:5 StringLiteral ("\\"\\""), apps/web/src/a.ts:7:5 StringLiteral ("\\"\\"")';
+/** A Timeout on lines 2 to 9 that holds the one on line 3, so it retries a round later. */
+const wide = { ...strykerMutant('Timeout', 2, 1), location: { start: { line: 2, column: 1 }, end: { line: 9, column: 1 } } };
 
 test('a workspace lane rewrites its reuse file, runs --incremental from its own directory, and judges only its targets', async () => {
   const { deps, files, runs, setPlan } = fakeDeps([report({ 'src/a.ts': [strykerMutant('Killed'), strykerMutant('Survived', 7)], 'src/old.ts': [strykerMutant('Survived')] })]);
@@ -195,54 +213,96 @@ test('an unreadable reuse file is removed; no key or no reuse means no --increme
   assert.equal(result.judgement.caught, 1);
 });
 
-test('a timed-out mutant is retried alone, with one worker, a 3-minute limit, its span for the ignorer and the file\'s other mutators left out', async () => {
-  const other = (mutatorName: string, line: number) => ({ ...strykerMutant('Killed', line), mutatorName });
+const EVENTS = '/repo/reports/agnipariksha/apps-web.retry-events.jsonl';
+const RETRY_REPORT = '/repo/reports/agnipariksha/apps-web.retry.json';
+const RETRY_WRAPPER = '/repo/reports/agnipariksha/apps-web.retry.stryker.config.mjs';
+const PLUGINS = { ignorer: RETRY_PLUGIN, reporter: RETRY_REPORTER };
+/** The event line the retry reporter writes for a report mutant of `file`. */
+const event = (file: string, m: ReturnType<typeof strykerMutant>, at: number) =>
+  JSON.stringify({ kind: 'mutant', at, file, status: m.status, mutator: m.mutatorName, replacement: m.replacement, line: m.location.start.line, column: m.location.start.column, endLine: m.location.end.line, endColumn: m.location.end.column });
+
+test("one round retries a lane's timeouts: one worker, a 3-minute limit, every span for the ignorer, its own report and events, the wall, and the round files' unused mutators left out", async () => {
+  const other = (mutatorName: string, line: number, status = 'Killed') => ({ ...strykerMutant(status, line), mutatorName });
+  const lane = report({
+    'src/a.ts': [strykerMutant('Timeout'), strykerMutant('Killed', 4), other('ConditionalExpression', 5), other('ConditionalExpression', 6), other('BlockStatement', 7)],
+    'src/b.ts': [other('ArrayDeclaration', 1, 'Timeout')],
+    'src/c.ts': [other('Regex', 1)],
+  });
   const { deps, files, runs, logs, setPlan } = fakeDeps(
-    [
-      report({
-        'src/a.ts': [strykerMutant('Timeout'), strykerMutant('Killed', 4), other('ConditionalExpression', 5), other('ConditionalExpression', 6), other('BlockStatement', 7)],
-        'src/b.ts': [other('ArrayDeclaration', 1)],
-      }),
-      report({ 'src/a.ts': [strykerMutant('Killed')] }),
-    ],
+    [lane, report({ 'src/a.ts': [strykerMutant('Killed')], 'src/b.ts': [other('ArrayDeclaration', 1)] })],
     [],
     null,
+    [['{"kind":"dry-run","at":0}', event('src/a.ts', strykerMutant('Killed'), 0)].join('\n')],
   );
-  const plan: Plan = { ...webPlan, targets: ['apps/web/src/a.ts', 'apps/web/src/b.ts'] };
+  const plan: Plan = { ...webPlan, targets: ['apps/web/src/a.ts', 'apps/web/src/b.ts', 'apps/web/src/c.ts'] };
   setPlan(plan);
+  files.set(EVENTS, 'a stale line');
   const result = await judgeLane(plan, deps);
-  const retryWrapper = '/repo/reports/agnipariksha/apps-web.retry.stryker.config.mjs';
   assert.deepEqual(runs[1], {
     cwd: '/repo/apps/web',
-    args: ['run', retryWrapper, '--concurrency', '1', '--timeoutMS', '180000', '--mutate', 'src/a.ts:3:4-3:8'],
-    env: { X: '1', AGNIPARIKSHA_RETRY_SPAN: '3:4-3:8' },
+    args: ['run', RETRY_WRAPPER, '--concurrency', '1', '--timeoutMS', '180000', '--mutate', 'src/a.ts:3:4-3:8,src/b.ts:1:4-1:8'],
+    env: { X: '1', AGNIPARIKSHA_RETRY_SPANS: 'src/a.ts:3:4-3:8\nsrc/b.ts:1:4-1:8', AGNIPARIKSHA_RETRY_EVENTS: EVENTS },
+    stopAfterMs: 900_000,
   });
-  assert.equal(files.get(retryWrapper), retryConfig('/repo/apps/web/stryker.config.mjs', '/repo/reports/agnipariksha/apps-web.json', RETRY_PLUGIN, ['ConditionalExpression', 'BlockStatement']));
-  assert.deepEqual(runs[0]?.env, { X: '1' }, 'the lane run carries no span');
+  assert.equal(files.get(RETRY_WRAPPER), retryConfig('/repo/apps/web/stryker.config.mjs', RETRY_REPORT, PLUGINS, ['ConditionalExpression', 'BlockStatement']));
+  assert.deepEqual(runs[0], { cwd: '/repo/apps/web', args: ['run', '/repo/reports/agnipariksha/apps-web.stryker.config.mjs', '--mutate', 'src/a.ts,src/b.ts,src/c.ts'], env: { X: '1' } }, 'the lane run carries no span and no stop');
+  assert.equal(files.get('/repo/reports/agnipariksha/apps-web.json'), lane, "the round leaves the lane's report alone");
+  assert.equal(result.retried, 2);
+  assert.deepEqual(result.judgement.byStatus, { Killed: 7 });
+  assert.deepEqual(logs, [
+    '  retry round 1 of 1: 2 timed-out mutant(s) in 2 file(s)',
+    '  retry 1 of 2: apps/web/src/a.ts:3:5 StringLiteral ("\\"\\""): Killed after 0.0 s',
+    '  retry 2 of 2: apps/web/src/b.ts:1:5 ArrayDeclaration ("\\"\\""): Killed',
+  ]);
+});
+
+test('a round stopped at the wall keeps what its events say Stryker finished, reads no report, and refuses the rest', async () => {
+  const { deps, setPlan } = fakeDeps(
+    [twoTimeouts(), report({ 'src/a.ts': [strykerMutant('Survived'), strykerMutant('Survived', 7)] })],
+    [{ code: 0, seen: [] }, { code: 143, seen: [], stopped: true }],
+    null,
+    [['{"kind":"dry-run","at":0}', event('src/a.ts', strykerMutant('Killed'), 0)].join('\n')],
+  );
+  setPlan(webPlan);
+  const result = await judgeLane(webPlan, deps);
   assert.equal(result.retried, 1);
-  assert.deepEqual(result.judgement.byStatus, { Killed: 6 });
-  assert.deepEqual(logs, ['  retry 1 of 1: apps/web/src/a.ts:3:5 StringLiteral ("\\"\\"")', '  retry 1 of 1: Killed after 0.0 min'], 'the gate\'s log names the mutant it retries');
+  assert.deepEqual(result.judgement.byStatus, { Killed: 1 });
+  assert.equal(result.refusals.length, 1);
+  assert.match(result.refusals[0] ?? '', /^the timeout retry pass reached its 15-minute budget after 0\.0 min: .*; 1 timed-out mutant\(s\) left unretried: apps\/web\/src\/a\.ts:7:5 StringLiteral/);
 });
 
-test('the retry ignorer the retry config loads is the compiled one beside lanes', () => {
+test('a stale round report or event file is removed before the round: a round that writes none is never read as one', async () => {
+  const { deps, files, setPlan } = fakeDeps([twoTimeouts()], [], null);
+  setPlan(webPlan);
+  files.set(RETRY_REPORT, report({ 'src/a.ts': [strykerMutant('Killed'), strykerMutant('Killed', 7)] }));
+  files.set(EVENTS, event('src/a.ts', strykerMutant('Killed'), 0));
+  const result = await judgeLane(webPlan, deps);
+  assert.deepEqual(result.refusals, [`retry round 1 of 1 (${both}): Stryker wrote no report at ${RETRY_REPORT}`]);
+  assert.equal(files.has(EVENTS), false);
+});
+
+test('the retry ignorer and reporter the retry config loads are the compiled ones beside lanes', () => {
   assert.equal(RETRY_PLUGIN, join(dirname(fileURLToPath(import.meta.url)), 'retry-ignorer.js'));
+  assert.equal(RETRY_REPORTER, join(dirname(fileURLToPath(import.meta.url)), 'retry-reporter.js'));
 });
 
-test('the retry config is the lane config with the report moved, the retry ignorer added and the other mutators left out', async () => {
+test('the retry config is the lane config with the report moved, the retry ignorer and reporter added and the other mutators left out', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agnipariksha-'));
+  const plugins = { ignorer: '/p/retry-ignorer.js', reporter: '/p/retry-reporter.js' };
   try {
     writeFileSync(
       join(dir, 'base.mjs'),
-      "export default { testRunner: 'tap', jsonReporter: { spacer: 2 }, appendPlugins: ['/own.mjs'], ignorers: ['arid'], mutator: { plugins: ['x'], excludedMutations: ['Regex'] } };",
+      "export default { testRunner: 'tap', jsonReporter: { spacer: 2 }, reporters: ['json'], appendPlugins: ['/own.mjs'], ignorers: ['arid'], mutator: { plugins: ['x'], excludedMutations: ['Regex'] } };",
     );
     writeFileSync(join(dir, 'bare.mjs'), "export default { testRunner: 'tap' };");
-    writeFileSync(join(dir, 'retry.mjs'), retryConfig(join(dir, 'base.mjs'), '/r/out.json', '/p/retry-ignorer.js', ['BlockStatement', 'StringLiteral']));
-    writeFileSync(join(dir, 'bare-retry.mjs'), retryConfig(join(dir, 'bare.mjs'), '/r/out.json', '/p/retry-ignorer.js', []));
+    writeFileSync(join(dir, 'retry.mjs'), retryConfig(join(dir, 'base.mjs'), '/r/out.json', plugins, ['BlockStatement', 'StringLiteral']));
+    writeFileSync(join(dir, 'bare-retry.mjs'), retryConfig(join(dir, 'bare.mjs'), '/r/out.json', plugins, []));
     const loaded = (await import(pathToFileURL(join(dir, 'retry.mjs')).href)) as { default: unknown };
     assert.deepEqual(loaded.default, {
       testRunner: 'tap',
       jsonReporter: { spacer: 2, fileName: '/r/out.json' },
-      appendPlugins: ['/own.mjs', '/p/retry-ignorer.js'],
+      reporters: ['json', 'agnipariksha-retry-log'],
+      appendPlugins: ['/own.mjs', '/p/retry-ignorer.js', '/p/retry-reporter.js'],
       ignorers: ['arid', 'agnipariksha-retry'],
       mutator: { plugins: ['x'], excludedMutations: ['Regex', 'BlockStatement', 'StringLiteral'] },
     });
@@ -250,7 +310,8 @@ test('the retry config is the lane config with the report moved, the retry ignor
     assert.deepEqual(bare.default, {
       testRunner: 'tap',
       jsonReporter: { fileName: '/r/out.json' },
-      appendPlugins: ['/p/retry-ignorer.js'],
+      reporters: ['agnipariksha-retry-log'],
+      appendPlugins: ['/p/retry-ignorer.js', '/p/retry-reporter.js'],
       ignorers: ['agnipariksha-retry'],
       mutator: { excludedMutations: [] },
     });
@@ -329,7 +390,11 @@ test('a dry run failing on a trigger reruns once in the fallback mode, and only 
     assert.equal(result.fellBack, `its dry run failed: "${trigger}"`);
     assert.deepEqual(
       runs.map((r) => r.env),
-      [{ RELATED: '1' }, { RELATED: '0', SUITES: 'scripts/a.test.ts' }, { RELATED: '0', SUITES: 'scripts/a.test.ts', AGNIPARIKSHA_RETRY_SPAN: '3:4-3:8' }],
+      [
+        { RELATED: '1' },
+        { RELATED: '0', SUITES: 'scripts/a.test.ts' },
+        { RELATED: '0', SUITES: 'scripts/a.test.ts', AGNIPARIKSHA_RETRY_SPANS: 'scripts/a.ts:3:4-3:8', AGNIPARIKSHA_RETRY_EVENTS: '/repo/reports/agnipariksha/tooling-vitest.retry-events.jsonl' },
+      ],
       'the retry keeps the fallback mode',
     );
     assert.deepEqual(result.judgement.byStatus, { Killed: 2 });
@@ -374,8 +439,8 @@ test('a file no related suite reached is rerun alone in own-suite mode; its time
     [
       ['scripts/a.ts,scripts/b.ts', { RELATED: '1' }],
       ['scripts/b.ts', own],
-      ['scripts/a.ts:3:4-3:8', { RELATED: '1', AGNIPARIKSHA_RETRY_SPAN: '3:4-3:8' }],
-      ['scripts/b.ts:4:4-4:8', { ...own, AGNIPARIKSHA_RETRY_SPAN: '4:4-4:8' }],
+      ['scripts/a.ts:3:4-3:8', { RELATED: '1', AGNIPARIKSHA_RETRY_SPANS: 'scripts/a.ts:3:4-3:8', AGNIPARIKSHA_RETRY_EVENTS: '/repo/reports/agnipariksha/tooling-vitest.retry-events.jsonl' }],
+      ['scripts/b.ts:4:4-4:8', { ...own, AGNIPARIKSHA_RETRY_SPANS: 'scripts/b.ts:4:4-4:8', AGNIPARIKSHA_RETRY_EVENTS: '/repo/reports/agnipariksha/tooling-vitest.retry-events.jsonl' }],
     ],
   );
   assert.deepEqual(result.judgement.byStatus, { Killed: 4, Survived: 1 });
@@ -500,14 +565,15 @@ test("a timeout retry whose dry run fails on a test says the run was flaky, name
   const { deps, setPlan } = fakeDeps([report({ 'src/a.ts': [strykerMutant('Timeout')] })], [{ code: 0, seen: [] }, failedRun('clock is pinned')], null);
   setPlan(webPlan);
   const result = await judgeLane(webPlan, deps);
+  const one = 'retry round 1 of 1 (apps/web/src/a.ts:3:5 StringLiteral ("\\"\\""))';
   assert.deepEqual(result.refusals, [
-    'retry of apps/web/src/a.ts:3 (StringLiteral): the initial test run was flaky: it passed in the lane\'s run and failed in this retry on "clock is pinned"; fix the flake first (an injected, pinned clock is the usual cure), then run again, and apply each hung mutant by hand to see that it dies fast',
+    `${one}: the initial test run was flaky: it passed in the lane's run and failed in this retry on "clock is pinned"; fix the flake first (an injected, pinned clock is the usual cure), then run again, and apply each hung mutant by hand to see that it dies fast`,
   ]);
   assert.match(flakyRetry([]), /failed in this retry; fix the flake first/, 'no names, no "on"');
 
   const otherRetry = fakeDeps([report({ 'src/a.ts': [strykerMutant('Timeout')] })], [{ code: 0, seen: [] }, { code: 1, seen: ['No tests were executed'] }], null);
   otherRetry.setPlan(webPlan);
-  assert.deepEqual((await judgeLane(webPlan, otherRetry.deps)).refusals, ['retry of apps/web/src/a.ts:3 (StringLiteral): Stryker exited 1 (No tests were executed)']);
+  assert.deepEqual((await judgeLane(webPlan, otherRetry.deps)).refusals, [`${one}: Stryker exited 1 (No tests were executed)`]);
 });
 
 test('the configs are written one statement a line', () => {
@@ -516,13 +582,14 @@ test('the configs are written one statement a line', () => {
     'import base from "file:///l/stryker.config.mjs";\nexport default { ...base, jsonReporter: { ...base.jsonReporter, fileName: "/r/out.json" } };\n',
   );
   assert.equal(
-    retryConfig('/l/stryker.config.mjs', '/r/out.json', '/p/retry-ignorer.js', ['BlockStatement']),
+    retryConfig('/l/stryker.config.mjs', '/r/out.json', { ignorer: '/p/retry-ignorer.js', reporter: '/p/retry-reporter.js' }, ['BlockStatement']),
     [
       'import base from "file:///l/stryker.config.mjs";',
       'export default {',
       '  ...base,',
       '  jsonReporter: { ...base.jsonReporter, fileName: "/r/out.json" },',
-      '  appendPlugins: [...(base.appendPlugins ?? []), "/p/retry-ignorer.js"],',
+      '  appendPlugins: [...(base.appendPlugins ?? []), "/p/retry-ignorer.js", "/p/retry-reporter.js"],',
+      '  reporters: [...(base.reporters ?? []), "agnipariksha-retry-log"],',
       '  ignorers: [...(base.ignorers ?? []), "agnipariksha-retry"],',
       '  mutator: { ...base.mutator, excludedMutations: [...(base.mutator?.excludedMutations ?? []), ...["BlockStatement"]] },',
       '};',
@@ -539,37 +606,35 @@ test("a lane's file names collapse each run of other characters in its name to o
   assert.equal(runs[0]?.args[1], '/repo/reports/agnipariksha/apps-web.stryker.config.mjs');
 });
 
-const twoTimeouts = () => report({ 'src/a.ts': [strykerMutant('Timeout'), strykerMutant('Timeout', 7)] });
-const where = 'retry of apps/web/src/a.ts:3 (StringLiteral)';
-
-test('a retry that fails refuses that mutant, and only a busy dry run stops the pass', async () => {
-  const goesOn: [string, string | undefined, { code: number; seen: string[]; refusal?: string; failedTests?: string[] }][] = [
+test('a round that fails refuses its mutants and the next round runs; only a busy dry run stops the pass', async () => {
+  const first = 'retry round 1 of 2 (apps/web/src/a.ts:3:5 StringLiteral ("\\"\\""))';
+  const goesOn: [string, string | undefined, Code][] = [
     ['its temp directory vanished', report({ 'src/a.ts': [strykerMutant('Killed')] }), { code: 0, seen: [], refusal: 'its temp directory vanished' }],
     ['Stryker exited 1', undefined, { code: 1, seen: [] }],
     // Only the initial test run's failure names tests.
     ['Stryker exited 1 (No tests were executed)', undefined, { code: 1, seen: ['No tests were executed'], failedTests: ['x'] }],
-    // The lane's own report is removed first, so a retry that writes none is not read as the lane's.
-    ['Stryker wrote no report at /repo/reports/agnipariksha/apps-web.json', undefined, { code: 0, seen: [] }],
-    ["Stryker's report /repo/reports/agnipariksha/apps-web.json is not JSON", '{', { code: 0, seen: [] }],
+    [`Stryker wrote no report at ${RETRY_REPORT}`, undefined, { code: 0, seen: [] }],
+    [`Stryker's report ${RETRY_REPORT} is not JSON`, '{', { code: 0, seen: [] }],
     ['the report has no `files`', '[]', { code: 0, seen: [] }],
     [flakyRetry(['t']), undefined, { code: 1, seen: [FAILED_INITIAL_RUN], failedTests: ['t'] }],
   ];
   for (const [refusal, text, code] of goesOn) {
-    const { deps, runs, setPlan } = fakeDeps([twoTimeouts(), text, report({ 'src/a.ts': [strykerMutant('Killed', 7)] })], [{ code: 0, seen: [] }, code], null);
+    const { deps, runs, setPlan } = fakeDeps([report({ 'src/a.ts': [strykerMutant('Timeout'), wide] }), text, report({ 'src/a.ts': [{ ...wide, status: 'Killed' }] })], [{ code: 0, seen: [] }, code], null);
     setPlan(webPlan);
     const result = await judgeLane(webPlan, deps);
-    assert.deepEqual(result.refusals, [`${where}: ${refusal}`], refusal);
+    assert.deepEqual(result.refusals, [`${first}: ${refusal}`], refusal);
     assert.equal(runs.length, 3, refusal);
+    assert.deepEqual(runs[2]?.args.at(-1), 'src/a.ts:2:0-9:0', refusal);
     assert.equal(result.retried, 1, refusal);
   }
 
-  const busy = fakeDeps([twoTimeouts()], [{ code: 0, seen: [] }, { code: 1, seen: [DRY_RUN_TIMEOUT] }], null);
+  const busy = fakeDeps([report({ 'src/a.ts': [strykerMutant('Timeout'), wide] })], [{ code: 0, seen: [] }, { code: 1, seen: [DRY_RUN_TIMEOUT] }], null);
   busy.setPlan(webPlan);
   const stopped = await judgeLane(webPlan, busy.deps);
   assert.equal(busy.runs.length, 2);
   assert.deepEqual(stopped.refusals, [
-    `${where}: Stryker's initial test run timed out: the machine is busy; push again when it is quieter`,
-    'a retry found the machine busy; 1 timed-out mutant(s) left unretried: apps/web/src/a.ts:7:5 StringLiteral ("\\"\\""). For each, make the suite that owns its file kill it fast, or push again when the machine is quieter',
+    `${first}: Stryker's initial test run timed out: the machine is busy; push again when it is quieter`,
+    'a retry found the machine busy; 1 timed-out mutant(s) left unretried: apps/web/src/a.ts:2:1 StringLiteral ("\\"\\""). For each, make the suite that owns its file kill it fast, or push again when the machine is quieter',
   ]);
 
   const noEnd = { ...strykerMutant('Timeout'), location: { start: { line: 3, column: 5 } } };
@@ -578,7 +643,7 @@ test('a retry that fails refuses that mutant, and only a busy dry run stops the 
   const unlocated = await judgeLane(webPlan, located.deps);
   assert.equal(located.runs.length, 2);
   assert.equal(unlocated.retried, 1);
-  assert.deepEqual(unlocated.refusals, [`${where}: its report gives no full location to retry it by`]);
+  assert.deepEqual(unlocated.refusals, ['retry of apps/web/src/a.ts:3 (StringLiteral): its report gives no full location to retry it by']);
 });
 
 test('a lane that fell back already never reruns a NoCoverage file', async () => {

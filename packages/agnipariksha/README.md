@@ -97,27 +97,47 @@ runs the repository's own `node_modules/.bin/stryker`.
   for the file: `a-cases.test.ts is not the owner, so it did not run; only
   a.test.ts kills mutants of a.ts here`. Under a related filter any suite
   that imports the file runs, a sibling included, so there it says nothing.
-- **A timed-out mutant** is rerun once alone, with concurrency 1 and a
-  three-minute timeout; one that times out again counts as caught. Stryker's
-  `--mutate` range takes in every mutant nested inside the one retried (a
-  BlockStatement's range holds every mutant in its block), so the retry loads an ignorer of its
-  own, `agnipariksha-retry`, that drops them, and leaves out the file's other
-  mutators. What runs is the retried mutant and the other replacements its own
-  mutator makes at that node (`>` to `>=` and to `<=`). The lane's own
-  plugins, ignorers and exclusions stay. A retry that reports its mutant
-  Ignored refuses: the verdict would not count it. Each retry prints a line
-  naming its mutant as it starts (`retry 2 of 3: src/a.ts:12:9
-  EqualityOperator (">=")`) and one with its status and minutes as it ends.
-  At the end of the pass, the gate names each mutant that timed out again.
-  It is caught, but every run pays a whole retry for it, so the suite that
-  owns its file should kill it fast. The 15-minute budget is a wall: the pass
-  starts no retry when the time gone plus its longest retry so far would
-  pass 15 minutes, so it ends near its budget, never a whole retry past it.
-  A pass the budget stops, or one whose retry finds the machine busy (its
-  dry run timed out), refuses once and names every mutant it left
-  unretried. A retry whose dry run fails on a test refuses as
-  flaky, naming the tests Stryker printed: the lane's own run had passed
-  them.
+- **A timed-out mutant** is retried once, with concurrency 1 and a
+  three-minute timeout; one that times out again counts as caught. The
+  retries run in rounds: one Stryker run per round, whose `--mutate` lists
+  every span it retries, so a round pays the initial test run once for all
+  its mutants (a run per mutant once spent 8 of 17 minutes repeating it,
+  veda#706). Stryker's `--mutate` range takes in every mutant nested inside
+  a retried one (a BlockStatement's range holds every mutant in its block),
+  so the round loads an ignorer of its own, `agnipariksha-retry`, that drops
+  what lies inside a retried span of the same file. A mutant whose place holds
+  another retried one waits for a later round, so the ignorer never drops a
+  retried node. The round leaves out the mutators none of its mutants use in
+  its files. What still runs beside the retried mutants is each one's own
+  mutator's other replacements at its node (`>` to `>=` and to `<=`), and
+  where a round retries two mutators in one file, each one's replacements at
+  the other's nodes. Only the retried mutants' statuses count. The lane's own
+  plugins, reporters, ignorers and exclusions stay. A round writes its own
+  report, `<lane>.retry.json`, so the lane's `<lane>.json` keeps its whole
+  run. A retry that reports its mutant Ignored refuses: the verdict would not
+  count it.
+- **What a round prints.** A reporter of its own, `agnipariksha-retry-log`,
+  prints a line as Stryker finishes each mutant and writes it to
+  `<lane>.retry-events.jsonl`. The gate then prints one line for each retried
+  mutant, with its status and seconds (`retry 2 of 3: src/a.ts:12:9
+  EqualityOperator (">="): Killed after 6.0 s`). At the end of the pass, it
+  names each mutant that timed out again. That mutant is caught, but every
+  run pays a whole retry for it, so the suite that owns its file should kill
+  it fast.
+- **The 15-minute budget is a wall** from the pass's start. A round starts
+  only before it, and the gate stops a round's Stryker at it. A stopped round
+  keeps every status its events had recorded. The pass then refuses once,
+  naming every mutant it left unretried and where its time went: Stryker's
+  start and initial test runs, the mutants that timed out again, and the
+  rest. It leads with the largest. For hangs it names them and says a re-run
+  will not pass. For the initial test runs it says the suites are slow to
+  start or the machine is busy. A stopped Stryker leaves its sandbox in
+  `.stryker-tmp/`.
+- **A round that cannot run** refuses its mutants, and the next round runs.
+  A round whose dry run times out finds the machine busy; that stops the
+  pass, which refuses once and names every mutant it left unretried. A round
+  whose dry run fails on a test refuses as flaky, naming the tests Stryker
+  printed: the lane's own run had passed them.
 - **A failed test in the dry run** is named in the gate's own line. A lane
   with no `fallbackEnv` reruns such a dry run once with the same variables.
   If it passes, the gate says the test is flaky and that run's results

@@ -93,8 +93,12 @@ without suppressing them, and the traps of a gate scoped to a diff.
   it. A retry of one such `cli.ts` Timeout ran 54 mutants in 156 s at `--concurrency 1`. To run
   one mutant, add an ignorer that drops each node strictly inside its span (Stryker drops the
   node's subtree with it) and exclude the file's other mutators. The node's other replacements
-  from its own mutator still run: no Stryker option selects finer. agnipariksha's timeout retry
-  does this (`src/retry-ignorer.ts`).
+  from its own mutator still run: no Stryker option selects finer. To run many such mutants in
+  one Stryker run (one dry run for all), list every range: `--mutate a.ts:r1,a.ts:r2,b.ts:r3`
+  keeps them all, since Stryker 10.1.1 unions the ranges of one file. An ignorer tells files
+  apart by `path.hub.file.opts.filename`, as a Babel node's `loc` names no file. Spans in one run
+  must not nest, or the outer span's ignorer drops the inner mutant. agnipariksha's timeout
+  retry does all this (`src/retry-ignorer.ts`, rounds in `src/timeout-retry.ts`, veda#706).
   <!-- held by: agnipariksha's timeout retry (retry-ignorer.ts, its retry config) -->
 - **Ignorers and Babel locations.** An ignorer's `shouldIgnore(path)` sees Babel locations:
   lines 1-based, columns 0-based. Stryker's JSON report counts both from 1, and `--mutate`

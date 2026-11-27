@@ -3,7 +3,7 @@ import { execFileSync, type ChildProcess } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
@@ -38,6 +38,16 @@ const FIXTURE = fileURLToPath(new URL('../test/fixture/agnipariksha.json', impor
 const fixture = parseConfig(readFileSync(FIXTURE, 'utf8'));
 if (typeof fixture === 'string') throw new Error(fixture);
 const config: Config = fixture;
+
+after(() => {
+  // A mutant that leaves a timer or a child running holds this file open after its last test.
+  // Fail it then, so the mutant reads Killed rather than Timeout (docs/lessons/stryker.md). The
+  // timer is unref'd, so it fires only then; a healthy run ends as before.
+  setTimeout(() => {
+    process.stderr.write('cli.test.ts: still running 5 s after the last test; a handle was left open\n');
+    process.exit(1);
+  }, 5_000).unref();
+});
 
 test('parseArgs: --base, --files, --no-reuse, --pushed-refs, and refusals', () => {
   assert.deepEqual(parseArgs([]), { reuse: true, trackedOnly: false, pushedRefs: false });
@@ -675,6 +685,17 @@ test('spawnStryker returns the exit code and the markers it saw, across chunks a
   assert.deepEqual(await spawnStryker([node, '-e', 'process.kill(process.pid, "SIGKILL")'], children)('.', [], {}), { code: 1, seen: [] });
   assert.deepEqual(await spawnStryker(['/nonexistent/stryker'], children)('.', [], {}), { code: 127, seen: [] });
   assert.deepEqual(await spawnStryker([node, '-e', 'console.log("abc")'], children, ['abc'])('.', [], {}), { code: 0, seen: ['abc'] });
+});
+
+test('spawnStryker stops a run at stopAfterMs and says so; a run that ends first is not stopped, and its stop is cleared', HANG, async () => {
+  const children = new Set<ChildProcess>();
+  const begun = Date.now();
+  // SIGTERM ends the child with no exit code, which reads as 1.
+  assert.deepEqual(await spawnStryker([node, '-e', 'setTimeout(() => {}, 60_000)'], children)('.', [], {}, 200), { code: 1, seen: [], stopped: true });
+  assert.ok(Date.now() - begun < 10_000, 'stopped long before its own end');
+  assert.equal(children.size, 0);
+  // Left uncleared, this stop's timer would hold the file open for a minute, and the exit guard fails it.
+  assert.deepEqual(await spawnStryker([node, '-e', 'process.exit(0)'], children)('.', [], {}, 60_000), { code: 0, seen: [] });
 });
 
 test('each Stryker run gets its own fresh temp directory, which no lane env can override, removed afterwards', HANG, async () => {

@@ -130,9 +130,9 @@ runs the repository's own `node_modules/.bin/stryker`.
   naming every mutant it left unretried and where its time went: Stryker's
   start and initial test runs, the mutants that timed out again, and the
   rest. It leads with the largest. For hangs it names them and says a re-run
-  will not pass. For the initial test runs it says the suites are slow to
-  start or the machine is busy. A stopped Stryker leaves its sandbox in
-  `.stryker-tmp/`.
+  will not pass. For the initial test runs it says to make the owning suites
+  start faster. Only a dry run that times out says the machine is busy. A
+  stopped Stryker leaves its sandbox in `.stryker-tmp/`.
 - **A round that cannot run** refuses its mutants, and the next round runs.
   A round whose dry run times out finds the machine busy; that stops the
   pass, which refuses once and names every mutant it left unretried. A round

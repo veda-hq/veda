@@ -271,6 +271,28 @@ test('a round stopped at the wall keeps what its events say Stryker finished, re
   assert.match(result.refusals[0] ?? '', /^the timeout retry pass reached its 15-minute budget after 0\.0 min: .*; 1 timed-out mutant\(s\) left unretried: apps\/web\/src\/a\.ts:7:5 StringLiteral/);
 });
 
+test("a refused round passes on when its dry run ended, so the wall's refusal books the rest of its time as the rest", async () => {
+  const { deps, setPlan } = fakeDeps(
+    [report({ 'src/a.ts': [strykerMutant('Timeout'), wide] })],
+    [{ code: 0, seen: [] }, { code: 1, seen: [] }, { code: 143, seen: [], stopped: true }],
+    null,
+    ['{"kind":"dry-run","at":60000}'],
+  );
+  setPlan(webPlan);
+  let t = 0;
+  deps.now = () => t;
+  const run = deps.runStryker;
+  // The lane's run takes no time; the first round ends at 10 minutes, the second at the wall.
+  const ends = [0, 10 * 60_000, 15 * 60_000];
+  deps.runStryker = async (...args) => {
+    const result = await run(...args);
+    t = ends.shift() ?? t;
+    return result;
+  };
+  const result = await judgeLane(webPlan, deps);
+  assert.match(result.refusals[1] ?? '', /: 6\.0 min went to starting Stryker and its initial test run \(2 run\(s\)\), 0\.0 min to 0 mutant\(s\) that timed out again, and 9\.0 min to the rest;/);
+});
+
 test('a stale round report or event file is removed before the round: a round that writes none is never read as one', async () => {
   const { deps, files, setPlan } = fakeDeps([twoTimeouts()], [], null);
   setPlan(webPlan);

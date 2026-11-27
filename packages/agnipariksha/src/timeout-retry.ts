@@ -15,11 +15,13 @@ export interface Tested {
 /**
  * One round: why it could not run (`busy`: its dry run timed out), or what it
  * did. `dryRunEnd` is when its initial test run ended (null if it never
- * did), `tested` each mutant as Stryker finished it, `stopped` whether the
- * wall stopped it, and `report` every status from Stryker's JSON report,
- * when Stryker ended by itself and wrote one.
+ * did, or no event said), `tested` each mutant as Stryker finished it,
+ * `stopped` whether the wall stopped it, and `report` every status from
+ * Stryker's JSON report, when Stryker ended by itself and wrote one.
  */
-export type RoundRun = { refusal: string; busy: boolean } | { dryRunEnd: number | null; tested: Tested[]; stopped: boolean; report: Mutant[] | null };
+export type RoundRun =
+  | { refusal: string; busy: boolean; dryRunEnd?: number | null }
+  | { dryRunEnd: number | null; tested: Tested[]; stopped: boolean; report: Mutant[] | null };
 
 /**
  * The mutant's span, `line:column-endLine:endColumn`, lines 1-based and
@@ -133,10 +135,10 @@ export function outgrew(spent: Spent, left: readonly Mutant[]): string {
     return `${head}. Mostly hangs: each mutant that timed out again took the whole ${RETRY_TIMEOUT_MS / 60_000}-minute limit, so a re-run will not pass. For each (${spent.hung.map(describeMutant).join(', ')}), ${KILL_IT_FAST}`;
   }
   if (spent.dryRuns >= rest) {
-    return `${head}. Mostly Stryker's start and initial test runs: the owning suites are slow to start here, or the machine is busy; push again when it is quieter`;
+    return `${head}. Mostly Stryker's start and initial test runs, which each round pays once: make the owning suites start faster`;
   }
   const slowest = spent.slowest === null ? '' : `; the slowest, ${describeMutant(spent.slowest.mutant)}, took ${seconds(spent.slowest.ms)}`;
-  return `${head}. Mostly mutants that ended before the limit, but slowly${slowest}: for each, ${KILL_IT_FAST}, or push again when the machine is quieter`;
+  return `${head}. Mostly mutants that ended before the limit, but slowly${slowest}: for each, ${KILL_IT_FAST}`;
 }
 
 const where = (m: Mutant): string => `${m.file}:${m.line} (${m.mutator})`;
@@ -182,6 +184,7 @@ export async function retryTimeouts(
   let retried = 0;
   for (const [index, round] of rounds.entries()) {
     const begun = now();
+    // A pass the busy dry run stopped stays stopped for that reason, whatever the clock says.
     if (stopped === null && begun >= deadline) stopped = 'wall';
     if (stopped !== null) {
       left.push(...round);
@@ -192,15 +195,15 @@ export async function retryTimeouts(
     spent.rounds += 1;
     const run = await rerun(round, deadline);
     const ended = now();
+    // Until its dry run ends, a round is Stryker's start; a round with no dry-run event never got past it.
+    const dryRunEnd = run.dryRunEnd ?? ended;
+    spent.dryRuns += dryRunEnd - begun;
     if ('refusal' in run) {
-      spent.dryRuns += ended - begun;
       log(`  ${label}: refused after ${minutes(ended - begun)}`);
       if (run.busy) stopped = 'busy';
       refusals.push(`${label} (${round.map(describeMutant).join(', ')}): ${run.refusal}`);
       continue;
     }
-    const dryRunEnd = run.dryRunEnd ?? ended;
-    spent.dryRuns += dryRunEnd - begun;
     // At one worker, a mutant's time runs from the event before it.
     const times = new Map<Mutant, number>();
     let previous = dryRunEnd;

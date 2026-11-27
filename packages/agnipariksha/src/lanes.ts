@@ -305,7 +305,8 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
       const retry = settle(result, spans, retryReport);
       if ('mutants' in retry) return { dryRunEnd, tested, stopped: false, report: retry.mutants };
       // The lane's own run passed its initial test run, so a test failing in the retry's is flaky.
-      return retry.trigger?.line === FAILED_INITIAL_RUN ? { refusal: flakyRetry(retry.trigger.failedTests), busy: false } : retry;
+      const refusal = retry.trigger?.line === FAILED_INITIAL_RUN ? flakyRetry(retry.trigger.failedTests) : retry.refusal;
+      return { refusal, busy: retry.busy, dryRunEnd };
     },
     deps.now,
     deps.log,

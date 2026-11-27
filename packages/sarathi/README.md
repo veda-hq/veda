@@ -679,10 +679,10 @@ events are left alone. It acts only on events the settings route to sarathi.
 `sarathi page` publishes, reads and answers claude.ai pages (Artifacts) for a
 session that does not carry the Artifact tools. In the desktop app the
 claude-artifacts server's seven eager tools come to 22,800 characters,
-roughly 6,000 tokens, per request (2026-11-27). A deny in settings leaves
-those definitions in (three probe sessions, 2026-11-27); the Claude Code
-lessons give the session connector toggle as what drops them. A session
-without them, or with them denied, still publishes:
+roughly 6,000 tokens, per request (2026-11-27). Denying the built-in
+`Artifact` tool in the main checkout's project settings keeps the CLI from
+adding that server at all (the Claude Code lessons say how and why). A
+session without them still publishes:
 
 ```sh
 sarathi page <page.html> [--title T] [--description D] [--icon I]

@@ -352,6 +352,71 @@ describe('sarathi check', () => {
     assert.equal((await run(['check', '--settings', covers], { dir: trailing })).err, '');
   });
 
+  it('takes several settings entries for one event together', async () => {
+    const pattern = '^mcp__.+__(publish_version|edit_version)$';
+    const dir = project({ PreToolUse: [{ matcher: 'Bash|Edit', command: 'a' }, { matcher: pattern, command: 'b', timeout: 70 }] });
+    const both = settingsFile(dir, { hooks: { PreToolUse: [entry('Bash|Edit', 'PreToolUse', 70), entry(pattern, 'PreToolUse', 70)] } });
+    assert.deepEqual(await run(['check', '--settings', both], { dir }), { code: 0, out: `sarathi: ${join(dir, '.claude', 'sarathi.json')} is valid (PreToolUse 2)\n`, err: '' });
+    // A settings entry that runs something else covers nothing.
+    const other = { matcher: pattern, hooks: [{ type: 'command', command: 'echo hi', timeout: 70 }] };
+    const missing = settingsFile(dir, { hooks: { PreToolUse: [entry('Bash|Edit', 'PreToolUse', 70), other] } });
+    assert.deepEqual(await run(['check', '--settings', missing], { dir }), {
+      code: 1,
+      out: '',
+      err: `sarathi: PreToolUse: no settings entry runs sarathi under the matcher "${pattern}", which a handler uses\n`,
+    });
+  });
+
+  it('covers a handler pattern only by the same matcher, or one matching every tool', async () => {
+    const dir = project({ PreToolUse: [{ matcher: 'mcp__.*__edit_version', command: 'a' }] });
+    for (const matcher of ['mcp__.*', 'mcp__.*__edit_version$', 'mcp__claude-artifacts__edit_version']) {
+      const file = settingsFile(dir, { hooks: { PreToolUse: [entry(matcher, 'PreToolUse', 60)] } });
+      assert.deepEqual(
+        await run(['check', '--settings', file], { dir }),
+        { code: 1, out: '', err: 'sarathi: PreToolUse: no settings entry runs sarathi under the matcher "mcp__.*__edit_version", which a handler uses\n' },
+        matcher,
+      );
+    }
+    for (const matcher of [undefined, '', '*', 'mcp__.*__edit_version']) {
+      const file = settingsFile(dir, { hooks: { PreToolUse: [entry(matcher, 'PreToolUse', 60)] } });
+      assert.equal((await run(['check', '--settings', file], { dir })).err, '', String(matcher));
+    }
+  });
+
+  it('names a match-all handler left out, with every settings matcher', async () => {
+    const dir = project({ Stop: [{ command: 'c' }] });
+    const file = settingsFile(dir, { hooks: { Stop: [entry('Bash', 'Stop', 60), entry('Read', 'Stop', 60)] } });
+    assert.deepEqual(await run(['check', '--settings', file], { dir }), {
+      code: 1,
+      out: '',
+      err: 'sarathi: Stop: a handler matches every tool, so the settings entry needs no matcher (has "Bash", "Read")\n',
+    });
+  });
+
+  it('names a tool two settings entries run sarathi for', async () => {
+    const dir = project({ PreToolUse: [{ matcher: 'Bash|Edit|Read', command: 'a' }] });
+    const file = settingsFile(dir, { hooks: { PreToolUse: [entry('Bash|Edit', 'PreToolUse', 60), entry('Edit|Read|Bash', 'PreToolUse', 60), entry('Write', 'PreToolUse', 60)] } });
+    assert.deepEqual(await run(['check', '--settings', file], { dir }), {
+      code: 1,
+      out: '',
+      err: 'sarathi: PreToolUse: more than one settings entry runs sarathi for Bash, Edit, so its handlers would run twice\n',
+    });
+    const all = settingsFile(dir, { hooks: { PreToolUse: [entry(undefined, 'PreToolUse', 60), entry('Read', 'PreToolUse', 60)] } });
+    assert.match((await run(['check', '--settings', all], { dir })).err, /runs sarathi for Read, so its handlers would run twice/);
+  });
+
+  it('holds every settings entry to the longest handler timeout', async () => {
+    const dir = project({ PreToolUse: [{ matcher: 'Bash', command: 'a', timeout: 90 }, { matcher: 'x.*', command: 'b' }] });
+    const file = settingsFile(dir, { hooks: { PreToolUse: [entry('Bash', 'PreToolUse', 90), entry('x.*', 'PreToolUse', 89), entry('Read', 'PreToolUse')] } });
+    assert.deepEqual(await run(['check', '--settings', file], { dir }), {
+      code: 1,
+      out: '',
+      err:
+        "sarathi: PreToolUse: the settings timeout must be at least 90 s, the longest handler's (has 89)\n" +
+        "sarathi: PreToolUse: the settings timeout must be at least 90 s, the longest handler's (has none)\n",
+    });
+  });
+
   it('treats settings without hooks as running nothing', async () => {
     const dir = project({ Stop: [{ command: 'c' }] });
     const result = await run(['check', '--settings', settingsFile(dir, {})], { dir });

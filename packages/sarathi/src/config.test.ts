@@ -9,11 +9,12 @@ import {
   compileMatcher,
   entriesFor,
   forbiddenSet,
+  handlerMatchers,
   isOn,
   loadConfig,
   longestTimeout,
+  matchesAll,
   parseConfig,
-  settingsMatcher,
 } from './config.ts';
 
 const ROOT = '/project';
@@ -108,7 +109,7 @@ describe('compileMatcher', () => {
   });
 });
 
-describe('entriesFor, settingsMatcher, longestTimeout', () => {
+describe('entriesFor, handlerMatchers, longestTimeout', () => {
   const config = parse({
     hooks: {
       PreToolUse: [
@@ -131,11 +132,11 @@ describe('entriesFor, settingsMatcher, longestTimeout', () => {
     assert.deepEqual(entriesFor(config, 'Missing', 'Bash'), []);
   });
 
-  it('gives the union of plain matchers, or all', () => {
-    assert.equal(settingsMatcher(config, 'PreToolUse'), 'Bash|Edit|ExitWorktree');
-    assert.equal(settingsMatcher(config, 'Stop'), undefined);
-    assert.equal(settingsMatcher(config, 'PostToolUse'), undefined);
-    assert.equal(settingsMatcher(config, 'Missing'), '');
+  it('splits the matchers into all, the union of plain names, and patterns', () => {
+    assert.deepEqual(handlerMatchers(config, 'PreToolUse'), { all: false, names: ['Bash', 'Edit', 'ExitWorktree'], patterns: [] });
+    assert.deepEqual(handlerMatchers(config, 'Stop'), { all: true, names: [], patterns: [] });
+    assert.deepEqual(handlerMatchers(config, 'PostToolUse'), { all: false, names: [], patterns: ['mcp__.*'] });
+    assert.deepEqual(handlerMatchers(config, 'Missing'), { all: false, names: [], patterns: [] });
   });
 
   it('gives the longest timeout, defaulting to 60 s', () => {
@@ -220,16 +221,30 @@ describe('the hook list, rule by rule', () => {
     assert.throws(() => compileMatcher('('), (error: unknown) => error instanceof ConfigError && /^matcher: "matcher" is not a regular expression \(/.test(error.message));
   });
 
-  it('gives the settings matcher in sorted order, and all for an empty or "*" matcher', () => {
+  it('gives names and patterns sorted, each once, no empty name, and all for an empty or "*" matcher', () => {
     const config = parseConfig(
-      JSON.stringify({ hooks: { A: [{ matcher: 'Write', command: 'x' }, { matcher: 'Edit|Bash', command: 'y' }], B: [{ matcher: '', command: 'x' }], C: [{ matcher: '*', command: 'x' }], D: [{ matcher: 'x.*y', command: 'x' }] } }),
+      JSON.stringify({
+        hooks: {
+          A: [{ matcher: 'Write|', command: 'x' }, { matcher: 'Edit|Bash|Write', command: 'y' }],
+          B: [{ matcher: '', command: 'x' }, { matcher: 'Bash', command: 'y' }],
+          C: [{ matcher: '*', command: 'x' }],
+          D: [{ matcher: 'x.*y', command: 'x' }, { matcher: '^a$', command: 'y' }, { matcher: 'x.*y', command: 'z' }, { matcher: 'Read', command: 'w' }],
+        },
+      }),
       'sarathi.json',
       '/project',
     );
-    assert.equal(settingsMatcher(config, 'A'), 'Bash|Edit|Write');
-    assert.equal(settingsMatcher(config, 'B'), undefined);
-    assert.equal(settingsMatcher(config, 'C'), undefined);
-    assert.equal(settingsMatcher(config, 'D'), undefined);
+    assert.deepEqual(handlerMatchers(config, 'A'), { all: false, names: ['Bash', 'Edit', 'Write'], patterns: [] });
+    assert.deepEqual(handlerMatchers(config, 'B'), { all: true, names: ['Bash'], patterns: [] });
+    assert.deepEqual(handlerMatchers(config, 'C'), { all: true, names: [], patterns: [] });
+    assert.deepEqual(handlerMatchers(config, 'D'), { all: false, names: ['Read'], patterns: ['^a$', 'x.*y'] });
+  });
+
+  it('takes an absent, empty or "*" matcher, and only those, as matching all', () => {
+    assert.equal(matchesAll(undefined), true);
+    assert.equal(matchesAll(''), true);
+    assert.equal(matchesAll('*'), true);
+    for (const matcher of ['Bash', '.*', '**', ' ']) assert.equal(matchesAll(matcher), false, matcher);
   });
 
   it('gives no timeout for an event it does not list', () => {

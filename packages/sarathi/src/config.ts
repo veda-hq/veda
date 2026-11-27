@@ -185,20 +185,33 @@ export function entriesFor(config: Config, event: string, target: string): Entry
   return (config.hooks[event] ?? []).filter(entry => compileMatcher(entry.matcher)(target));
 }
 
-/**
- * The matcher the one settings entry for `event` needs so that every entry here
- * can fire: the union of their names, or `undefined` (all) when one entry
- * matches all or uses a regular expression.
- */
-export function settingsMatcher(config: Config, event: string): string | undefined {
+/** Does a matcher match every target? Absent, empty and `*` do. */
+export function matchesAll(matcher: string | undefined): boolean {
+  return matcher === undefined || matcher === '' || matcher === '*';
+}
+
+/** What the settings must run sarathi for, so that every entry for an event can fire. */
+export interface HandlerMatchers {
+  /** An entry matches every target. */
+  readonly all: boolean;
+  /** The plain names the entries match, sorted, none empty. */
+  readonly names: readonly string[];
+  /** The regular expressions the entries match, as written, sorted, each once. */
+  readonly patterns: readonly string[];
+}
+
+/** The matchers `event`'s entries use, split into all, plain names and regular expressions. */
+export function handlerMatchers(config: Config, event: string): HandlerMatchers {
+  let all = false;
   const names = new Set<string>();
-  for (const entry of config.hooks[event] ?? []) {
-    const matcher = entry.matcher;
-    // '' and '*', matching all, are not plain names either.
-    if (matcher === undefined || !PLAIN.test(matcher)) return undefined;
-    for (const name of matcher.split('|')) names.add(name);
+  const patterns = new Set<string>();
+  for (const { matcher } of config.hooks[event] ?? []) {
+    if (matchesAll(matcher)) all = true;
+    else if (PLAIN.test(matcher as string)) for (const name of (matcher as string).split('|')) names.add(name);
+    else patterns.add(matcher as string);
   }
-  return [...names].sort().join('|');
+  names.delete('');
+  return { all, names: [...names].sort(), patterns: [...patterns].sort() };
 }
 
 /** Is a variable set, as a switch reads it? Absent, empty, `0` and `false` are off. */

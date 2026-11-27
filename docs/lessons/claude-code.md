@@ -89,27 +89,42 @@ undoing another.
   and keep general-purpose for subagents that must edit, write or publish.
   <!-- when: tool "Agent|Task" input "^(?!.*\x22subagent_type\x22)|\x22subagent_type\x22:\x22general-purpose\x22" -->
 - **Standing context.** A bare tool name in `permissions.deny` (or `--disallowedTools`) removes
-  that tool's definition from every request's standing context, the cheapest prefix cut;
-  desktop-app MCP tools have no per-project switch. Auto-memory `MEMORY.md` loads only its first
-  200 lines or 25 KB and silently drops the rest, so fold one-line entries into topic notes.
+  that tool's definition from every request's standing context, the cheapest prefix cut; the
+  desktop app's own MCP tools have no per-project switch (claude-artifacts does). Auto-memory
+  `MEMORY.md` loads only its first 200 lines or 25 KB and silently drops the rest, so fold
+  one-line entries into topic notes.
   Measure standing cost from the first request's `message.usage` in the transcript.
 - **Deferred tools cost nothing.** In `/context`, the "MCP tools (deferred)" and "System tools
   (deferred)" rows are not part of the reported total, so disabling a deferred MCP server saves
   nothing; only eager schemas in the system prompt cost tokens. To count real tool use across
   `~/.claude/projects/**/*.jsonl`, grep for `"name":"<tool>","input"` (the `,"input"` suffix
-  marks a tool use, not a definition). Desktop-app MCP servers are injected by the app runtime
-  and cannot be toggled from `claude mcp` or any settings file.
+  marks a tool use, not a definition). The desktop app's own MCP servers (browser pane,
+  visualize, `ccd_*`) are injected by the app runtime and cannot be toggled from `claude mcp` or
+  any settings file; claude-artifacts is the CLI's own (next item).
 - **The desktop app runs its own CLI.** The desktop app runs a bundled CLI under
   `~/Library/Application Support/Claude/claude-code/<ver>/`, not the terminal one. Probe it with
   `claude -p --output-format stream-json --verbose --strict-mcp-config` (init lists tools, the
   result has usage) and isolate A/B runs with `--setting-sources user,local`. A bare name in
   `permissions.deny` blocks calls in an open session at once, but definitions drop only in a new
-  session, and desktop-provided MCP tools keep their definitions even then; disable connectors
-  with the session connector toggle instead. Re-checked 2026-11-27 in three new desktop
-  sessions: with `mcp__claude-artifacts` denied in `settings.local.json`, then in
-  `settings.json`, then with `Artifact` denied beside it, each still received the server's
-  seven eager tools. Desktop transcripts record the definitions a session received
-  (`attachment.tools`), so read them there.
+  session. The session connector toggle turns claude.ai connectors on or off; it lists
+  claude-artifacts as kind `other` and refuses to toggle it. A desktop session in a worktree
+  starts with `--project-config-root` set to the main checkout, and reads `settings.json` and
+  `settings.local.json` from there, not from the worktree: three 2026-11-27 probes that denied
+  `mcp__claude-artifacts` and `Artifact` in the worktree's files each still got the server's
+  seven eager tools. The CLI adds claude-artifacts itself, and skips it when the built-in
+  `Artifact` tool is denied (`--debug` writes `Artifacts MCP server not added:
+  artifact_tool_denied (deny_rule)` to `~/.claude/debug/<session>.txt`). A project whose
+  settings deny `Artifact` gets no server, tool names or instructions in any session, where the
+  seven otherwise cost about 6,000 tokens a request. To drop it for a project, deny `Artifact`
+  in the main checkout's project settings; that also drops the built-in `Artifact` tool, and
+  `sarathi page` still publishes, since its sub-session loads no project settings. A deny of
+  `mcp__claude-artifacts` alone leaves the server connected; in a `-p` run it removes the
+  tools from init, and in a desktop session it is untested. To probe this, run the bundled CLI
+  with `CLAUDE_CODE_ARTIFACT=1` (`-p` leaves Artifact off: `sdk_default_off`) and without
+  `--strict-mcp-config`, which also skips the server; init then comes sooner, before the
+  claude.ai connectors have loaded. Desktop transcripts record the definitions a session
+  received in `attachment.tools`, or in a `deferred_tools_delta`'s `surfacedDefinitions` when
+  the server connects after the first request, so read them there.
 - **Transcript usage repeats per block.** JSONL transcripts write one line per assistant content
   block and repeat that API response's usage on each line under the same `requestId`, so
   per-line summation over-counts cost about 1.7x. In subagent transcripts `output_tokens` is a

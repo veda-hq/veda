@@ -98,7 +98,8 @@ interface Job {
   readonly runMs: number;
   grantedAt: number | null;
   endAt: number;
-  overBound: boolean;
+  /** Set when it is granted, as every job is in the end. */
+  grant?: Grant;
 }
 
 const jobRequest = (job: Job): Request => ({
@@ -124,35 +125,40 @@ export const replay = (
     runMs: Math.max(0, logged.endedAt - logged.startedAt),
     grantedAt: null,
     endAt: Number.POSITIVE_INFINITY,
-    overBound: false,
   }));
-  const arrivals = [...jobs].sort((a, b) => a.logged.askedAt - b.logged.askedAt);
-  let active: Job[] = [];
-  let next = 0;
-  while (next < arrivals.length || active.length > 0) {
-    // The next moment anything changes: an arrival, an end, or a bound reached.
-    const moments = [
-      ...active.map((job) =>
-        job.grantedAt === null ? job.logged.askedAt + boundMs : job.endAt,
+  let now = Number.NEGATIVE_INFINITY;
+  for (;;) {
+    const unfinished = jobs.filter((job) => job.endAt > now);
+    if (unfinished.length === 0) break;
+    // The next moment anything changes, each strictly later than now: an
+    // arrival, a bound reached, or an end.
+    now = Math.min(
+      ...unfinished.map((job) =>
+        job.logged.askedAt > now
+          ? job.logged.askedAt
+          : job.grantedAt === null
+            ? job.logged.askedAt + boundMs
+            : job.endAt,
       ),
-      arrivals[next]?.logged.askedAt ?? Number.POSITIVE_INFINITY,
-    ];
-    const now = Math.min(...moments);
-    active = active.filter((job) => job.endAt > now);
-    while (next < arrivals.length && (arrivals[next] as Job).logged.askedAt <= now)
-      active.push(arrivals[next++] as Job);
-    const byId = new Map(active.map((job) => [job.logged.id, job]));
-    for (const grant of grants(active.map(jobRequest), count, now, boundMs)) {
-      const job = byId.get(grant.token) as Job;
-      job.grantedAt = now;
-      job.endAt = now + job.runMs;
-      job.overBound = grant.overBound;
+    );
+    // Grant until nothing changes: a run of no length frees its turn at the moment it got it.
+    for (;;) {
+      const present = unfinished.filter((job) => job.logged.askedAt <= now && job.endAt > now);
+      const byId = new Map(present.map((job) => [job.logged.id, job]));
+      const granted = grants(present.map(jobRequest), count, now, boundMs);
+      if (granted.length === 0) break;
+      for (const grant of granted) {
+        const job = byId.get(grant.token) as Job;
+        job.grantedAt = now;
+        job.endAt = now + job.runMs;
+        job.grant = grant;
+      }
     }
   }
   return jobs.map((job) => ({
     id: job.logged.id,
     waitMs: (job.grantedAt as number) - job.logged.askedAt,
-    overBound: job.overBound,
+    overBound: (job.grant as Grant).overBound,
   }));
 };
 

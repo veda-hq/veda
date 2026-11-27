@@ -8,18 +8,18 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it, test } from "node:test";
 import { START_IDENTITY_FORMAT, type LivenessSystem } from "./liveness.ts";
 import { lockFilename, type SlotChild, type SpawnSlotChild } from "./slot.ts";
 import {
   appendLine,
   cleanLabel,
   currentStage,
-  DEFAULT_TURN_DIR,
   DEFAULT_TURNS,
   DEFAULT_WAIT_MINUTES,
   gitIn,
@@ -164,10 +164,10 @@ const REPO_GIT = fakeGit({
 
 describe("turnDirectory", () => {
   it("is DVARA_TURN_DIR as given, else the machine's folder under ~/.dvara/turns", () => {
-    assert.equal(turnDirectory({ [TURN_DIR_ENV]: "/q" }), "/q");
-    assert.equal(turnDirectory({ [TURN_DIR_ENV]: "" }), join(homedir(), ".dvara", "turns", hostname()));
+    assert.equal(turnDirectory({ DVARA_TURN_DIR: "/q" }), "/q");
+    assert.equal(turnDirectory({ DVARA_TURN_DIR: "" }), join(homedir(), ".dvara", "turns", hostname()));
     assert.equal(turnDirectory({}), join(homedir(), ".dvara", "turns", hostname()));
-    assert.equal(DEFAULT_TURN_DIR, "~/.dvara/turns");
+    assert.equal(TURN_DIR_ENV, "DVARA_TURN_DIR");
   });
 });
 
@@ -227,6 +227,22 @@ describe("resolveSettings", () => {
         ),
         { mode: "record", turns: 2, waitMinutes: 30, reason: "default" },
       );
+    for (const odd of [true, null, [3], "3x", -2])
+      assert.deepEqual(resolveSettings({}, { mode: null, turns: odd, waitMinutes: odd }), {
+        mode: "record",
+        turns: 2,
+        waitMinutes: 30,
+        reason: "default",
+      });
+  });
+
+  it("reads counts in the settings file written as text or as numbers", () => {
+    assert.deepEqual(resolveSettings({}, { turns: "3", waitMinutes: 12 }), {
+      mode: "record",
+      turns: 3,
+      waitMinutes: 12,
+      reason: "default",
+    });
   });
 
   it("is off in CI, whatever else says", () => {
@@ -268,9 +284,13 @@ describe("whoAsks", () => {
     assert.deepEqual(whoAsks("/code/veda", git), { repo: "veda", worktree: null, branch: null });
   });
 
-  it("reads a bare common directory's name without .git", () => {
+  it("reads a bare common directory's name without its last .git", () => {
     const git = fakeGit({ "rev-parse": "/w/tree\n/srv/niyam.git", branch: null });
     assert.deepEqual(whoAsks("/w/tree", git), { repo: "niyam", worktree: "tree", branch: null });
+    const dotted = fakeGit({ "rev-parse": "/w/t\n/srv/my.github.git", branch: "b" });
+    assert.equal(whoAsks("/w/t", dotted).repo, "my.github");
+    const plain = fakeGit({ "rev-parse": "/w/t\n/srv/plain", branch: "b" });
+    assert.equal(whoAsks("/w/t", plain).repo, "plain");
   });
 
   it("reads a real repository through the real git, and nothing outside one", () => {
@@ -365,6 +385,9 @@ describe("tickets on disk", () => {
       readTickets(dir).map((entry) => entry.token).sort(),
       ["mine", "their-token"],
     );
+    // The holder's files are its own: no one else on the machine reads its turn.
+    assert.equal(statSync(ticketPath(dir, "mine")).mode & 0o777, 0o600);
+    assert.equal(statSync(join(dir, TICKETS_DIRNAME)).mode & 0o777, 0o700);
   });
 
   it("skip what is not a ticket", () => {
@@ -406,6 +429,7 @@ describe("sleepFor", () => {
 });
 
 describe("underQueueLock", () => {
+  const it = (name: string, fn: () => Promise<void>) => test(name, { timeout: 10_000 }, fn);
   const sleeps: number[] = [];
   const sleep = async (ms: number): Promise<void> => {
     sleeps.push(ms);
@@ -532,6 +556,28 @@ describe("look", () => {
     assert.equal(view.me, me);
     assert.equal(existsSync(ticketPath(dir, "mine")), false);
   });
+
+  it("never counts its own ticket among the others", () => {
+    const me = mine({ grantedAt: T0 });
+    writeTicket(dir, me);
+    const view = look(dir, me, settings({ turns: 1 }), T0 + 99, liveness(w.system));
+    assert.deepEqual(view.holders, []);
+    assert.equal(view.inUse, 0);
+    const waiting = mine({ token: "waiting" });
+    writeTicket(dir, waiting);
+    writeTicket(dir, ticket({ exclusive: true, grantedAt: T0 }));
+    const behind = look(dir, waiting, settings({ turns: 1 }), T0 + 99, liveness(w.system));
+    assert.equal(behind.place, 1);
+  });
+
+  it("is granted only its own turn, not the turn of one ahead of it", () => {
+    writeTicket(dir, ticket({ token: "ahead", pid: THIRD, grantedAt: null, askedAt: T0 - 1 }));
+    const me = mine();
+    const view = look(dir, me, settings({ turns: 1 }), T0 + 5, liveness(w.system));
+    assert.equal(view.me.grantedAt, null);
+    assert.equal(view.place, 2);
+    assert.equal(view.inUse, 0);
+  });
 });
 
 describe("ordinal", () => {
@@ -593,6 +639,13 @@ describe("parseTurnArgs", () => {
       { exclusive: true, class: "push", label: "android flows", command: ["x", "--", "y"] },
     );
     assert.equal(parseTurnArgs(["--class", "other", "--", "x"]).hasOwnProperty("error"), false);
+    // A label that reads like a class is a label.
+    assert.deepEqual(parseTurnArgs(["--label", "push", "--", "x"]), {
+      exclusive: false,
+      class: "other",
+      label: "push",
+      command: ["x"],
+    });
   });
 
   it("refuses a missing command and bad or repeated options", () => {
@@ -628,8 +681,8 @@ describe("cleanLabel", () => {
 describe("currentStage", () => {
   it("is the last stage marked in the hook's stage file", () => {
     const file = join(dir, "run.stages");
-    writeFileSync(file, "0\tlint\n12\tmutation\n\n");
-    assert.equal(currentStage({ DVARA_STAGE_FILE: file }), "mutation");
+    writeFileSync(file, "0\tlint\n12\tmutation\n40\tandroid\n\n");
+    assert.equal(currentStage({ DVARA_STAGE_FILE: file }), "android");
   });
 
   it("is null outside a hook, before the first marker, or for a marker with no name", () => {
@@ -665,6 +718,8 @@ describe("queuedPids", () => {
     assert.equal(queuedPids(dir, [SELF, OTHER], w.system), true);
     assert.equal(queuedPids(dir, [SELF], w.system), false);
     assert.equal(queuedPids(dir, [], w.system), false);
+    // Only a pid with an entry has its start read.
+    assert.deepEqual(w.startReads, [OTHER]);
   });
 
   it("ignores an entry left by a pid since reused", () => {
@@ -719,7 +774,7 @@ const start = (argv: readonly string[], options: StartOptions = {}): Run => {
   });
   const status = turn(argv, {
     err: (line) => stderr.push(line),
-    env: { [TURN_DIR_ENV]: dir, KEEP: "x", ...options.env },
+    env: { DVARA_TURN_DIR: dir, KEEP: "x", ...options.env },
     cwd: "/code/veda/.claude/worktrees/brave",
     system: w.system,
     signals,
@@ -751,6 +806,9 @@ const tickets = (): string[] =>
   existsSync(join(dir, TICKETS_DIRNAME)) ? readdirSync(join(dir, TICKETS_DIRNAME)) : [];
 
 describe("turn", () => {
+  // Each case is bounded: a mutant that leaves a wait hanging fails it here,
+  // at once, rather than at the mutation run's limit.
+  const it = (name: string, fn: () => Promise<void>) => test(name, { timeout: 10_000 }, fn);
   it("refuses bad arguments with its usage", async () => {
     const run = start(["--class", "fast", "--", "x"]);
     assert.equal(await run.status, 2);
@@ -775,7 +833,7 @@ describe("turn", () => {
     const token = options?.env[TURN_HELD_ENV] ?? "";
     assert.match(token, /^[0-9a-f]{24}$/);
     assert.deepEqual(options?.env, {
-      [TURN_DIR_ENV]: dir,
+      DVARA_TURN_DIR: dir,
       KEEP: "x",
       DVARA_MEASURED_HOOK: "pre-push",
       [TURN_HELD_ENV]: token,
@@ -898,7 +956,12 @@ describe("turn", () => {
     writeTicket(dir, ticket({ token: "ahead", pid: THIRD, grantedAt: null, askedAt: T0 - 1 }));
     const run = start(["--", "x"]);
     await run.started;
+    // Its ticket stands in line while the command runs, for every other request to see.
+    assert.equal(tickets().length, 3);
     while (run.sleeps.length < 2) await new Promise((resolve) => setImmediate(resolve));
+    // The holders end as the command does: no look after the exit grants it.
+    w.alive.delete(OTHER);
+    w.alive.delete(THIRD);
     run.child.emit("exit", 0, null);
     assert.equal(await run.status, 0);
     const [line] = logLines();
@@ -906,6 +969,68 @@ describe("turn", () => {
     assert.equal(line?.["wouldWaitMs"], null);
     assert.equal(line?.["ahead"], 1);
     assert.match(run.stderr[0] ?? "", /you are 2nd in line/);
+  });
+
+  it("keeps the command's status when the virtual line fails while it runs", async () => {
+    writeTicket(dir, ticket({ exclusive: true }));
+    const run = start(["--", "x"], {
+      onSleep: () => {
+        // The queue's folder turns into a file: the next look cannot write the grant.
+        rmSync(join(dir, TICKETS_DIRNAME), { recursive: true, force: true });
+        writeFileSync(join(dir, TICKETS_DIRNAME), "");
+      },
+    });
+    await run.started;
+    while (run.sleeps.length < 1) await new Promise((resolve) => setImmediate(resolve));
+    for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    run.child.emit("exit", 5, null);
+    assert.equal(await run.status, 5);
+    assert.equal(run.sleeps.length, 1);
+    assert.equal(logLines()[0]?.["grantedAt"], null);
+  });
+
+  it("writes no waiter entry for an enforce request served at once", async () => {
+    const run = start(["--", "x"], { env: { [TURN_MODE_ENV]: "enforce" } });
+    await run.started;
+    assert.equal(existsSync(join(dir, WAITERS_DIRNAME)), false);
+    run.child.emit("exit", 0, null);
+    assert.equal(await run.status, 0);
+    assert.deepEqual(run.sleeps, []);
+  });
+
+  it("waits again in a queue whose waiter folder exists, and names a waiter with no start", async () => {
+    mkdirSync(join(dir, WAITERS_DIRNAME));
+    w.starts.set(SELF, null);
+    writeTicket(dir, ticket({ exclusive: true }));
+    const contents: string[] = [];
+    const run = start(["--", "x"], {
+      env: { [TURN_MODE_ENV]: "enforce" },
+      onSleep: (count) => {
+        contents.push(readFileSync(waiterPath(dir, SELF), "utf8"));
+        if (count === 2) w.alive.delete(OTHER);
+      },
+    });
+    await run.started;
+    assert.deepEqual(contents, ["", ""]);
+    assert.ok(!run.stderr.some((line) => line.includes("queue unavailable")), run.stderr.join("\n"));
+    run.child.emit("exit", 0, null);
+    await run.status;
+  });
+
+  it("keeps the waiter folder its own", async () => {
+    writeTicket(dir, ticket({ exclusive: true }));
+    let mode = 0;
+    const run = start(["--", "x"], {
+      env: { [TURN_MODE_ENV]: "enforce" },
+      onSleep: () => {
+        mode = statSync(join(dir, WAITERS_DIRNAME)).mode & 0o777;
+        w.alive.delete(OTHER);
+      },
+    });
+    await run.started;
+    assert.equal(mode, 0o700);
+    run.child.emit("exit", 0, null);
+    await run.status;
   });
 
   it("waits in enforce mode, saying so every minute, and runs once served", async () => {
@@ -916,11 +1041,12 @@ describe("turn", () => {
       env: { [TURN_MODE_ENV]: "enforce" },
       onSleep: (count) => {
         seen.push(existsSync(waiter));
-        if (count === 125) w.alive.delete(OTHER);
+        // Served at 121 s: the third notice is due at 120 s exactly, not a second later.
+        if (count === 121) w.alive.delete(OTHER);
       },
     });
     await run.started;
-    assert.equal(run.sleeps.length, 125);
+    assert.equal(run.sleeps.length, 121);
     assert.ok(seen.every(Boolean));
     assert.equal(existsSync(waiter), false);
     const notices = run.stderr.filter((line) => line.startsWith("⏳"));
@@ -939,10 +1065,10 @@ describe("turn", () => {
     assert.equal(await run.status, 0);
     const [line] = logLines();
     assert.equal(line?.["mode"], "enforce");
-    assert.equal(line?.["waitedMs"], 125 * POLL_MS);
-    assert.equal(line?.["wouldWaitMs"], 125 * POLL_MS);
-    assert.equal(line?.["grantedAt"], T0 + 125 * POLL_MS);
-    assert.equal(line?.["startedAt"], T0 + 125 * POLL_MS);
+    assert.equal(line?.["waitedMs"], 121 * POLL_MS);
+    assert.equal(line?.["wouldWaitMs"], 121 * POLL_MS);
+    assert.equal(line?.["grantedAt"], T0 + 121 * POLL_MS);
+    assert.equal(line?.["startedAt"], T0 + 121 * POLL_MS);
     assert.equal(line?.["ranAnyway"], false);
     assert.equal(NOTICE_MS, 60_000);
     assert.equal(POLL_MS, 1000);
@@ -983,7 +1109,31 @@ describe("turn", () => {
     assert.equal(line?.["signal"], "SIGTERM");
     assert.equal(line?.["exitCode"], 143);
     assert.equal(line?.["grantedAt"], null);
+    assert.equal(line?.["error"], null);
     assert.equal(run.signals.listenerCount("SIGTERM"), 0);
+    assert.deepEqual(run.stderr.filter((text) => !text.startsWith("⏳") && !text.startsWith("   ")), []);
+  });
+
+  it("spawns a real command with its arguments, the held turn and inherited stdio", async () => {
+    const status = await turn(
+      [
+        "--",
+        process.execPath,
+        "-e",
+        "process.exit(process.argv[1] === 'arg' && /^[0-9a-f]{24}$/.test(process.env.DVARA_TURN_HELD ?? '') ? 9 : 1)",
+        "arg",
+      ],
+      {
+        err: () => undefined,
+        env: { DVARA_TURN_DIR: dir, PATH: process.env["PATH"] },
+        cwd: dir,
+        system: w.system,
+        signals: new EventEmitter(),
+        git: () => null,
+        sleep: async () => undefined,
+      },
+    );
+    assert.equal(status, 9);
   });
 
   it("forwards signals to the command, and the first decides the status", async () => {
@@ -1028,7 +1178,7 @@ describe("turn", () => {
     const calls: string[][] = [];
     const run = turn(["--", "x"], {
       err: () => undefined,
-      env: { [TURN_DIR_ENV]: dir, CI: "true" },
+      env: { DVARA_TURN_DIR: dir, CI: "true" },
       cwd: "/c/repo",
       system: w.system,
       signals: new EventEmitter(),
@@ -1218,7 +1368,7 @@ describe("turnReplay", () => {
       [line(), line({ id: "b", askedAt: 110, startedAt: 110, endedAt: 210 })].join("\n"),
     );
     const { out, err, context } = io();
-    assert.equal(turnReplay(["--count", "1", "--count", "2", "--wait-minutes", "1"], { ...context, env: { [TURN_DIR_ENV]: dir } }), 0);
+    assert.equal(turnReplay(["--count", "1", "--count", "2", "--wait-minutes", "1"], { ...context, env: { DVARA_TURN_DIR: dir } }), 0);
     assert.deepEqual(err, []);
     assert.deepEqual(out.map((text) => JSON.parse(text) as Record<string, unknown>), [
       { count: 1, boundMs: 60_000, requests: 2, waited: 1, totalWaitMs: 90, p50WaitMs: 0, p95WaitMs: 90, maxWaitMs: 90, overBound: 0 },
@@ -1236,7 +1386,7 @@ describe("turnReplay", () => {
 
   it("fails on an unreadable log, and refuses bad arguments with its usage", () => {
     const missing = io();
-    assert.equal(turnReplay([], { ...missing.context, env: { [TURN_DIR_ENV]: join(dir, "none") } }), 1);
+    assert.equal(turnReplay([], { ...missing.context, env: { DVARA_TURN_DIR: join(dir, "none") } }), 1);
     assert.match(missing.err[0] ?? "", /^dvara turn-replay: cannot read .+turns\.jsonl: ENOENT/);
     const bad = io();
     assert.equal(turnReplay(["--count", "0"], { ...bad.context, env: {} }), 2);

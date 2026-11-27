@@ -244,6 +244,181 @@ class Listed(unittest.TestCase):
         self.assertEqual([m.occurrence for m in gate.listed(mutants, second)], [1])
 
 
+def bar(source: str, line: int, nth: int = 1, operator: str = "ReplaceBinaryOperator_BitOr_Add", module: str = "m"):
+    """A mutant of the nth `|` on a line, spanning it as cosmic-ray's does."""
+
+    text = source.split("\n")[line - 1]
+    col = -1
+    for _ in range(nth):
+        col = text.index("|", col + 1)
+    return gate.Mutant(module, operator, 0, (line, col), (line, col + 1), {}, text.strip())
+
+
+DEFERRED = textwrap.dedent(
+    """\
+    from __future__ import annotations
+
+    def f(x: int | None = a | b, *rest: str | bytes, **kw: int | str) -> Path | None:
+        y: int | str = c | d
+        return e | f
+
+
+    class C:
+        z: list[int] | None = None
+    """
+)
+
+
+class AnnotationSpans(unittest.TestCase):
+    def spans(self, source: str):
+        return gate.annotation_spans(source)
+
+    def test_each_annotation_is_a_span_and_values_are_not(self):
+        spans = self.spans(DEFERRED)
+        inside = lambda line, nth: gate.inside(bar(DEFERRED, line, nth), spans)
+        # x's annotation, then its default a | b, then *rest's, **kw's and the return's.
+        self.assertEqual([inside(3, n) for n in range(1, 6)], [True, False, True, True, True])
+        self.assertEqual([inside(4, 1), inside(4, 2)], [True, False])  # y: int | str = c | d
+        self.assertFalse(inside(5, 1))  # the body
+        self.assertTrue(inside(9, 1))  # a class attribute's annotation
+
+    def test_a_module_without_the_future_import_has_none(self):
+        self.assertEqual(self.spans(DEFERRED.replace("from __future__ import annotations", "import os")), [])
+        self.assertEqual(self.spans("from __future__ import division\ndef f() -> int | None: ...\n"), [])
+
+    def test_columns_are_characters_not_bytes(self):
+        source = 'from __future__ import annotations\ndef f(é: str = "üü") -> int | None: ...\n'
+        spans = self.spans(source)
+        self.assertTrue(gate.inside(bar(source, 2), spans))
+        # The span ends with `None`, in characters: a mutant just past it is outside.
+        text = source.split("\n")[1]
+        end = text.index(":", text.index("None"))
+        past = gate.Mutant("m", "Op", 0, (2, end), (2, end + 1), {}, text)
+        self.assertFalse(gate.inside(past, spans))
+
+    def test_the_positions_of_veda_650s_run(self):
+        # cosmic-ray's positions of the 55 survivors in run 45936765161, on
+        # these lines as they read at 17dc453.
+        lines = {
+            ("boundary", 76): "def recorded_folder(session_id: object, environ: Mapping[str, str]) -> Path | None:",
+            ("boundary", 87): "def session_worktree(session_id: object, own: Any, environ: Mapping[str, str]) -> Path | None:",
+            ("boundary", 92): "def session_main_checkout(session_id: object, own: Any, environ: Mapping[str, str]) -> Path | None:",
+            ("rules", 46): "def recorded_main_checkout(call: Call) -> str | None:",
+            ("rules", 84): "def main_checkout_way_out(target: str, root: str, started: str) -> tuple[str, bool] | None:",
+        }
+        for (module, col), line in lines.items():
+            with self.subTest(module=module, col=col):
+                source = f"from __future__ import annotations\n{line}\n    pass\n"
+                self.assertEqual(line.index("|"), col)
+                mutant = gate.Mutant(module, "ReplaceBinaryOperator_BitOr_Pow", 0, (2, col), (2, col + 1), {}, line)
+                self.assertTrue(gate.inside(mutant, self.spans(source)))
+
+    def test_a_package_that_reads_annotations_skips_nothing_and_says_where(self):
+        for reader in ("typing.get_type_hints(f)", "f.__annotations__", "inspect.signature(f)",
+                       "from inspect import signature", "import annotationlib", "f.__annotate__",
+                       "from functools import singledispatch"):
+            with self.subTest(reader=reader):
+                readers = {"a/m.py": DEFERRED, "a/tests/test_m.py": f"{reader}\n"}
+                spans, found = gate.unevaluated({"m": DEFERRED}, readers)
+                self.assertEqual((spans, found), ({"m": []}, "a/tests/test_m.py"))
+        spans, found = gate.unevaluated({"m": DEFERRED}, {"a/m.py": DEFERRED, "a/tests/test_m.py": "x = 1\n"})
+        self.assertIsNone(found)
+        self.assertNotEqual(spans["m"], [])
+
+    def test_the_scope_reads_kavachs_modules_and_its_tests(self):
+        sources, readers = gate.read_annotation_scope()
+        self.assertIn("boundary", sources)
+        self.assertIn("packages/kavach/python/kavach/boundary.py", readers)
+        self.assertIn("packages/kavach/python/tests/test_rules.py", readers)
+
+
+class Choose(unittest.TestCase):
+    def test_annotation_mutants_are_skipped_unless_a_row_names_them(self):
+        source = DEFERRED
+        spans = {"m": gate.annotation_spans(source)}
+        annotated = bar(source, 3, 5)  # the return annotation's `|`
+        default = bar(source, 3, 2)  # a | b
+        default.occurrence = 1
+        listed = bar(source, 4, 1, operator="ReplaceBinaryOperator_BitOr_Sub")  # y's annotation
+        every = {"m": [annotated, default, listed]}
+        row = gate.Row("m.py", listed.line_text, listed.operator, 1, "survived", "r", 7)
+        chosen, skipped, refusals = gate.choose(every, {"m": {3, 4}}, [row], set(), spans)
+        self.assertEqual(skipped, [annotated])
+        self.assertEqual(sorted(m.start for m in chosen.values()), [default.start, listed.start])
+        self.assertEqual(listed.expected, "survived")
+        self.assertEqual(refusals, [])
+
+    def test_off_a_changed_line_nothing_is_chosen_or_skipped(self):
+        annotated = bar(DEFERRED, 3, 5)
+        chosen, skipped, _ = gate.choose({"m": [annotated]}, {"m": {5}}, [], set(), {"m": gate.annotation_spans(DEFERRED)})
+        self.assertEqual((chosen, skipped), ({}, []))
+
+    def test_without_spans_every_mutant_is_chosen(self):
+        mutants = [bar(DEFERRED, 3, n) for n in range(1, 6)]
+        for n, m in enumerate(mutants):
+            m.occurrence = n
+        chosen, skipped, _ = gate.choose({"m": mutants}, {"m": {3}}, [], set(), {"m": []})
+        self.assertEqual((len(chosen), skipped), (5, []))
+
+    def test_the_report_lists_what_was_skipped(self):
+        verdict = gate.Verdict(skipped=[bar(DEFERRED, 3, 5)])
+        text = gate.report(verdict)
+        self.assertIn("- Skipped: 1 mutant(s) inside an annotation never evaluated", text)
+        self.assertIn("### Skipped: inside an annotation never evaluated", text)
+        self.assertIn("`m.py:3:", text)
+
+    def test_run_reads_the_scope_and_chooses_with_nothing_changed(self):
+        # Through read_annotation_scope, unevaluated, choose and skip_note,
+        # to the early return before any recording.
+        from unittest import mock
+
+        empty = {"lines": {}, "rows": [], "problems": [], "any": False}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gate, "plan", return_value=empty):
+            verdict = gate.run("HEAD", Path(tmp), 1)
+        self.assertTrue(verdict.passed)
+        self.assertEqual((verdict.skipped, verdict.annotation_reader, verdict.mutants), ([], None, []))
+
+    def test_the_report_names_the_file_that_turned_the_skip_off(self):
+        text = gate.report(gate.Verdict(annotation_reader="packages/kavach/python/tests/test_x.py"))
+        self.assertIn(
+            "- Skipped: none: `packages/kavach/python/tests/test_x.py` reads annotations at run time", text
+        )
+
+
+COSMIC_RAY = Path(sys.executable).parent / "cosmic-ray"
+
+
+# In CI the plan job installs cosmic-ray, so there the test runs or fails.
+@unittest.skipUnless(COSMIC_RAY.exists() or os.environ.get("GITHUB_ACTIONS"), "cosmic-ray is installed in the plan job")
+class RealMutants(unittest.TestCase):
+    def test_exactly_the_annotation_mutants_of_a_module_are_skipped(self):
+        source = textwrap.dedent(
+            """\
+            from __future__ import annotations
+
+            def f(x: int | None = 1 | 2) -> str | None:
+                return x | 4
+            """
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fixture.py"
+            path.write_text(source, encoding="utf-8")
+            mutants = gate.enumerate_mutants(Path(tmp) / "work", "fixture", path)
+        spans = gate.annotation_spans(source)
+        bitor = [m for m in mutants if m.operator.startswith("ReplaceBinaryOperator_BitOr_")]
+        line3 = source.split("\n")[2]
+        columns = [i for i, ch in enumerate(line3) if ch == "|"]
+        skipped = {m.start for m in bitor if gate.inside(m, spans)}
+        kept = {m.start for m in bitor if not gate.inside(m, spans)}
+        # The return annotation's `|`, as in veda#650's run, and the
+        # parameter annotation's if cosmic-ray mutates it.
+        self.assertIn((3, columns[2]), skipped)
+        self.assertLessEqual(skipped, {(3, columns[0]), (3, columns[2])})
+        self.assertEqual(kept, {(3, columns[1]), (4, source.split("\n")[3].index("|"))})
+        # Nothing but an annotation's `|` is skipped.
+        self.assertFalse([m for m in mutants if gate.inside(m, spans) and m not in bitor])
+
+
 class Select(unittest.TestCase):
     def test_line_tests_by_class_cost_then_importing_modules(self):
         s = gate.Statements("x = (1,\n     2)\ny = 3\n")

@@ -12,7 +12,13 @@ mutation-equivalents.tsv) names it with the outcome it gets.
 - ``run``: records, per test, the lines each test runs (in its own process
   and in every Python child), then runs each mutant against only the tests
   recorded on its lines, failfast, under the memory and file caps. A changed
-  line no test runs is refused as uncovered, with no mutant run.
+  line no test runs is refused as uncovered, with no mutant run. A mutant
+  wholly inside an annotation Python never evaluates is skipped and listed
+  in the report, unless a list row names it (veda#685): its module has
+  ``from __future__ import annotations``, it lies in a parameter, return or
+  annotated-assignment annotation, and no Python file under
+  packages/kavach/python/, the tests included, reads annotations at run
+  time. No test can kill such a mutant.
 - ``cap``: the wrapper each test run goes through. It sets the caps, runs
   the tests and reports the largest child's memory.
 
@@ -25,6 +31,7 @@ mutant, and scores a timeout as a kill.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import queue
@@ -231,6 +238,94 @@ class Statements:
 
     def executable(self, line: int) -> bool:
         return self.first(line) in self.statements
+
+
+# ------------------------------------------------ unevaluated annotations
+
+# What reads an annotation at run time, so that a mutant in one could be
+# caught after all. Searched in every Python file under PRAGMA_ROOT, the
+# tests included, since one file can read another's hints.
+# `singledispatch`'s `register` reads the hints of the function it takes.
+ANNOTATION_READS = re.compile(
+    r"get_type_hints|__annotations__|__annotate__|annotationlib|inspect\.signature|from\s+inspect\s+import"
+    r"|singledispatch"
+)
+
+Span = tuple[tuple[int, int], tuple[int, int]]
+
+
+def annotation_spans(source: str) -> list[Span]:
+    """The (line, column) spans of a module's annotations that Python never
+    evaluates: each parameter, return and annotated-assignment annotation,
+    when the module has ``from __future__ import annotations``; none
+    without it, where a mutated annotation fails at import.
+
+    ``ast`` counts columns in UTF-8 bytes and cosmic-ray (through parso) in
+    characters, so the columns are turned into characters."""
+
+    tree = ast.parse(source)
+    deferred = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "__future__"
+        and any(alias.name == "annotations" for alias in node.names)
+        for node in tree.body
+    )
+    if not deferred:
+        return []
+    lines = source.split("\n")
+
+    def column(line: int, offset: int) -> int:
+        return len(lines[line - 1].encode("utf-8")[:offset].decode("utf-8", errors="ignore"))
+
+    spans: list[Span] = []
+
+    def add(node: ast.expr | None) -> None:
+        if node is not None:
+            spans.append(
+                (
+                    (node.lineno, column(node.lineno, node.col_offset)),
+                    (node.end_lineno, column(node.end_lineno, node.end_col_offset)),
+                )
+            )
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            params = node.args
+            for arg in (*params.posonlyargs, *params.args, *params.kwonlyargs, params.vararg, params.kwarg):
+                if arg is not None:
+                    add(arg.annotation)
+            add(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            add(node.annotation)
+    return spans
+
+
+def unevaluated(sources: dict[str, str], readers: dict[str, str]) -> tuple[dict[str, list[Span]], str | None]:
+    """Each module's annotation spans whose mutants the gate skips, and the
+    first of ``readers`` (path to text) that reads annotations at run time.
+    When one does, no module has spans."""
+
+    reader = next((path for path, text in sorted(readers.items()) if ANNOTATION_READS.search(text)), None)
+    if reader is not None:
+        return {module: [] for module in sources}, reader
+    return {module: annotation_spans(text) for module, text in sources.items()}, None
+
+
+def read_annotation_scope() -> tuple[dict[str, str], dict[str, str]]:
+    """kavach's modules by name, and every Python file under PRAGMA_ROOT by
+    path, the files whose annotation reads turn the skip off."""
+
+    sources = {p.stem: p.read_text(encoding="utf-8") for p in sorted((ROOT / SOURCES).glob("*.py"))}
+    readers = {
+        str(p.relative_to(ROOT)): p.read_text(encoding="utf-8")
+        for p in sorted((ROOT / PRAGMA_ROOT).rglob("*.py"))
+        if "__pycache__" not in p.parts
+    }
+    return sources, readers
+
+
+def inside(mutant: Mutant, spans: list[Span]) -> bool:
+    return any(start <= mutant.start and mutant.end <= end for start, end in spans)
 
 
 # ---------------------------------------------------------- the recording
@@ -537,9 +632,12 @@ class Mutant:
         return f"{self.module}.py:{self.start[0]}:{self.start[1]} {self.operator}"
 
 
-def enumerate_mutants(work: Path, module: str) -> list[Mutant]:
+def enumerate_mutants(work: Path, module: str, source: Path | None = None) -> list[Mutant]:
+    """cosmic-ray's mutants of a kavach module, or of the file ``source``."""
+
+    source = source or ROOT / SOURCES / f"{module}.py"
     where = fresh(work / "init" / module)
-    shutil.copy(ROOT / SOURCES / f"{module}.py", where / f"{module}.py")
+    shutil.copy(source, where / f"{module}.py")
     config = where / "cosmic-ray.toml"
     config.write_text(
         f'[cosmic-ray]\nmodule-path = "{module}.py"\ntimeout = 600.0\nexcluded-modules = []\n'
@@ -549,7 +647,7 @@ def enumerate_mutants(work: Path, module: str) -> list[Mutant]:
     tool = str(Path(sys.executable).parent / "cosmic-ray")
     subprocess.run([tool, "init", str(config), "session.sqlite"], cwd=where, check=True, capture_output=True)
     dump = subprocess.run([tool, "dump", "session.sqlite"], cwd=where, check=True, capture_output=True, text=True).stdout
-    source = read_module(module + ".py").splitlines()
+    lines = source.read_text(encoding="utf-8").splitlines()
     found = []
     for line in dump.splitlines():
         if not line.strip():
@@ -565,7 +663,7 @@ def enumerate_mutants(work: Path, module: str) -> list[Mutant]:
                 start=start,
                 end=end,
                 args=m.get("operator_args") or {},
-                line_text=source[start[0] - 1].strip() if start[0] - 1 < len(source) else "",
+                line_text=lines[start[0] - 1].strip() if start[0] - 1 < len(lines) else "",
             )
         )
     return found
@@ -774,6 +872,11 @@ class Verdict:
     # recorded on it and the test modules whose import runs it.
     lines: list[tuple[str, str, int, int]] = field(default_factory=list)
     mutants: list[Mutant] = field(default_factory=list)
+    # Mutants on changed lines left unrun: inside an annotation Python never
+    # evaluates (veda#685).
+    skipped: list[Mutant] = field(default_factory=list)
+    # The file whose annotation reads turned that skip off, if one did.
+    annotation_reader: str | None = None
     faults: list[str] = field(default_factory=list)
     timings: dict = field(default_factory=dict)
 
@@ -816,6 +919,44 @@ def plan(base: str) -> dict:
     return {"lines": lines, "rows": changed_rows, "problems": problems, "any": bool(lines or changed_rows)}
 
 
+def choose(
+    every: dict[str, list[Mutant]],
+    wanted: dict[str, set[int]],
+    rows: list[Row],
+    changed_rows: set[int],
+    spans: dict[str, list[Span]],
+) -> tuple[dict[tuple, Mutant], list[Mutant], list[str]]:
+    """The mutants to run: those on changed lines and those of the rows to
+    check, each a row names holding its outcome. Then the mutants skipped,
+    inside an annotation never evaluated and named by no row, and the
+    refusals of rows that name no mutant."""
+
+    chosen: dict[tuple, Mutant] = {}
+    refusals: list[str] = []
+    for module, mutants in every.items():
+        lines = wanted[module]
+        for mutant in mutants:
+            if lines.intersection(mutant.lines()):
+                chosen[(module, mutant.operator, mutant.occurrence)] = mutant
+    for row in rows:
+        module = row.file[:-3]
+        if module not in every:
+            continue
+        on_changed = any(m.start[0] in wanted[module] for m in listed(every[module], row))
+        named = listed(every[module], row)
+        if not named and (row.at in changed_rows or on_changed):
+            refusals.append(f"{LIST} line {row.at}, {row.label()}: cosmic-ray makes no such mutant")
+        for mutant in named:
+            if row.at in changed_rows or mutant.start[0] in wanted[module]:
+                mutant = chosen.setdefault((module, mutant.operator, mutant.occurrence), mutant)
+                mutant.expected, mutant.row = row.outcome, row
+    skipped = []
+    for key, mutant in list(chosen.items()):
+        if mutant.row is None and inside(mutant, spans.get(mutant.module, [])):
+            skipped.append(chosen.pop(key))
+    return chosen, skipped, refusals
+
+
 def run(base: str, work: Path, workers: int, pattern: str = "test_*.py") -> Verdict:
     verdict = Verdict()
     began = time.monotonic()
@@ -834,24 +975,9 @@ def run(base: str, work: Path, workers: int, pattern: str = "test_*.py") -> Verd
     start = time.monotonic()
     every: dict[str, list[Mutant]] = {module: enumerate_mutants(work, module) for module in sorted(wanted)}
     verdict.timings["enumerate"] = round(time.monotonic() - start, 1)
-    chosen: dict[tuple, Mutant] = {}
-    for module, mutants in every.items():
-        lines = wanted[module]
-        for mutant in mutants:
-            if lines.intersection(mutant.lines()):
-                chosen[(module, mutant.operator, mutant.occurrence)] = mutant
-    for row in rows:
-        module = row.file[:-3]
-        if module not in every:
-            continue
-        on_changed = any(m.start[0] in wanted[module] for m in listed(every[module], row))
-        named = listed(every[module], row)
-        if not named and (row.at in changed_rows or on_changed):
-            verdict.refusals.append(f"{LIST} line {row.at}, {row.label()}: cosmic-ray makes no such mutant")
-        for mutant in named:
-            if row.at in changed_rows or mutant.start[0] in wanted[module]:
-                mutant = chosen.setdefault((module, mutant.operator, mutant.occurrence), mutant)
-                mutant.expected, mutant.row = row.outcome, row
+    spans, verdict.annotation_reader = unevaluated(*read_annotation_scope())
+    chosen, verdict.skipped, refused = choose(every, wanted, rows, changed_rows, spans)
+    verdict.refusals += refused
 
     statements_of = {module: Statements(read_module(module + ".py")) for module in set(every) | set(planned["lines"])}
     executable = [
@@ -860,7 +986,7 @@ def run(base: str, work: Path, workers: int, pattern: str = "test_*.py") -> Verd
         for number in lines
         if statements_of[module].executable(number)
     ]
-    say(f"{len(chosen)} mutant(s) and {len(executable)} executable changed line(s) to judge")
+    say(f"{len(chosen)} mutant(s) and {len(executable)} executable changed line(s) to judge; skipped: {skip_note(verdict)}")
     if not chosen and not executable:
         # Comments, blank lines or docstrings only: nothing to record or run.
         verdict.timings["total"] = round(time.monotonic() - began, 1)
@@ -936,6 +1062,13 @@ def run(base: str, work: Path, workers: int, pattern: str = "test_*.py") -> Verd
     return verdict
 
 
+def skip_note(verdict: Verdict) -> str:
+    if verdict.annotation_reader:
+        return (f"none: `{verdict.annotation_reader}` reads annotations at run time, "
+                "so mutants inside annotations run too")
+    return f"{len(verdict.skipped)} mutant(s) inside an annotation never evaluated"
+
+
 def report(verdict: Verdict) -> str:
     counts: dict[str, int] = defaultdict(int)
     for mutant in verdict.mutants:
@@ -944,6 +1077,8 @@ def report(verdict: Verdict) -> str:
     md.append(f"- **{'Passed' if verdict.passed else 'Refused'}.** {len(verdict.mutants)} mutant(s): "
               + (", ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "none"))
     md.append(f"- Time: `{json.dumps(verdict.timings)}`")
+    if verdict.skipped or verdict.annotation_reader:
+        md.append(f"- Skipped: {skip_note(verdict)}")
     for title, items in (("Faults in the run", verdict.faults), ("Uncovered changed lines", verdict.uncovered),
                          ("Refused", verdict.refusals)):
         if items:
@@ -958,6 +1093,12 @@ def report(verdict: Verdict) -> str:
         for m in verdict.mutants:
             md.append(f"| `{m.label()}` | `{m.line_text[:80]}` | {m.expected} | {m.outcome} | {len(m.tests)} | {m.seconds} s |")
         md += ["", "</details>"]
+    if verdict.skipped:
+        md += ["", "### Skipped: inside an annotation never evaluated", "",
+               "Their modules have `from __future__ import annotations`, and no module of the package reads "
+               "annotations at run time, so no test can kill them (veda#685).", ""]
+        skipped = sorted(verdict.skipped, key=lambda m: (m.module, m.start, m.operator, m.occurrence))
+        md += [f"- `{m.label()}` on `{m.line_text[:80]}`" for m in skipped]
     return "\n".join(md) + "\n"
 
 

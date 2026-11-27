@@ -313,13 +313,23 @@ class AnnotationSpans(unittest.TestCase):
                 mutant = gate.Mutant(module, "ReplaceBinaryOperator_BitOr_Pow", 0, (2, col), (2, col + 1), {}, line)
                 self.assertTrue(gate.inside(mutant, self.spans(source)))
 
-    def test_a_package_that_reads_annotations_skips_nothing(self):
+    def test_a_package_that_reads_annotations_skips_nothing_and_says_where(self):
         for reader in ("typing.get_type_hints(f)", "f.__annotations__", "inspect.signature(f)",
-                       "from inspect import signature", "import annotationlib", "f.__annotate__"):
+                       "from inspect import signature", "import annotationlib", "f.__annotate__",
+                       "from functools import singledispatch"):
             with self.subTest(reader=reader):
-                spans = gate.unevaluated({"m": DEFERRED, "other": f"{reader}\n"})
-                self.assertEqual(spans, {"m": [], "other": []})
-        self.assertNotEqual(gate.unevaluated({"m": DEFERRED, "other": "x = 1\n"})["m"], [])
+                readers = {"a/m.py": DEFERRED, "a/tests/test_m.py": f"{reader}\n"}
+                spans, found = gate.unevaluated({"m": DEFERRED}, readers)
+                self.assertEqual((spans, found), ({"m": []}, "a/tests/test_m.py"))
+        spans, found = gate.unevaluated({"m": DEFERRED}, {"a/m.py": DEFERRED, "a/tests/test_m.py": "x = 1\n"})
+        self.assertIsNone(found)
+        self.assertNotEqual(spans["m"], [])
+
+    def test_the_scope_reads_kavachs_modules_and_its_tests(self):
+        sources, readers = gate.read_annotation_scope()
+        self.assertIn("boundary", sources)
+        self.assertIn("packages/kavach/python/kavach/boundary.py", readers)
+        self.assertIn("packages/kavach/python/tests/test_rules.py", readers)
 
 
 class Choose(unittest.TestCase):
@@ -356,6 +366,12 @@ class Choose(unittest.TestCase):
         self.assertIn("- Skipped: 1 mutant(s) inside an annotation never evaluated", text)
         self.assertIn("### Skipped: inside an annotation never evaluated", text)
         self.assertIn("`m.py:3:", text)
+
+    def test_the_report_names_the_file_that_turned_the_skip_off(self):
+        text = gate.report(gate.Verdict(annotation_reader="packages/kavach/python/tests/test_x.py"))
+        self.assertIn(
+            "- Skipped: none: `packages/kavach/python/tests/test_x.py` reads annotations at run time", text
+        )
 
 
 COSMIC_RAY = Path(sys.executable).parent / "cosmic-ray"

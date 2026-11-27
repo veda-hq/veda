@@ -16,8 +16,9 @@ mutation-equivalents.tsv) names it with the outcome it gets.
   wholly inside an annotation Python never evaluates is skipped and listed
   in the report, unless a list row names it (veda#685): its module has
   ``from __future__ import annotations``, it lies in a parameter, return or
-  annotated-assignment annotation, and no module of the package reads
-  annotations at run time. No test can kill such a mutant.
+  annotated-assignment annotation, and no Python file under
+  packages/kavach/python/, the tests included, reads annotations at run
+  time. No test can kill such a mutant.
 - ``cap``: the wrapper each test run goes through. It sets the caps, runs
   the tests and reports the largest child's memory.
 
@@ -242,10 +243,12 @@ class Statements:
 # ------------------------------------------------ unevaluated annotations
 
 # What reads an annotation at run time, so that a mutant in one could be
-# caught after all. Searched in every module of the package, since one
-# module can read another's hints.
+# caught after all. Searched in every Python file under PRAGMA_ROOT, the
+# tests included, since one file can read another's hints.
+# `singledispatch`'s `register` reads the hints of the function it takes.
 ANNOTATION_READS = re.compile(
     r"get_type_hints|__annotations__|__annotate__|annotationlib|inspect\.signature|from\s+inspect\s+import"
+    r"|singledispatch"
 )
 
 Span = tuple[tuple[int, int], tuple[int, int]]
@@ -297,13 +300,28 @@ def annotation_spans(source: str) -> list[Span]:
     return spans
 
 
-def unevaluated(sources: dict[str, str]) -> dict[str, list[Span]]:
-    """Each module's annotation spans whose mutants the gate skips: none in
-    any module when one of them reads annotations at run time."""
+def unevaluated(sources: dict[str, str], readers: dict[str, str]) -> tuple[dict[str, list[Span]], str | None]:
+    """Each module's annotation spans whose mutants the gate skips, and the
+    first of ``readers`` (path to text) that reads annotations at run time.
+    When one does, no module has spans."""
 
-    if any(ANNOTATION_READS.search(text) for text in sources.values()):
-        return {module: [] for module in sources}
-    return {module: annotation_spans(text) for module, text in sources.items()}
+    reader = next((path for path, text in sorted(readers.items()) if ANNOTATION_READS.search(text)), None)
+    if reader is not None:
+        return {module: [] for module in sources}, reader
+    return {module: annotation_spans(text) for module, text in sources.items()}, None
+
+
+def read_annotation_scope() -> tuple[dict[str, str], dict[str, str]]:
+    """kavach's modules by name, and every Python file under PRAGMA_ROOT by
+    path, the files whose annotation reads turn the skip off."""
+
+    sources = {p.stem: p.read_text(encoding="utf-8") for p in sorted((ROOT / SOURCES).glob("*.py"))}
+    readers = {
+        str(p.relative_to(ROOT)): p.read_text(encoding="utf-8")
+        for p in sorted((ROOT / PRAGMA_ROOT).rglob("*.py"))
+        if "__pycache__" not in p.parts
+    }
+    return sources, readers
 
 
 def inside(mutant: Mutant, spans: list[Span]) -> bool:
@@ -857,6 +875,8 @@ class Verdict:
     # Mutants on changed lines left unrun: inside an annotation Python never
     # evaluates (veda#685).
     skipped: list[Mutant] = field(default_factory=list)
+    # The file whose annotation reads turned that skip off, if one did.
+    annotation_reader: str | None = None
     faults: list[str] = field(default_factory=list)
     timings: dict = field(default_factory=dict)
 
@@ -955,8 +975,8 @@ def run(base: str, work: Path, workers: int, pattern: str = "test_*.py") -> Verd
     start = time.monotonic()
     every: dict[str, list[Mutant]] = {module: enumerate_mutants(work, module) for module in sorted(wanted)}
     verdict.timings["enumerate"] = round(time.monotonic() - start, 1)
-    package = {p.stem: p.read_text(encoding="utf-8") for p in sorted((ROOT / SOURCES).glob("*.py"))}
-    chosen, verdict.skipped, refused = choose(every, wanted, rows, changed_rows, unevaluated(package))
+    spans, verdict.annotation_reader = unevaluated(*read_annotation_scope())
+    chosen, verdict.skipped, refused = choose(every, wanted, rows, changed_rows, spans)
     verdict.refusals += refused
 
     statements_of = {module: Statements(read_module(module + ".py")) for module in set(every) | set(planned["lines"])}
@@ -966,10 +986,7 @@ def run(base: str, work: Path, workers: int, pattern: str = "test_*.py") -> Verd
         for number in lines
         if statements_of[module].executable(number)
     ]
-    say(
-        f"{len(chosen)} mutant(s) and {len(executable)} executable changed line(s) to judge; "
-        f"{len(verdict.skipped)} skipped inside annotations never evaluated"
-    )
+    say(f"{len(chosen)} mutant(s) and {len(executable)} executable changed line(s) to judge; {skip_note(verdict)}")
     if not chosen and not executable:
         # Comments, blank lines or docstrings only: nothing to record or run.
         verdict.timings["total"] = round(time.monotonic() - began, 1)
@@ -1045,6 +1062,13 @@ def run(base: str, work: Path, workers: int, pattern: str = "test_*.py") -> Verd
     return verdict
 
 
+def skip_note(verdict: Verdict) -> str:
+    if verdict.annotation_reader:
+        return (f"none: `{verdict.annotation_reader}` reads annotations at run time, "
+                "so mutants inside annotations run too")
+    return f"{len(verdict.skipped)} mutant(s) inside an annotation never evaluated"
+
+
 def report(verdict: Verdict) -> str:
     counts: dict[str, int] = defaultdict(int)
     for mutant in verdict.mutants:
@@ -1053,8 +1077,8 @@ def report(verdict: Verdict) -> str:
     md.append(f"- **{'Passed' if verdict.passed else 'Refused'}.** {len(verdict.mutants)} mutant(s): "
               + (", ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "none"))
     md.append(f"- Time: `{json.dumps(verdict.timings)}`")
-    if verdict.skipped:
-        md.append(f"- Skipped: {len(verdict.skipped)} mutant(s) inside an annotation never evaluated")
+    if verdict.skipped or verdict.annotation_reader:
+        md.append(f"- Skipped: {skip_note(verdict)}")
     for title, items in (("Faults in the run", verdict.faults), ("Uncovered changed lines", verdict.uncovered),
                          ("Refused", verdict.refusals)):
         if items:

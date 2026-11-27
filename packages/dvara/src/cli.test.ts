@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { after, describe, it } from "node:test";
+import { after, describe, it as test, type TestContext } from "node:test";
 import {
   entry,
   isEntry,
@@ -31,7 +31,24 @@ import { repo } from "./records/fixture.test.ts";
 const dirs: string[] = [];
 after(() => {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  // A run that never settles leaves the supervisor's sampling interval
+  // running: once every test has ended, a process still alive 5 s later
+  // exits, so the mutant is killed rather than timed out (veda#654). The
+  // timer is unref'd, so a healthy run ends as before.
+  setTimeout(() => process.exit(), 5_000).unref();
 });
+
+type Case = (t: TestContext) => void | Promise<void>;
+/**
+ * Every case fails at 30 s unless it sets its own limit: a mutant that keeps
+ * a supervised run from settling would otherwise hang it until Stryker's.
+ */
+function it(name: string, fn: Case): void;
+function it(name: string, options: { timeout: number }, fn: Case): void;
+function it(name: string, options: Case | { timeout: number }, fn?: Case): void {
+  if (typeof options === "function") void test(name, { timeout: 30_000 }, options);
+  else void test(name, options, fn as Case);
+}
 
 const scratch = (prefix: string): string => {
   const dir = mkdtempSync(join(tmpdir(), prefix));

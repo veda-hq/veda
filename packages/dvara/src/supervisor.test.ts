@@ -39,6 +39,17 @@ const it = (name: string, fn: (t: TestContext) => void | Promise<void>) =>
   test(name, { timeout: 5_000 }, fn);
 
 /**
+ * A run that never settles also never clears its sampling interval, so its
+ * test fails at 5 s but the process stays alive until Stryker's limit: five
+ * such retries outgrew the gate's 15-minute budget (veda#654). Once every
+ * test has ended, a process still alive 5 s later exits, with the code the
+ * runner set. The timer is unref'd, so a healthy run ends as before.
+ */
+after(() => {
+  setTimeout(() => process.exit(), 5_000).unref();
+});
+
+/**
  * Git hermetic for the whole process: the fixtures' git and the hooks the
  * supervisor runs spawn git with this process's environment. A global trace2
  * event target (a daemon's socket) could otherwise write into a fixture's

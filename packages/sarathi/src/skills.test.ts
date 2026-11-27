@@ -90,6 +90,44 @@ describe('skills/working-rules/SKILL.md', () => {
   });
 });
 
+describe('skills/slice-review/SKILL.md', () => {
+  const text = read('skills/slice-review/SKILL.md');
+  const flat = text.replace(/\s+/g, ' ');
+
+  it('opens with the frontmatter a plugin skill needs', () => {
+    frontmatter(text, 'slice-review');
+  });
+
+  it('passes the slice and its contract to a fresh reader, never the conversation', () => {
+    for (const rule of [
+      /Before `niyam propose` for a slice/,
+      /the slice's title and body, verbatim/,
+      /Leave out the conversation, your reasons/,
+      /Use the `Explore` type/,
+      /One subagent, one pass/,
+    ]) {
+      assert.match(flat, rule);
+    }
+  });
+
+  it('holds an adversarial brief that asks for findings only, or says none were found', () => {
+    const brief = /```text\n([\s\S]*?)\n```/.exec(text)?.[1]?.replace(/\s+/g, ' ') ?? '';
+    for (const part of [/^Adversarial review\./, /Do not validate, summarise or praise/, /at most five findings/, /"Nothing found"/, /\*\*You will see:\*\*/, /\*\*Why:\*\*/, /\*\*Guards:\*\*/, /SLICE <title and body, verbatim>$/]) {
+      assert.match(brief, part);
+    }
+  });
+
+  it('has the proposing agent answer each finding where the owner sees it', () => {
+    assert.match(flat, /For each one, fix the slice, or say why not/);
+    assert.match(flat, /on the page `niyam propose --page` names/);
+  });
+
+  it('is the file veda tells its agents to use before proposing', () => {
+    const claude = readFileSync(new URL('../../../CLAUDE.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+    assert.match(claude, /Before `niyam propose` for a slice, have it read with fresh eyes, as `packages\/sarathi\/skills\/slice-review\/SKILL\.md` says/);
+  });
+});
+
 describe('skills/research-first/SKILL.md', () => {
   const text = read('skills/research-first/SKILL.md');
   const flat = text.replace(/\s+/g, ' ');

@@ -359,6 +359,13 @@ describe('parseConfig', () => {
     ['{"commonNames":[1]}', 'commonNames is not a list of strings'],
     ['{"oppositePairs":[["a"]]}', 'oppositePairs is not a list of [word, word] pairs'],
     ['{"oppositePairs":"a"}', 'oppositePairs is not a list of [word, word] pairs'],
+    ['3', 'the config is not a JSON object'],
+    ['null', 'the config is not a JSON object'],
+    ['"x"', 'the config is not a JSON object'],
+    ['{"a":1,"b":2}', 'the config has unknown field(s): a, b'],
+    ['{"threshold":1e999}', 'threshold is not a number'],
+    ['{"commonNames":["a",1]}', 'commonNames is not a list of strings'],
+    ['{"oppositePairs":[["a","b"],["c"]]}', 'oppositePairs is not a list of [word, word] pairs'],
   ] as const) {
     it(`refuses ${text}`, () => {
       assert.throws(() => parseConfig(text), { message });
@@ -400,5 +407,165 @@ describe('runDuplicateTests', () => {
     assert.deepEqual(result.out.slice(6, 10), ['', '   100% Match:', '     A: a.test.ts:1 "builds an order"', '     B: b.test.ts:1 "builds an order"']);
     assert.equal(result.out.at(-1), `Total potential duplicates: ${String((result.out.length - 8) / 4)}`);
     assert.ok(result.out.some((l) => l.includes('c.test.ts:1 "builds an orders"')));
+  });
+});
+
+describe('duplicate-tests as each file, name and config reads', () => {
+  it('takes a test or spec file of each language as a test file, and nothing after its extension', () => {
+    const files = ['a.test.ts', 'a.spec.jsx', 'a.test.tsx', 'a.test.js', 'a.test.ts.snap', 'a.tests.ts'];
+    assert.deepEqual(
+      files.map((file) => DEFAULT_CONFIG.include.test(file)),
+      [true, true, true, true, false, false],
+    );
+  });
+
+  it('reads a .mts or .cts file as TS, so a generic arrow is code, and a .tsx file or any other as TSX only', () => {
+    const tests = "\ndescribe('D', () => { it('d', () => { expect(a).toBe(1); expect(b).toEqual(2); expect(c).toMatch(/x/); }); });";
+    const generic = `const p = <T>(x: T): T => x;${tests}`;
+    assert.equal(extractTestSignatures(ts, 'g.test.mts', generic).signatures.length, 1);
+    assert.equal(extractTestSignatures(ts, 'g.test.cts', generic).signatures.length, 1);
+    for (const file of ['g.test.tsx', 'g.test.es6']) {
+      assert.deepEqual(extractTestSignatures(ts, file, generic), { signatures: [], parseError: "Unexpected token. Did you mean `{'>'}` or `&gt;`? (1:24)" }, file);
+    }
+  });
+
+  it('keeps a .ts file its own parse when that is clean, and its own errors when both fail', () => {
+    const tests = "\ndescribe('D', () => { it('d', () => { expect(a).toBe(1); expect(b).toEqual(2); expect(c).toMatch(/x/); }); });";
+    // Clean under both: TS reads a type assertion, TSX an element divided twice.
+    assert.deepEqual(extractTestSignatures(ts, 'c.test.ts', `const x = <a>b</a>/g/1;${tests}`), {
+      signatures: [],
+      parseError: 'a <T>value type assertion, which a JSX parse reads as an unterminated element (1:10)',
+    });
+    assert.deepEqual(extractTestSignatures(ts, 'b.test.ts', `const v = <number>w; ) )${tests}`), { signatures: [], parseError: 'Declaration or statement expected. (1:21)' });
+  });
+
+  it('refuses at the first syntax Babel had no plugin for, and judges only a class by its decorators', () => {
+    const tests = "\ndescribe('D', () => { it('d', () => { expect(a).toBe(1); expect(b).toEqual(2); expect(c).toMatch(/x/); }); });";
+    assert.deepEqual(extractTestSignatures(ts, 'a.test.ts', `class K { static accessor x = 1; static accessor y = 2; }${tests}`), {
+      signatures: [],
+      parseError: 'an accessor field, which needs the decoratorAutoAccessors parser plugin (1:10)',
+    });
+    for (const ok of ['class K { static x = 1; }', 'class K { readonly y = 2; }', 'export @dec function f() {}']) {
+      assert.equal(extractTestSignatures(ts, 'ok.test.ts', `${ok}${tests}`).signatures.length, 1, ok);
+    }
+  });
+
+  it('skips a test named by each default common name, in another file too', () => {
+    const common = ['should be defined', 'should exist', 'should return', 'should throw', 'should create', 'should update', 'should delete', 'should get', 'should set'];
+    for (const testName of common) {
+      assert.deepEqual(findDuplicates(DEFAULT_CONFIG, [sig({ testName }), sig({ file: 'b.test.ts', testName })]), [], testName);
+    }
+    assert.deepEqual(findDuplicates(DEFAULT_CONFIG, [sig({ testName: ' should return' }), sig({ file: 'b.test.ts', testName: ' should return' })]), []);
+  });
+
+  it('skips a pair when either test is common or has under three assertions', () => {
+    const common = sig({ testName: 'should return' });
+    const near = sig({ file: 'b.test.ts', testName: 'should returns' });
+    assert.deepEqual(findDuplicates(DEFAULT_CONFIG, [common, near]), []);
+    assert.deepEqual(findDuplicates(DEFAULT_CONFIG, [near, common]), []);
+    const three = sig({ assertionPattern: ['toBe', 'toBe', 'toBe'] });
+    const two = sig({ file: 'b.test.ts', assertionPattern: ['toBe', 'toBe'] });
+    assert.deepEqual(findDuplicates(DEFAULT_CONFIG, [three, two]), []);
+    assert.deepEqual(findDuplicates(DEFAULT_CONFIG, [two, three]), []);
+  });
+
+  it('excuses opposite names across files', () => {
+    assert.deepEqual(findDuplicates(DEFAULT_CONFIG, [sig({ testName: 'accepts it when valid' }), sig({ file: 'b.test.ts', testName: 'accepts it when invalid' })]), []);
+  });
+
+  it('reads each default opposite pair either way round, and neither word alone', () => {
+    const pairs = [
+      ['success', 'failure'],
+      ['success', 'error'],
+      ['pass', 'fail'],
+      ['valid', 'invalid'],
+      ['correct', 'incorrect'],
+      ['positive', 'negative'],
+      ['zero', 'negative'],
+      ['true', 'false'],
+      ['enabled', 'disabled'],
+      ['before', 'after'],
+      ['start', 'end'],
+      ['to', 'from'],
+      ['forward', 'backward'],
+      ['add', 'remove'],
+      ['create', 'delete'],
+    ];
+    for (const [first, second] of pairs) {
+      assert.equal(areOppositeScenarios(DEFAULT_CONFIG, `x ${String(first)}`, `x ${String(second)}`), true, `${String(first)} ${String(second)}`);
+      assert.equal(areOppositeScenarios(DEFAULT_CONFIG, `x ${String(second)}`, `x ${String(first)}`), true, `${String(second)} ${String(first)}`);
+      assert.equal(areOppositeScenarios(DEFAULT_CONFIG, `x ${String(first)}`, 'x plain'), false, String(first));
+      assert.equal(areOppositeScenarios(DEFAULT_CONFIG, `x ${String(second)}`, 'x plain'), false, String(second));
+    }
+  });
+
+  it('tells HTTP tokens, AND/OR and endpoints apart only when both names have them', () => {
+    assert.equal(areOppositeScenarios(DEFAULT_CONFIG, 'GET returns 200', 'GET returns 404'), true);
+    assert.equal(areOppositeScenarios(DEFAULT_CONFIG, 'joins with AND', 'joins with AND OR'), true);
+    assert.equal(areOppositeScenarios(DEFAULT_CONFIG, 'joins with AND', 'joins plainly'), false);
+    assert.equal(areOppositeScenarios(DEFAULT_CONFIG, 'joins plainly', 'joins with AND'), false);
+    assert.equal(areOppositeScenarios(DEFAULT_CONFIG, 'serves health', 'serves /health'), false);
+  });
+
+  it('drops each filler word, every one-letter word, and punctuation from a name in one file', () => {
+    const filler = ['should', 'when', 'with', 'the', 'an', 'it', 'is', 'are', 'be', 'to', 'for', 'of', 'in', 'on', 'and', 'or', 'not', 'if', 'that', 'this', 'can', 'does'];
+    for (const word of filler) {
+      assert.equal(areSameFileComplementary(DEFAULT_CONFIG, 'a.test.ts', 'a.test.ts', `rejects ${word} quantity`, 'rejects quantity'), false, word);
+    }
+    assert.equal(areSameFileComplementary(DEFAULT_CONFIG, 'a.test.ts', 'a.test.ts', 'rejects x quantity', 'rejects quantity'), false);
+    assert.equal(areSameFileComplementary(DEFAULT_CONFIG, 'a.test.ts', 'a.test.ts', 'checks x-ray scans', 'checks ray scans'), false);
+  });
+
+  it('excuses in one file opposite names with the same words, and a word only the second has', () => {
+    assert.equal(areSameFileComplementary(DEFAULT_CONFIG, 'a.test.ts', 'a.test.ts', 'GET list', 'get list'), true);
+    assert.equal(areSameFileComplementary(DEFAULT_CONFIG, 'a.test.ts', 'a.test.ts', 'rejects quantity', 'rejects zero quantity'), true);
+  });
+
+  it('does not excuse the same words repeated other times in one file', () => {
+    assert.equal(areSameFileComplementary(DEFAULT_CONFIG, 'a.test.ts', 'a.test.ts', 'checks ab ab cd', 'checks ab cd cd'), false);
+  });
+
+  it('scores a describe path joined by " > ", and none when only the first has one', () => {
+    assert.equal(compositeSimilarity(sig({ describePath: [] }), sig({})), 0.7);
+    assert.equal(compositeSimilarity(sig({ describePath: ['Or', 'ders'] }), sig({})), 0.5 + 0.2 + (1 - 3 / 9) * 0.3);
+    assert.equal(compositeSimilarity(sig({}), sig({ describePath: ['Or', 'ders'] })), 0.5 + 0.2 + (1 - 3 / 9) * 0.3);
+  });
+
+  it('scores a string against an empty one 0, even one whose lowercase is longer', () => {
+    // `İ` lowercases to two UTF-16 units.
+    assert.equal(stringSimilarity('İ', ''), 0);
+    assert.equal(stringSimilarity('İ', 'i'), 0.5);
+    assert.equal(compositeSimilarity(sig({ describePath: ['İ'] }), sig({ describePath: [] })), 0.7);
+  });
+
+  it('reports the best match first, then the rest in the order found', () => {
+    const test = (name: string): string => `describe('Orders', () => { it('${name}', () => { expect(a).toBe(1); expect(b).toEqual(2); expect(c).toMatch(/x/); }); });`;
+    const files = Object.entries({ 'a.test.ts': test('builds an orders'), 'b.test.ts': test('builds an order'), 'c.test.ts': test('builds an order') }).map(([file, text]) => ({ file, path: `/repo/${file}`, read: () => text }));
+    assert.deepEqual(runDuplicateTests(ts, DEFAULT_CONFIG, 'files', files), {
+      code: 1,
+      out: [
+        '🔍 Searching for duplicate tests (Threshold: 0.85)...',
+        '   Mode: files',
+        '   Analyzing 3 files...',
+        '   Extracted 3 test signatures.',
+        '',
+        '❌ Found potential duplicate tests:',
+        '',
+        '   100% Match:',
+        '     A: b.test.ts:1 "builds an order"',
+        '     B: c.test.ts:1 "builds an order"',
+        '',
+        '   99% Match:',
+        '     A: a.test.ts:1 "builds an orders"',
+        '     B: b.test.ts:1 "builds an order"',
+        '',
+        '   99% Match:',
+        '     A: a.test.ts:1 "builds an orders"',
+        '     B: c.test.ts:1 "builds an order"',
+        '',
+        'Total potential duplicates: 3',
+      ],
+      err: [],
+    });
   });
 });

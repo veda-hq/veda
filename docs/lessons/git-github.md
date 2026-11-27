@@ -86,6 +86,13 @@ and PR state, and the GitHub API.
   never ask the owner to. A branch left behind still counts: on
   https://github.com/veda-hq/veda/pull/383 an old branch, kept for the owner to delete, held a
   secret-shaped token and failed every PR's Secret scans check until it went.
+- **Check out a tag to push it.** veda's pre-push runs agnipariksha with `--pushed-refs`
+  (`packages/agnipariksha/src/pushed-refs.ts`), which refuses a push of any ref that is not the
+  checked-out `HEAD`. So a release tag pushed from a branch is refused: "the push carries
+  refs/tags/vX.Y.Z at …, not the checked-out HEAD (…)". With a clean tree, run
+  `git switch --detach vX.Y.Z`, then `git push origin refs/tags/vX.Y.Z`. An annotated tag is
+  compared by its commit, so the detached checkout is enough. The session that released dvara
+  after veda#700 did this in its own worktree on 2026-11-27.
 - **Tracked-files checks pass on new files.** A check that scans only git-tracked files passes
   vacuously on a new untracked file, so stage it before running the check.
 - **Read-then-write on a counter races.** Code that looks up the latest round (or version) of a

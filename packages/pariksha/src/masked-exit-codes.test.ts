@@ -361,6 +361,10 @@ describe('handlerStarts', () => {
     });
   }
 
+  it('reads every `||` inside a group as text, however many there are', () => {
+    for (const list of ['a ( x || y || z ) || b', 'a { x || y || z; } || b']) assert.deepEqual(handlerStarts(list), [list.lastIndexOf('||')], list);
+  });
+
   it('finds every operator after a closed group', () => {
     const list = 'a $(x) || b || c';
     assert.deepEqual(handlerStarts(list), [list.indexOf('||'), list.lastIndexOf('||')]);

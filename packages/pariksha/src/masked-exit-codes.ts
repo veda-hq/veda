@@ -377,19 +377,18 @@ interface PrintfPass {
 }
 
 /** The format's `pieces` written once, each `%s` or `%b` taking the next of `args` ('' when none is left). */
-const printfPass = (pieces: readonly string[], args: readonly string[]): PrintfPass => {
-  const [piece, ...later] = pieces;
-  if (piece === undefined) return { text: '', rest: args, stop: false };
-  if (piece !== '%s' && piece !== '%b') {
-    const next = printfPass(later, args);
-    return { ...next, text: (piece === '%%' ? '%' : printfEscapes(piece, 'format').text) + next.text };
-  }
-  const [arg = '', ...more] = args;
-  const value = piece === '%s' ? { text: arg, stop: false } : printfEscapes(arg, 'argument');
-  if (value.stop) return { text: value.text, rest: more, stop: true };
-  const next = printfPass(later, more);
-  return { ...next, text: value.text + next.text };
-};
+// A fold over the pieces, not a recursion: a fixed list, so no mutant can spin it.
+const printfPass = (pieces: readonly string[], args: readonly string[]): PrintfPass =>
+  pieces.reduce<PrintfPass>(
+    (pass, piece) => {
+      if (pass.stop) return pass;
+      if (piece !== '%s' && piece !== '%b') return { ...pass, text: pass.text + (piece === '%%' ? '%' : printfEscapes(piece, 'format').text) };
+      const [arg = '', ...more] = pass.rest;
+      const value = piece === '%s' ? { text: arg, stop: false } : printfEscapes(arg, 'argument');
+      return { text: pass.text + value.text, rest: more, stop: value.stop };
+    },
+    { text: '', rest: args, stop: false },
+  );
 
 /**
  * What `printf FORMAT ARGS…` writes, for `%s`, `%b` and `%%` with every
@@ -405,13 +404,18 @@ export const renderPrintf = (words: readonly string[]): string | null => {
   // this reader does not render. An escape writes `%` (`\045`) as text.
   const pieces = format.split(/(%[sb%])/);
   if (pieces.some((piece, index) => index % 2 === 0 && piece.includes('%'))) return null;
-  /** Every pass: the format is reused while arguments remain, and one that takes none runs once. */
-  const passes = (left: readonly string[]): string => {
-    const once = printfPass(pieces, left);
-    if (once.stop || once.rest.length === 0 || once.rest.length === left.length) return once.text;
-    return once.text + passes(once.rest);
-  };
-  return passes(args);
+  // The format is reused while arguments remain, and one that takes none runs
+  // once. Each pass but the last takes an argument, so the arguments and one
+  // more bound the passes: a fold over that many, which no mutant can spin.
+  const runs = Array.from({ length: args.length + 1 });
+  return runs.reduce<{ readonly text: string; readonly left: readonly string[]; readonly done: boolean }>(
+    (state) => {
+      if (state.done) return state;
+      const once = printfPass(pieces, state.left);
+      return { text: state.text + once.text, left: once.rest, done: once.stop || once.rest.length === 0 || once.rest.length === state.left.length };
+    },
+    { text: '', left: args, done: false },
+  ).text;
 };
 
 /**

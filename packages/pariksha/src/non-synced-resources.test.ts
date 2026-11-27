@@ -57,6 +57,8 @@ describe('linkPath', () => {
     assert.equal(linkPath('<a b.md'), '<a');
     assert.equal(linkPath('<a#b>'), '<a');
     assert.equal(linkPath('<abc'), '<abc');
+    // A `>` with no `<` before it is part of the path.
+    assert.equal(linkPath('x>y.md'), 'x>y.md');
   });
 
   it('can leave nothing', () => {

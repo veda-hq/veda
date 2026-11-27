@@ -99,10 +99,10 @@ export const moduleExports = (ts: Ts, root: string, file: string): ModuleExports
         }
       } else if (ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) {
         // An enum always has a name; a default class may not.
-        const name = statement.name?.text;
-        if (name !== undefined) locals.set(name, { kind: 'value' });
+        const name = statement.name;
+        if (name !== undefined) locals.set(name.text, { kind: 'value' });
         if (hasExport(ts, statement) && hasDefault(ts, statement)) out.set('default', 'value');
-        else if (hasExport(ts, statement) && name !== undefined) out.set(name, 'value');
+        else if (hasExport(ts, statement) && name !== undefined) out.set(name.text, 'value');
       } else if (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) {
         locals.set(statement.name.text, { kind: 'type' });
         if (hasExport(ts, statement)) out.set(statement.name.text, 'type');

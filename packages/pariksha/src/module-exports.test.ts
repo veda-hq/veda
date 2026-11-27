@@ -23,9 +23,22 @@ const repo = (files: Record<string, string>): string => {
   }
   return root;
 };
+/**
+ * TypeScript that refuses to parse a file twice, recording what it parsed:
+ * each module is read once, so a cycle that is not ended throws here at
+ * once rather than running on.
+ */
+const once = (parsed: string[] = []): Ts => ({
+  ...ts,
+  createSourceFile: (...args: Parameters<Ts['createSourceFile']>) => {
+    if (parsed.includes(args[0])) throw new Error(`${args[0]} parsed twice`);
+    parsed.push(args[0]);
+    return ts.createSourceFile(...args);
+  },
+});
 /** The exports of `m.ts` among these files, as a plain object. */
 const of = (files: Record<string, string>): { exports: Record<string, string>; unfollowed: readonly string[] } => {
-  const found = moduleExports(ts, repo(files), 'm.ts');
+  const found = moduleExports(once(), repo(files), 'm.ts');
   return { exports: Object.fromEntries(found.exports), unfollowed: found.unfollowed };
 };
 
@@ -205,35 +218,37 @@ describe('moduleExports', () => {
       "import { type Ty } from './x';",
       "import type { Ty2 } from './x';",
       "import './side-effect';",
-      'export { C, E, I, T, bare, missing, Ty, Ty2 };',
+      // A specifier that is no string names no module to follow.
+      'import y from z;',
+      'export { C, E, I, T, bare, missing, Ty, Ty2, y };',
       "export type * from './x';",
       'export class {}',
     ].join('\n');
-    assert.deepEqual(of({ 'm.ts': source, 'x.ts': 'export const shown = 1;\nexport type Ty = 1;\nexport type Ty2 = 2;\n', 'side-effect.ts': '' }).exports, {
-      open: 'value',
-      C: 'value',
-      E: 'value',
-      I: 'type',
-      T: 'type',
-      bare: 'value',
-      missing: 'unresolved',
-      Ty: 'type',
-      Ty2: 'type',
+    // Imported as types, Ty and Ty2 are types here, whatever x.ts holds.
+    assert.deepEqual(of({ 'm.ts': source, 'x.ts': 'export const shown = 1;\nexport const Ty = 1;\nexport const Ty2 = 2;\n', 'side-effect.ts': '' }), {
+      exports: {
+        open: 'value',
+        C: 'value',
+        E: 'value',
+        I: 'type',
+        T: 'type',
+        bare: 'value',
+        missing: 'unresolved',
+        Ty: 'type',
+        Ty2: 'type',
+        y: 'unresolved',
+      },
+      unfollowed: [],
     });
     assert.deepEqual(of({ 'm.ts': 'export default class {}\nclass K {}\nexport { K };\n' }).exports, { default: 'value', K: 'value' });
     assert.deepEqual(of({ 'm.ts': 'const a = 1;\nexport { a };\n' }).exports, { a: 'value' });
+    // An import for its side effects re-exports nothing; nor does a star that names no module.
+    assert.deepEqual(of({ 'm.ts': "import './side';\nexport * ;\n", 'side.ts': 'export const s = 1;\n' }), { exports: {}, unfollowed: [] });
   });
 
   it('parses each module once, however often and however circularly it is reached', () => {
     const parsed: string[] = [];
-    const counting: Ts = {
-      ...ts,
-      createSourceFile: (...args: Parameters<Ts['createSourceFile']>) => {
-        if (parsed.includes(args[0])) throw new Error(`${args[0]} parsed twice`);
-        parsed.push(args[0]);
-        return ts.createSourceFile(...args);
-      },
-    };
+    const counting = once(parsed);
     const root = repo({
       'm.ts': "export * from './b';\nexport * from './c';\n",
       'b.ts': "export * from './d';\nexport * from './m';\n",
@@ -245,6 +260,6 @@ describe('moduleExports', () => {
   });
 
   it('reads a module that does not exist as one exporting nothing', () => {
-    assert.deepEqual(moduleExports(ts, repo({}), 'gone.ts'), { exports: new Map(), unfollowed: [] });
+    assert.deepEqual(moduleExports(once(), repo({}), 'gone.ts'), { exports: new Map(), unfollowed: [] });
   });
 });

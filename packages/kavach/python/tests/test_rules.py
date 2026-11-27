@@ -251,10 +251,10 @@ SESSION = "11111111-2222-4333-8444-555555555555"
 HOST = "local_0a0a0a0a-1b1b-4c2c-8d3d-4e4e4e4e4e4e"
 
 
-class RecordedWorktree(Repo):
-    """veda#362: two managed worktrees of one repository, ``mine`` (the one
-    the desktop app's record names as this session's) and ``theirs``, with
-    the app folder faked under a test HOME."""
+class RecordFixture(Repo):
+    """Two managed worktrees of one repository, ``mine`` (the one the desktop
+    app's record names as this session's) and ``theirs``, with the app folder
+    faked under a test HOME."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -278,6 +278,10 @@ class RecordedWorktree(Repo):
 
     def find(self, command: str, cwd: str, session: str | None = SESSION) -> str | None:
         return rules.cd_out_of_worktree(rules.Call("Bash", {"command": command}, cwd, session_id=session))
+
+
+class RecordedWorktree(RecordFixture):
+    """veda#362: the record names ``mine``."""
 
     def test_from_another_sessions_worktree_the_cd_back_passes(self) -> None:
         os.mkdir(os.path.join(self.mine, "sub"))
@@ -305,7 +309,9 @@ class RecordedWorktree(Repo):
     def test_a_recorded_path_that_is_no_ownable_root_names_nothing(self) -> None:
         sub = os.path.join(self.mine, "sub")
         os.mkdir(sub)
-        for named in ("/", sub, self.repo, "relative/path", os.path.join(self.work, "missing")):
+        # The main checkout is no ownable root either, but a record naming it
+        # gets a way out of its own (MainCheckoutRecord, veda#641).
+        for named in ("/", sub, "relative/path", os.path.join(self.work, "missing")):
             with self.subTest(named=named):
                 self.write_record(worktreePath=named, cwd=named)
                 found = self.find(f"cd {self.mine}", self.theirs) or ""
@@ -348,6 +354,131 @@ class RecordedWorktree(Repo):
                 event: dict[str, object] = {"tool_name": "Bash", "tool_input": {"command": f"cd {self.mine}"}, "cwd": self.theirs}
                 if session is not None:
                     event["session_id"] = session
+                result = subprocess.run(
+                    [sys.executable, str(COMMAND_GUARD)], input=json.dumps(event), cwd=self.theirs, env=env,
+                    capture_output=True, text=True, timeout=120, check=False,
+                )
+                self.assertEqual(result.returncode, code, result.stderr)
+
+    def test_a_worktree_record_never_asks_for_a_main_checkout(self) -> None:
+        with mock.patch.object(rules, "recorded_main_checkout", side_effect=AssertionError("asked")):
+            self.assertIn("another worktree", self.find(f"cd {self.theirs}", self.mine) or "")
+            self.assertIsNone(self.find(f"cd {self.mine}", self.theirs))
+
+
+STARTER = "local_5f5f5f5f-6a6a-4b7b-8c8c-9d9d9d9d9d9d"
+STRANGER = "local_e0e0e0e0-f1f1-4a2a-8b3b-c4c4c4c4c4c4"
+
+
+class MainCheckoutRecord(RecordFixture):
+    """veda#641: this session's record names the main checkout, as a
+    scheduled task's does; another live record names ``theirs``, and no
+    record names ``made``, a worktree the session made."""
+
+    REFUSE = config.parse({"rules": {"cd-out-of-worktree": "refuse"}})
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.made = os.path.join(self.repo, ".claude", "worktrees", "made")
+        git(self.repo, "worktree", "add", "-q", self.made)
+        self.write_record(cwd=self.repo, worktreePath=None)
+        self.owner(STARTER, self.theirs)
+
+    def owner(self, host: str, cwd: str, **fields: object) -> None:
+        record = {"sessionId": host, "cliSessionId": "66666666-7777-4888-8999-aaaaaaaaaaaa", "cwd": cwd, "isArchived": False, **fields}
+        Path(self.records, f"{host}.json").write_text(json.dumps(record), encoding="utf-8")
+
+    def test_from_a_live_peers_worktree_the_cd_out_passes(self) -> None:
+        os.mkdir(os.path.join(self.repo, "sub"))
+        for command in (
+            f"cd {self.repo}",
+            f"cd {self.repo}/sub",
+            f"cd {self.made}",
+            f"pushd {self.made}",
+            f"cd {self.repo} && cd {self.made}",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.find(command, self.theirs))
+                call = rules.Call("Bash", {"command": command}, self.theirs, session_id=SESSION)
+                self.assertEqual(rules.judge(call, self.REFUSE), rules.Outcome([], []))
+
+    def test_into_another_live_peers_worktree_it_still_fires(self) -> None:
+        self.owner(STRANGER, self.mine)
+        found = self.find(f"cd {self.mine}", self.theirs) or ""
+        self.assertIn(f"another worktree, {self.mine}, which another session may own", found)
+        # An archived record is no owner, so that worktree is a way out too.
+        self.owner(STRANGER, self.mine, isArchived=True)
+        self.assertIsNone(self.find(f"cd {self.mine}", self.theirs))
+
+    def test_from_a_worktree_no_one_else_works_in_it_judges_as_before(self) -> None:
+        # Writes there are this session's to make, so nothing strands it.
+        found = self.find(f"cd {self.repo}", self.made) or ""
+        self.assertIn(f"outside this session's checkout ({self.made} is this session's)", found)
+        self.assertIn(f"another worktree, {self.mine}", self.find(f"cd {self.mine}", self.made) or "")
+
+    def test_a_failed_scan_judges_as_before(self) -> None:
+        failed = boundary.OwnerScan(None, failure="OSError")
+        with mock.patch.object(boundary, "worktree_owners", return_value=failed):
+            found = self.find(f"cd {self.repo}", self.theirs) or ""
+            self.assertIn(f"outside this session's checkout ({self.theirs} is this session's)", found)
+        # A scan of the target that fails is no way out either.
+        scans = iter((boundary.OwnerScan((STARTER,)), failed))
+        with mock.patch.object(boundary, "worktree_owners", side_effect=lambda *args: next(scans)):
+            self.assertIn(f"another worktree, {self.made}", self.find(f"cd {self.made}", self.theirs) or "")
+
+    def test_only_this_main_checkouts_managed_worktrees_are_a_way_out(self) -> None:
+        targets: list[str] = []
+        # Repositories that sort before and after this one's folder.
+        for name in ("other", "zz-other"):
+            other = os.path.join(self.work, name)
+            os.mkdir(other)
+            git(other, "init", "-q", ".")
+            git(other, "config", "user.email", "t@example.com")
+            git(other, "config", "user.name", "t")
+            git(other, "commit", "-q", "--allow-empty", "-m", "init")
+            managed = os.path.join(other, ".claude", "worktrees", "x")
+            git(other, "worktree", "add", "-q", managed)
+            targets += [other, managed]
+        unmanaged = os.path.join(self.work, "loose")
+        git(self.repo, "worktree", "add", "-q", unmanaged)
+        elsewhere = os.path.join(self.work, "elsewhere")
+        for target in (*targets, unmanaged, elsewhere, os.path.join(self.work, "missing")):
+            with self.subTest(target=target):
+                self.assertIsNotNone(self.find(f"cd {target}", self.theirs))
+                self.assertIsNone(rules.main_checkout_way_out(target, self.theirs, self.repo))
+
+    def test_a_later_cd_is_judged_from_where_the_way_out_led(self) -> None:
+        elsewhere = os.path.join(self.work, "elsewhere")
+        # From the main checkout, which no session owns.
+        found = self.find(f"cd {self.repo} && cd {elsewhere}", self.theirs) or ""
+        self.assertIn(f"outside its checkout (the shell is in {self.repo}, which the worktree guard", found)
+        # From the worktree it made, which is the session's.
+        found = self.find(f"cd {self.made} && cd {self.repo}", self.theirs) or ""
+        self.assertIn(f"outside this session's checkout ({self.made} is this session's)", found)
+
+    def test_a_record_that_does_not_fit_gets_no_way_out(self) -> None:
+        self.assertIn("outside this session's checkout", self.find(f"cd {self.repo}", self.theirs, session=None) or "")
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_HOST_SESSION_ID": STARTER}):
+            self.assertIn(f"another worktree, {self.made}", self.find(f"cd {self.made}", self.theirs) or "")
+
+    def test_main_checkout_way_out(self) -> None:
+        way = rules.main_checkout_way_out
+        self.assertEqual(way(self.repo, self.theirs, self.repo), (self.repo, False))
+        self.assertEqual(way(self.made, self.theirs, self.repo), (self.made, True))
+        self.assertIsNone(way(self.theirs, self.made, self.repo))
+        self.assertIsNone(way(os.path.join(self.work, "elsewhere"), self.theirs, self.repo))
+        with mock.patch.object(boundary, "checkout_state", return_value=None):
+            self.assertIsNone(way(self.made, self.theirs, self.repo))
+
+    def test_the_command_guard_lets_the_cd_out_through_both_refusing_rules(self) -> None:
+        settings = os.path.join(self.work, "kavach.json")
+        refuse = {"rules": {"cd-out-of-worktree": "refuse", "other-sessions-worktree": "refuse"}}
+        Path(settings).write_text(json.dumps(refuse), encoding="utf-8")
+        env = {**ENV, "HOME": self.home, "CLAUDE_CODE_HOST_SESSION_ID": HOST, "KAVACH_CONFIG": settings}
+        self.owner(STRANGER, self.mine)
+        for target, code in ((self.repo, 0), (self.made, 0), (self.mine, 2)):
+            with self.subTest(target=target):
+                event = {"tool_name": "Bash", "tool_input": {"command": f"cd {target}"}, "cwd": self.theirs, "session_id": SESSION}
                 result = subprocess.run(
                     [sys.executable, str(COMMAND_GUARD)], input=json.dumps(event), cwd=self.theirs, env=env,
                     capture_output=True, text=True, timeout=120, check=False,

@@ -19,7 +19,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path, PurePath
-from typing import Any, Mapping, NamedTuple, Protocol, Sequence
+from typing import Any, Mapping, NamedTuple, Optional, Protocol, Sequence
 
 
 # Admission to this set means one thing: NO invocation of the command mutates
@@ -663,40 +663,84 @@ def session_record(app: Path, host: str) -> dict[str, Any] | None:
     return record
 
 
-def session_worktree(session_id: object, own: Any, environ: Mapping[str, str]) -> Path | None:
-    """The worktree the desktop app records as this session's, or ``None``.
+def recorded_folder(session_id: object, environ: Mapping[str, str]) -> Optional[Path]:
+    """The folder the desktop app's record of this session names, or ``None``.
 
     The record counts only when the hook's environment names the app session
     (``CLAUDE_CODE_HOST_SESSION_ID``) and its ``cliSessionId`` is the payload's
     ``session_id``: the checks the side-session notes folders pass. Its
-    ``worktreePath`` names the worktree, or, where a record has none, its
+    ``worktreePath`` names the folder, or, where a record has none, its
     ``cwd``, the folder the session started in (``shellFolders``, not
-    ``cwd``, follows the shell). The path counts only when it is absolute, a
-    real directory, and the root of a checkout a session can own
-    (``ownable_checkout``), so a record naming ``/``, a subfolder or a main
-    checkout names nothing. Never raises: anything that does not fit is
-    ``None``, and the caller keeps its behaviour without a record."""
+    ``cwd``, follows the shell). The path counts only when it is absolute and
+    a real directory, not a symlink. May raise; its callers do not."""
+
+    host = environ.get("CLAUDE_CODE_HOST_SESSION_ID", "")
+    if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
+        return None
+    if not HOST_SESSION.fullmatch(host):
+        return None
+    app = claude_app_root()
+    if app.is_symlink():
+        return None
+    record = session_record(app, host)
+    if record is None or record.get("cliSessionId") != session_id:
+        return None
+    named = record.get("worktreePath") or record.get("cwd")
+    if not isinstance(named, str) or not named.startswith("/"):
+        return None
+    path = Path(named)
+    if path.is_symlink() or not path.is_dir():
+        return None
+    return path
+
+
+def session_worktree(session_id: object, own: Any, environ: Mapping[str, str]) -> Optional[Path]:
+    """The worktree the desktop app records as this session's, or ``None``.
+
+    The record's folder (``recorded_folder``) counts only when it is the root
+    of a checkout a session can own (``ownable_checkout``), so a record naming
+    ``/``, a subfolder or a main checkout names nothing. Never raises:
+    anything that does not fit is ``None``, and the caller keeps its behaviour
+    without a record."""
 
     try:
-        host = environ.get("CLAUDE_CODE_HOST_SESSION_ID", "")
-        if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
-            return None
-        if not HOST_SESSION.fullmatch(host):
-            return None
-        app = claude_app_root()
-        if app.is_symlink():
-            return None
-        record = session_record(app, host)
-        if record is None or record.get("cliSessionId") != session_id:
-            return None
-        named = record.get("worktreePath") or record.get("cwd")
-        if not isinstance(named, str) or not named.startswith("/"):
-            return None
-        path = Path(named)
-        if path.is_symlink() or not path.is_dir():
+        path = recorded_folder(session_id, environ)
+        if path is None:
             return None
         root = ownable_checkout(path, own, environ)
-        if root is None or root.resolve() != path.resolve():
+        # `samefile`, not an ordering a mutant could keep: the root is the
+        # path or a folder above it.
+        if root is None or not root.samefile(path):
+            return None
+        return root
+    except Exception:
+        return None
+
+
+def session_main_checkout(session_id: object, own: Any, environ: Mapping[str, str]) -> Optional[Path]:
+    """The main checkout the desktop app records as this session's, or
+    ``None`` (veda#641).
+
+    A scheduled task's record names the main checkout it started in: the task
+    makes its own worktree later. The record's folder (``recorded_folder``)
+    counts only when it is the root of a main (not linked) checkout that
+    ``ownable_checkout`` does not take, so a record naming a worktree, a
+    subfolder, ``/`` or the plain clone `worktree.ownCheckout` names gives
+    ``None``. Never raises, as ``session_worktree`` does not."""
+
+    try:
+        path = recorded_folder(session_id, environ)
+        if path is None:
+            return None
+        state = checkout_state(path)
+        if state is None:
+            return None
+        root, linked, _primary = state
+        if linked or not root.samefile(path):
+            return None
+        # What `ownable_checkout` takes of a main checkout: the plain clone
+        # `worktree.ownCheckout` names.
+        if owns_plain_checkout(own, root, environ):
             return None
         return root
     except Exception:
@@ -720,7 +764,10 @@ def worktree_owners(root: Path, host: str) -> OwnerScan:
 
     Every record is looked at, for each call whose shell is in a worktree
     that this session's record does not name: a subagent's ``agent-*``
-    worktree or one the session made, as well as another session's. So only
+    worktree or one the session made, as well as another session's. A
+    session whose record names a main checkout (a scheduled task's) makes
+    its own worktree, so the scan runs for each of its calls in one
+    (veda#641). So only
     each record's head is read first (``RECORD_HEAD``): the app writes
     ``cwd`` third. A head whose top-level ``cwd`` is another folder is
     skipped. The whole record is read and parsed only when that ``cwd`` is

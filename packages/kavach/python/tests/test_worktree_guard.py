@@ -2902,6 +2902,14 @@ class OtherSessionsWorktreeTest(GuardFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("(refuses from 2026-12-01)", result.stdout)
 
+    def test_its_own_worktree_sorting_after_the_shells_still_fires(self) -> None:
+        # Only the same worktree passes, not one that sorts after it.
+        later = self.main / ".claude" / "worktrees" / "zz-mine"
+        git(self.main, "worktree", "add", "-qb", later.name, str(later))
+        self.write_record(HOST, SESSION, later)
+        self.assertIn("this session's is zz-mine.", self.assert_warns(self.guard(self.theirs)))
+        self.assert_silent(self.guard(later, settings=self.REFUSE))
+
     def test_several_owners_are_counted(self) -> None:
         self.write_record(STRANGER, "77777777-7777-4777-8777-777777777777", self.theirs)
         self.assertIn("which 2 other live sessions work in", self.assert_warns(self.guard(self.theirs)))
@@ -2931,10 +2939,150 @@ class OtherSessionsWorktreeTest(GuardFixture):
         self.assert_silent(self.guard(self.theirs, settings=self.REFUSE))
 
     def test_a_record_naming_no_worktree_keeps_todays_behaviour(self) -> None:
-        for named in (self.main, self.mine / "sub", "relative/path", self.outside / "gone"):
+        for named in (self.mine / "sub", "relative/path", self.outside / "gone"):
             with self.subTest(named=named):
                 self.write_record(HOST, SESSION, named)
                 self.assert_silent(self.guard(self.theirs, settings=self.REFUSE))
+
+    # A record naming the main checkout: a scheduled task's, which makes its
+    # own worktree later (veda#641).
+
+    def test_a_main_checkout_record_in_a_worktree_it_made_passes(self) -> None:
+        self.write_record(HOST, SESSION, self.main)
+        for cwd in (self.made, self.agent):
+            with self.subTest(cwd=cwd.name):
+                self.assert_silent(self.guard(cwd, settings=self.REFUSE))
+        self.assertFalse(self.log.exists())
+
+    def test_a_main_checkout_record_in_a_live_peers_worktree_warns(self) -> None:
+        self.write_record(HOST, SESSION, self.main)
+        context = self.assert_warns(self.guard(self.theirs))
+        self.assertIn(
+            "the shell is in worktree their-task, which another live session works in; "
+            f"this session started in the main checkout {self.main}, so its own worktree is one it made. "
+            "A write here changes that session's files and branch. "
+            "Run `cd <the worktree this session made>` alone to return, then retry "
+            f"(the shell is in {self.theirs}).",
+            context,
+        )
+        # No `cd` to the main checkout, where writes are refused.
+        self.assertNotIn(f"cd {self.main}", context)
+        self.assertTrue(context.endswith("This call still runs while the rule is on trial."))
+        row = self.rows()[-1]
+        self.assertEqual((row["rule"], row["mode"]), ("other-sessions-worktree", "warn"))
+
+    def test_a_main_checkout_record_in_a_live_peers_worktree_refuses(self) -> None:
+        self.write_record(HOST, SESSION, self.main)
+        for tool, values in (
+            ("Bash", {"command": "touch new.txt"}),
+            ("Write", {"file_path": str(self.theirs / "a.txt"), "content": "x"}),
+        ):
+            with self.subTest(tool=tool):
+                result = self.guard(self.theirs, values, tool, settings=self.REFUSE)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("BLOCKED: the shell is in worktree their-task", result.stderr)
+                self.assertIn("this session started in the main checkout", result.stderr)
+                self.assertIn("(kavach rule other-sessions-worktree)", result.stderr)
+                self.assertEqual(self.rows()[-1]["mode"], "refuse")
+        # Two owners are counted as for a worktree session.
+        self.write_record(STRANGER, "77777777-7777-4777-8777-777777777777", self.theirs)
+        self.assertIn("which 2 other live sessions work in", self.assert_warns(self.guard(self.theirs)))
+
+    def test_a_main_checkout_record_still_reads_and_leaves_a_peers_worktree(self) -> None:
+        self.write_record(HOST, SESSION, self.main)
+        for command in ("cat tracked.txt", f"cd {self.made}", f"cd {self.main}"):
+            with self.subTest(command=command):
+                self.assert_silent(self.guard(self.theirs, {"command": command}, settings=self.REFUSE))
+        self.assertFalse(self.log.exists())
+
+    def test_a_main_checkout_records_failed_scan_allows(self) -> None:
+        self.write_record(HOST, SESSION, self.main)
+        moved = self.outside / "records"
+        shutil.move(str(self.records.parent.parent), str(moved))
+        self.records.parent.parent.symlink_to(moved)
+        self.assert_silent(self.guard(self.theirs, settings=self.REFUSE))
+        row = self.rows()[-1]
+        self.assertEqual((row["rule"], row["mode"]), ("other-sessions-worktree", "scan-failed"))
+        self.assertTrue(row["reason"].endswith("so it found no owner; this rule let the call through."))
+
+    def test_session_main_checkout(self) -> None:
+        environ = {"CLAUDE_CODE_HOST_SESSION_ID": HOST}
+        own = ADAPTER.config.parse({"worktree": {"ownCheckout": OWN_CHECKOUT}}).own_checkout
+        link = self.outside / "main-link"
+        link.symlink_to(self.main)
+        (self.main / "sub").mkdir()
+        found = MODULE.session_main_checkout
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            self.write_record(HOST, SESSION, self.main)
+            self.assertEqual(found(SESSION, None, environ), self.main)
+            # The plain clone `ownCheckout` names is ownable, so no main checkout here.
+            owned = {**environ, "AGENT_REMOTE": "true", "CLAUDE_PROJECT_DIR": str(self.main)}
+            self.assertIsNone(found(SESSION, own, owned))
+            # Outside that environment, or for another project, it is one again.
+            self.assertEqual(found(SESSION, own, {**environ, "CLAUDE_PROJECT_DIR": str(self.main)}), self.main)
+            self.assertEqual(found(SESSION, own, {**owned, "CLAUDE_PROJECT_DIR": str(self.outside)}), self.main)
+            # A record that does not match names nothing.
+            self.assertIsNone(found(OTHER_SESSION, None, environ))
+            self.assertIsNone(found("x", None, environ))
+            self.assertIsNone(found(SESSION, None, {}))
+            self.assertIsNone(found(SESSION, None, {"CLAUDE_CODE_HOST_SESSION_ID": STARTER}))
+            # A malformed session id is refused even where the record carries it.
+            self.write_record(HOST, "x", self.main)
+            self.assertIsNone(found("x", None, environ))
+            # So is a records folder reached through a symlink.
+            app = self.home / "Library" / "Application Support" / "Claude"
+            self.write_record(HOST, SESSION, self.main)
+            with mock.patch.object(MODULE, "claude_app_root", return_value=self.outside / "app-link"):
+                (self.outside / "app-link").symlink_to(app)
+                self.assertIsNone(found(SESSION, None, environ))
+            # Nor does a folder that is not a main checkout's root.
+            for named in (self.mine, self.main / "sub", link, "relative/path", self.outside, self.outside / "gone"):
+                with self.subTest(named=named):
+                    self.write_record(HOST, SESSION, named)
+                    self.assertIsNone(found(SESSION, None, environ))
+            # A path that is no string names nothing either.
+            self.write_record(HOST, SESSION, self.main, worktreePath=3)
+            self.assertIsNone(found(SESSION, None, environ))
+            # A relative path names nothing, even one that is a main checkout
+            # from the hook's own folder.
+            self.write_record(HOST, SESSION, self.main.name)
+            here = os.getcwd()
+            os.chdir(self.main.parent)
+            self.addCleanup(os.chdir, here)
+            self.assertIsNone(found(SESSION, None, environ))
+            self.assertIsNone(MODULE.session_worktree(SESSION, None, environ))
+            os.chdir(here)
+            # `worktreePath` comes before `cwd`, as for a worktree.
+            self.write_record(HOST, SESSION, self.mine, worktreePath=str(self.main))
+            self.assertEqual(found(SESSION, None, environ), self.main)
+            self.assertIsNone(MODULE.session_worktree(SESSION, None, environ))
+            # And it never raises.
+            with mock.patch.object(MODULE, "checkout_state", side_effect=RuntimeError("boom")):
+                self.assertIsNone(found(SESSION, None, environ))
+        # A record naming a worktree keeps `session_worktree`'s answer.
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            self.write_record(HOST, SESSION, self.mine)
+            self.assertEqual(MODULE.session_worktree(SESSION, None, environ), self.mine)
+            self.assertIsNone(found(SESSION, None, environ))
+            # And `session_worktree` never raises either.
+            with mock.patch.object(MODULE, "ownable_checkout", side_effect=RuntimeError("boom")):
+                self.assertIsNone(MODULE.session_worktree(SESSION, None, environ))
+
+    def test_the_main_checkout_is_asked_only_without_a_worktree(self) -> None:
+        # A worktree session pays nothing new.
+        asked = mock.patch.object(ADAPTER.boundary, "session_main_checkout", side_effect=AssertionError("asked"))
+        mine = mock.patch.object(ADAPTER.boundary, "session_worktree", return_value=self.mine)
+        none = mock.patch.object(ADAPTER.boundary, "worktree_owners", return_value=ADAPTER.boundary.OwnerScan(()))
+        with asked, mine, none:
+            finding = ADAPTER.other_sessions_worktree(SESSION, self.theirs, ADAPTER.config.parse({}), {})
+        self.assertEqual(finding, ADAPTER.OtherSessionsFinding(None))
+        # Without either record, no scan runs.
+        scanned = mock.patch.object(ADAPTER.boundary, "worktree_owners", side_effect=AssertionError("scanned"))
+        no_worktree = mock.patch.object(ADAPTER.boundary, "session_worktree", return_value=None)
+        no_main = mock.patch.object(ADAPTER.boundary, "session_main_checkout", return_value=None)
+        with scanned, no_worktree, no_main:
+            finding = ADAPTER.other_sessions_worktree(SESSION, self.theirs, ADAPTER.config.parse({}), {})
+        self.assertEqual(finding, ADAPTER.OtherSessionsFinding(None))
 
     def test_owners_that_do_not_count(self) -> None:
         cases: list[tuple[str, Callable[[], None]]] = [

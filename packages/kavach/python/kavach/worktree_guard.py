@@ -24,9 +24,10 @@ side-session notes folders the desktop app granted it.
 
 A managed worktree passes the gate, but not silently when it is another live
 session's (rule ``other-sessions-worktree``, veda#363). That is the case when
-the desktop app's record of this session names a different worktree and
-another record, not archived, names this one. It warns until the consumer's
-``rules`` set it to refuse.
+the desktop app's record of this session names a different worktree, or a
+main checkout (a scheduled task's, veda#641), and another record, not
+archived, names this one. It warns until the consumer's ``rules`` set it to
+refuse.
 """
 
 from __future__ import annotations
@@ -1432,7 +1433,9 @@ def other_sessions_worktree(
 
     - the desktop app's record of this session names its worktree
       (``boundary.session_worktree``, the record #362's rule trusts), and that
-      worktree is not ``root``;
+      worktree is not ``root``; or the record names a main checkout
+      (``boundary.session_main_checkout``), as a scheduled task's does, since
+      the task makes its own worktree later (veda#641);
     - another record, not archived, names ``root`` as its ``cwd``
       (``boundary.worktree_owners``).
 
@@ -1444,7 +1447,12 @@ def other_sessions_worktree(
     in ``scan`` (veda#588); a failed scan finds no owner."""
 
     own = boundary.session_worktree(session_id, loaded.own_checkout, environ)
-    if own is None or own.resolve() == root.resolve():
+    started = None
+    if own is None:
+        started = boundary.session_main_checkout(session_id, loaded.own_checkout, environ)
+        if started is None:
+            return OtherSessionsFinding(None)
+    elif own.resolve() == root.resolve():
         return OtherSessionsFinding(None)
     scan = boundary.worktree_owners(root, environ.get("CLAUDE_CODE_HOST_SESSION_ID", ""))
     problem = None
@@ -1460,6 +1468,16 @@ def other_sessions_worktree(
         sessions, whose = "another live session works", "that session's"
     else:
         sessions, whose = f"{len(owners)} other live sessions work", "their"
+    if own is None:
+        # No `cd` to the main checkout: writes there are refused. Rule
+        # `cd-out-of-worktree` lets this `cd` through (veda#641).
+        return OtherSessionsFinding(
+            f"the shell is in worktree {root.name}, which {sessions} in; this session started "
+            f"in the main checkout {started}, so its own worktree is one it made. A write here "
+            f"changes {whose} files and branch. Run `cd <the worktree this session made>` alone "
+            f"to return, then retry (the shell is in {root}).",
+            problem,
+        )
     return OtherSessionsFinding(
         f"the shell is in worktree {root.name}, which {sessions} in; this session's is "
         f"{own.name}. A write here changes {whose} files and branch. Run "

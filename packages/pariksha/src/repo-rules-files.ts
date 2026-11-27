@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { lineAt, positiveInteger, stringList, type Finding, type Repo, type Rule } from './repo-rules.ts';
 
 /** The extension of `path`, lower-cased, with its dot; '' for none. */
-const extensionOf = (path: string): string => /(\.[^./]+)$/.exec(path)?.[1]?.toLowerCase() ?? '';
+const extensionOf = (path: string): string => /\.[^./]+$/.exec(path)?.[0].toLowerCase() ?? '';
 
 /** A line over 1 MB: what one grep hit of a review bot cannot carry. */
 export const DEFAULT_MAX_LINE_BYTES = 1_000_000;
@@ -12,14 +12,13 @@ export const DEFAULT_MAX_LINE_BYTES = 1_000_000;
 export const longLineOf = (bytes: Buffer, max: number): { line: number; length: number } | undefined => {
   let start = 0;
   let line = 1;
-  for (;;) {
-    const end = bytes.indexOf(10, start);
-    const stop = end === -1 ? bytes.length : end;
-    if (stop - start > max) return { line, length: stop - start };
-    if (end === -1) return undefined;
-    start = end + 1;
+  for (const [i, byte] of bytes.entries()) {
+    if (byte !== 10) continue;
+    if (i - start > max) return { line, length: i - start };
+    start = i + 1;
     line += 1;
   }
+  return bytes.length - start > max ? { line, length: bytes.length - start } : undefined;
 };
 
 /** Ignore files a ripgrep-based reviewer reads at the root, besides `.gitignore`. */
@@ -73,8 +72,9 @@ export const rawNulInSource: Rule = {
     for (const file of repo.files) {
       if (!extensions.includes(extensionOf(file))) continue;
       const bytes = repo.bytes(file);
-      const at = bytes?.indexOf(0) ?? -1;
-      if (bytes === undefined || at === -1) continue;
+      if (bytes === undefined) continue;
+      const at = bytes.indexOf(0);
+      if (at === -1) continue;
       findings.push({ file, line: lineAt(bytes.subarray(0, at).toString('latin1'), at), detail: 'a raw NUL byte, so git shows the file as binary' });
     }
     return findings;
@@ -109,7 +109,7 @@ export const codeqlSuppressionCommentForm: Rule = {
     for (const file of repo.files) {
       if (!CODEQL_SOURCES.includes(extensionOf(file))) continue;
       const text = repo.read(file);
-      if (text === undefined || !text.includes('codeql[')) continue;
+      if (text === undefined) continue;
       text.split('\n').forEach((line, i) => {
         const problem = suppressionProblem(line);
         if (problem !== undefined) findings.push({ file, line: i + 1, detail: `the suppression comment ${problem}` });

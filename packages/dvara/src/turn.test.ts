@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, it, test } from "node:test";
+import { after, afterEach, beforeEach, describe, test } from "node:test";
 import { START_IDENTITY_FORMAT, type LivenessSystem } from "./liveness.ts";
 import { lockFilename, type SlotChild, type SpawnSlotChild } from "./slot.ts";
 import {
@@ -76,6 +76,26 @@ import {
  * so a run inside a held turn, in CI or with the queue enforcing tests the
  * same thing, and nothing writes into the machine's real queue.
  */
+
+/**
+ * Every test fails at 10 s rather than waiting forever: a mutant that leaves
+ * a promise unsettled (sleepFor with its timer removed) otherwise held the
+ * suite open to the gate's limit, twice per retry pass, and outgrew its
+ * 15-minute budget (veda#654). Failing inside the limit, the test kills it.
+ */
+const it = (name: string, fn: () => void | Promise<void>) => test(name, { timeout: 10_000 }, fn);
+
+/**
+ * Once every test has ended, a process still alive 5 s later is held open by
+ * a handle nothing closed: it fails, and exits. The timer is unref'd, so a
+ * healthy run ends as before.
+ */
+after(() => {
+  setTimeout(() => {
+    process.stderr.write("turn.test.ts: still running 5 s after the last test; a handle was left open\n");
+    process.exit(1);
+  }, 5_000).unref();
+});
 
 const SELF = 4242;
 const OTHER = 999;
@@ -436,7 +456,6 @@ describe("sleepFor", () => {
 });
 
 describe("underQueueLock", () => {
-  const it = (name: string, fn: () => Promise<void>) => test(name, { timeout: 10_000 }, fn);
   const sleeps: number[] = [];
   const sleep = async (ms: number): Promise<void> => {
     sleeps.push(ms);
@@ -815,7 +834,6 @@ const tickets = (): string[] =>
 describe("turn", () => {
   // Each case is bounded: a mutant that leaves a wait hanging fails it here,
   // at once, rather than at the mutation run's limit.
-  const it = (name: string, fn: () => Promise<void>) => test(name, { timeout: 10_000 }, fn);
   it("refuses bad arguments with its usage", async () => {
     const run = start(["--class", "fast", "--", "x"]);
     assert.equal(await run.status, 2);

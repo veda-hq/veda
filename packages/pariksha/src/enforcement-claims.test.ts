@@ -82,7 +82,7 @@ describe('parseConfig', () => {
     refuses({ dispatcher: { path: 'scripts/d.sh', call: 'x' } }, /^Error: dispatcher: unknown key "call"$/);
     refuses({ workspaces: [{ dir: '.', probes: ['a.ts'], files: [] }] }, /^Error: workspaces\[0\]: unknown key "files"$/);
     refuses({ stageRoots: { hooks: ['.husky'], roots: [] } }, /unknown key "roots"/);
-    refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], glob: '' } }, /unknown key "glob"/);
+    refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], glob: '' } }, /^Error: runnable: unknown key "glob"$/);
     refuses({ workspaceList: { pnpm: 'p.yaml', npm: 'x' } }, /unknown key "npm"/);
     refuses({ tests: { file: 'x', runner: 'y', only: 1 } }, /unknown key "only"/);
     refuses({ packageRunner: { path: 'a.sh', call: 'run', validatorsDir: 'v', extra: 1 } }, /unknown key "extra"/);
@@ -97,7 +97,7 @@ describe('parseConfig', () => {
   });
 
   it('refuses a missing or bad dispatcher, package runner, stage root, prefix, extension or pattern', () => {
-    refuses({ dispatcher: 'scripts/run-validation.sh' }, /"dispatcher" must be an object/);
+    refuses({ dispatcher: 'scripts/run-validation.sh' }, /^Error: "dispatcher" must be an object$/);
     refuses({ dispatcher: { path: '/abs.sh' } }, /dispatcher: "path": "\/abs\.sh" is not a normalized root-relative path/);
     refuses({ packageRunner: { path: 'a.sh', call: 'run validator', validatorsDir: 'v' } }, /"call" must be a shell function name/);
     refuses({ stageRoots: { hooks: [], workflows: [] } }, /"hooks" and "workflows" are both empty/);

@@ -742,8 +742,18 @@ describe('subcommand claims', () => {
     ]);
   });
 
-  it('records each program call with its first argument, by the path that ran it', () => {
-    const reach = resolveStageReach(repo('node_modules/.bin/tool one\ntsx vendor/tool/cli.ts two\nnode_modules/.bin/tsx three\n'), withPrograms);
-    assert.deepEqual([...reach.calls].sort(), ['node_modules/.bin/tool\tone', 'node_modules/.bin/tsx\tthree', 'vendor/tool/cli.ts\ttwo']);
+  it('records each program call with its first argument, by program, and nothing a path outside the root bin or the listed paths runs', () => {
+    const hook = ['node_modules/.bin/tool one', 'tsx vendor/tool/cli.ts two', 'node_modules/.bin/tsx three', '../node_modules/.bin/tool six', 'print  seven', 'pnpm turbo run check'].join('\n');
+    const more = { 'apps/web/package.json': JSON.stringify({ scripts: { check: 'node_modules/.bin/tool four && tsx vendor/tool/cli.ts five' } }) };
+    assert.deepEqual([...resolveStageReach(repo(hook, more), withPrograms).calls].sort(), ['tool\tone', 'tool\ttwo', 'tsx\tthree']);
+    assert.deepEqual([...resolveStageReach(repo(hook, more), STAGES).calls].sort(), ['tool\tone', 'tsx\tthree']);
+    const noBin = config({ runnable: { prefixes: CONFIG.runnable.prefixes, extensions: CONFIG.runnable.extensions, programs: PROGRAMS } });
+    assert.deepEqual([...resolveStageReach(repo(hook, more), noBin).calls].sort(), ['tool\ttwo']);
+  });
+
+  it('reads no program into a script that is not one, whatever its config begins with', () => {
+    assert.deepEqual(verdict('bash scripts/x.sh\n', claim({ enforcementScript: 'scripts/x.sh', enforcementConfig: 'tool sub' }), withPrograms, { 'scripts/x.sh': 'exit 0\n' }), []);
+    const noBin = config({ runnable: { prefixes: CONFIG.runnable.prefixes, extensions: CONFIG.runnable.extensions } });
+    assert.deepEqual(verdict('node_modules/.bin/tool other\nbash scripts/x.sh\n', claim({}), noBin)[0]?.rule, 'node_modules/.bin/tool');
   });
 });

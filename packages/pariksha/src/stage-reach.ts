@@ -112,7 +112,7 @@ export interface StageReach {
   /** `<workspace dir>\t<script name>` → the script's command. */
   readonly scripts: Map<string, string>;
   readonly workspaces: readonly string[];
-  /** `<program path>\t<first argument>`, for each `<bin>/<name>` or listed program path a stage runs. */
+  /** `<program>\t<first argument>`, for each call of a program a stage runs. */
   readonly calls: Set<string>;
 }
 
@@ -274,20 +274,28 @@ export const runnablePatterns = (prefixes: readonly string[], extensions: readon
 const FIRST_ARGUMENT = `["']?(?:[^\\S\\n]|\\\\\\n)+["']?([a-z][\\w-]*)(?![\\w./-])`;
 
 /**
- * `<program path>\t<first argument>` for each program call in `text`, run
- * from `cwd`: a `<bin>/<name>` binary in command position, or anywhere a
- * path `programs` lists, such as `tsx <path> <subcommand>`. A path is resolved
- * from `cwd` as `pathsIn` resolves it, so a listed path written from another
- * folder names another file.
+ * `<program>\t<first argument>` for each program call in `text`, run from
+ * `cwd`: the root's `<bin>/<name>` binary in command position, program
+ * `<name>`, or anywhere a path `programs` lists, such as
+ * `tsx <path> <subcommand>`. A path is resolved from `cwd` as `pathsIn`
+ * resolves it, so a listed path written from another folder names another
+ * file, and a workspace's own bin folder is not the root's.
  */
 export const programCalls = (text: string, cwd: string, bin: string | undefined, programs: ReadonlyMap<string, readonly string[]>): string[] => {
-  const listed = [...programs.values()].flat();
-  const patterns: RegExp[] = [];
-  if (bin !== undefined) patterns.push(new RegExp(`${COMMAND_START}((?:\\.\\.?\\/)*${escape(bin)}\\/[\\w-]+)${FIRST_ARGUMENT}`, 'gm'));
-  if (listed.length > 0) patterns.push(new RegExp(`(?<![\\w./-])((?:\\.\\.?\\/)*(?:${listed.map(escape).join('|')}))${FIRST_ARGUMENT}`, 'g'));
+  const byPath = new Map([...programs].flatMap(([name, paths]) => paths.map((path) => [path, name] as const)));
+  const patterns = [
+    bin === undefined ? undefined : new RegExp(`${COMMAND_START}((?:\\.\\.?\\/)*${escape(bin)}\\/[\\w-]+)${FIRST_ARGUMENT}`, 'gm'),
+    // With no listed path this matches an empty one, which resolves to the
+    // caller's folder: no program, so nothing is recorded.
+    new RegExp(`(?<![\\w./-])((?:\\.\\.?\\/)*(?:${[...byPath.keys()].map(escape).join('|')}))${FIRST_ARGUMENT}`, 'g'),
+  ].filter((pattern) => pattern !== undefined);
   const calls: string[] = [];
   for (const pattern of patterns) {
-    for (const match of text.matchAll(pattern)) calls.push(`${posix.join(cwd, match[1] as string)}\t${match[2] as string}`);
+    for (const match of text.matchAll(pattern)) {
+      const path = posix.join(cwd, match[1] as string);
+      const program = byPath.get(path) ?? (posix.dirname(path) === bin ? posix.basename(path) : undefined);
+      if (program !== undefined) calls.push(`${program}\t${match[2] as string}`);
+    }
   }
   return calls;
 };
@@ -403,10 +411,17 @@ export const testFileRuns = (path: string, reach: StageReach, config: Pick<Stage
   return [...reach.scripts].some(([key, command]) => key.startsWith(`${owner}\t`) && config.testRunner.test(command));
 };
 
-/** The program a claim's script is: a listed path's program, else `<name>` for a `<bin>/<name>` binary. */
-const programOf = (script: string, config: Pick<StageConfig, 'bin' | 'programs'>): string | undefined => {
-  for (const [name, paths] of config.programs) if (paths.includes(script)) return name;
-  return config.bin !== undefined && posix.dirname(script) === config.bin ? posix.basename(script) : undefined;
+/**
+ * The program and subcommand a claim names: its script is a program (a listed
+ * path's, else `<name>` for a `<bin>/<name>` binary) and its config begins
+ * with that program's name and a subcommand.
+ */
+const subcommandOf = (standard: Standard, config: Pick<StageConfig, 'bin' | 'programs'>): { program: string; sub: string } | undefined => {
+  const script = posix.normalize(standard.enforcementScript);
+  const program = [...config.programs].find(([, paths]) => paths.includes(script))?.[0] ?? (posix.dirname(script) === config.bin ? posix.basename(script) : undefined);
+  if (program === undefined) return undefined;
+  const call = new RegExp(`^${escape(program)}[^\\S\\n]+([a-z][\\w-]*)(?![\\w./-])`).exec(standard.enforcementConfig);
+  return call === null ? undefined : { program, sub: call[1] as string };
 };
 
 /**
@@ -442,14 +457,9 @@ export const findUncalledValidators = (root: string, standards: readonly Standar
     const missing = named.filter((path) => !existsSync(posix.join(root, path)));
     for (const path of missing) report(path, 'does not exist');
     if (missing.length > 0) continue;
-    const script = posix.normalize(standard.enforcementScript);
-    const program = programOf(script, config);
-    const sub = program === undefined ? null : new RegExp(`^${escape(program)}[^\\S\\n]+([a-z][\\w-]*)(?![\\w./-])`).exec(standard.enforcementConfig);
-    if (program !== undefined && sub !== null) {
-      const runs = [...(config.bin === undefined ? [] : [`${config.bin}/${program}`]), ...(config.programs.get(program) ?? [])];
-      if (!runs.some((path) => reach.calls.has(`${path}\t${sub[1] as string}`))) {
-        report(`${program} ${sub[1] as string}`, 'is never run by a hook or workflow — the claim names a subcommand nothing calls');
-      }
+    const subcommand = subcommandOf(standard, config);
+    if (subcommand !== undefined) {
+      if (!reach.calls.has(`${subcommand.program}\t${subcommand.sub}`)) report(`${subcommand.program} ${subcommand.sub}`, 'is never run by a hook or workflow — the claim names a subcommand nothing calls');
       continue;
     }
     if (!named.some((path) => reach.files.has(path) || testFileRuns(path, reach, config))) {

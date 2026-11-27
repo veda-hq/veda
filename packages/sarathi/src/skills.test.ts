@@ -103,11 +103,20 @@ describe('skills/slice-review/SKILL.md', () => {
       /Before `niyam propose` for a slice/,
       /the slice's title and body, verbatim/,
       /Leave out the conversation, your reasons/,
-      /Use the `Explore` type/,
       /One subagent, one pass/,
     ]) {
       assert.match(flat, rule);
     }
+  });
+
+  it('runs the slice-reviewer agent, and Explore only where no copy of it is listed', () => {
+    assert.match(
+      flat,
+      /Use the `slice-reviewer` agent: `sarathi:slice-reviewer` where the sarathi plugin is enabled, else `slice-reviewer` where the project carries `\.claude\/agents\/slice-reviewer\.md`, else the `Explore` type/,
+    );
+    assert.match(flat, /no shell, where `Explore` has one/);
+    assert.match(flat, /`omitClaudeMd: true` keeps the user, project and local `CLAUDE\.md` out when Claude Code spawns it as a subagent/);
+    assert.match(flat, /Where a hook runs the call as a separate session instead/);
   });
 
   it('holds an adversarial brief that asks for findings only, or says none were found', () => {
@@ -125,6 +134,33 @@ describe('skills/slice-review/SKILL.md', () => {
   it('is the file veda tells its agents to use before proposing', () => {
     const claude = readFileSync(new URL('../../../CLAUDE.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
     assert.match(claude, /Before `niyam propose` for a slice, have it read with fresh eyes, as `packages\/sarathi\/skills\/slice-review\/SKILL\.md` says/);
+    assert.match(claude, /one `slice-reviewer` subagent \(`\.claude\/agents\/slice-reviewer\.md`, no shell\)/);
+  });
+});
+
+describe('agents/slice-reviewer.md', () => {
+  const text = read('agents/slice-reviewer.md');
+
+  it('reads and searches only, and runs without CLAUDE.md as a subagent', () => {
+    const block = /^---\n([\s\S]*?)\n---\n/.exec(text)?.[1];
+    assert.ok(block !== undefined, 'the agent starts with a --- frontmatter block');
+    const fields = new Map(
+      block.split('\n').map((line) => {
+        const at = line.indexOf(':');
+        return [line.slice(0, at).trim(), line.slice(at + 1).trim()] as const;
+      }),
+    );
+    assert.equal(fields.get('name'), 'slice-reviewer');
+    assert.deepEqual(fields.get('tools')?.split(/,\s*/), ['Read', 'Grep', 'Glob']);
+    assert.equal(fields.get('omitClaudeMd'), 'true');
+    assert.equal(fields.get('model'), 'sonnet');
+    assert.ok(!fields.has('disallowedTools'), 'an allow list, not a deny list, so no new tool slips in');
+  });
+
+  it('is the file veda carries as its project agent, byte for byte', () => {
+    // veda's sessions do not enable the sarathi plugin, so veda keeps its own copy.
+    const project = readFileSync(new URL('../../../.claude/agents/slice-reviewer.md', import.meta.url), 'utf8');
+    assert.equal(project, text);
   });
 });
 

@@ -114,7 +114,8 @@ exact release.
 
 Before `niyam propose` for a slice, have it read with fresh eyes, as
 `packages/sarathi/skills/slice-review/SKILL.md` says (the plugin's
-`sarathi:slice-review`): one `Explore` subagent gets the slice's body, the
+`sarathi:slice-review`): one `slice-reviewer` subagent
+(`.claude/agents/slice-reviewer.md`, no shell) gets the slice's body, the
 files it names and its contract, never the conversation or your reasons,
 and reports what is wrong, missing or unclear. Answer each finding (fix the
 slice, or say why not) on the page `--page` names, then propose.

@@ -10,7 +10,7 @@ import {
   planRounds,
   RETRY_BUDGET_MS,
   RETRY_TIMEOUT_MS,
-  retryTimeouts,
+  retryTimeouts as retryIn,
   sameMutant,
   seconds,
   type RoundRun,
@@ -51,6 +51,9 @@ const clock = (start = 0) => {
   return { state, now: () => state.t };
 };
 const named = (ms: readonly Mutant[]) => ms.map((m) => `${m.line}:${m.status}`);
+/** The pass with every mutant in one group, unless a test names its groups. */
+type Args = Parameters<typeof retryIn>;
+const retryTimeouts = (mutants: Args[0], rerun: Args[1], now: Args[2], log: Args[3], group: Args[4] = () => 'g') => retryIn(mutants, rerun, now, log, group);
 
 test('the retry limit is three minutes and the pass budget fifteen', () => {
   assert.equal(RETRY_TIMEOUT_MS, 180_000);
@@ -245,7 +248,8 @@ test('a timed-out mutant with no full location refuses and is never retried', as
 });
 
 test('a round that cannot run refuses its mutants, says so in the log, and the pass goes on', async () => {
-  const c = clock();
+  // A start past 0 tells the round's time (end less start) from its sum.
+  const c = clock(5 * MIN);
   const { lines, log } = kept();
   const outer = at(2, 1, 9, 1);
   let call = 0;
@@ -342,6 +346,48 @@ test('of two equally slow mutants, the first is the slowest', async () => {
     () => {},
   );
   assert.match(pass.refusals[0] ?? '', /the slowest, scripts\/a\.ts:3:5 StringLiteral \("\\"\\""\), took 5\.0 s/);
+});
+
+test('a later, slower mutant becomes the slowest; a mutant with no time never does', async () => {
+  const c = clock();
+  let call = 0;
+  const pass = await retryTimeouts(
+    [mutant('Timeout', 3), mutant('Timeout', 4), mutant('Timeout', 5), at(2, 1, 9, 1)],
+    async (round) => {
+      call += 1;
+      if (call === 1) {
+        // Line 3 takes 3 s, line 4 7 s; line 5 is in the report alone, so it has no time.
+        return {
+          dryRunEnd: 0,
+          tested: [
+            { mutant: mutant('Killed', 3), at: 3 * SEC },
+            { mutant: mutant('Killed', 4), at: 10 * SEC },
+          ],
+          stopped: false,
+          report: round.map((m) => ({ ...m, status: 'Killed' })),
+        };
+      }
+      c.state.t = RETRY_BUDGET_MS;
+      return { dryRunEnd: 0, tested: [], stopped: true, report: null };
+    },
+    c.now,
+    () => {},
+  );
+  assert.match(pass.refusals[0] ?? '', /the slowest, scripts\/a\.ts:4:5 StringLiteral \("\\"\\""\), took 7\.0 s/);
+
+  // Only a mutant with no time, and the rest of the time the largest share: no slowest is named.
+  const late = clock();
+  const untimed = await retryTimeouts(
+    [mutant('Timeout', 5), at(2, 1, 9, 1)],
+    async (round) => {
+      if (round.some((m) => m.line === 5)) return { dryRunEnd: 0, tested: [], stopped: false, report: [mutant('Killed', 5)] };
+      late.state.t = RETRY_BUDGET_MS;
+      return { dryRunEnd: 0, tested: [], stopped: true, report: null };
+    },
+    late.now,
+    () => {},
+  );
+  assert.match(untimed.refusals[0] ?? '', /\. Mostly mutants that ended before the limit, but slowly: for each/);
 });
 
 test('a busy last round refuses once: no mutant was left', async () => {
@@ -449,7 +495,8 @@ test('outgrew breaks a tie toward hangs, then toward the dry runs', () => {
 });
 
 test('the wall stops a round: what Stryker finished counts, the rest is left, and one refusal says where the time went', async () => {
-  const c = clock();
+  // The pass starts a minute in, so the time gone is the end less the start, not their sum.
+  const c = clock(MIN);
   const { lines, log } = kept();
   const hang = mutant('Timeout', 3);
   const deadlines: number[] = [];
@@ -459,13 +506,13 @@ test('the wall stops a round: what Stryker finished counts, the rest is left, an
     async (_round, deadline) => {
       runs += 1;
       deadlines.push(deadline);
-      c.state.t = RETRY_BUDGET_MS;
+      c.state.t = MIN + RETRY_BUDGET_MS;
       // The first round's 15 s dry run, then a 3-minute hang, a quick kill, and the stop.
       return {
-        dryRunEnd: 15 * SEC,
+        dryRunEnd: MIN + 15 * SEC,
         tested: [
-          { mutant: hang, at: 15 * SEC + RETRY_TIMEOUT_MS },
-          { mutant: { ...mutant('Killed', 4) }, at: 21 * SEC + RETRY_TIMEOUT_MS },
+          { mutant: hang, at: MIN + 15 * SEC + RETRY_TIMEOUT_MS },
+          { mutant: { ...mutant('Killed', 4) }, at: MIN + 21 * SEC + RETRY_TIMEOUT_MS },
         ],
         stopped: true,
         report: null,
@@ -475,7 +522,7 @@ test('the wall stops a round: what Stryker finished counts, the rest is left, an
     log,
   );
   assert.equal(runs, 1, 'no round starts at the wall');
-  assert.deepEqual(deadlines, [RETRY_BUDGET_MS]);
+  assert.deepEqual(deadlines, [MIN + RETRY_BUDGET_MS]);
   assert.deepEqual(named(pass.mutants), ['3:Timeout', '4:Killed']);
   assert.equal(pass.retried, 2);
   assert.deepEqual(pass.refusals, [

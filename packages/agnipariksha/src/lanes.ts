@@ -285,7 +285,8 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
   const pass = await retryTimeouts(
     mutants,
     async (round, deadline) => {
-      const env = (round.some((m) => ownSuite.has(m.file)) ? fallbackEnv : undefined) ?? firstEnv;
+      // A round is never empty, and all of it is in one mode (the group below).
+      const env = (ownSuite.has((round[0] as Mutant).file) ? fallbackEnv : undefined) ?? firstEnv;
       const files = new Set(round.map((m) => m.file));
       const mutators = new Set(round.map((m) => m.mutator));
       const excluded = [...new Set(mutants.filter((o) => files.has(o.file) && !mutators.has(o.mutator)).map((o) => o.mutator))];

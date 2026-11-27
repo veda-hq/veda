@@ -89,8 +89,6 @@ export class RetryReporter {
   }
 }
 
-type Rec = Record<string, unknown>;
-const isRecord = (value: unknown): value is Rec => typeof value === 'object' && value !== null;
 const num = (value: unknown): number => (typeof value === 'number' ? value : Number.NaN);
 
 /**
@@ -104,14 +102,14 @@ export function readEvents(text: string | undefined, laneCwd: string): { dryRunE
   const tested: Tested[] = [];
   // An absent file reads as "undefined", which is no event.
   for (const line of String(text).split('\n')) {
-    let event: unknown;
+    // Any JSON value: a line that is not an object has no numeric `at` (a string's `at` is a method), and is skipped.
+    let event: Record<string, unknown> | null = null;
     try {
-      event = JSON.parse(line);
+      event = JSON.parse(line) as Record<string, unknown> | null;
     } catch {
-      // fail-open: a cut-off line is no event; its mutant reads as unretried, never as retried.
-      continue;
+      // fail-open: a cut-off line is no event (it stays null); its mutant reads as unretried, never as retried.
     }
-    if (!isRecord(event) || typeof event.at !== 'number') continue;
+    if (typeof event?.at !== 'number') continue;
     if (event.kind === 'dry-run') dryRunEnd = event.at;
     if (event.kind !== 'mutant') continue;
     const path = String(event.file);

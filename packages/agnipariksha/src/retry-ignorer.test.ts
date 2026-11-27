@@ -32,7 +32,8 @@ test('parseSpans reads file:line:column-endLine:endColumn lines, by file resolve
   ]);
   assert.deepEqual(spans.get('/w/src/b.ts'), [{ start: { line: 3, column: 0 }, end: { line: 3, column: 9 } }]);
   assert.deepEqual([...parseSpans('/abs/x:y.ts:1:0-2:0', '/w').keys()], ['/abs/x:y.ts'], 'an absolute file stays, colons and all');
-  for (const text of [undefined, '', ':3:4-7:8', 'a.ts:3:4-7', 'a.ts:3:4:7:8', 'a.ts:x:4-7:8', 'a.ts:3:4-7:8 ', 'a.ts:3:4-7:-8', '3:4-7:8']) {
+  // A carriage return is a line end to the pattern: an entry that starts or ends with one is not whole.
+  for (const text of [undefined, '', ':3:4-7:8', 'a.ts:3:4-7', 'a.ts:3:4:7:8', 'a.ts:x:4-7:8', 'a.ts:3:4-7:8 ', 'a.ts:3:4-7:-8', '3:4-7:8', '\ra.ts:3:4-7:8', 'a.ts:3:4-7:8\r']) {
     assert.equal(parseSpans(text, '/w').size, 0, String(text));
   }
   assert.equal(parseSpans('a.ts:3:4-7:8\nnonsense\n\nb.ts:1:0-1:1', '/w').size, 2, 'a bad line is skipped, the rest read');

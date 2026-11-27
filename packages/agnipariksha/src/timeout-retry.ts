@@ -77,7 +77,7 @@ export function planRounds(mutants: readonly Mutant[], group: (m: Mutant) => str
   const height = (m: Mutant): number => {
     const known = heights.get(m);
     if (known !== undefined) return known;
-    const found = Math.max(-1, ...mutants.filter((other) => holds(m, other)).map(height)) + 1;
+    const found = Math.max(0, ...mutants.filter((other) => holds(m, other)).map((other) => height(other) + 1));
     heights.set(m, found);
     return found;
   };
@@ -163,7 +163,7 @@ export async function retryTimeouts(
   rerun: (round: Mutant[], deadline: number) => Promise<RoundRun>,
   now: () => number,
   log: (line: string) => void,
-  group: (m: Mutant) => string = () => '',
+  group: (m: Mutant) => string,
 ): Promise<RetryPass> {
   const startedAt = now();
   const deadline = startedAt + RETRY_BUDGET_MS;
@@ -178,7 +178,8 @@ export async function retryTimeouts(
   const rounds = planRounds(pending, group);
   /** Why the pass stopped, once it has. */
   let stopped: 'wall' | 'busy' | null = null;
-  const spent: Spent = { gone: 0, dryRuns: 0, rounds: 0, hangs: 0, hung: [], slowest: null };
+  // The pass's end gives `gone` and `hung`.
+  const spent: Omit<Spent, 'gone' | 'hung'> = { dryRuns: 0, rounds: 0, hangs: 0, slowest: null };
   const hung: Mutant[] = [];
   const left: Mutant[] = [];
   let retried = 0;
@@ -205,11 +206,14 @@ export async function retryTimeouts(
       continue;
     }
     // At one worker, a mutant's time runs from the event before it.
-    const times = new Map<Mutant, number>();
+    // An event for no retried mutant (another replacement at its node) keys `undefined`, which no lookup asks for.
+    const times = new Map<Mutant | undefined, number>();
     let previous = dryRunEnd;
     for (const tested of run.tested) {
-      const mine = round.find((m) => sameMutant(m, tested.mutant));
-      if (mine !== undefined) times.set(mine, tested.at - previous);
+      times.set(
+        round.find((m) => sameMutant(m, tested.mutant)),
+        tested.at - previous,
+      );
       previous = tested.at;
     }
     const results = run.report ?? run.tested.map((tested) => tested.mutant);

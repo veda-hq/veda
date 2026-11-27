@@ -237,6 +237,8 @@ test("one round retries a lane's timeouts: one worker, a 3-minute limit, every s
   const plan: Plan = { ...webPlan, targets: ['apps/web/src/a.ts', 'apps/web/src/b.ts', 'apps/web/src/c.ts'] };
   setPlan(plan);
   files.set(EVENTS, 'a stale line');
+  // A minute on the clock: the stop comes the budget after the pass's start, not after the clock's zero.
+  deps.now = () => 60_000;
   const result = await judgeLane(plan, deps);
   assert.deepEqual(runs[1], {
     cwd: '/repo/apps/web',
@@ -291,6 +293,14 @@ test("a refused round passes on when its dry run ended, so the wall's refusal bo
   };
   const result = await judgeLane(webPlan, deps);
   assert.match(result.refusals[1] ?? '', /: 6\.0 min went to starting Stryker and its initial test run \(2 run\(s\)\), 0\.0 min to 0 mutant\(s\) that timed out again, and 9\.0 min to the rest;/);
+});
+
+test("a stale lane report is removed before the lane's run: a run that writes none is never read as one", async () => {
+  const { deps, files, setPlan } = fakeDeps([undefined], [], null);
+  setPlan(webPlan);
+  files.set('/repo/reports/agnipariksha/apps-web.json', report({ 'src/a.ts': [strykerMutant('Killed')] }));
+  const result = await judgeLane(webPlan, deps);
+  assert.deepEqual(result.refusals, ['Stryker wrote no report at /repo/reports/agnipariksha/apps-web.json']);
 });
 
 test('a stale round report or event file is removed before the round: a round that writes none is never read as one', async () => {

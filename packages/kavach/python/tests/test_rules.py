@@ -444,6 +444,71 @@ class CheckoutDiscardsUncommitted(Repo):
             rules.uncommitted(["a.txt"], os.path.join(self.work, "elsewhere"))
 
 
+class CheckoutDuringAMerge(Repo):
+    """A stopped merge: c.txt in conflict (UU), d.txt added on both sides
+    (AA), a.txt with a local edit."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        Path(self.repo, "c.txt").write_text("base\n", encoding="utf-8")
+        git(self.repo, "add", "c.txt")
+        git(self.repo, "commit", "-q", "-m", "c")
+        git(self.repo, "checkout", "-q", "-b", "other")
+        for name in ("c.txt", "d.txt"):
+            Path(self.repo, name).write_text("theirs\n", encoding="utf-8")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-q", "-m", "theirs")
+        git(self.repo, "checkout", "-q", "-")
+        for name in ("c.txt", "d.txt"):
+            Path(self.repo, name).write_text("ours\n", encoding="utf-8")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-q", "-m", "ours")
+        subprocess.run(["git", "merge", "other"], cwd=self.repo, env=ENV, capture_output=True, check=False)
+        Path(self.repo, "a.txt").write_text("changed\n", encoding="utf-8")
+
+    def find(self, command: str) -> str | None:
+        return rules.checkout_discards_uncommitted(self.bash(command))
+
+    def test_resolving_the_conflicted_path_passes(self) -> None:
+        for command in (
+            "git checkout --ours -- c.txt",
+            "git checkout --theirs c.txt",
+            "git checkout -m -- c.txt",
+            "git checkout HEAD -- c.txt",
+            "git checkout other -- c.txt",
+            "git restore --ours c.txt",
+            "git restore --source=HEAD --staged --worktree c.txt",
+            "git checkout -- c.txt",
+            "git checkout --theirs -- c.txt d.txt",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.find(command))
+
+    def test_a_changed_path_outside_the_conflict_still_fires_alone(self) -> None:
+        for command in (
+            "git checkout --ours -- a.txt",
+            "git checkout --theirs -- c.txt a.txt",
+            "git checkout --theirs -- .",
+            "git checkout -m -- a.txt",
+        ):
+            with self.subTest(command=command):
+                found = self.find(command) or ""
+                self.assertIn(", and a.txt holds uncommitted changes that would be lost. A path in a merge", found)
+                self.assertNotIn("c.txt", found)
+                self.assertNotIn("d.txt", found)
+
+    def test_every_unmerged_state_is_left_out(self) -> None:
+        self.assertEqual(rules.UNMERGED, {"DD", "AU", "UD", "UA", "DU", "AA", "UU"})
+        self.assertEqual(rules.uncommitted(["."], self.repo), ["a.txt"])
+        git(self.repo, "add", "c.txt", "d.txt")  # resolved: ordinary staged changes again
+        self.assertEqual(rules.uncommitted(["."], self.repo), ["a.txt", "c.txt", "d.txt"])
+
+    def test_a_one_letter_path_is_read_whole(self) -> None:
+        Path(self.repo, "e").write_text("one\n", encoding="utf-8")
+        git(self.repo, "add", "e")
+        self.assertEqual(rules.uncommitted(["e"], self.repo), ["e"])
+
+
 class CommitBodyRefLineLength(Repo):
     def find(self, command: str) -> str | None:
         return rules.commit_body_ref_line_length(self.bash(command))
@@ -491,6 +556,106 @@ class CommitBodyRefLineLength(Repo):
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.find(command))
+
+    # Each message holds LONG_REF as a body line. The outcome beside it is what
+    # @commitlint/lint 20.2 (ensure and rules 20.5.3, is-ignored 20.5.0) gives
+    # it with footer-max-line-length at 100, run on 2026-11-27: True passes.
+    COMMITLINT = (
+        ("url", f"fix: title\n\n{LONG_REF} https://example.com/x\n", True),
+        ("http url", f"fix: title\n\n{LONG_REF} http://example.com/x\n", True),
+        ("bare scheme", f"fix: title\n\n{LONG_REF} https://\n", False),
+        ("scheme inside a word", f"fix: title\n\n{LONG_REF} xhttps://example.com\n", False),
+        ("scheme after an accented letter", f"fix: title\n\n{LONG_REF} éhttps://example.com\n", True),
+        ("upper-case scheme", f"fix: title\n\n{LONG_REF} HTTPS://example.com\n", False),
+        ("url on the next line", f"fix: title\n\n{LONG_REF}\nhttps://example.com/x\n", False),
+        ("revert", f'Revert "fix: title"\n\n{LONG_REF}\n', True),
+        ("revert lower case", f"revert x\n\n{LONG_REF}\n", True),
+        ("revert type", f"revert: fix: title\n\n{LONG_REF}\n", False),
+        ("revert with no space", f'Revert"x"\n\n{LONG_REF}\n', False),
+        ("revert below the subject", f"fix: title\nRevert x\n\n{LONG_REF}\n", False),
+        ("revert in the body", f'fix: title\n\nRevert "x"\n{LONG_REF}\n', False),
+        ("reapply", f'Reapply "fix: title"\n\n{LONG_REF}\n', True),
+        ("fixup", f"fixup! fix: title\n\n{LONG_REF}\n", True),
+        ("squash", f"squash! fix: title\n\n{LONG_REF}\n", True),
+        ("amend", f"amend! fix: title\n\n{LONG_REF}\n", True),
+        ("fixup after a type", f"fix: fixup! title\n\n{LONG_REF}\n", False),
+        ("semver", f"1.2.3\n\n{LONG_REF}\n", True),
+        ("semver with v, prerelease and build", f"v1.2.3-rc.1+build.5\n\n{LONG_REF}\n", True),
+        ("semver prerelease parts", f"1.2.3-0.1a.x-y\n\n{LONG_REF}\n", True),
+        ("semver chore with a skip tag", f"chore(release): 1.2.3 [skip ci]\n\n{LONG_REF}\n", True),
+        ("semver chore with a parenthesised tag", f"chore(release): 1.2.3 (ci skip)\n\n{LONG_REF}\n", True),
+        ("semver chore with a dashed tag", f"chore: 1.2.3 [ci-skip]\n\n{LONG_REF}\n", True),
+        ("semver with a non-ASCII digit", f"1١.2.3\n\n{LONG_REF}\n", False),
+        ("semver missing a part", f"1.2\n\n{LONG_REF}\n", False),
+        ("semver with a leading zero", f"01.2.3\n\n{LONG_REF}\n", False),
+        ("semver prerelease with a leading zero", f"1.2.3-alpha.01\n\n{LONG_REF}\n", False),
+        ("semver build with an empty part", f"1.2.3+a..b\n\n{LONG_REF}\n", False),
+        ("semver chore twice", f"chore: chore: 1.2.3\n\n{LONG_REF}\n", False),
+        ("semver skip tag twice", f"1.2.3 [skip ci] [skip ci]\n\n{LONG_REF}\n", False),
+        ("semver parenthesised tag twice", f"1.2.3 (skip ci) (skip ci)\n\n{LONG_REF}\n", False),
+        ("semver in the body", f"fix: title\n\n1.2.3\n{LONG_REF}\n", False),
+        ("semver at the largest safe major", f"9007199254740991.0.0\n\n{LONG_REF}\n", True),
+        ("semver past the largest safe major", f"9007199254740992.0.0\n\n{LONG_REF}\n", False),
+        ("semver far past the largest safe major", f"99999999999999999999.0.0\n\n{LONG_REF}\n", False),
+        ("semver past the largest safe minor", f"1.9007199254740992.0\n\n{LONG_REF}\n", False),
+        ("semver past the largest safe patch", f"1.0.9007199254740992\n\n{LONG_REF}\n", False),
+        ("semver of 256 characters", f"1.0.0+{'a' * 250}\n\n{LONG_REF}\n", True),
+        ("semver of 257 characters", f"1.0.0+{'a' * 251}\n\n{LONG_REF}\n", False),
+        ("merge branch", f"Merge branch 'x'\n\n{LONG_REF}\n", True),
+        ("merge branch in the body", f"fix: title\n\nMerge branch 'x'\n\n{LONG_REF}\n", True),
+        ("merge branch with more on the line", f"fix: title\n\nMerge branch 'x' and more\n{LONG_REF}\n", True),
+        ("merge pull request in the body", f"fix: title\n\nMerge pull request #5 from a/b\n{LONG_REF}\n", True),
+        ("merge into in the body", f"fix: title\n\nMerge a into b\n{LONG_REF}\n", True),
+        ("merge tag in the body", f"fix: title\n\nMerge tag 'v1'\n{LONG_REF}\n", True),
+        ("merge lower case", f"merge branch 'x'\n\n{LONG_REF}\n", False),
+        ("merge with no space", f"fix: title\n\nMergebranch x\n{LONG_REF}\n", False),
+        ("merged into", f"Merged x into y\n\n{LONG_REF}\n", True),
+        ("merged in", f"Merged x in y\n\n{LONG_REF}\n", True),
+        ("merged PR", f"Merged PR 5: thing\n\n{LONG_REF}\n", True),
+        ("merged PR in the body", f"fix: title\n\nMerged PR 5: x\n{LONG_REF}\n", False),
+        ("merge remote-tracking branch", f"Merge remote-tracking branch 'origin/main'\n\n{LONG_REF}\n", True),
+        ("automatic merge", f"Automatic merge of x\n\n{LONG_REF}\n", True),
+        ("auto-merged", f"Auto-merged a into b\n\n{LONG_REF}\n", True),
+    )
+
+    def test_it_passes_what_commitlint_passes(self) -> None:
+        for name, message, passes in self.COMMITLINT:
+            Path(self.repo, "message.txt").write_text(message, encoding="utf-8")
+            with self.subTest(name=name):
+                found = self.find("git commit -F message.txt")
+                if passes:
+                    self.assertIsNone(found)
+                else:
+                    line = next(line for line in message.split("\n") if LONG_REF in line)
+                    self.assertIn(f"a body line of {len(line)} characters holding `#3606`", found or "")
+
+    def test_a_commit_whose_subject_git_writes_passes(self) -> None:
+        for command in (
+            # git puts its own subject above every -m, so the first is body too.
+            f'git commit --fixup=HEAD -m "note" -m "{LONG_REF}"',
+            f'git commit --fixup HEAD -m "note" -m "{LONG_REF}"',
+            f'git commit --squash=HEAD -m "note" -m "{LONG_REF}"',
+            f'git commit --squash HEAD -m "note" -m "{LONG_REF}"',
+            f'git commit -m "fixup! fix: title" -m "{LONG_REF}"',
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.find(command))
+        found = self.find(f'git commit -m "--fixup" -m "{LONG_REF}"')
+        self.assertIn("holding `#3606`", found or "")
+
+    def test_a_body_line_right_under_the_subject_fires(self) -> None:
+        found = self.find(f"git commit -m 'fix: title\n{LONG_REF}'")
+        self.assertIn("holding `#3606`", found or "")
+
+    def test_an_ignored_commit_leaves_the_next_one_judged(self) -> None:
+        found = self.find(
+            f'git commit -m "Revert x" -m "{LONG_REF}" && git commit -m "fix: title" -m "{LONG_REF}"'
+        )
+        self.assertIn("holding `#3606`", found or "")
+
+    def test_the_message_says_a_url_passes(self) -> None:
+        found = self.find(f'git commit -m "fix: title" -m "{LONG_REF}"')
+        self.assertTrue((found or "").endswith("keep issue references off long lines (a line holding a URL passes)."))
 
 
 class CaseFoldPathCollision(Repo):

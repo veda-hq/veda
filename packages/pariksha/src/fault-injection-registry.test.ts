@@ -147,6 +147,21 @@ describe('discovery', () => {
   });
 });
 
+describe('discoverGroup', () => {
+  it('reads sources only, never a test, spec, declaration or fixture, and lists them sorted', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pariksha-fault-discover-'));
+    try {
+      const files = ['b.ts', 'a.ts', 'fixtures/f.ts', 'fixture/g.ts', 'x/fixtures/h.ts', 'a.test.ts', 'a.spec.ts', 'a.d.ts', 'a.d.tsx', 'myfixtures/k.ts'];
+      put(root, Object.fromEntries(files.map((f) => [f, 'main();\n'])));
+      put(root, { 'quiet.ts': 'export {};\n' });
+      const group = { roots: ['.'], include: /\.tsx?$/, marker: /main\(/ };
+      assert.deepEqual(discoverGroup(root, [...files, 'quiet.ts'], group), ['a.d.tsx', 'a.ts', 'b.ts', 'myfixtures/k.ts']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('registry helpers', () => {
   it('computes the baseline from discovered, registered and exempt sources', () => {
     assert.deepEqual(
@@ -233,6 +248,42 @@ describe('the config', () => {
       assert.throws(() => parseConfig(JSON.stringify(config(over))), message);
     });
   }
+
+  it('names each refusal by where it sits, in whole', () => {
+    const harness = { module: 'h.ts', imports: [], checks: { A: 'a' }, heldBy: 'h' };
+    const group = { roots: ['s'], include: 'x', marker: { pattern: 'x' } };
+    const whole: Array<[Record<string, unknown>, string]> = [
+      [{ discover: [] }, '"discover" must be an object'],
+      [{ discover: { cli: { roots: ['s'], marker: { pattern: 'x' } } } }, 'discover.cli: "include" must be a non-empty regular expression'],
+      // A flag list that reads as letters is still no string of flags.
+      [{ discover: { cli: { ...group, marker: { pattern: 'x', flags: ['m'] } } } }, 'discover.cli: marker.flags must be some of i, m, s, u'],
+      [{ harness: [] }, '"harness" must be an object'],
+      [{ harness: { ...harness, imports: 'x' } }, 'harness: "imports" must be a list'],
+      [{ harness: { ...harness, imports: [''] } }, 'harness.imports[0] must be a bare module specifier'],
+      [{ harness: { ...harness, imports: ['@a/b', 1] } }, 'harness.imports[1] must be a bare module specifier'],
+      [{ harness: { ...harness, checks: [] } }, 'harness: "checks" must be an object'],
+      [{ harness: { ...harness, checks: { A: ['a'] } } }, 'harness.checks.A must be a function name'],
+      [{ harness: { module: 'h.ts', checks: { A: 'a' } } }, 'harness: "heldBy" must be a non-empty string'],
+      [{ harness: { checks: { A: 'a' }, heldBy: 'h' } }, 'harness: "module" must be a non-empty string'],
+      [{ consumers: 'x' }, '"consumers" must be a list'],
+      [{ consumers: [{ source: 'a.ts', unit: 'main', checks: [['ERR-09']], test: 'a.test.ts' }] }, 'consumers[0]: ["ERR-09"] is not a check in harness.checks'],
+      [{ exemptIn: [['cli']] }, 'exemptIn[0]: ["cli"] is not a group in "discover"'],
+      [{ exempt: 'x' }, '"exempt" must be a list'],
+      [{ baseline: undefined }, '"baseline" must be a non-empty string'],
+      [{ collected: [] }, '"collected" is empty, so nothing would match'],
+    ];
+    for (const [over, message] of whole) assert.throws(() => parseConfig(JSON.stringify(config(over))), { message }, message);
+  });
+
+  it('records the checks a config opted out of, and nothing else', () => {
+    assert.deepEqual(parsed().skipped, ['examples', 'findingIds']);
+  });
+
+  it('reads a baseline against today’s groups unless told it is the merge base’s', () => {
+    const c = parsed();
+    assert.throws(() => parseBaseline('{"cli": [], "server": [], "tools": []}', 'b.json', c), { message: 'b.json: unknown list "tools"' });
+    assert.deepEqual({ ...parseBaseline('{"cli": [], "server": [], "tools": []}', 'b.json', c, true) }, { cli: [], server: [] });
+  });
 });
 
 describe('the harness and the registered consumers', () => {
@@ -330,6 +381,31 @@ describe('the harness and the registered consumers', () => {
     const nameless = parsed({ consumers: [{ source: 'scripts/tool.ts', unit: '(entry)', checks: ['ERR-09'], test: 'docs/tool.test.ts' }] });
     assert.ok(checkConsumers(ts, root, nameless).includes('scripts/tool.ts: unit "(entry)" opens with no name'));
   });
+
+  it('reads a $ in a unit’s name as itself', () => {
+    const root = make({ 'scripts/tool.ts': 'export async function main() {}\nexport const run = main;\n' });
+    const c = parsed({ consumers: [{ source: 'scripts/tool.ts', unit: '$run', checks: ['ERR-09'], test: 'scripts/tool.faults.test.ts' }] });
+    assert.deepEqual(checkConsumers(ts, root, c), ['scripts/tool.ts: unit $run is not named in the source']);
+  });
+
+  it('takes the harness through any one of its package specifiers', () => {
+    const root = make({ 'scripts/tool.faults.test.ts': SUITE.replace('../packages/h/src/fault/index.ts', '@acme/h/fault') });
+    const c = parsed({ harness: { ...(config()['harness'] as Record<string, unknown>), imports: ['@acme/h/other', '@acme/h/fault'] } });
+    assert.deepEqual(checkConsumers(ts, root, c), []);
+  });
+
+  it('names a check a hand-built config declares but harness.checks lacks', () => {
+    const root = make({});
+    const c = parsed();
+    const handBuilt: Config = { ...c, consumers: [{ ...(c.consumers[0] ?? assert.fail()), checks: ['ERR-09', 'ERR-99'] }] };
+    assert.deepEqual(checkConsumers(ts, root, handBuilt), ['scripts/tool.ts: scripts/tool.faults.test.ts declares ERR-99, which harness.checks does not name']);
+  });
+
+  it('lists every re-export it did not follow', () => {
+    assert.deepEqual(harnessOf("export * from '@acme/a';\nexport * from '@acme/b';\nexport { checkContainment, checkExitContract, checkRerunConvergence } from './checks';\n"), [
+      "harness: packages/h/src/fault/index.ts does not export assertNoViolations (not followed: packages/h/src/fault/index.ts: '@acme/a', packages/h/src/fault/index.ts: '@acme/b')",
+    ]);
+  });
 });
 
 describe('findings', () => {
@@ -358,6 +434,40 @@ describe('findings', () => {
   it('holds each example suite to calling its check through the harness', () => {
     const c = parsed({ consumers: [], examples: { catalogue: null, fixtures: { 'ERR-09': { example: 'M1', test: 'packages/h/src/err-09.examples.test.ts' }, 'STATE-11': { example: 'M2', test: 'packages/h/src/state-11.examples.test.ts' } } } });
     assert.deepEqual(findings(ts, root, c, { cli: [], server: [] }, { cli: [], server: [] }, []), ['packages/h/src/state-11.examples.test.ts: the STATE-11 example suite never calls checkRerunConvergence(']);
+  });
+
+  it('names every group an exemption may sit in, and reads only those groups, present or not', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pariksha-fault-exempt-'));
+    try {
+      const c = parsed({ consumers: [], exempt: [{ source: 'apps/server/src/a.service.ts', reason: 'logs only' }], exemptIn: ['cli', 'server'] });
+      assert.deepEqual(findings(ts, root, { ...c, harness: { ...c.harness, module: 'none.ts' } }, { cli: [] }, { cli: [] }, []), [
+        'harness: none.ts does not exist',
+        'apps/server/src/a.service.ts: exempt, but discovery does not find it in cli or server; drop the exemption',
+      ]);
+      const onlyCli = { ...c, exemptIn: ['cli'], harness: { ...c.harness, module: 'none.ts' } };
+      assert.deepEqual(findings(ts, root, onlyCli, { cli: [], server: ['apps/server/src/a.service.ts'] }, { cli: [], server: [] }, []), [
+        'harness: none.ts does not exist',
+        'apps/server/src/a.service.ts: exempt, but discovery does not find it in cli; drop the exemption',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('names an example a hand-built config holds for a check harness.checks lacks', () => {
+    const c = parsed({ consumers: [], examples: { catalogue: null, fixtures: { 'ERR-09': { example: 'M1', test: 'packages/h/src/err-09.examples.test.ts' } } } });
+    const handBuilt: Config = { ...c, harness: { ...c.harness, checks: { 'STATE-11': 'checkRerunConvergence' } } };
+    assert.deepEqual(findings(ts, root, handBuilt, { cli: [], server: [] }, { cli: [], server: [] }, []), [
+      'packages/h/src/err-09.examples.test.ts: the ERR-09 example has no check in harness.checks',
+    ]);
+  });
+
+  it('prints a refusal whole, its hint last', () => {
+    assert.deepEqual(formatFindings(['x: wrong'], { cli: [] }, { cli: [] }, [], false), {
+      ok: false,
+      out: [],
+      err: ['pariksha fault-injection-registry: x: wrong', 'pariksha fault-injection-registry: 1 problem(s). Register a fault-injection suite for a discovered source, or exempt it with a reason; the baseline only shrinks.'],
+    });
   });
 
   it('summarises a clean run by group, and what it did not check', () => {

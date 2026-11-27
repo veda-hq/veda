@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -40,6 +40,25 @@ describe('parseConfig', () => {
     assert.throws(() => parseConfig('{"routes": {"a": ""}}'), /"routes" must map paths/);
     assert.throws(() => parseConfig('{"routes": []}'), /"routes" must map paths/);
   });
+  it('refuses a value that is no object: a string, null, a list', () => {
+    assert.throws(() => parseConfig('"ab"'), { message: 'the config must be a JSON object' });
+    assert.throws(() => parseConfig('null'), { message: 'the config must be a JSON object' });
+    assert.throws(() => parseConfig('[]'), { message: 'the config must be a JSON object' });
+    assert.throws(() => parseConfig('{"routes": "ab"}'), { message: '"routes" must map paths to workspace folders' });
+    assert.throws(() => parseConfig('{"routes": null}'), { message: '"routes" must map paths to workspace folders' });
+  });
+  it('refuses each bad workspace entry, wherever it sits in the list', () => {
+    for (const workspaces of [[''], [1], ['libs', ''], ['libs', 'a/b'], ['a/b', 'libs']]) {
+      assert.throws(() => parseConfig(JSON.stringify({ workspaces })), { message: '"workspaces" must be a list of folder names' }, JSON.stringify(workspaces));
+    }
+    assert.deepEqual(parseConfig('{"workspaces": ["libs", "tools"]}').workspaces, ['libs', 'tools']);
+  });
+  it('refuses each bad route: an empty path, an empty or non-string workspace, wherever it sits', () => {
+    for (const routes of [{ '': '.' }, { a: '' }, { a: 1 }, { a: null }, { a: '.', b: '' }, { a: '', b: '.' }]) {
+      assert.throws(() => parseConfig(JSON.stringify({ routes })), { message: '"routes" must map paths to workspace folders' }, JSON.stringify(routes));
+    }
+    assert.deepEqual(parseConfig('{"routes": {"a/": ".", "b.ts": "apps/w"}}').routes, { 'a/': '.', 'b.ts': 'apps/w' });
+  });
 });
 
 describe('owner and groupFiles', () => {
@@ -62,6 +81,18 @@ describe('owner and groupFiles', () => {
       ['apps/a', ['apps/a/x.ts', 'apps/a/y.ts']],
       ['.', ['b.ts', 'c.ts']],
     ]);
+  });
+  it('drops only a leading ./, never one inside a path', () => {
+    assert.deepEqual([...groupFiles(DEFAULT_CONFIG, ['b/./c.ts', 'apps/a/./x.ts'])], [
+      ['.', ['b/./c.ts']],
+      ['apps/a', ['apps/a/./x.ts']],
+    ]);
+  });
+  it('is a workspace two folders deep, the rest of the path aside', () => {
+    assert.equal(owner(DEFAULT_CONFIG, 'apps/web/a.ts'), 'apps/web');
+    assert.equal(owner(DEFAULT_CONFIG, 'apps/web/src/deep/a.ts'), 'apps/web');
+    assert.equal(owner(DEFAULT_CONFIG, 'apps'), '.');
+    assert.equal(owner(DEFAULT_CONFIG, 'scripts/web/a.ts'), '.');
   });
 });
 
@@ -135,6 +166,24 @@ describe('lintByWorkspace', () => {
     assert.equal(lintByWorkspace(root, DEFAULT_CONFIG, ['a.ts'], [], inheritEslint, sink().io), 0);
     bin(root, '.', '#!/bin/sh\nexit 3\n');
     assert.equal(lintByWorkspace(root, DEFAULT_CONFIG, ['a.ts'], [], inheritEslint, sink().io), 1);
+  });
+
+  it('runs a real binary in its folder, stdin closed, stdout and stderr this process’s own', () => {
+    const root = temp();
+    mkdirSync(join(root, 'apps/w'), { recursive: true });
+    // The fake ESLint records its folder and what its three streams are.
+    const fake = `#!${process.execPath}\nconst fs = process.getBuiltinModule('node:fs');\nfs.writeFileSync('${join(root, 'seen.json')}', JSON.stringify({ cwd: process.cwd(), fds: [0, 1, 2].map((fd) => { const s = fs.fstatSync(fd); return [s.dev, s.ino]; }) }));\n`;
+    bin(root, 'apps/w', fake);
+    const result = inheritEslint(join(root, 'apps/w/node_modules/.bin/eslint'), [], join(root, 'apps/w'));
+    assert.equal(result.status, 0);
+    const seen = JSON.parse(readFileSync(join(root, 'seen.json'), 'utf8')) as { cwd: string; fds: [number, number][] };
+    const id = (fd: number): [number, number] => {
+      const s = fstatSync(fd);
+      return [s.dev, s.ino];
+    };
+    const devNull = statSync('/dev/null');
+    assert.equal(seen.cwd, join(root, 'apps/w'));
+    assert.deepEqual(seen.fds, [[devNull.dev, devNull.ino], id(1), id(2)]);
   });
 });
 

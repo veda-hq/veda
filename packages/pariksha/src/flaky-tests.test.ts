@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   DEFAULT_CONFIG,
@@ -404,6 +407,8 @@ describe('runnerNoise', () => {
   it('keeps every noise line, one per line, and drops blank and indented-JSON ones', () => {
     assert.equal(runnerNoise('FAIL a\n\n   \nFAIL b\n{"x":1}\n', ''), 'FAIL a\nFAIL b');
     assert.equal(runnerNoise('FAIL a\n\n   \n  {"x":1}\nFAIL b\n', ''), 'FAIL a\nFAIL b');
+    // The noise is trimmed at its ends, each line kept as printed inside it.
+    assert.equal(runnerNoise('  FAIL a\n  at b  \n', ''), 'FAIL a\n  at b');
   });
 });
 
@@ -459,11 +464,25 @@ describe('parseConfig and parseRuns', () => {
     ['{"include":1}', 'include is not a regex string'],
     ['{"packageRoots":"apps"}', 'packageRoots is not a list of strings'],
     ['{"exclude":[1]}', 'exclude is not a list of strings'],
+    ['null', 'the config is not a JSON object'],
+    ['"ab"', 'the config is not a JSON object'],
+    ['{"roots":[],"only":1}', 'the config has unknown field(s): roots, only'],
+    ['{"exclude":"ab"}', 'exclude is not a list of strings'],
+    ['{"exclude":null}', 'exclude is not a list of strings'],
+    ['{"exclude":{"a":"b"}}', 'exclude is not a list of strings'],
+    ['{"exclude":["a",1]}', 'exclude is not a list of strings'],
   ] as const) {
     it(`refuses ${text}`, () => {
       assert.throws(() => parseConfig(text), { message });
     });
   }
+
+  it('takes test and spec files of four extensions by default, by the whole name', () => {
+    const { include, packageRoots, exclude } = parseConfig('{}');
+    assert.deepEqual(['a.test.ts', 'a.spec.tsx', 'b/a.test.js', 'a.spec.jsx'].map((f) => include.test(f)), [true, true, true, true]);
+    assert.deepEqual(['a.test.ts.snap', 'a.test.mjs', 'a.ts', 'atest.ts'].map((f) => include.test(f)), [false, false, false, false]);
+    assert.deepEqual([packageRoots, exclude], [[], []]);
+  });
 
   it('reads a run count from 1 to 1000, and refuses anything else', () => {
     assert.deepEqual(['1', '1000', '+3', '007'].map(parseRuns), [1, 1000, 3, 7]);
@@ -674,5 +693,32 @@ describe('npxVitest', () => {
     const outcome = npxVitest(['--version'], '/nonexistent/pariksha-flaky-tests');
     assert.equal(outcome.status, null);
     assert.match(String(outcome.error?.message), /ENOENT/);
+  });
+
+  it('runs `npx vitest …` in the directory given, stdin closed, its whole output captured as text, past the 1 MiB default', () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pariksha-npx-')));
+    const path = process.env['PATH'];
+    try {
+      mkdirSync(join(dir, 'bin'));
+      mkdirSync(join(dir, 'work'));
+      // A stand-in npx: it records how it was started, then prints a large report.
+      const fake = `#!${process.execPath}\nconst fs = process.getBuiltinModule('node:fs');\nconst s = fs.fstatSync(0);\nfs.writeFileSync('${join(dir, 'seen.json')}', JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), stdin: [s.dev, s.ino] }));\nprocess.stdout.write('x'.repeat(2_000_000));\nprocess.stderr.write('warn');\n`;
+      writeFileSync(join(dir, 'bin/npx'), fake);
+      chmodSync(join(dir, 'bin/npx'), 0o755);
+      process.env['PATH'] = `${join(dir, 'bin')}:${path ?? ''}`;
+      const outcome = npxVitest(['run', 'a.test.ts'], join(dir, 'work'));
+      // Both streams are read whole, as text. Compared by summary: a failed
+      // deepEqual of two 2 MB values takes minutes to print its diff.
+      const { stdout } = outcome;
+      assert.deepEqual(
+        { status: outcome.status, error: outcome.error?.message, text: typeof stdout, whole: stdout === 'x'.repeat(2_000_000), stderr: outcome.stderr },
+        { status: 0, error: undefined, text: 'string', whole: true, stderr: 'warn' },
+      );
+      const devNull = statSync('/dev/null');
+      assert.deepEqual(JSON.parse(readFileSync(join(dir, 'seen.json'), 'utf8')), { argv: ['vitest', 'run', 'a.test.ts'], cwd: join(dir, 'work'), stdin: [devNull.dev, devNull.ino] });
+    } finally {
+      process.env['PATH'] = path;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

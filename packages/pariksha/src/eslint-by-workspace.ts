@@ -51,8 +51,9 @@ export const owner = (config: Config, path: string): string => {
     .filter((key) => (key.endsWith('/') ? path.startsWith(key) : path === key))
     .sort((a, b) => b.length - a.length)[0];
   if (routed !== undefined) return config.routes[routed] as string;
-  const [group, name, ...rest] = path.split('/');
-  return group !== undefined && name !== undefined && rest.length > 0 && config.workspaces.includes(group) ? `${group}/${name}` : '.';
+  // A workspace folder holds the path when it has a file below `<group>/<name>/`.
+  const parts = path.split('/');
+  return parts.length > 2 && config.workspaces.includes(parts[0] as string) ? parts.slice(0, 2).join('/') : '.';
 };
 
 /** `files` grouped by owner, in first-seen order; a leading `./` dropped, repeats once. */
@@ -72,11 +73,11 @@ export const groupFiles = (config: Config, files: readonly string[]): Map<string
 const executable = (path: string): boolean => {
   try {
     accessSync(path, constants.X_OK);
-    return true;
   } catch {
     // fail-open: no executable here means try the next binary; with none, the group fails.
     return false;
   }
+  return true;
 };
 
 /** The ESLint a workspace runs: its own, else the root's. */

@@ -42,9 +42,12 @@ have to add to the prompt is a finding already, so add it to the slice.
 
 ## 2. Doubt
 
-One subagent, one pass. Use the `Explore` type: it is read-only and loads
-neither `CLAUDE.md` nor memory. Where a hook runs the call some other way,
-follow it and note what ran. Paste this brief with its slots filled:
+One subagent, one pass. Use the `Explore` type: it is read-only, and
+Claude Code's own `Explore` loads neither `CLAUDE.md` nor memory. Where a
+hook runs the call as a separate session instead, `CLAUDE.md`, the memory
+index and the user's instructions reach the reviewer. Those are the
+repository's rules, not the session's reasoning, so the review still counts;
+note what ran. Paste this brief with its slots filled:
 
 ```text
 Adversarial review. Below is a work slice that an agent will ask its owner

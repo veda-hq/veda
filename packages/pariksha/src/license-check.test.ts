@@ -98,6 +98,24 @@ describe('isAllowed', () => {
   it('never reads a bracket as part of a licence name', () => {
     assert.equal(isAllowed('MIT ( OR ISC', ['MIT (', 'ISC']), false);
   });
+
+  it('takes a whole licence equal to an allowed name before parsing it, brackets and blanks around it included', () => {
+    assert.equal(isAllowed('Public Domain (see LICENSE)', ['Public Domain (see LICENSE)']), true);
+    assert.equal(isAllowed('  Public Domain (see LICENSE) ', ['Public Domain (see LICENSE)']), true);
+    // Parsed, the same text is a name and then a bracket that nothing joins.
+    assert.equal(isAllowed('Public Domain (see LICENSE)', ['Public Domain', 'see LICENSE']), false);
+  });
+
+  it('reads tokens split by any run of blanks, and brackets with no blanks around them', () => {
+    assert.equal(isAllowed('Apache \t 2.0', ['Apache 2.0']), true);
+    assert.equal(isAllowed('(MIT)AND(ISC)', ['MIT', 'ISC']), true);
+    assert.equal(isAllowed('(MIT)AND(GPL)', ['MIT', 'ISC']), false);
+    assert.equal(isAllowed('((MIT OR GPL) AND ISC) OR GPL', ['MIT', 'ISC']), true);
+    assert.equal(isAllowed('MIT AND ISC AND GPL', ['MIT', 'ISC']), false);
+    assert.equal(isAllowed('GPL OR GPL OR MIT', ['MIT']), true);
+    assert.equal(isAllowed('MIT OR (ISC', ['MIT', 'ISC']), false);
+    assert.equal(isAllowed('MIT AND (ISC', ['MIT', 'ISC']), false);
+  });
 });
 
 describe('parseLicenseConfig', () => {
@@ -107,6 +125,14 @@ describe('parseLicenseConfig', () => {
 
   it('reads no packages as none allowed by name', () => {
     assert.deepEqual(parseLicenseConfig('{"allow": ["MIT"]}'), { allow: ['MIT'], packages: {} });
+  });
+
+  it('names each refusal whole', () => {
+    const allow = '"allow" must be a non-empty list of licence names, none blank or with surrounding spaces';
+    for (const text of ['{"allow": [1]}', '{"allow": [""]}', '{"allow": ["MIT", ""]}', '{"allow": "MIT"}']) assert.throws(() => parseLicenseConfig(text), { message: allow }, text);
+    for (const text of ['null', '"MIT"', '3']) assert.throws(() => parseLicenseConfig(text), { message: 'the config must be a JSON object' }, text);
+    assert.throws(() => parseLicenseConfig('{"allow": ["MIT"], "packages": {"a": " "}}'), { message: '"packages": "a" must be a package name with a reason, a non-empty string' });
+    assert.throws(() => parseLicenseConfig('{"allow": ["MIT"], "packages": null}'), { message: '"packages" must be an object of package names to reasons' });
   });
 
   for (const [label, text, message] of [
@@ -256,6 +282,8 @@ describe('fromPnpm', () => {
     ['a null entry', { MIT: [null] }],
     ['an entry with a blank name', { MIT: [{ name: ' ', versions: ['1.0.0'] }] }],
     ['an entry with a blank version', { MIT: [{ name: 'a', versions: ['1.0.0', ''] }] }],
+    ['an entry with a version of spaces', { MIT: [{ name: 'a', versions: [' '] }] }],
+    ['an entry whose versions are not all text', { MIT: [{ name: 'a', versions: ['1.0.0', 2] }] }],
   ] as const) {
     it(`reads ${label} as unreadable`, () => {
       assert.equal(fromPnpm(output), null);
@@ -332,6 +360,17 @@ describe('runLicenseCheck', () => {
     assert.equal(runLicenseCheck({ config: CONFIG, root: '.' }, () => JSON.stringify({ 'a@1.0.0': { licenses: 'MIT' } }), c.io), 2);
     assert.deepEqual(c.err, ['license-check: unreadable pnpm licenses output']);
     assert.deepEqual(c.out, []);
+  });
+
+  it('keeps the failure it could not read past as the cause', () => {
+    const failure = new Error('spawn pnpm ENOENT');
+    assert.throws(
+      () =>
+        runLicenseCheck({ config: CONFIG, root: '.' }, () => {
+          throw failure;
+        }, capture().io),
+      (e: unknown) => e instanceof Error && e.cause === failure,
+    );
   });
 
   it('throws, naming the source, when pnpm prints something other than JSON', () => {

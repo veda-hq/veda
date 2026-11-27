@@ -966,6 +966,146 @@ describe('SHELL-06 edges the mutation gate found unpinned', () => {
     assert.deepEqual(rulesHit(hook('f() {', '  node x')), []);
   });
 
+  it('reads only the first word after `.` as the file it sources', () => {
+    assert.deepEqual(rulesHit(hook('.', 'select_node || exit 1', 'node x')), ['runtime-before-select-node']);
+    assert.deepEqual(rulesHit(hook('. lib.sh scripts/lib/select-node.sh', 'select_node || exit 1', 'node x')), ['runtime-before-select-node']);
+    assert.deepEqual(rulesHit(hook('. other/lib.sh', 'select_node || exit 1', 'node x')), ['runtime-before-select-node']);
+  });
+
+  it('reads a pipeline stage by the `|` that ends the text before it, however many blanks follow', () => {
+    // A pipeline earlier on the line is over by the time `.` runs.
+    assert.deepEqual(rulesHit(hook('echo a | cat; . scripts/lib/select-node.sh', 'select_node || exit 1', 'node x')), []);
+    assert.deepEqual(rulesHit(hook('echo a |  . scripts/lib/select-node.sh', 'select_node || exit 1', 'node x')), ['runtime-before-select-node']);
+  });
+
+  it('reads an opt-out whose exit and code are apart by more than one blank', () => {
+    assert.deepEqual(rulesHit(hook(SELECT, '[ "$SKIP_HOOK" = 1 ] && exit  0', 'node x')), ['opt-out-after-select-node']);
+  });
+
+  it('reads an opt-out only after the source, on its own line too', () => {
+    assert.deepEqual(rulesHit(hook('[ "$SKIP_HOOK" = 1 ] && exit 0; . scripts/lib/select-node.sh', 'select_node || exit 1', 'node x')), []);
+  });
+
+  each([
+    ['a PATH edit opening the line', 'PATH="/opt/bin:$PATH"'],
+    ['a PATH edit after an and', 'true && PATH="/opt/bin:$PATH"'],
+    ['an export two blanks wide', 'export  PATH="/opt/bin:$PATH"'],
+    ['fnm after a blank', 'true && fnm use'],
+    ['fnm two blanks from its command', 'fnm  use'],
+    ['mise after a blank', 'true && mise activate bash'],
+    ['mise two blanks from its command', 'mise  exec -- node -v'],
+  ])('flags %s as own-runtime-path', (_label, line) => {
+    assert.deepEqual(rulesHit(hook(SELECT, line)), ['own-runtime-path']);
+  });
+
+  each([
+    ['sh at the end of the line', 'exec sh'],
+    ['sh two blanks from exec', 'exec  sh .husky/pre-push'],
+    ['sh through env', 'exec /usr/bin/env sh .husky/pre-push'],
+    ['sh through env, two blanks wide', 'exec /usr/bin/env  sh .husky/pre-push'],
+  ])('flags %s as an exec trampoline', (_label, line) => {
+    assert.deepEqual(rulesHit(hook(line)), ['exec-sh-trampoline']);
+  });
+
+  it('reads only the program exec starts, not an sh among its operands', () => {
+    assert.deepEqual(rulesHit(hook('exec bash .husky/run sh')), []);
+  });
+
+  it('reads redirections between a selection and its `||`, however written', () => {
+    for (const call of ['select_node>/dev/null || exit 1', 'select_node >/dev/null || exit 1', 'select_node > /dev/null || exit 1', 'select_node >> log || exit 1', 'select_node >a 2>&1 || exit 1']) {
+      assert.deepEqual(rulesHit(hook('. scripts/lib/select-node.sh', call, 'node x')), [], call);
+    }
+    // Only before the `||`: a redirection after it is read with its exit.
+    assert.deepEqual(rulesHit(hook('. scripts/lib/select-node.sh', 'select_node || exit >x 1', 'node x')), ['runtime-before-select-node']);
+  });
+
+  it('reads a selection guarded by an if two blanks wide, or by `!` two blanks wide, but not by an earlier if or an elif', () => {
+    assert.deepEqual(rulesHit(hook('. scripts/lib/select-node.sh', 'if  select_node; then :; else exit 1; fi', 'node x')), []);
+    assert.deepEqual(rulesHit(hook('. scripts/lib/select-node.sh', 'if !  select_node; then exit 1; fi', 'node x')), []);
+    assert.deepEqual(rulesHit(hook('. scripts/lib/select-node.sh', 'if true; then :; fi; select_node', 'node x')), ['runtime-before-select-node']);
+    assert.deepEqual(rulesHit(hook('. scripts/lib/select-node.sh', 'if false; then :; elif select_node; then :; fi', 'node x')), ['runtime-before-select-node']);
+  });
+
+  it('reads a case pattern’s `)` as no subshell closing', () => {
+    assert.deepEqual(rulesHit(hook('case "$1" in', '  a) true ;;', 'esac', '( . scripts/lib/select-node.sh; select_node || exit 1 )', 'node x')), ['runtime-before-select-node']);
+  });
+
+  it('reads a bare header whose next line opens no brace as no definition', () => {
+    assert.deepEqual(rulesHit(hook('f()', 'echo x', 'node y')), ['runtime-before-select-node']);
+    assert.deepEqual(rulesHit(hook('lint()', 'node x {')), ['runtime-before-select-node']);
+  });
+
+  it('reads a brace on the line after a bare header, indented or not', () => {
+    assert.deepEqual(rulesHit(hook('cleanup()', '  {', '  exit 130', '}', 'trap cleanup INT')), []);
+    // A multi-line string on the brace line opens no definition, as on a header line.
+    assert.deepEqual(rulesHit(hook('cleanup()', '{ echo "a', 'b"; exit 130; }', 'trap cleanup INT')), ['signal-trap-continues']);
+    assert.deepEqual(rulesHit(hook('cleanup() { echo "a', 'b"; exit 130; }', 'trap cleanup INT')), ['signal-trap-continues']);
+  });
+
+  it('reads a function body from just past its `{` to just before its `}`', () => {
+    assert.deepEqual(rulesHit(hook('cleanup() { exit 130; }', 'trap cleanup INT')), []);
+    assert.deepEqual(rulesHit(hook('cleanup() { exit 130; }; echo done', 'trap cleanup INT')), []);
+    // A ${…} with a brace inside it is no brace of the body.
+    assert.deepEqual(rulesHit(hook('cleanup() { echo ${A:-{}; exit 130; }', 'trap cleanup INT')), []);
+    assert.deepEqual(rulesHit(hook('cleanup() { echo ${AB}; exit 130; }', 'trap cleanup INT')), []);
+  });
+
+  it('reads the first definition of a handler, and a definition right after another', () => {
+    assert.deepEqual(rulesHit(hook('cleanup() { echo; }', 'cleanup() { exit 130; }', 'trap cleanup INT')), ['signal-trap-continues']);
+    assert.deepEqual(rulesHit(hook('a() { echo; }', 'cleanup() { exit 130; }', 'trap cleanup INT')), []);
+  });
+
+  it('reads a handler by its quotes only when they wrap it whole, and a function name with blanks around it', () => {
+    assert.deepEqual(rulesHit(hook("trap 'exit 130'x INT")), ['signal-trap-continues']);
+    assert.deepEqual(rulesHit(hook("trap x'exit 130' INT")), ['signal-trap-continues']);
+    assert.deepEqual(rulesHit(hook('cleanup() { exit 130; }', "trap ' cleanup ' INT")), []);
+  });
+
+  it('reads a handler string’s last statement, never its name-like last word as a function', () => {
+    assert.deepEqual(rulesHit(hook("trap 'echo bye; exit' INT")), []);
+    assert.deepEqual(rulesHit(hook("trap 'echo bye; exit 130' INT")), []);
+    assert.deepEqual(rulesHit(hook("trap 'exit 1; echo bye' INT")), ['signal-trap-continues']);
+    assert.deepEqual(rulesHit(hook("trap '' INT")), ['signal-trap-continues']);
+  });
+
+  it('reads a trap with no handler, or a handler and no signal, as nothing to judge', () => {
+    assert.deepEqual(rulesHit(hook('trap')), []);
+    assert.deepEqual(rulesHit(hook("trap 'echo bye'")), []);
+  });
+
+  it('judges a trap on any stop signal among others', () => {
+    assert.deepEqual(rulesHit(hook("trap 'echo bye' USR1 INT")), ['signal-trap-continues']);
+    assert.deepEqual(rulesHit(hook("trap 'echo bye' INT USR1")), ['signal-trap-continues']);
+    assert.deepEqual(rulesHit(hook("trap 'echo bye' USR1")), []);
+  });
+
+  each(['SIGINT', 'SIGTERM', 'SIGHUP', 'sigquit', 'INT', 'TERM', 'HUP'])('treats %s as a stop signal, SIG or not', (signal) => {
+    assert.deepEqual(rulesHit(hook(`trap 'echo bye' ${signal}`)), ['signal-trap-continues']);
+  });
+
+  it('reads the separators after a group at the command’s own level', () => {
+    assert.deepEqual(rulesHit(hook('. scripts/lib/select-node.sh $(true) &', 'select_node || exit 1', 'node x')), ['runtime-before-select-node']);
+    assert.deepEqual(rulesHit(hook('. scripts/lib/select-node.sh $(true) && true', 'select_node || exit 1', 'node x')), []);
+  });
+
+  it('reads a subshell still open across lines, nested ones included', () => {
+    assert.deepEqual(rulesHit(hook('( (:)', '  . scripts/lib/select-node.sh; select_node || exit 1', ')', 'node x')), ['runtime-before-select-node']);
+  });
+
+  it('reads a brace line holding a multi-line string as no definition, as a header line holding one', () => {
+    assert.deepEqual(rulesHit(hook('f()', '{ echo "a', 'b"; node x; }')), ['runtime-before-select-node']);
+    assert.deepEqual(rulesHit(hook('f() { echo "a', 'b"; node x; }')), ['runtime-before-select-node']);
+  });
+
+  it('reads a function defined inside another’s body as part of that body', () => {
+    assert.deepEqual(rulesHit(hook('outer() {', '  inner() { node x; }', '}', 'inner')), []);
+  });
+
+  it('reads a multi-line body to just before its `}`, and a handler by its last statement', () => {
+    assert.deepEqual(rulesHit(hook('cleanup() {', '  exit 130', '}; echo done', 'trap cleanup INT')), []);
+    assert.deepEqual(rulesHit(hook('cleanup() { exit 1; echo; }', 'trap cleanup INT')), ['signal-trap-continues']);
+  });
+
   it('orders positions strictly', () => {
     assert.equal(isBefore({ index: 1, offset: 2 }, { index: 1, offset: 2 }), false);
     assert.equal(isBefore({ index: 1, offset: 2 }, { index: 1, offset: 3 }), true);

@@ -47,7 +47,7 @@ export const parseLicenseConfig = (text: string): LicenseConfig => {
   const allow = raw['allow'];
   // An empty list would refuse every package; a missing one is a config that names no policy.
   // A name with surrounding spaces would never equal a reported licence, which is trimmed.
-  if (!Array.isArray(allow) || allow.length === 0 || allow.some((name) => typeof name !== 'string' || name.trim() === '' || name !== name.trim())) {
+  if (!Array.isArray(allow) || allow.length === 0 || allow.some((name) => typeof name !== 'string' || name === '' || name !== name.trim())) {
     throw new Error('"allow" must be a non-empty list of licence names, none blank or with surrounding spaces');
   }
   const packages = 'packages' in raw ? raw['packages'] : {};
@@ -63,6 +63,9 @@ export const packageName = (id: string): string => {
   return at > 0 ? id.slice(0, at) : id;
 };
 
+/** A parsed head of a token list: its value and the tokens after it. */
+type Parsed = { readonly value: boolean; readonly rest: readonly string[] } | null;
+
 /**
  * Whether an SPDX expression is allowed: AND binds tighter than OR, an OR
  * passes when either side does, an AND when both do, and a licence name when
@@ -71,44 +74,40 @@ export const packageName = (id: string): string => {
  */
 export const isAllowed = (expression: string, allowed: readonly string[]): boolean => {
   if (allowed.includes(expression.trim())) return true;
-  const tokens = expression.split(/(\(|\)|\s+)/).filter((token) => token.trim() !== '');
-  let at = 0;
-  const isKeyword = (token: string | undefined): boolean => token === 'AND' || token === 'OR' || token === '(' || token === ')';
-  // Each step returns null for a malformed expression.
-  const atom = (): boolean | null => {
-    if (tokens[at] === '(') {
-      at += 1;
-      const inner = or();
-      if (inner === null || tokens[at] !== ')') return null;
-      at += 1;
-      return inner;
-    }
-    const words: string[] = [];
-    while (at < tokens.length && !isKeyword(tokens[at])) {
-      words.push(tokens[at] as string);
-      at += 1;
-    }
-    return words.length === 0 ? null : allowed.includes(words.join(' '));
+  const isKeyword = (token: string): boolean => token === 'AND' || token === 'OR' || token === '(' || token === ')';
+  // Each step parses from the head of `tokens` and returns its value with the
+  // tokens left, or null for a malformed expression. No loop and no shared
+  // index: each step that calls another hands it a shorter list, and only a
+  // list that opens with a bracket recurses from its head, so no step can
+  // call itself on the empty list forever.
+  // The tail after the bracket, by destructuring: a list that kept its bracket would open this group again forever.
+  const group = ([, ...tail]: readonly string[]): Parsed => {
+    const inner = or(tail);
+    return inner?.rest[0] === ')' ? { value: inner.value, rest: inner.rest.slice(1) } : null;
   };
-  const and = (): boolean | null => {
-    let value = atom();
-    while (value !== null && tokens[at] === 'AND') {
-      at += 1;
-      const next = atom();
-      value = next === null ? null : value && next;
-    }
-    return value;
+  const licence = (tokens: readonly string[]): Parsed => {
+    const keyword = tokens.findIndex(isKeyword);
+    const name = keyword === -1 ? tokens : tokens.slice(0, keyword);
+    return name.length === 0 ? null : { value: allowed.includes(name.join(' ')), rest: tokens.slice(name.length) };
   };
-  const or = (): boolean | null => {
-    let value = and();
-    while (value !== null && tokens[at] === 'OR') {
-      at += 1;
-      const next = and();
-      value = next === null ? null : value || next;
-    }
-    return value;
+  // A lookup, not a test, picks the step: a bracket opens a group, anything else a licence name.
+  const steps = new Map<string | undefined, (tokens: readonly string[]) => Parsed>([['(', group]]);
+  const atom = (tokens: readonly string[]): Parsed => (steps.get(tokens[0]) ?? licence)(tokens);
+  const and = (tokens: readonly string[]): Parsed => {
+    const left = atom(tokens);
+    if (left?.rest[0] !== 'AND') return left;
+    const right = and(left.rest.slice(1));
+    return right === null ? null : { value: left.value && right.value, rest: right.rest };
   };
-  return or() === true && at === tokens.length;
+  const or = (tokens: readonly string[]): Parsed => {
+    const left = and(tokens);
+    if (left?.rest[0] !== 'OR') return left;
+    const right = or(left.rest.slice(1));
+    return right === null ? null : { value: left.value || right.value, rest: right.rest };
+  };
+  // A token is a bracket or a run of anything else but blanks.
+  const parsed = or([...expression.matchAll(/[()]|[^()\s]+/g)].map((match) => match[0]));
+  return parsed?.value === true && parsed.rest.length === 0;
 };
 
 /** The packages whose licence is not allowed, from a `name@version` report. */

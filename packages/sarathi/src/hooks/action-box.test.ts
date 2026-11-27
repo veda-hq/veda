@@ -105,13 +105,18 @@ describe('markersRemoved', () => {
   });
 
   test('does not join two edits into a marker neither holds', () => {
-    const edits = [
+    // Joined old texts would make a marker the new ones lack: no removal.
+    const kept = [
       { old_text: 'data-if-', new_text: 'data-if-' },
       { old_text: 'silent', new_text: 'silent' },
+    ];
+    assert.deepEqual(markersRemoved({ edits: kept }), []);
+    // Joined new texts would hide the marker the edits take out.
+    const taken = [
       { old_text: 'data-if-silent', new_text: 'data-if-' },
       { old_text: 'x', new_text: 'silent' },
     ];
-    assert.deepEqual(markersRemoved({ edits }), ['data-if-silent']);
+    assert.deepEqual(markersRemoved({ edits: taken }), ['data-if-silent']);
   });
 
   test('refuses edits it cannot read', () => {
@@ -198,6 +203,14 @@ describe('decide', () => {
       assert.equal(decide({ tool_name, tool_input: { edits: removing } }, noRead), why);
       assert.equal(decide({ tool_name, tool_input: { edits: removing, path: 'index.html' } }, noRead), why);
       assert.equal(decide({ tool_name, tool_input: { edits: removing, path: './index.html' } }, noRead), why);
+    });
+
+    test('names every marker an edit takes out', () => {
+      const edits = [{ old_text: '<div data-action-box><p data-if-silent>x</p>', new_text: '<div><p>x</p>' }];
+      assert.equal(
+        decide({ tool_name, tool_input: { edits } }, noRead),
+        'this edit_version takes data-action-box, data-if-silent out of the page; an action box keeps all of data-action-box, data-action-link, data-if-silent before the page\'s first <h2>',
+      );
     });
 
     test('passes an edit that keeps every marker', () => {

@@ -256,7 +256,7 @@ export function settingsProblems(config: Config, settings: Map<string, SettingsH
   const problems: string[] = [];
   for (const [event, list] of Object.entries(config.hooks)) {
     if (list.length === 0) continue;
-    const runners = (settings.get(event) ?? []).filter(item => runsSarathiFor(item.command, event));
+    const runners = settings.get(event)?.filter(item => runsSarathiFor(item.command, event)) ?? [];
     if (runners.length === 0) {
       problems.push(`${event}: no settings hook runs \`sarathi hook ${event}\``);
       continue;

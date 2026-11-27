@@ -70,15 +70,15 @@ function filesSent(input: Record<string, unknown>, read: (path: string) => strin
 export function markersRemoved(input: Record<string, unknown>): string[] {
   const edits = input.edits;
   if (!Array.isArray(edits)) throw new Error('edit_version names no edits');
-  let before = '';
-  let after = '';
-  for (const edit of edits) {
+  const pairs = edits.map(edit => {
     if (!isRecord(edit) || typeof edit.old_text !== 'string' || typeof edit.new_text !== 'string') {
       throw new Error('edit_version has an edit without old_text and new_text');
     }
-    before += `${edit.old_text}\n`;
-    after += `${edit.new_text}\n`;
-  }
+    return [edit.old_text, edit.new_text] as const;
+  });
+  // Joined with a line break, so two edits never make a marker neither holds.
+  const before = pairs.map(([old]) => old).join('\n');
+  const after = pairs.map(([, now]) => now).join('\n');
   return MARKERS.filter(marker => occurrences(after, marker) < occurrences(before, marker));
 }
 

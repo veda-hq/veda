@@ -381,6 +381,9 @@ describe('sarathi check', () => {
       const file = settingsFile(dir, { hooks: { PreToolUse: [entry(matcher, 'PreToolUse', 60)] } });
       assert.equal((await run(['check', '--settings', file], { dir })).err, '', String(matcher));
     }
+    // One entry matching every tool covers the pattern, whatever the others match.
+    const beside = settingsFile(dir, { hooks: { PreToolUse: [entry('Read', 'PreToolUse', 60), entry(undefined, 'PreToolUse', 60)] } });
+    assert.equal((await run(['check', '--settings', beside], { dir })).err, '');
   });
 
   it('names a match-all handler left out, with every settings matcher', async () => {

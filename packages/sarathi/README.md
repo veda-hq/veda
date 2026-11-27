@@ -666,9 +666,12 @@ events are left alone. It acts only on events the settings route to sarathi.
 ## Pages
 
 `sarathi page` publishes, reads and answers claude.ai pages (Artifacts) for a
-session that does not carry the Artifact tools. Their definitions cost about
-11,000 tokens per request, so a project can deny them in its settings and
-still publish:
+session that does not carry the Artifact tools. In the desktop app the
+claude-artifacts server's seven eager tools come to 22,800 characters,
+roughly 6,000 tokens, per request (2026-11-27). A deny in settings leaves
+those definitions in (three probe sessions, 2026-11-27); the Claude Code
+lessons give the session connector toggle as what drops them. A session
+without them, or with them denied, still publishes:
 
 ```sh
 sarathi page <page.html> [--title T] [--description D] [--icon I]
@@ -679,9 +682,11 @@ sarathi page --reply <artifact> --thread <id> --text-file <file> [--resolve]
 ```
 
 Each job runs in a one-off `claude -p` session, in a new scratch directory
-outside the project, so it loads no project settings. It gets only the tools
-the job needs, and its success is judged by what those tools returned, not by
-what the session says. It prints the page URL, the threads, the saved path or
+outside the project, so it loads no project settings. It runs on Sonnet and
+starts with only the tools the job needs (`--tools`, with `ArtifactData`
+denied), about 20,000 tokens where the full tool list took 38,000. Its
+success is judged by what those tools returned, not by what the session
+says. It prints the page URL, the threads, the saved path or
 the reply's outcome.
 
 **Updating a page someone may have changed.** Comment threads answered by

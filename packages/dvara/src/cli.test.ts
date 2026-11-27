@@ -967,8 +967,8 @@ describe("dvara turn", () => {
           lines[0] ?? "",
           /^⏳ Waiting for a heavy-work turn \(2 of 2 in use, you are 1st in line\); waited 0 min of up to 30\.$/,
         );
-        assert.match(lines[1] ?? "", /^ {3}\S+ {2}first holder {3}for 0 min/);
-        assert.match(lines[2] ?? "", /^ {3}\S+ {2}second holder {2}for 0 min/);
+        assert.match(lines[1] ?? "", /^ {5}\S+ {2}first holder {3}for 0 min/);
+        assert.match(lines[2] ?? "", /^ {5}\S+ {2}second holder {2}for 0 min/);
         const waiter = log(dir).find((line) => line["label"] === "waiter");
         t.diagnostic(JSON.stringify(waiter));
         assert.equal(waiter?.["mode"], "enforce");

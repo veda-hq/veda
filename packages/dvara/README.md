@@ -382,11 +382,13 @@ dvara turn [--exclusive] [--class push|other] [--label <text>] -- <command> [arg
 
   ```text
   ⏳ Waiting for a heavy-work turn (2 of 2 in use, you are 1st in line); waited 3 min of up to 30.
-     acme-policy  pnpm check     for 6 min  (worktree brave-curie)
-     acme_store   mutation gate  for 2 min  (branch claude/w-58-hooks)
+       acme-policy  pnpm check     for 6 min  (worktree brave-curie)
+       acme_store   mutation gate  for 2 min  (branch claude/w-58-hooks)
   ```
 
-  `--label` names the request there (default: the command).
+  Each holder line starts with exactly five spaces, so a hook that hides a
+  stage's output can pass on the `⏳ ` lines and the lines indented so
+  beneath them. `--label` names the request there (default: the command).
 - **Bounded, never refusing.** At the bound, 30 minutes (`DVARA_TURN_WAIT_MINUTES`,
   or `"waitMinutes"`), the command runs anyway with a warning. The exit
   status is always the command's: a forwarded SIGINT or SIGTERM decides it

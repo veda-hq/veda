@@ -28,6 +28,7 @@ import {
   LOCK_TRIES,
   liveness,
   look,
+  HOLDER_INDENT,
   NOTICE_MS,
   ordinal,
   parseReplayArgs,
@@ -641,10 +642,13 @@ describe("waitingLines", () => {
     };
     assert.deepEqual(waitingLines(view, settings(), T0 + 3 * 60_000), [
       "⏳ Waiting for a heavy-work turn (2 of 2 in use, you are 1st in line); waited 3 min of up to 30.",
-      "   acme-policy  pnpm check     for 8 min  (worktree brave-curie)",
-      "   acme_store   mutation gate  for 5 min  (branch claude/w-58-hooks)",
-      "   veda         tsc            for 3 min",
+      "     acme-policy  pnpm check     for 8 min  (worktree brave-curie)",
+      "     acme_store   mutation gate  for 5 min  (branch claude/w-58-hooks)",
+      "     veda         tsc            for 3 min",
     ]);
+    // Exactly five: a hook that hides a stage's output passes on these lines by that indent.
+    assert.equal(HOLDER_INDENT, " ".repeat(5));
+    for (const line of waitingLines(view, settings(), T0).slice(1)) assert.match(line, /^ {5}\S/);
   });
 
   it("is the one line with no holders", () => {
@@ -1084,7 +1088,7 @@ describe("turn", () => {
       "⏳ Waiting for a heavy-work turn (2 of 2 in use, you are 1st in line); waited 2 min of up to 30.",
     ]);
     assert.equal(
-      run.stderr.filter((line) => line === "   acme-policy  pnpm check  for 6 min  (worktree brave-curie)").length,
+      run.stderr.filter((line) => line === "     acme-policy  pnpm check  for 6 min  (worktree brave-curie)").length,
       1,
     );
     assert.equal(run.stderr.length, 6);
@@ -1143,7 +1147,7 @@ describe("turn", () => {
     assert.equal(line?.["waitedMs"], 2 * POLL_MS);
     assert.deepEqual(replayable(readFileSync(join(dir, TURN_LOG_FILENAME), "utf8"), 0), []);
     assert.equal(run.signals.listenerCount("SIGTERM"), 0);
-    assert.deepEqual(run.stderr.filter((text) => !text.startsWith("⏳") && !text.startsWith("   ")), []);
+    assert.deepEqual(run.stderr.filter((text) => !text.startsWith("⏳") && !text.startsWith(HOLDER_INDENT)), []);
   });
 
   it("grants a free turn at the moment it was asked for, however long git took", async () => {

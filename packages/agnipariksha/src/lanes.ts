@@ -3,11 +3,12 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { nameTests } from './failed-tests.ts';
-import { RETRY_IGNORER_NAME, RETRY_SPAN_VAR } from './retry-ignorer.ts';
+import { RETRY_IGNORER_NAME, RETRY_SPANS_VAR } from './retry-ignorer.ts';
+import { readEvents, RETRY_EVENTS_VAR, RETRY_REPORTER_NAME } from './retry-reporter.ts';
 import { forReuse, pruneToTargets } from './reuse-filter.ts';
 import { ownerOf, type Exists } from './suite-owner.ts';
-import { mutantSpan, RETRY_TIMEOUT_MS, retryTimeouts, type RetryRun } from './timeout-retry.ts';
-import { judge, readMutants, type Judgement } from './verdict.ts';
+import { mutantSpan, RETRY_TIMEOUT_MS, retryTimeouts } from './timeout-retry.ts';
+import { judge, readMutants, type Judgement, type Mutant } from './verdict.ts';
 
 export interface Lane {
   name: string;
@@ -103,13 +104,16 @@ export interface LaneDeps {
   /**
    * Run Stryker; `seen` lists the `MARKERS` its output carried, `refusal`
    * says why the run cannot be trusted whatever it exited with, and
-   * `failedTests` names the tests its initial test run failed on.
+   * `failedTests` names the tests its initial test run failed on. Given
+   * `stopAfterMs`, it stops Stryker that long after the start, and says
+   * `stopped`.
    */
   runStryker: (
     cwd: string,
     args: string[],
     env: Record<string, string>,
-  ) => Promise<{ code: number; seen: readonly string[]; refusal?: string; failedTests?: readonly string[] }>;
+    stopAfterMs?: number,
+  ) => Promise<{ code: number; seen: readonly string[]; refusal?: string; failedTests?: readonly string[]; stopped?: boolean }>;
   readFile: (path: string) => string | undefined;
   writeFile: (path: string, text: string) => void;
   removeFile: (path: string) => void;
@@ -154,27 +158,30 @@ export function wrapperConfig(configPath: string, reportPath: string): string {
 
 /** The compiled retry ignorer, beside this module in `dist/`. */
 export const RETRY_PLUGIN = fileURLToPath(new URL('retry-ignorer.js', import.meta.url));
+/** The compiled retry reporter, beside this module in `dist/`. */
+export const RETRY_REPORTER = fileURLToPath(new URL('retry-reporter.js', import.meta.url));
 
 /**
- * A timeout retry's config: the wrapper's, plus the retry ignorer (which
- * drops the mutants nested in the retried one) and the mutators to leave out
- * (the file's others, which leaves only the retried node's own replacements).
- * The lane's own plugins, ignorers and exclusions stay.
+ * A timeout retry round's config: the wrapper's with its own report path,
+ * plus the retry ignorer (which drops the mutants nested in the retried
+ * ones), the retry reporter (which writes each result as it comes) and the
+ * mutators to leave out (the ones no retried mutant of the round's files
+ * uses). The lane's own plugins, reporters, ignorers and exclusions stay.
  */
-export function retryConfig(configPath: string, reportPath: string, plugin: string, excluded: readonly string[]): string {
+export function retryConfig(configPath: string, reportPath: string, plugins: { ignorer: string; reporter: string }, excluded: readonly string[]): string {
   return [
     `import base from ${JSON.stringify(pathToFileURL(configPath).href)};`,
     'export default {',
     '  ...base,',
     `  jsonReporter: { ...base.jsonReporter, fileName: ${JSON.stringify(reportPath)} },`,
-    `  appendPlugins: [...(base.appendPlugins ?? []), ${JSON.stringify(plugin)}],`,
+    `  appendPlugins: [...(base.appendPlugins ?? []), ${JSON.stringify(plugins.ignorer)}, ${JSON.stringify(plugins.reporter)}],`,
+    `  reporters: [...(base.reporters ?? []), ${JSON.stringify(RETRY_REPORTER_NAME)}],`,
     `  ignorers: [...(base.ignorers ?? []), ${JSON.stringify(RETRY_IGNORER_NAME)}],`,
     `  mutator: { ...base.mutator, excludedMutations: [...(base.mutator?.excludedMutations ?? []), ...${JSON.stringify(excluded)}] },`,
     '};',
     '',
   ].join('\n');
 }
-
 const BUSY = "Stryker's initial test run timed out: the machine is busy; push again when it is quieter";
 
 export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult> {
@@ -186,6 +193,9 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
   const on = (failedTests: readonly string[], lead = ' on '): string => (failedTests.length > 0 ? `${lead}${nameTests(failedTests)}` : '');
   const wrapper = join(deps.reportsDir, `${slug}.stryker.config.mjs`);
   const retryWrapper = join(deps.reportsDir, `${slug}.retry.stryker.config.mjs`);
+  // A round's own report and events, so the lane's report keeps the lane's whole run.
+  const retryReport = join(deps.reportsDir, `${slug}.retry.json`);
+  const events = join(deps.reportsDir, `${slug}.retry-events.jsonl`);
   deps.writeFile(wrapper, wrapperConfig(join(cwd, lane.config), report));
   const local = (file: string): string => (lane.cwd === '' ? file : file.slice(lane.cwd.length + 1));
   const firstEnv = lane.env(plan.suites);
@@ -196,10 +206,9 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
     line: string;
     failedTests: readonly string[];
   }
-  type Run = RetryRun & { trigger?: Trigger };
-  const run = async (mutate: string[], extra: string[], env: Record<string, string>, config = wrapper): Promise<Run> => {
-    deps.removeFile(report);
-    const result = await deps.runStryker(cwd, ['run', config, ...extra, '--mutate', mutate.join(',')], env);
+  type Run = { mutants: Mutant[] } | { refusal: string; busy: boolean; trigger?: Trigger };
+  /** What a finished Stryker run says: a refusal, or the targets' mutants from the report at `reportPath`. */
+  const settle = (result: Awaited<ReturnType<LaneDeps['runStryker']>>, mutate: string[], reportPath: string): Run => {
     if (result.refusal !== undefined) return { refusal: result.refusal, busy: false };
     if (result.code !== 0) {
       if (result.seen.includes(DRY_RUN_TIMEOUT)) return { refusal: BUSY, busy: true };
@@ -208,17 +217,21 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
       const failedTests = line === FAILED_INITIAL_RUN ? (result.failedTests ?? []) : [];
       return { refusal: `Stryker exited ${result.code} (${line}${on(failedTests, ': ')})`, busy: false, trigger: { line, failedTests } };
     }
-    const text = deps.readFile(report);
-    if (text === undefined) return { refusal: `Stryker wrote no report at ${report}`, busy: false };
+    const text = deps.readFile(reportPath);
+    if (text === undefined) return { refusal: `Stryker wrote no report at ${reportPath}`, busy: false };
     let raw: unknown;
     try {
       raw = JSON.parse(text);
     } catch {
       // fail-open: an unreadable report refuses the lane (exit 2), never passes it.
-      return { refusal: `Stryker's report ${report} is not JSON`, busy: false };
+      return { refusal: `Stryker's report ${reportPath} is not JSON`, busy: false };
     }
     const mutants = readMutants(pruneToTargets(raw, lane.cwd, mutate), lane.cwd);
     return typeof mutants === 'string' ? { refusal: mutants, busy: false } : { mutants };
+  };
+  const run = async (mutate: string[], extra: string[], env: Record<string, string>): Promise<Run> => {
+    deps.removeFile(report);
+    return settle(await deps.runStryker(cwd, ['run', wrapper, ...extra, '--mutate', mutate.join(',')], env), mutate, report);
   };
 
   const key = lane.reuse ? deps.reuseKey(lane) : null;
@@ -271,19 +284,35 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
   const noMutants = plan.targets.filter((target) => !mutants.some((m) => m.file === target));
   const pass = await retryTimeouts(
     mutants,
-    async (m) => {
-      const span = mutantSpan(m);
-      if (span === null) return { refusal: 'its report gives no full location to retry it by', busy: false };
-      const env = (ownSuite.has(m.file) ? fallbackEnv : undefined) ?? firstEnv;
-      const excluded = [...new Set(mutants.filter((o) => o.file === m.file && o.mutator !== m.mutator).map((o) => o.mutator))];
-      deps.writeFile(retryWrapper, retryConfig(join(cwd, lane.config), report, RETRY_PLUGIN, excluded));
-      // Stryker mutates every node inside the `--mutate` range; the ignorer, given the span, drops those nested in this one.
-      const retry = await run([`${local(m.file)}:${span}`], ['--concurrency', '1', '--timeoutMS', String(RETRY_TIMEOUT_MS)], { ...env, [RETRY_SPAN_VAR]: span }, retryWrapper);
+    async (round, deadline) => {
+      // A round is never empty, and all of it is in one mode (the group below).
+      const env = (ownSuite.has((round[0] as Mutant).file) ? fallbackEnv : undefined) ?? firstEnv;
+      const files = new Set(round.map((m) => m.file));
+      const mutators = new Set(round.map((m) => m.mutator));
+      const excluded = [...new Set(mutants.filter((o) => files.has(o.file) && !mutators.has(o.mutator)).map((o) => o.mutator))];
+      deps.writeFile(retryWrapper, retryConfig(join(cwd, lane.config), retryReport, { ignorer: RETRY_PLUGIN, reporter: RETRY_REPORTER }, excluded));
+      deps.removeFile(retryReport);
+      deps.removeFile(events);
+      // Stryker mutates every node inside each `--mutate` range; the ignorer, given the spans, drops those nested in them.
+      const spans = round.map((m) => `${local(m.file)}:${mutantSpan(m)}`);
+      const result = await deps.runStryker(
+        cwd,
+        ['run', retryWrapper, '--concurrency', '1', '--timeoutMS', String(RETRY_TIMEOUT_MS), '--mutate', spans.join(',')],
+        { ...env, [RETRY_SPANS_VAR]: spans.join('\n'), [RETRY_EVENTS_VAR]: events },
+        deadline - deps.now(),
+      );
+      const { dryRunEnd, tested } = readEvents(deps.readFile(events), lane.cwd);
+      if (result.stopped === true) return { dryRunEnd, tested, stopped: true, report: null };
+      const retry = settle(result, spans, retryReport);
+      if ('mutants' in retry) return { dryRunEnd, tested, stopped: false, report: retry.mutants };
       // The lane's own run passed its initial test run, so a test failing in the retry's is flaky.
-      return 'refusal' in retry && retry.trigger?.line === FAILED_INITIAL_RUN ? { refusal: flakyRetry(retry.trigger.failedTests), busy: false } : retry;
+      const refusal = retry.trigger?.line === FAILED_INITIAL_RUN ? flakyRetry(retry.trigger.failedTests) : retry.refusal;
+      return { refusal, busy: retry.busy, dryRunEnd };
     },
     deps.now,
     deps.log,
+    // A fallback file's round runs under the fallback's variables, so it never shares one with the lane's.
+    (m) => String(ownSuite.has(m.file)),
   );
   const judgement = judge(pass.mutants);
   const refusals = [...pass.refusals, ...judgement.unknown.map((u) => `unknown status: ${u}`)];

@@ -1,27 +1,32 @@
 /**
- * The Stryker ignorer a timeout retry loads, so the retry runs the mutant it
- * retries and not every mutant nested inside it.
+ * The Stryker ignorer a timeout retry round loads, so the round runs the
+ * mutants it retries and not every mutant nested inside them.
  *
- * A retry selects its mutant with `--mutate file:l:c-l:c`, and Stryker mutates
- * every node inside that range. For a BlockStatement that is every mutant in
- * the block, each run one by one at concurrency 1: one of `cli.ts`'s retries
- * ran 54. This ignorer drops every node strictly inside the retried mutant's
- * span, and Stryker drops each such node's whole subtree with it. The node at
- * the span itself and its ancestors stay, so the retried mutant is still made.
+ * A round selects its mutants with `--mutate file:l:c-l:c,…`, and Stryker
+ * mutates every node inside each range. For a BlockStatement that is every
+ * mutant in the block, each run one by one at concurrency 1: one of
+ * `cli.ts`'s retries ran 54. This ignorer drops every node strictly inside a
+ * retried span of its own file, unless the node is a retried span itself or
+ * holds one, and Stryker drops each ignored node's whole subtree with it. So
+ * each retried node and its ancestors stay, and every retried mutant is still
+ * made. A round never holds a span inside another (`planRounds`), so no
+ * retried node is lost inside an ancestor's.
  *
  * Stryker loads it in its own process, from `dist/`, through the retry
- * config's `appendPlugins`; it imports nothing.
+ * config's `appendPlugins`; it imports only `node:path`.
  */
+import { resolve } from 'node:path';
 
 /**
- * The variable that carries the retried mutant's span, `line:column-endLine:endColumn`:
- * lines 1-based and columns 0-based, as Babel counts them.
+ * The variable that carries the round's spans, one a line:
+ * `file:line:column-endLine:endColumn`, the file relative to Stryker's working
+ * directory, lines 1-based and columns 0-based, as Babel counts them.
  */
-export const RETRY_SPAN_VAR = 'AGNIPARIKSHA_RETRY_SPAN';
+export const RETRY_SPANS_VAR = 'AGNIPARIKSHA_RETRY_SPANS';
 /** The name the retry config lists in `ignorers`. */
 export const RETRY_IGNORER_NAME = 'agnipariksha-retry';
 /** Stryker reports it on each ignored mutant. */
-export const NESTED_REASON = 'agnipariksha retries one mutant alone, and this node lies inside it';
+export const NESTED_REASON = 'agnipariksha retries a timed-out mutant here, and this node lies inside it';
 
 export interface Position {
   line: number;
@@ -32,43 +37,65 @@ export interface Span {
   end: Position;
 }
 
-/** The span a `RETRY_SPAN_VAR` value names, or null. */
-export function parseSpan(text: string | undefined): Span | null {
-  // An unset variable reads as "undefined", which is no span.
-  const match = /^(\d+):(\d+)-(\d+):(\d+)$/.exec(String(text));
-  if (match === null) return null;
-  const [line, column, endLine, endColumn] = match.slice(1).map(Number) as [number, number, number, number];
-  return { start: { line, column }, end: { line: endLine, column: endColumn } };
+/** One `RETRY_SPANS_VAR` line: a file (which may hold colons), then its span. */
+const ENTRY = /^(.+):(\d+):(\d+)-(\d+):(\d+)$/;
+
+/**
+ * The spans a `RETRY_SPANS_VAR` value names, by file resolved against `cwd`.
+ * A line that names no file and span is left out. An unset variable reads as
+ * "undefined", which names none.
+ */
+export function parseSpans(text: string | undefined, cwd: string): Map<string, Span[]> {
+  const byFile = new Map<string, Span[]>();
+  for (const entry of String(text).split('\n')) {
+    const match = ENTRY.exec(entry);
+    if (match === null) continue;
+    const [file, line, column, endLine, endColumn] = match.slice(1) as [string, string, string, string, string];
+    const span: Span = { start: { line: Number(line), column: Number(column) }, end: { line: Number(endLine), column: Number(endColumn) } };
+    const key = resolve(cwd, file);
+    byFile.set(key, [...(byFile.get(key) ?? []), span]);
+  }
+  return byFile;
 }
 
 const atOrBefore = (a: Position, b: Position): boolean => a.line < b.line || (a.line === b.line && a.column <= b.column);
 const samePosition = (a: Position, b: Position): boolean => a.line === b.line && a.column === b.column;
 
-/** Whether `loc` lies inside `span` and is not `span` itself. */
-export function nestedIn(span: Span, loc: Span): boolean {
-  const inside = atOrBefore(span.start, loc.start) && atOrBefore(loc.end, span.end);
-  return inside && !(samePosition(span.start, loc.start) && samePosition(span.end, loc.end));
+/** Whether `inner` lies inside `outer`, ends included. */
+export function within(outer: Span, inner: Span): boolean {
+  return atOrBefore(outer.start, inner.start) && atOrBefore(inner.end, outer.end);
 }
 
-/** The part of Babel's NodePath the ignorer reads. */
+/** Whether `loc` lies inside `span` and is not `span` itself. */
+export function nestedIn(span: Span, loc: Span): boolean {
+  return within(span, loc) && !(samePosition(span.start, loc.start) && samePosition(span.end, loc.end));
+}
+
+/** The part of Babel's NodePath the ignorer reads: the node's place, and its file's name from the hub. */
 export interface NodePathLike {
   node: { loc?: Span | null };
+  hub?: { file?: { opts?: { filename?: string | null } } } | null;
 }
 
 /**
- * Ignores every node nested in the span `RETRY_SPAN_VAR` names. With no span
- * it ignores nothing, and the retry runs the whole range, as it did before.
+ * Ignores every node strictly inside a span `RETRY_SPANS_VAR` names for the
+ * node's own file, unless it is or holds such a span. With no span it
+ * ignores nothing, and the round runs its whole ranges.
  */
 export class RetryIgnorer {
-  readonly span: Span | null;
+  readonly spans: Map<string, Span[]>;
 
-  constructor(env: Readonly<Record<string, string | undefined>> = process.env) {
-    this.span = parseSpan(env[RETRY_SPAN_VAR]);
+  constructor(env: Readonly<Record<string, string | undefined>> = process.env, cwd: string = process.cwd()) {
+    this.spans = parseSpans(env[RETRY_SPANS_VAR], cwd);
   }
 
   shouldIgnore(path: NodePathLike): string | undefined {
     const loc = path.node.loc;
-    return this.span !== null && loc != null && nestedIn(this.span, loc) ? NESTED_REASON : undefined;
+    const name = path.hub?.file?.opts?.filename;
+    const spans = typeof name === 'string' ? this.spans.get(resolve(name)) : undefined;
+    if (loc == null || spans === undefined) return undefined;
+    const inside = spans.some((span) => nestedIn(span, loc));
+    return inside && !spans.some((span) => within(loc, span)) ? NESTED_REASON : undefined;
   }
 }
 

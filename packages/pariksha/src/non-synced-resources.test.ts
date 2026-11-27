@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -204,6 +204,20 @@ describe('checkDoc', () => {
     const caseBlind = existsSync(join(r, 'docs/LOWER.md'));
     const head = caseBlind ? '❌ Error: Reference whose case differs from the file on disk in docs/forms.md:' : '❌ Error: Reference to non-existent file in docs/forms.md:';
     assert.deepEqual(checkDoc(r, 'docs/forms.md', 'See [lower](./LOWER.md).\n'), { refused: true, out: [head, '   Link: ./LOWER.md', '   Expected path: docs/LOWER.md', ''] });
+  });
+
+  it('refuses a file whose folder cannot be listed, as one whose name on disk is not the link’s, on any disk', () => {
+    const r = tree({ 'locked/a.md': '' });
+    // Enter but not list: stat finds the file, readdir cannot confirm its name.
+    chmodSync(join(r, 'locked'), 0o311);
+    try {
+      assert.deepEqual(checkDoc(r, 'doc.md', '[a](./locked/a.md)\n'), {
+        refused: true,
+        out: ['❌ Error: Reference whose case differs from the file on disk in doc.md:', '   Link: ./locked/a.md', '   Expected path: locked/a.md', ''],
+      });
+    } finally {
+      chmodSync(join(r, 'locked'), 0o755);
+    }
   });
 
   it('refuses a FIFO, which is neither file nor folder', () => {

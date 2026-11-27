@@ -33,7 +33,8 @@ export interface PreambleConfig {
 
 export const DEFAULT_RUNTIMES: readonly string[] = ['node', 'npx', 'pnpm', 'npm', 'tsx', 'corepack', 'yarn'];
 
-const STOP_SIGNALS = new Set(['INT', 'TERM', 'HUP', 'QUIT', '1', '2', '3', '15']);
+/** The signals that stop a hook, by name with or without `SIG`, or by number. */
+const STOP_SIGNALS = new Set(['INT', 'TERM', 'HUP', 'QUIT', 'SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT', '1', '2', '3', '15']);
 
 const escapeRegex = (text: string): string => text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 
@@ -47,23 +48,24 @@ const firstWordMatches = (rest: string, pattern: RegExp): boolean =>
 
 /**
  * Quote-masked text after a command at this level only: each `( … )` or
- * `$( … )` group becomes one space, so `&(:)&` stays two separate `&`, and
- * the text is cut at a `)` that closes an enclosing group. Only this level's
- * separators remain; offsets are not kept.
+ * `$( … )` group, brackets included, is blanked, so `&(:)&` stays two
+ * separate `&`. Past a `)` that closes an enclosing group the depth is
+ * below zero, so the rest is blanked too. Only this level's separators
+ * remain, at their offsets.
  */
 const outerLevel = (masked: string): string => {
   let depth = 0;
-  const kept: string[] = [];
-  for (const char of masked) {
-    if (char === ')') {
-      if (depth === 0) break;
-      depth -= 1;
-    } else if (char === '(') {
-      if (depth === 0) kept.push(' ');
-      depth += 1;
-    } else if (depth === 0) kept.push(char);
-  }
-  return kept.join('');
+  // Each character's depth as it is read: a bracket counts as inside its group.
+  const depths = masked.split('').map((char) => {
+    if (char === '(') depth += 1;
+    const inside = depth;
+    if (char === ')') depth -= 1;
+    return inside;
+  });
+  return masked
+    .split('')
+    .map((char, at) => (depths[at] === 0 ? char : ' '))
+    .join('');
 };
 
 /**
@@ -77,7 +79,9 @@ const runsInChildShell = (code: string, start: number, end: number): boolean => 
   // or `||` too, which bind looser than `|`), read at this level only: a `;`
   // inside `"$(a; b)"` ends nothing.
   const list = outerLevel(maskQuoted(code).slice(end)).split(/[;\n]/)[0] as string;
-  if (/(?:^|[^&>])&(?![&>])/.test(list)) return true;
+  // The list opens with the character after the command's name, which a
+  // backgrounding `&` never is: `.` needs its file, and a selection its `||`.
+  if (/[^&>]&(?![&>])/.test(list)) return true;
   const pipeline = list.split(/&&|\|\|/)[0] as string;
   return /\|/.test(pipeline);
 };
@@ -95,7 +99,8 @@ const selectSources = (code: string, script: RegExp): number[] =>
  * lines joined with newlines.
  */
 const OPT_OUT = /\$\{?[A-Z][A-Z0-9_]*\b[^\]\n]*\]\]?\s*(?:&&|(?:;|\n)\s*then)\s*exit\s+0\b/g;
-const PATH_EDIT = /(?:^|[\s;&|(])(?:export\s+)?PATH\+?=/;
+/** `PATH=`, `PATH+=` or `export PATH=`: the blank after `export` already opens the name. */
+const PATH_EDIT = /(?:^|[\s;&|(])PATH\+?=/;
 const NVM = /\bNVM_DIR\b|\bnvm\.sh\b/;
 const FNM_USE = /(?:^|[\s;&|("])fnm\s+(?:use|env)\b/;
 /** `mise activate`, `mise env`, `mise exec`/`x` or `mise shell`: each edits the runtime PATH. */
@@ -145,16 +150,11 @@ interface FunctionDefinition {
  * one statement, and `cleanup && exit 130` is one whose exit may not run.
  */
 const splitStatements = (code: string): string[] => {
-  const masked = maskQuoted(code);
-  const parts: string[] = [];
-  let from = 0;
-  for (let at = 0; at <= code.length; at += 1) {
-    if (at === code.length || masked[at] === ';' || masked[at] === '\n') {
-      parts.push(code.slice(from, at).trim());
-      from = at + 1;
-    }
-  }
-  return parts.filter(Boolean);
+  // Offsets of each unquoted `;` and newline; a statement runs from just past one to the next.
+  const cuts = [...maskQuoted(code).matchAll(/[;\n]/g)].map((match) => match.index);
+  return [-1, ...cuts]
+    .map((from, at) => code.slice(from + 1, cuts[at] ?? code.length).trim())
+    .filter(Boolean);
 };
 
 /** Unquoted code with `${…}` blanked, offsets preserved, for brace counting. */
@@ -179,34 +179,36 @@ const headerAt = (lines: readonly CodeLine[], index: number): { name: string; br
  * brace depth back to zero, so a nested `{ …; }` group does not end it and
  * code after the closing brace on that line stays top level.
  */
+/** The `}` that brings the depth back to zero, read from the start of line `from`; undefined when none does. */
+const closingBrace = (lines: readonly CodeLine[], from: number): At | undefined => {
+  let depth = 0;
+  for (const [at, line] of lines.slice(from).entries()) {
+    for (const [offset, char] of braceView(line.code).split('').entries()) {
+      if (char === '{') depth += 1;
+      else if (char === '}' && --depth === 0) return { index: from + at, offset };
+    }
+  }
+  return undefined;
+};
+
 const functionDefinitions = (lines: readonly CodeLine[]): FunctionDefinition[] => {
   const out: FunctionDefinition[] = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const start = index;
-    const header = headerAt(lines, index);
+  // A header may open only after the last definition's closing line.
+  let next = 0;
+  for (const start of lines.keys()) {
+    const header = start < next ? undefined : headerAt(lines, start);
     if (header === undefined) continue;
     const { name, braceLine, rest } = header;
-    index = braceLine;
     // Where the body starts: just past the `{`, on the line holding it.
     const bodyStart = (lines[braceLine] as CodeLine).code.length - rest.length;
-    let depth = 0;
-    let end: At | undefined;
-    for (; index < lines.length && end === undefined; index += 1) {
-      for (const [offset, char] of braceView((lines[index] as CodeLine).code)
-        .split('')
-        .entries()) {
-        if (char === '{') depth += 1;
-        else if (char === '}' && --depth === 0) {
-          end = { index, offset };
-          break;
-        }
-      }
-    }
-    index -= 1; // back to the closing line; the outer loop steps past it
-    const close = end ?? { index, offset: (lines[index] as CodeLine).code.length };
-    const parts: string[] = [];
-    for (let line = braceLine; line <= close.index; line += 1) parts.push((lines[line] as CodeLine).code.slice(line === braceLine ? bodyStart : 0, line === close.index ? close.offset : undefined));
-    const body = parts.join(';');
+    // A body that never closes runs to the end of the hook.
+    const last = lines.length - 1;
+    const close = closingBrace(lines, braceLine) ?? { index: last, offset: (lines[last] as CodeLine).code.length };
+    next = close.index + 1;
+    const body = lines
+      .slice(braceLine, close.index + 1)
+      .map((line, at) => line.code.slice(at === 0 ? bodyStart : 0, braceLine + at === close.index ? close.offset : undefined))
+      .join(';');
     out.push({ name, start, end: close, body, statements: splitStatements(body).filter((statement) => statement !== '}' && statement !== '{') });
   }
   return out;
@@ -263,8 +265,14 @@ const handlerEndsInExit = (handler: string, functions: readonly FunctionDefiniti
   // Otherwise split on `;` and newlines only: `cleanup && exit 130` is one
   // statement whose exit is skipped when cleanup fails. An empty handler
   // (`trap '' SIG`) has no last statement.
-  const last = /^[A-Za-z_][A-Za-z0-9_]*$/.test(body) ? functions.find((entry) => entry.name === body)?.statements.at(-1) : splitStatements(body).at(-1);
-  return last !== undefined && EXIT_STATEMENT.test(last);
+  // The last statement, as a list of none or one; the first definition of a name is the one read.
+  const last = /^[A-Za-z_][A-Za-z0-9_]*$/.test(body)
+    ? functions
+        .filter((entry) => entry.name === body)
+        .slice(0, 1)
+        .flatMap((entry) => entry.statements.slice(-1))
+    : splitStatements(body).slice(-1);
+  return last.some((statement) => EXIT_STATEMENT.test(statement));
 };
 
 const trapFindings = (config: PreambleConfig, source: ShellSource, lines: readonly CodeLine[], functions: readonly FunctionDefinition[]): ShellFinding[] => {
@@ -277,9 +285,9 @@ const trapFindings = (config: PreambleConfig, source: ShellSource, lines: readon
       // `trap - SIG` restores the default, so it needs no check either.
       if (args[0] === '--') args = args.slice(1);
       else if (args[0]?.startsWith('-')) continue;
-      if (args.length < 2) continue;
+      // A trap with no signal stops none, so the handler is read only when it is there.
       const [handler, ...signals] = args as [string, ...string[]];
-      const stops = signals.some((signal) => STOP_SIGNALS.has(unquote(signal).toUpperCase().replace(/^SIG/, '')));
+      const stops = signals.some((signal) => STOP_SIGNALS.has(unquote(signal).toUpperCase()));
       if (stops && !handlerEndsInExit(handler, functions)) {
         out.push(finding(config, source, 'signal-trap-continues', entry.line, `trap ${handler} on ${signals.join(' ')} does not end in exit: bash resumes after the handler, so a cancelled hook keeps running`));
       }

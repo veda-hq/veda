@@ -73,14 +73,15 @@ export const parseConfig = (text: string | undefined): Config => {
   if (unknown.length > 0) throw new Error(`the config has unknown field(s): ${unknown.join(', ')}`);
   const { include, threshold, commonNames, oppositePairs } = raw;
   if (include !== undefined && typeof include !== 'string') throw new Error('include is not a regex string');
-  if (threshold !== undefined && (typeof threshold !== 'number' || !Number.isFinite(threshold))) throw new Error('threshold is not a number');
+  // Only a number is finite.
+  if (threshold !== undefined && !Number.isFinite(threshold)) throw new Error('threshold is not a number');
   if (commonNames !== undefined && !isStrings(commonNames)) throw new Error('commonNames is not a list of strings');
   if (oppositePairs !== undefined && !(Array.isArray(oppositePairs) && oppositePairs.every((p) => isStrings(p) && p.length === 2))) {
     throw new Error('oppositePairs is not a list of [word, word] pairs');
   }
   return {
     include: include === undefined ? DEFAULT_CONFIG.include : new RegExp(include),
-    threshold: threshold ?? DEFAULT_CONFIG.threshold,
+    threshold: (threshold as number | undefined) ?? DEFAULT_CONFIG.threshold,
     commonNames: commonNames ?? DEFAULT_CONFIG.commonNames,
     oppositePairs: (oppositePairs as Array<[string, string]> | undefined) ?? DEFAULT_CONFIG.oppositePairs,
   };
@@ -141,21 +142,22 @@ export const extractTestName = (ts: Ts, sf: TS.SourceFile, call: TS.CallExpressi
  */
 const scriptKind = (ts: Ts, file: string): TS.ScriptKind => (/\.[cm]?ts$/.test(file) ? ts.ScriptKind.TS : ts.ScriptKind.TSX);
 
-/** The syntax errors the parse recorded; `parseDiagnostics` is the source file's own list, read without a program. */
-const syntaxErrors = (sf: TS.SourceFile): readonly TS.DiagnosticWithLocation[] => (sf as unknown as { parseDiagnostics?: readonly TS.DiagnosticWithLocation[] }).parseDiagnostics ?? [];
+/** The syntax errors the parse recorded; `parseDiagnostics` is the source file's own list, read without a program, and every parse sets it. */
+const syntaxErrors = (sf: TS.SourceFile): readonly TS.DiagnosticWithLocation[] => (sf as unknown as { parseDiagnostics: readonly TS.DiagnosticWithLocation[] }).parseDiagnostics;
 
 /**
  * Syntax TypeScript reads and the Babel parse this replaces (plugins
  * typescript, jsx and decorators-legacy) threw on, so the file gave no
  * signatures: a `<T>value` assertion in a `.ts` file, which JSX reads as an
  * unterminated element, and an `accessor` field, which needs a plugin it did
- * not have.
+ * not have. Only a TS parse holds a type assertion: under TSX, `<T>value` is
+ * an element.
  */
-const babelRefusal = (ts: Ts, kind: TS.ScriptKind, node: TS.Node): string | undefined => {
-  if (kind === ts.ScriptKind.TS && ts.isTypeAssertionExpression(node)) return 'a <T>value type assertion, which a JSX parse reads as an unterminated element';
+const babelRefusal = (ts: Ts, node: TS.Node): string | undefined => {
+  if (ts.isTypeAssertionExpression(node)) return 'a <T>value type assertion, which a JSX parse reads as an unterminated element';
   if (ts.isPropertyDeclaration(node) && node.modifiers?.some((m) => m.kind === ts.SyntaxKind.AccessorKeyword) === true) return 'an accessor field, which needs the decoratorAutoAccessors parser plugin';
-  if (ts.isClassLike(node)) {
-    const modifiers = node.modifiers ?? [];
+  if (ts.isClassLike(node) && node.modifiers !== undefined) {
+    const { modifiers } = node;
     const exported = modifiers.findIndex((m) => m.kind === ts.SyntaxKind.ExportKeyword);
     // `export default @dec class` is a decorated class expression, which they do take.
     const isDefault = modifiers.some((m) => m.kind === ts.SyntaxKind.DefaultKeyword);
@@ -171,7 +173,8 @@ const parseError = (ts: Ts, sf: TS.SourceFile, refused: { readonly node: TS.Node
     const { line, character } = sf.getLineAndCharacterOfPosition(pos);
     return `(${String(line + 1)}:${String(character)})`;
   };
-  if (first !== undefined) return `${ts.flattenDiagnosticMessageText(first.messageText, '\n')} ${at(first.start)}`;
+  // A parse diagnostic's message is plain text, never a chain.
+  if (first !== undefined) return `${first.messageText as string} ${at(first.start)}`;
   if (refused !== undefined) return `${refused.why} ${at(refused.node.getStart(sf))}`;
   return undefined;
 };
@@ -184,17 +187,15 @@ export interface FileSignatures {
 
 /** Every test with an assertion in one file, in the order a depth-first walk meets them. */
 export const extractTestSignatures = (ts: Ts, file: string, content: string): FileSignatures => {
-  const parse = (k: TS.ScriptKind): TS.SourceFile => ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true, k);
-  let kind = scriptKind(ts, file);
-  let sf = parse(kind);
-  if (kind === ts.ScriptKind.TS && syntaxErrors(sf).length > 0) {
-    // JSX in a `.ts` file, which Babel read: take the TSX parse when it is clean.
-    const tsx = parse(ts.ScriptKind.TSX);
-    if (syntaxErrors(tsx).length === 0) {
-      kind = ts.ScriptKind.TSX;
-      sf = tsx;
-    }
-  }
+  // No parent pointers: nothing here reads a node's parent.
+  const parse = (k: TS.ScriptKind): TS.SourceFile => ts.createSourceFile(file, content, ts.ScriptTarget.Latest, undefined, k);
+  // JSX in a `.ts` file, which Babel read: when the file's own parse fails,
+  // take the TSX parse if that one is clean. A file clean under both can read
+  // differently (`<a>b</a>/g/1` is a type assertion to TS), so its own parse
+  // comes first. A `.tsx` file's TSX parse is its own, so it fails again.
+  const own = parse(scriptKind(ts, file));
+  const tsx = syntaxErrors(own).length > 0 ? parse(ts.ScriptKind.TSX) : undefined;
+  const sf = tsx !== undefined && syntaxErrors(tsx).length === 0 ? tsx : own;
   const signatures: TestSignature[] = [];
   const describeStack: string[] = [];
   let refused: { node: TS.Node; why: string } | undefined;
@@ -215,13 +216,14 @@ export const extractTestSignatures = (ts: Ts, file: string, content: string): Fi
 
   const walk = (node: TS.Node): void => {
     if (refused === undefined) {
-      const why = babelRefusal(ts, kind, node);
+      const why = babelRefusal(ts, node);
       if (why !== undefined) refused = { node, why };
     }
-    const call = isPlainCall(ts, node) ? node : undefined;
-    const name = call === undefined ? undefined : calleeName(ts, call);
-    if (call !== undefined && name === 'describe') describeStack.push(extractTestName(ts, sf, call));
-    if (call !== undefined && (name === 'test' || name === 'it')) {
+    // Only a call has a callee name, so a name means `node` is a call.
+    const name = isPlainCall(ts, node) ? calleeName(ts, node) : undefined;
+    const call = node as TS.CallExpression;
+    if (name === 'describe') describeStack.push(extractTestName(ts, sf, call));
+    if (name === 'test' || name === 'it') {
       const assertionPattern = assertions(call);
       if (assertionPattern.length > 0) {
         signatures.push({
@@ -241,22 +243,26 @@ export const extractTestSignatures = (ts: Ts, file: string, content: string): Fi
   return error === undefined ? { signatures } : { signatures: [], parseError: error };
 };
 
+// Each loop walks a string's UTF-16 units, as `length` counts them, and steps on whatever its body does.
 const levenshtein = (a: string, b: string): number => {
   let prev = Array.from({ length: a.length + 1 }, (_, j) => j);
-  for (let i = 1; i <= b.length; i++) {
-    const row = [i];
-    for (let j = 1; j <= a.length; j++) {
-      row[j] = b.charAt(i - 1) === a.charAt(j - 1) ? (prev[j - 1] as number) : Math.min((prev[j - 1] as number) + 1, (row[j - 1] as number) + 1, (prev[j] as number) + 1);
+  const unitsA = a.split('');
+  for (const [i, charB] of b.split('').entries()) {
+    const row = [i + 1];
+    for (const [j, charA] of unitsA.entries()) {
+      row[j + 1] = charB === charA ? (prev[j] as number) : Math.min((prev[j] as number) + 1, (row[j] as number) + 1, (prev[j + 1] as number) + 1);
     }
     prev = row;
   }
   return prev[a.length] as number;
 };
 
-/** 1 minus the edit distance over the longer length, case-insensitive; 1 for two empty strings. */
+/** 1 minus the edit distance over the longer length, case-insensitive, so 0 against an empty string; 1 for two empty strings. */
 export const stringSimilarity = (a: string, b: string): number => {
-  const max = Math.max(a.length, b.length);
-  return max > 0 ? 1 - levenshtein(a.toLowerCase(), b.toLowerCase()) / max : 1;
+  const lowerA = a.toLowerCase();
+  const lowerB = b.toLowerCase();
+  const max = Math.max(lowerA.length, lowerB.length);
+  return max > 0 ? 1 - levenshtein(lowerA, lowerB) / max : 1;
 };
 
 /** Jaccard similarity of two matcher lists, as sets; 0 when both are empty. */
@@ -268,20 +274,19 @@ export const patternSimilarity = (a: readonly string[], b: readonly string[]): n
 };
 
 /**
- * Two tests in no describe block: full credit in one file; across files the
- * file stems (the basename up to its first dot) are the only names they have.
+ * Two tests in no describe block: the file stems (the basename up to its
+ * first dot) are the only names they have, so one file gives full credit.
  */
 const neitherDescribed = (file1: string, file2: string): number => {
-  if (file1 === file2) return 1;
   const stem = (f: string): string => basename(f).split('.')[0] as string;
   return stringSimilarity(stem(file1), stem(file2));
 };
 
-/** 50% matchers, 20% name, 30% describe path. */
+/** 50% matchers, 20% name, 30% describe path; no path credit when only one has a describe path, which scores 0 against an empty one. */
 export const compositeSimilarity = (a: TestSignature, b: TestSignature): number => {
   const path1 = a.describePath.join(' > ');
   const path2 = b.describePath.join(' > ');
-  const describeSim = path1.length > 0 && path2.length > 0 ? stringSimilarity(path1, path2) : path1.length === 0 && path2.length === 0 ? neitherDescribed(a.file, b.file) : 0;
+  const describeSim = path1 === '' && path2 === '' ? neitherDescribed(a.file, b.file) : stringSimilarity(path1, path2);
   return patternSimilarity(a.assertionPattern, b.assertionPattern) * 0.5 + stringSimilarity(a.testName, b.testName) * 0.2 + describeSim * 0.3;
 };
 
@@ -306,7 +311,7 @@ export const areOppositeScenarios = (config: Config, name1: string, name2: strin
   }
   const http1 = Array.from(name1.matchAll(HTTP_INDICATORS), (m) => m[0]);
   const http2 = Array.from(name2.matchAll(HTTP_INDICATORS), (m) => m[0]);
-  if (http1.length > 0 && http2.length > 0 && http1.some((m) => !http2.includes(m))) return true;
+  if (http2.length > 0 && http1.some((m) => !http2.includes(m))) return true;
   const comb1 = Array.from(name1.matchAll(COMBINATOR_INDICATORS), (m) => m[0]);
   const comb2 = Array.from(name2.matchAll(COMBINATOR_INDICATORS), (m) => m[0]);
   if (comb1.length > 0 && comb2.length > 0 && (comb1.some((c) => !comb2.includes(c)) || comb2.some((c) => !comb1.includes(c)))) return true;
@@ -315,13 +320,15 @@ export const areOppositeScenarios = (config: Config, name1: string, name2: strin
   return end1.length > 0 && end2.length > 0 && end1[0] !== end2[0];
 };
 
-const FILLER = new Set(['should', 'when', 'with', 'the', 'a', 'an', 'it', 'is', 'are', 'be', 'to', 'for', 'of', 'in', 'on', 'and', 'or', 'not', 'if', 'that', 'this', 'can', 'does']);
+// One-letter words are dropped by length, `a` among them.
+const FILLER = new Set(['should', 'when', 'with', 'the', 'an', 'it', 'is', 'are', 'be', 'to', 'for', 'of', 'in', 'on', 'and', 'or', 'not', 'if', 'that', 'this', 'can', 'does']);
 
+// After the replace, a space is the only blank left; a run of them leaves empty words, which the length drops.
 const words = (name: string): string[] =>
   name
     .toLowerCase()
     .replace(/[^a-z0-9 ]/g, ' ')
-    .split(/\s+/)
+    .split(' ')
     .filter((w) => w.length > 1 && !FILLER.has(w));
 
 /**
@@ -345,10 +352,8 @@ export const areSameFileComplementary = (config: Config, file1: string, file2: s
 export const findDuplicates = (config: Config, signatures: readonly TestSignature[]): DuplicateMatch[] => {
   const matches: DuplicateMatch[] = [];
   const processed = new Set<string>();
-  for (let i = 0; i < signatures.length; i++) {
-    for (let j = i + 1; j < signatures.length; j++) {
-      const a = signatures[i] as TestSignature;
-      const b = signatures[j] as TestSignature;
+  for (const [i, a] of signatures.entries()) {
+    for (const b of signatures.slice(i + 1)) {
       if (a.assertionPattern.length < MIN_ASSERTIONS || b.assertionPattern.length < MIN_ASSERTIONS) continue;
       if (isCommon(config, a.testName) || isCommon(config, b.testName)) continue;
       if (areOppositeScenarios(config, a.testName, b.testName)) continue;

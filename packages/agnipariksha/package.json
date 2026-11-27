@@ -1,6 +1,6 @@
 {
   "name": "@veda-hq/agnipariksha",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Mutation gate over stock StrykerJS: mutates the files a push changed, lane by lane, and blocks on a surviving mutant. Lanes come from agnipariksha.json. Also an arid-node ignorer plugin, @veda-hq/agnipariksha/arid-nodes, and the Stryker sandbox exclusions, @veda-hq/agnipariksha/sandbox-ignore.",
   "keywords": ["mutation testing", "stryker", "gate", "pre-push", "ci", "coding agents"],
   "license": "MIT",

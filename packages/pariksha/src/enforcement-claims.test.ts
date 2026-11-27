@@ -81,11 +81,11 @@ describe('parseConfig', () => {
     refuses({ extra: 1 }, /^Error: unknown key "extra"$/);
     refuses({ dispatcher: { path: 'scripts/d.sh', call: 'x' } }, /^Error: dispatcher: unknown key "call"$/);
     refuses({ workspaces: [{ dir: '.', probes: ['a.ts'], files: [] }] }, /^Error: workspaces\[0\]: unknown key "files"$/);
-    refuses({ stageRoots: { hooks: ['.husky'], roots: [] } }, /unknown key "roots"/);
+    refuses({ stageRoots: { hooks: ['.husky'], roots: [] } }, /^Error: stageRoots: unknown key "roots"$/);
     refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], glob: '' } }, /^Error: runnable: unknown key "glob"$/);
-    refuses({ workspaceList: { pnpm: 'p.yaml', npm: 'x' } }, /unknown key "npm"/);
-    refuses({ tests: { file: 'x', runner: 'y', only: 1 } }, /unknown key "only"/);
-    refuses({ packageRunner: { path: 'a.sh', call: 'run', validatorsDir: 'v', extra: 1 } }, /unknown key "extra"/);
+    refuses({ workspaceList: { pnpm: 'p.yaml', npm: 'x' } }, /^Error: workspaceList: unknown key "npm"$/);
+    refuses({ tests: { file: 'x', runner: 'y', only: 1 } }, /^Error: tests: unknown key "only"$/);
+    refuses({ packageRunner: { path: 'a.sh', call: 'run', validatorsDir: 'v', extra: 1 } }, /^Error: packageRunner: unknown key "extra"$/);
   });
 
   it('refuses a workspace list that is empty, repeats a folder, or names a folder outside the root', () => {
@@ -101,13 +101,13 @@ describe('parseConfig', () => {
     refuses({ dispatcher: { path: '/abs.sh' } }, /dispatcher: "path": "\/abs\.sh" is not a normalized root-relative path/);
     refuses({ packageRunner: { path: 'a.sh', call: 'run validator', validatorsDir: 'v' } }, /"call" must be a shell function name/);
     refuses({ stageRoots: { hooks: [], workflows: [] } }, /"hooks" and "workflows" are both empty/);
-    refuses({ stageRoots: { hooks: ['../hooks'] } }, /hooks\[0\]: "\.\.\/hooks" is not a normalized root-relative path/);
+    refuses({ stageRoots: { hooks: ['../hooks'] } }, /^Error: stageRoots: hooks\[0\]: "\.\.\/hooks" is not a normalized root-relative path$/);
     refuses({ runnable: { prefixes: ['scripts'], extensions: ['sh'] } }, /prefixes\[0\]: "scripts" is not a folder path ending in "\/"/);
     refuses({ runnable: { prefixes: ['../scripts/'], extensions: ['sh'] } }, /prefixes\[0\]/);
     refuses({ runnable: { prefixes: [], extensions: ['sh'] } }, /"prefixes" is empty/);
     refuses({ runnable: { prefixes: ['scripts/'], extensions: ['.sh'] } }, /extensions\[0\]: "\.sh" is not a file extension/);
     refuses({ runnable: { prefixes: ['scripts/'], extensions: [] } }, /"extensions" is empty/);
-    refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], bin: '' } }, /"bin" must be a non-empty string/);
+    refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], bin: '' } }, /^Error: runnable: "bin" must be a non-empty string$/);
     refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], programs: ['tool'] } }, /runnable: "programs" must be an object/);
     refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], programs: { tool: 'vendor/cli.ts' } } }, /runnable\.programs: "tool" must be a list/);
     refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], programs: { tool: [] } } }, /runnable\.programs: "tool" is empty/);
@@ -120,8 +120,37 @@ describe('parseConfig', () => {
     refuses({ workspaceList: { turbo: 'turbo.json' } }, /workspaceList: "pnpm" must be a non-empty string/);
     refuses({ tests: { file: '(', runner: 'x' } }, /tests\.file: "\(" is not a regular expression/);
     refuses({ tests: { file: 'x' } }, /tests\.runner must be a non-empty regular expression/);
-    refuses({ standards: '' }, /"standards" must be a non-empty string/);
-    refuses({ id: '' }, /"id" must be a non-empty string/);
+    refuses({ standards: '' }, /^Error: "standards" must be a non-empty string$/);
+    refuses({ id: '' }, /^Error: "id" must be a non-empty string$/);
+  });
+
+  it('names where each bad value is, by its own key and its section', () => {
+    const runnable = { prefixes: ['scripts/'], extensions: ['sh'] };
+    refuses({ workspaces: 'apps/api' }, /^Error: "workspaces" must be a list$/);
+    refuses({ packageRunner: { path: 'a.sh', validatorsDir: 'v' } }, /^Error: packageRunner: "call" must be a non-empty string$/);
+    refuses({ packageRunner: { path: '/a.sh', call: 'run', validatorsDir: 'v' } }, /^Error: packageRunner: "path": "\/a\.sh" is not a normalized root-relative path$/);
+    refuses({ packageRunner: { path: 'a.sh', call: 'run', validatorsDir: '../v' } }, /^Error: packageRunner: "validatorsDir": "\.\.\/v" is not a normalized root-relative path$/);
+    refuses({ stageRoots: '.husky' }, /^Error: "stageRoots" must be an object$/);
+    refuses({ stageRoots: { workflows: ['../wf'] } }, /^Error: stageRoots: workflows\[0\]: "\.\.\/wf" is not a normalized root-relative path$/);
+    refuses({ stageRoots: { hooks: ['.husky'], actions: ['../a'] } }, /^Error: stageRoots: actions\[0\]: "\.\.\/a" is not a normalized root-relative path$/);
+    refuses({ runnable: 'scripts/' }, /^Error: "runnable" must be an object$/);
+    refuses({ runnable: { ...runnable, prefixes: 'scripts/' } }, /^Error: runnable: "prefixes" must be a list$/);
+    refuses({ runnable: { ...runnable, extensions: 'sh' } }, /^Error: runnable: "extensions" must be a list$/);
+    refuses({ workspaceList: 'pnpm-workspace.yaml' }, /^Error: "workspaceList" must be an object$/);
+    refuses({ workspaceList: { pnpm: 'p.yaml', turbo: '/turbo.json' } }, /^Error: workspaceList: "turbo": "\/turbo\.json" is not a normalized root-relative path$/);
+    refuses({ tests: '\\.test\\.ts$' }, /^Error: "tests" must be an object$/);
+  });
+
+  it('takes a prefix only as whole folder names, each ending in "/", and an extension only as letters and digits', () => {
+    const runnable = { prefixes: ['scripts/'], extensions: ['sh'] };
+    for (const prefix of ['scripts/x', 'node_modules/@scope/', '@scope/', './scripts/', 'scripts/./x/', 'scripts/../x/']) {
+      refuses({ runnable: { ...runnable, prefixes: [prefix] } }, new RegExp(`^Error: runnable\\.prefixes\\[0\\]: ${JSON.stringify(prefix).replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')} is not a folder path ending in "/" \\(a "\\*" segment is one folder\\)$`));
+    }
+    refuses({ runnable: { ...runnable, prefixes: [['scripts/']] } }, /^Error: runnable\.prefixes\[0\]: \["scripts\/"\] is not a folder path/);
+    for (const extension of ['sh.bak', 'sh!']) refuses({ runnable: { ...runnable, extensions: [extension] } }, /^Error: runnable\.extensions\[0\]: "sh(\.bak|!)" is not a file extension without its dot$/);
+    refuses({ runnable: { ...runnable, extensions: [['sh']] } }, /^Error: runnable\.extensions\[0\]: \["sh"\] is not a file extension without its dot$/);
+    assert.equal(config({ runnable: { prefixes: ['.claude/scripts/', 'apps/*/my-scripts.d/'], extensions: ['sh', 'mjs2'] } }).runnable.length, 1);
+    assert.equal(config({ workspaceList: { pnpm: 'p.yaml' } }).turbo, undefined);
   });
 });
 
@@ -195,6 +224,20 @@ describe('readStandards', () => {
     assert.deepEqual(read('id: BP-PROBE-109'), []);
     assert.deepEqual(read('~'), []);
     assert.deepEqual(readStandards(tree({ 'docs/standards/readme.md': '# no frontmatter\n' }), 'docs/standards'), []);
+  });
+
+  it('reads frontmatter only at the top of the file, and an absent field as empty', () => {
+    assert.deepEqual(readStandards(tree({ 'docs/standards/a.md': 'intro\n---\nid: X\nenforcement: guidance\n---\n' }), 'docs/standards'), []);
+    assert.deepEqual(read('enforcement: validator\nid: ~\nenforcement_config:'), [{ file: 'docs/standards/probe/probe.md', id: '', enforcement: 'validator', enforcementConfig: '', partialGates: '', appliesTo: [], enforcementScript: '', deprecated: false }]);
+  });
+
+  it('sorts the standards by file as text compares, not as the folder lists them', () => {
+    const rule = (id: string): string => `---\nid: ${id}\nenforcement: guidance\n---\n`;
+    const root = tree({ 'docs/standards/B.md': rule('BP-PROBE-121'), 'docs/standards/a.md': rule('BP-PROBE-120'), 'docs/standards/c/d.md': rule('BP-PROBE-122') });
+    assert.deepEqual(
+      readStandards(root, 'docs/standards').map((s) => s.file),
+      ['docs/standards/a.md', 'docs/standards/B.md', 'docs/standards/c/d.md'],
+    );
   });
 
   it('skips frontmatter that is not valid YAML, rather than counting it as a standard that passed', () => {
@@ -287,6 +330,11 @@ describe('findEnforcementProblems', () => {
       ['(enforcement_config) is enabled elsewhere but NOT in scripts, which is where this rule claims to apply'],
     );
     assert.deepEqual(problems(standard({ enforcementConfig: 'eqeqeq', appliesTo: ['scripts'] })), []);
+  });
+
+  it('skips a scope with no resolved config, so a root target with no root workspace checks nothing', () => {
+    const only = new Map([['apps/api', new Set(['no-console'])]]);
+    assert.deepEqual(findEnforcementProblems([standard({ enforcementConfig: 'no-console', appliesTo: ['docs'] })], only, '', { dispatcher: undefined, dispatchCall: undefined }), []);
   });
 
   it('names every claimed workspace when the rule is missing from them', () => {
@@ -448,12 +496,60 @@ describe('checkClaims', () => {
   });
 });
 
+describe('checkClaims (a whole run)', () => {
+  /** An ESLint stand-in whose every probe resolves to these rules. */
+  const fixed = (rules: Record<string, unknown>) =>
+    class {
+      calculateConfigForFile(): Promise<unknown> {
+        return Promise.resolve({ rules });
+      }
+    };
+  const files = (dispatch: boolean): Record<string, string> => ({
+    'docs/standards/lint.md': '---\nid: BP-LINT-001\nenforcement: eslint-rule\nenforcement_config: curly\n---\n',
+    'docs/standards/check.md': '---\nid: BP-CHECK-001\nenforcement: validator\nenforcement_config: run-validation.sh gone\nenforcement_script: scripts/check.sh\n---\n',
+    'scripts/check.sh': 'exit 0\n',
+    '.husky/pre-commit': 'bash scripts/check.sh\n',
+    'pnpm-workspace.yaml': 'packages:\n',
+    'turbo.json': '{}\n',
+    ...(dispatch ? { 'scripts/run-validation.sh': 'case "$1" in\n  here)\n    exit 0\n    ;;\nesac\n' } : {}),
+  });
+
+  it('reads the standards and returns every problem, the eslint-rule ones and the validator ones', async () => {
+    const outcome = await checkClaims(tree({ ...files(true), '.husky/pre-commit': 'exit 0\n' }), config({ workspaces: [{ dir: '.', probes: ['a.ts'] }] }), fixed({ eqeqeq: 2 }));
+    assert.deepEqual(
+      outcome.standards.map((s) => s.id),
+      ['BP-CHECK-001', 'BP-LINT-001'],
+    );
+    assert.deepEqual(outcome.problems, [
+      { file: 'docs/standards/check.md', id: 'BP-CHECK-001', rule: 'gone', reason: 'is not a case in scripts/run-validation.sh — the command does not exist' },
+      { file: 'docs/standards/lint.md', id: 'BP-LINT-001', rule: 'curly', reason: '(enforcement_config) is not enabled in ANY workspace config — the claim is false' },
+      { file: 'docs/standards/check.md', id: 'BP-CHECK-001', rule: 'scripts/check.sh', reason: 'is never run by a hook or workflow — the claim names a validator nothing calls' },
+    ]);
+  });
+
+  it('runs with no dispatcher, reading none', async () => {
+    const outcome = await checkClaims(tree(files(false)), config({ dispatcher: undefined, workspaces: [{ dir: '.', probes: ['a.ts'] }] }), fixed({ curly: 'error' }));
+    assert.deepEqual(outcome.problems, []);
+    assert.equal(outcome.standards.length, 2);
+  });
+});
+
 describe('formatOutcome', () => {
   const P = 'pariksha enforcement-claims:';
 
   it('counts the eslint-rule claims and the live validator claims on a pass', () => {
-    const standards = [standard({}), standard({ deprecated: true }), standard({ enforcement: 'validator' }), standard({ enforcement: 'validator', deprecated: true }), standard({ enforcement: 'guidance' })];
-    assert.deepEqual(formatOutcome(P, { standards, problems: [] }), { ok: true, out: [`${P} every eslint-rule claim is real and every validator claim runs at a stage (1 + 1 of 5 rule(s))`], err: [] });
+    const standards = [
+      standard({}),
+      standard({}),
+      standard({ deprecated: true }),
+      standard({ enforcement: 'validator' }),
+      standard({ enforcement: 'validator' }),
+      standard({ enforcement: 'validator' }),
+      standard({ enforcement: 'validator' }),
+      standard({ enforcement: 'validator', deprecated: true }),
+      standard({ enforcement: 'guidance' }),
+    ];
+    assert.deepEqual(formatOutcome(P, { standards, problems: [] }), { ok: true, out: [`${P} every eslint-rule claim is real and every validator claim runs at a stage (2 + 4 of 9 rule(s))`], err: [] });
   });
 
   it('lists each problem on one line, file, id, rule and reason, then the count', () => {

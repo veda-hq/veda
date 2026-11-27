@@ -935,6 +935,12 @@ describe('the gate as each change and doc writes it', () => {
     assert.deepEqual(hunkLines('@@ -3 +3 @@ function runTool() {\n-  return 1;\n+  return 2;'), ['-  return 1;', '+  return 2;']);
   });
 
+  it('reads no doc word by word when no word was removed', () => {
+    const snapshot = createTestRepo({ 'docs/a.md': 'Call `runTool`.\n' }).snapshot();
+    const words: ReadonlySet<string> = { ...new Set<string>(), size: 0, has: () => assert.fail('a word was looked up') } as unknown as ReadonlySet<string>;
+    assert.deepEqual(referrers(CONFIG, snapshot, ['lib/gone.ts'], [], words, []), []);
+  });
+
   it('reads no file when nothing was removed', () => {
     const real = createTestRepo({ 'docs/a.md': 'x\n' }).snapshot();
     const snapshot: RepoSnapshot = { ...real, readMany: () => assert.fail('a file was read') };

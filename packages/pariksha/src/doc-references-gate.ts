@@ -143,7 +143,8 @@ export const referrers = (config: Config, snapshot: RepoSnapshot, removedPaths: 
       out.push(file);
       continue;
     }
-    if (docKind(config, file) === 'markdown') {
+    // No removed word: no Markdown file is read word by word.
+    if (removedWords.size !== 0 && docKind(config, file) === 'markdown') {
       for (const match of text.matchAll(IDENTIFIER_WORD)) {
         if (removedWords.has(match[0])) {
           out.push(file);

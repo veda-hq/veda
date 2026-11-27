@@ -20,8 +20,8 @@ asks for issues only [2].
 
 ## When
 
-Before `niyam propose` for a slice: a new one, or one whose **You will
-see:**, **Why:** or **Guards:** changed in substance since its last review.
+Before `niyam propose` for a slice: a new one, or one whose scope changed
+since its last review (step 3 says what counts).
 Not for a State's drop, a fix's State, or a run of `propose` on a slice
 already reviewed and unchanged.
 
@@ -104,9 +104,10 @@ the page `niyam propose --page` names, under "Fresh-eyes review", so the
 owner sees them; "Nothing found" goes there too. Then file or edit the
 slice and propose.
 
-Do not run the review again for a cleaner result: one pass is the step. A
-second pass is for a slice whose sections changed in substance after the
-first.
+Do not run the review again for a cleaner result: one pass is the step.
+Edits that answer its findings need no second pass. A second pass is for a
+slice whose scope changed after the first: work added or dropped, or a new
+reason for it.
 
 ## Sources
 

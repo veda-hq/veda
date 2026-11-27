@@ -757,3 +757,85 @@ describe('subcommand claims', () => {
     assert.deepEqual(verdict('node_modules/.bin/tool other\nbash scripts/x.sh\n', claim({}), noBin)[0]?.rule, 'node_modules/.bin/tool');
   });
 });
+
+describe('edges each part of the walk decides', () => {
+  const steps = (lines: string[]) => yamlCommands(['jobs:', '  a:', '    defaults:', '      run:', '        working-directory: apps/web', '    steps:', ...lines].join('\n'), ['.github/actions']);
+
+  it("reads a step's working-directory trimmed and normalized, and falls back on a blank, absolute or climbing one", () => {
+    assert.deepEqual(
+      steps(['      - run: a', "        working-directory: ' '", '      - run: b', "        working-directory: ' /abs'", '      - run: c', "        working-directory: ' tools/x/ '", '      - run: d', '        working-directory: ..', '      - run: e', '        working-directory: tools/../..']).runs,
+      [
+        { text: 'a', dir: 'apps/web' },
+        { text: 'b', dir: 'apps/web' },
+        { text: 'c', dir: 'tools/x' },
+        { text: 'd', dir: 'apps/web' },
+        { text: 'e', dir: 'apps/web' },
+      ],
+    );
+  });
+
+  it('reads a step only as a mapping in a steps list, and a uses only as text', () => {
+    assert.deepEqual(steps(['      -', '      - uses: [./.github/actions/setup]', '      - run: x', '    strategy:', '      matrix:', '        include:', '          - run: not-a-step']), { runs: [{ text: 'x', dir: 'apps/web' }], actions: [] });
+  });
+
+  it('keeps every dir an exclusion does not name exactly, and sorts the result', () => {
+    const root = tree({
+      'pnpm-workspace.yaml': 'packages:\n  - packages/one\n  - apps/a/b\n  - "apx/*"\n  - "apps/*"\n  - _x\n  - x\n  - "!apps/*"\n',
+      'apx/b/package.json': '{}',
+      'apps/z/package.json': '{}',
+    });
+    assert.deepEqual(workspaceDirs(root, 'pnpm-workspace.yaml'), ['_x', 'apps/a/b', 'apx/b', 'packages/one', 'x']);
+  });
+
+  it('reads no scripts from a package.json that is null or whose scripts are null, and runs only string scripts', () => {
+    const run = (pkg: string): StageReach =>
+      resolveStageReach(tree({ 'pnpm-workspace.yaml': 'packages:\n', 'turbo.json': '{}', 'scripts/run-validation.sh': '', 'package.json': pkg, '.husky/pre-commit': 'pnpm count\npnpm lint\n', 'scripts/lint.sh': 'exit 0\n' }), STAGES);
+    assert.deepEqual(run('null').scripts, new Map());
+    assert.deepEqual(run('{"scripts": null}').scripts, new Map());
+    assert.deepEqual(run('{"scripts": {"count": 3, "lint": "bash scripts/lint.sh"}}').scripts, new Map([['.\tlint', 'bash scripts/lint.sh']]));
+  });
+
+  it('reads a case or a target only where a line starts with it', () => {
+    const dispatch = 'case "$1" in\n  echo foo)\n    bash scripts/a.sh\n    ;;\nesac\n';
+    assert.equal(dispatcherCase(dispatch, 'foo'), '');
+    assert.deepEqual(dispatcherTargets(dispatch), new Set());
+  });
+
+  it('follows a hook in any hooks folder, and nothing else that is not shell', () => {
+    const root = tree({
+      'pnpm-workspace.yaml': 'packages:\n',
+      'turbo.json': '{}',
+      'scripts/run-validation.sh': '',
+      'git-hooks/pre-push': 'bash scripts/pushed.sh\n',
+      '.husky/pre-commit': 'python3 scripts/x.py\nbash scripts/a.yml.sh\nbash scripts/not-runner.sh\n',
+      'scripts/x.py': 'bash scripts/from-python.sh\n',
+      'scripts/a.yml.sh': 'bash scripts/from-shell.sh\n',
+      'scripts/not-runner.sh': 'run_validator "alpha"\n',
+      'scripts/pushed.sh': 'exit 0\n',
+      'scripts/from-python.sh': 'exit 0\n',
+      'scripts/from-shell.sh': 'exit 0\n',
+      'scripts/package-validations/validate-package.sh': '',
+      'scripts/package-validations/validators/alpha.sh': 'exit 0\n',
+    });
+    const files = resolveStageReach(root, config({ stageRoots: { hooks: ['.husky', 'git-hooks'] } })).files;
+    assert.deepEqual([...files].sort(), ['.husky/pre-commit', 'git-hooks/pre-push', 'scripts/a.yml.sh', 'scripts/from-shell.sh', 'scripts/not-runner.sh', 'scripts/pushed.sh', 'scripts/x.py']);
+  });
+
+  it('reads pnpm and turbo calls past any run of spaces', () => {
+    const root = tree({
+      'pnpm-workspace.yaml': "packages:\n  - 'apps/*'\n",
+      'turbo.json': '{}',
+      'scripts/run-validation.sh': '',
+      'package.json': JSON.stringify({ scripts: { one: 'exit 0', two: 'exit 0', three: 'exit 0' } }),
+      'apps/web/package.json': JSON.stringify({ scripts: { lint: 'exit 0', test: 'exit 0' } }),
+      '.husky/pre-commit': 'pnpm  one\npnpm run  two\npnpm run three\npnpm turbo  run lint\npnpm turbo run  test\n',
+    });
+    assert.deepEqual([...resolveStageReach(root, STAGES).scripts.keys()].sort(), ['.\tone', '.\tthree', '.\ttwo', 'apps/web\tlint', 'apps/web\ttest']);
+  });
+
+  it('reports a named file that does not exist, and nothing else for it', () => {
+    const root = tree({ 'pnpm-workspace.yaml': 'packages:\n', 'turbo.json': '{}', 'scripts/run-validation.sh': '' });
+    const standard: Standard = { file: 'docs/standards/probe.md', id: 'BP-PROBE-001', enforcement: 'validator', enforcementConfig: '', partialGates: '', appliesTo: [], enforcementScript: 'scripts/gone.sh', deprecated: false };
+    assert.deepEqual(findUncalledValidators(root, [standard], STAGES), [{ file: 'docs/standards/probe.md', id: 'BP-PROBE-001', rule: 'scripts/gone.sh', reason: 'does not exist' }]);
+  });
+});

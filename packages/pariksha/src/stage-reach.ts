@@ -106,6 +106,9 @@ export const ROOT_DIR = '.';
 
 const read = (root: string, path: string): string => readFileSync(posix.join(root, path), 'utf8');
 
+/** No text: a dispatcher case no alias names, and a file the repository does not have. */
+const EMPTY = '';
+
 /** What the stages reach: files, the package scripts they run, and the program calls they make. */
 export interface StageReach {
   readonly files: Set<string>;
@@ -209,11 +212,11 @@ export const workspaceDirs = (root: string, workspaceFile: string): string[] => 
     const parent = pattern.slice(0, -2);
     const full = posix.join(root, parent);
     if (!existsSync(full)) continue;
-    for (const entry of readdirSync(full).sort()) {
+    for (const entry of readdirSync(full)) {
       if (existsSync(posix.join(full, entry, 'package.json'))) dirs.push(`${parent}/${entry}`);
     }
   }
-  return dirs.filter((dir) => !excluded.some((pattern) => matches(pattern, dir)));
+  return dirs.filter((dir) => !excluded.some((pattern) => matches(pattern, dir))).sort();
 };
 
 const scriptsOf = (root: string, dir: string): Record<string, string> => {
@@ -225,7 +228,7 @@ const scriptsOf = (root: string, dir: string): Record<string, string> => {
   } catch (e) {
     throw new Error(`${file} is not JSON: ${(e as Error).message}`);
   }
-  const scripts = typeof parsed === 'object' && parsed !== null ? (parsed as { scripts?: unknown }).scripts : undefined;
+  const scripts = isNode(parsed) ? parsed['scripts'] : undefined;
   if (typeof scripts !== 'object' || scripts === null) return {};
   return Object.fromEntries(Object.entries(scripts).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
 };
@@ -235,7 +238,7 @@ export const dispatcherCase = (dispatch: string, target: string): string => {
   for (const match of dispatch.matchAll(/^\s*([a-z][a-z0-9|-]*)\)\n([\s\S]*?)^\s*;;/gm)) {
     if ((match[1] as string).split('|').includes(target)) return match[2] as string;
   }
-  return '';
+  return EMPTY;
 };
 
 /** Every alias a dispatcher case line offers: `a|b)` offers both. */
@@ -261,7 +264,8 @@ export const runnablePatterns = (prefixes: readonly string[], extensions: readon
       .split('/')
       .map((segment) => (segment === '*' ? '[\\w-]+' : escape(segment)))
       .join('\\/');
-  const alternatives = [...prefixes].sort((a, b) => b.length - a.length).map((p) => `${folder(p)}\\/`);
+  // Order does not matter: every alternative is followed by the same greedy path tail.
+  const alternatives = prefixes.map((p) => `${folder(p)}\\/`);
   const patterns = [new RegExp(`(?<![\\w./-])((?:\\.\\.?\\/)*(?:${alternatives.join('|')})[\\w./-]*[\\w-]\\.(?:${extensions.map(escape).join('|')}))(?![\\w])`, 'g')];
   if (bin !== undefined) patterns.push(new RegExp(`${COMMAND_START}((?:\\.\\.?\\/)*${escape(bin)}\\/[\\w-]+)(?![\\w./-])`, 'gm'));
   return patterns;
@@ -318,12 +322,12 @@ const isHook = (path: string, hooks: readonly string[]): boolean => hooks.some((
 /** Walks every stage root and returns what it reaches. */
 export const resolveStageReach = (root: string, config: StageConfig): StageReach => {
   const workspaces = workspaceDirs(root, config.workspaceFile);
-  const turbo = config.turbo === undefined ? '' : read(root, config.turbo);
-  const dispatch = config.dispatcher === undefined ? '' : read(root, config.dispatcher);
+  const turbo = config.turbo === undefined ? EMPTY : read(root, config.turbo);
+  const dispatch = config.dispatcher === undefined ? EMPTY : read(root, config.dispatcher);
   const reach: StageReach = { files: new Set(), scripts: new Map(), workspaces, calls: new Set() };
   const seen = new Set<string>();
   const runner = config.packageRunner;
-  const runnerCall = new RegExp(`${escape(runner?.call ?? '')}\\s+"([\\w-]+)"`, 'g');
+  const runnerCall = new RegExp(`${escape(runner?.call ?? EMPTY)}\\s+"([\\w-]+)"`, 'g');
 
   const visitScript = (dir: string, name: string): void => {
     const scripts = scriptsOf(root, dir);
@@ -375,7 +379,7 @@ export const resolveStageReach = (root: string, config: StageConfig): StageReach
     }
     for (const match of text.matchAll(/\bpnpm\s+(?:run\s+)?([a-z][\w:.-]*)/g)) visitScript(cwd, match[1] as string);
     for (const match of text.matchAll(/\bturbo\s+run((?:\s+[^-\s|&;>][^\s|&;>]*)+)/g)) {
-      for (const task of (match[1] as string).trim().split(/\s+/)) {
+      for (const task of (match[1] as string).match(/\S+/g) as string[]) {
         if (task.startsWith('//#')) {
           visitScript(ROOT_DIR, task.slice(3));
           continue;
@@ -386,7 +390,6 @@ export const resolveStageReach = (root: string, config: StageConfig): StageReach
     }
   };
 
-  const roots: string[] = [];
   for (const [dirs, isRoot] of [
     [config.hooks, (entry: string) => !entry.startsWith('_')],
     [config.workflows, (entry: string) => /\.ya?ml$/.test(entry)],
@@ -394,10 +397,9 @@ export const resolveStageReach = (root: string, config: StageConfig): StageReach
     for (const dir of dirs) {
       const full = posix.join(root, dir);
       if (!existsSync(full)) continue;
-      for (const entry of readdirSync(full).sort()) if (isRoot(entry)) roots.push(`${dir}/${entry}`);
+      for (const entry of readdirSync(full)) if (isRoot(entry)) visitFile(`${dir}/${entry}`, ROOT_DIR);
     }
   }
-  for (const path of roots) visitFile(path, ROOT_DIR);
   return reach;
 };
 
@@ -435,7 +437,7 @@ export const findUncalledValidators = (root: string, standards: readonly Standar
   // claim has nothing to resolve, and its tree need not be a workspace.
   if (claims.length === 0) return [];
   const reach = given ?? resolveStageReach(root, config);
-  const dispatch = config.dispatcher === undefined ? '' : read(root, config.dispatcher);
+  const dispatch = config.dispatcher === undefined ? EMPTY : read(root, config.dispatcher);
   const problems: Problem[] = [];
 
   for (const standard of claims) {

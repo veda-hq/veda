@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -24,6 +24,7 @@ import {
   scratchVanished,
   spawnStryker,
   stopAll,
+  stopGroup,
   summaryLine,
   unfinishedMerge,
   type CliDeps,
@@ -687,15 +688,52 @@ test('spawnStryker returns the exit code and the markers it saw, across chunks a
   assert.deepEqual(await spawnStryker([node, '-e', 'console.log("abc")'], children, ['abc'])('.', [], {}), { code: 0, seen: ['abc'] });
 });
 
-test('spawnStryker stops a run at stopAfterMs and says so; a run that ends first is not stopped, and its stop is cleared', HANG, async () => {
+/** Whether process `pid` still runs. */
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    // ESRCH: it has gone.
+    return false;
+  }
+};
+/** A run that starts a grandchild (as Stryker starts its workers), writes its pid to `OUT`, and waits a minute. */
+const PARENT = `const c = require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' }); require('node:fs').writeFileSync(process.env.OUT, String(c.pid)); setTimeout(() => {}, 60000);`;
+
+test('spawnStryker stops a run at stopAfterMs, with every process under it, and says so; a run that ends first is not stopped, and its stop is cleared', HANG, async () => {
   const children = new Set<ChildProcess>();
-  const begun = Date.now();
-  // SIGTERM ends the child with no exit code, which reads as 1.
-  assert.deepEqual(await spawnStryker([node, '-e', 'setTimeout(() => {}, 60_000)'], children)('.', [], {}, 200), { code: 1, seen: [], stopped: true });
-  assert.ok(Date.now() - begun < 10_000, 'stopped long before its own end');
-  assert.equal(children.size, 0);
+  const out = mkdtempSync(join(tmpdir(), 'agnipariksha-test-'));
+  try {
+    const begun = Date.now();
+    // SIGTERM ends the child with no exit code, which reads as 1.
+    assert.deepEqual(await spawnStryker([node, '-e', PARENT], children)('.', [], { OUT: join(out, 'pid') }, 500), { code: 1, seen: [], stopped: true });
+    assert.ok(Date.now() - begun < 10_000, 'stopped long before its own end');
+    assert.equal(children.size, 0);
+    const grandchild = Number(readFileSync(join(out, 'pid'), 'utf8'));
+    await delay(200);
+    assert.equal(alive(grandchild), false, 'the stop reaches the process the run started');
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
   // Left uncleared, this stop's timer would hold the file open for a minute, and the exit guard fails it.
   assert.deepEqual(await spawnStryker([node, '-e', 'process.exit(0)'], children)('.', [], {}, 60_000), { code: 0, seen: [] });
+});
+
+test("stopGroup signals the run's whole process group, and a group that is gone, or never started, is nothing to stop", () => {
+  const sent: [number, string][] = [];
+  const record = (pid: number, signal: NodeJS.Signals) => void sent.push([pid, signal]);
+  stopGroup({ pid: 4321 } as ChildProcess, record);
+  stopGroup({} as ChildProcess, record);
+  assert.deepEqual(sent, [
+    [-4321, 'SIGTERM'],
+    [Number.NaN, 'SIGTERM'],
+  ]);
+  assert.doesNotThrow(() =>
+    stopGroup({ pid: 4321 } as ChildProcess, () => {
+      throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+    }),
+  );
 });
 
 test('each Stryker run gets its own fresh temp directory, which no lane env can override, removed afterwards', HANG, async () => {
@@ -865,6 +903,14 @@ test('stopAll stops a live run and removes its temp directory; a finished run is
     assert.equal(result.refusal, scratchVanished(tmp));
     assert.equal(children.size, 0, 'a closed child is let go');
 
+    // A run's own children go with it.
+    const parent = spawnStryker([node, '-e', PARENT], children)('.', [], { OUT: join(out, 'pid') });
+    const grandchild = Number(await written(join(out, 'pid')));
+    stopAll(children);
+    await parent;
+    await delay(200);
+    assert.equal(alive(grandchild), false, 'stopAll reaches the process the run started');
+
     // Done, the run is no longer live: a directory at its old path is someone else's now.
     mkdirSync(tmp);
     stopAll(children);
@@ -954,7 +1000,6 @@ test('realDeps reads, writes, removes and locks on the real filesystem', HANG, a
 test('entry runs the arguments after the script, sets the exit code, exits 2 on a signal, and stops the children on exit', async () => {
   const listeners = new Map<string, () => void>();
   const exits: number[] = [];
-  const kills: string[] = [];
   const proc: EntryProcess = {
     argv: ['node', 'bin.js', '--files', 'a.ts'],
     on: (event, listener) => listeners.set(event, listener),
@@ -963,9 +1008,12 @@ test('entry runs the arguments after the script, sets the exit code, exits 2 on 
     },
   };
   let ran: readonly string[] = [];
+  // A real run in its own group, as spawnStryker starts one.
+  const child = spawn(node, ['-e', 'setTimeout(() => {}, 60000)'], { detached: true, stdio: 'ignore' });
+  const closed = new Promise((done) => child.on('close', done));
   await entry(proc, async (argv, children) => {
     ran = argv;
-    children.add({ kill: (signal: string) => kills.push(signal) } as unknown as ChildProcess);
+    children.add(child);
     return 3;
   });
   assert.deepEqual(ran, ['--files', 'a.ts']);
@@ -973,8 +1021,10 @@ test('entry runs the arguments after the script, sets the exit code, exits 2 on 
   assert.deepEqual([...listeners.keys()], ['exit', 'SIGINT', 'SIGTERM', 'SIGHUP']);
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) listeners.get(signal)?.();
   assert.deepEqual(exits, [2, 2, 2]);
+  assert.equal(alive(child.pid ?? 0), true, 'no signal stopped the run: only the exit does');
   listeners.get('exit')?.();
-  assert.deepEqual(kills, ['SIGTERM']);
+  assert.equal(await closed, null, 'the exit stopped it by a signal');
+  assert.equal(child.signalCode, 'SIGTERM');
 });
 
 test('bootstrap refuses with exit 2 on a bad argument, and outside a repository', HANG, async () => {

@@ -357,6 +357,8 @@ export function spawnStryker(
         cwd,
         env: { ...inheritedEnv(process.env, unset), ...env, ...scratchTmpEnv(scratch) },
         stdio: ['inherit', 'pipe', 'pipe'],
+        // Its own process group, so a stop reaches the workers and test runs under it (`stopGroup`).
+        detached: true,
       });
       children.add(child);
       // At the timeout retry's wall, stop Stryker and say so; the pass keeps what it finished.
@@ -366,7 +368,7 @@ export function spawnStryker(
           ? undefined
           : setTimeout(() => {
               stopped = true;
-              child.kill('SIGTERM');
+              stopGroup(child);
             }, stopAfterMs);
       const seen = new Set<string>();
       const failed = failedTestReader();
@@ -505,9 +507,24 @@ export interface EntryProcess {
   exit: (code: number) => void;
 }
 
-/** The gate is exiting: stop its Stryker children and remove the live runs' temp directories. */
+/**
+ * Stop a Stryker run and every process under it. Signalled alone, Stryker
+ * 10.1.1 exits and leaves its workers and their test runs behind (SIGTERM and
+ * SIGINT alike, tried by hand on 2026-11-27), so each run is its own process
+ * group and the whole group is signalled. A group already gone has nothing
+ * left to stop.
+ */
+export function stopGroup(child: ChildProcess, kill: (pid: number, signal: NodeJS.Signals) => unknown = process.kill): void {
+  try {
+    kill(-(child.pid ?? Number.NaN), 'SIGTERM');
+  } catch {
+    // fail-open: the group has exited (ESRCH), or never started; either way nothing of it runs.
+  }
+}
+
+/** The gate is exiting: stop its Stryker runs, each with its group, and remove the live runs' temp directories. */
 export function stopAll(children: Set<ChildProcess>): void {
-  for (const child of children) child.kill('SIGTERM');
+  for (const child of children) stopGroup(child);
   removeLiveScratch();
 }
 

@@ -41,6 +41,13 @@ without suppressing them, and the traps of a gate scoped to a diff.
   passed, but the push was refused with "pre-push marked stage "lint"". A suite that runs dvara
   hooks drops every inherited `DVARA_` variable when it loads, as it does `GIT_`, and puts them
   back in `after` (`packages/dvara/src/supervisor.test.ts`, veda#459).
+- **A signalled Stryker leaves its workers running.** Sent SIGTERM or SIGINT, Stryker 10.1.1
+  exits at once, but its `child-process-proxy-worker` and the test run inside it (a
+  `node --test` the tap runner started) keep going, to the end of a hung mutant's wait. To stop
+  a run from code, spawn Stryker with `detached: true` and signal its group,
+  `process.kill(-child.pid, 'SIGTERM')`. Then a gate that exits on a signal must stop the group
+  too, since the terminal's Ctrl-C no longer reaches it. agnipariksha does both (`stopGroup` in
+  `src/cli.ts`, veda#706). Check with `pgrep -fl child-process-proxy-worker` after a stop.
 - **The step summary overflows in CI.** Under GitHub Actions, Vitest adds its github-actions
   reporter and appends to the step summary on every run, which under Stryker means once per
   mutant and overflows `$GITHUB_STEP_SUMMARY`. Unset `GITHUB_ACTIONS` and `GITHUB_STEP_SUMMARY`

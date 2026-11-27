@@ -233,10 +233,12 @@ describe('readStandards', () => {
 
   it('sorts the standards by file as text compares, not as the folder lists them', () => {
     const rule = (id: string): string => `---\nid: ${id}\nenforcement: guidance\n---\n`;
-    const root = tree({ 'docs/standards/B.md': rule('BP-PROBE-121'), 'docs/standards/a.md': rule('BP-PROBE-120'), 'docs/standards/c/d.md': rule('BP-PROBE-122') });
+    // Seven names whose text order is neither byte order nor creation order,
+    // so no folder listing hands them over already sorted.
+    const root = tree(Object.fromEntries(['g', 'B', 'e', 'a', 'F', 'c/d', 'D'].map((name, i) => [`docs/standards/${name}.md`, rule(`BP-PROBE-12${i}`)])));
     assert.deepEqual(
       readStandards(root, 'docs/standards').map((s) => s.file),
-      ['docs/standards/a.md', 'docs/standards/B.md', 'docs/standards/c/d.md'],
+      ['a', 'B', 'c/d', 'D', 'e', 'F', 'g'].map((name) => `docs/standards/${name}.md`),
     );
   });
 

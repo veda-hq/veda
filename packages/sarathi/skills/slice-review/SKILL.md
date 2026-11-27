@@ -42,12 +42,18 @@ have to add to the prompt is a finding already, so add it to the slice.
 
 ## 2. Doubt
 
-One subagent, one pass. Use the `Explore` type: it is read-only, and
-Claude Code's own `Explore` loads neither `CLAUDE.md` nor memory. Where a
-hook runs the call as a separate session instead, `CLAUDE.md`, the memory
-index and the user's instructions reach the reviewer. Those are the
-repository's rules, not the session's reasoning, so the review still counts;
-note what ran. Paste this brief with its slots filled:
+One subagent, one pass. Use the `slice-reviewer` agent:
+`sarathi:slice-reviewer` where the sarathi plugin is enabled, else
+`slice-reviewer` where the project carries `.claude/agents/slice-reviewer.md`,
+else the `Explore` type. The agent's tools are Read, Grep and Glob, so it
+has no shell, where `Explore` has one. Its `omitClaudeMd: true` keeps the
+user, project and local `CLAUDE.md` out when Claude Code spawns it as a
+subagent; managed policy files still load. The key needs a Claude Code build
+that knows it (2.1.326 and 2.1.330 do). Where a hook runs the call as a
+separate session instead, that session's `CLAUDE.md`, memory index and user
+instructions reach the reviewer. Those are the repository's rules, not the
+session's reasoning, so the review still counts; note what ran. Paste this
+brief with its slots filled:
 
 ```text
 Adversarial review. Below is a work slice that an agent will ask its owner

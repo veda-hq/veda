@@ -1038,21 +1038,26 @@ the research rule as `sarathi:research-first`.
 `skills/slice-review/SKILL.md` is a fresh-eyes review of a niyam slice
 before `niyam propose`. The session that wrote the slice, and an advisor
 that sees its transcript, read it with the meaning they already hold; a
-review bot reads only code, after the push. So one read-only `Explore`
-subagent gets the slice's body, the files it names and its contract
+review bot reads only code, after the push. So one `slice-reviewer`
+subagent (`agents/slice-reviewer.md`: Read, Grep and Glob, no shell, and
+`omitClaudeMd: true`, so Claude Code spawns it without the user's or the
+project's `CLAUDE.md`) gets the slice's body, the files it names and its contract
 (**You will see:**, **Why:**, **Guards:**), never the conversation or the
 author's reasons, with an adversarial brief: at most five findings, each
 quoting the words it attacks, or "Nothing found" and what it checked. The
 proposing agent answers each finding on the proposal's page, then proposes.
-One pass. veda's `CLAUDE.md` points its agents to the file.
+One pass. veda's `CLAUDE.md` points its agents to the file, and veda carries
+the agent as `.claude/agents/slice-reviewer.md`, the same file, since its
+sessions do not enable the plugin.
 
 ## The plugin
 
-`sarathi@veda`, from this repository's marketplace, carries two agents,
-`sarathi:worker` (carries out one decided task end to end) and
+`sarathi@veda`, from this repository's marketplace, carries three agents,
+`sarathi:worker` (carries out one decided task end to end),
 `sarathi:researcher` (answers a question a source can settle, with a verdict
 of Settled, Conflicting or Not settled and each claim's URL, version and date
-read; read-only), and the `sarathi:working-rules`,
+read; read-only) and `sarathi:slice-reviewer` (the slice review's reader),
+and the `sarathi:working-rules`,
 `sarathi:research-first` and `sarathi:slice-review` skills.
 
 ```sh

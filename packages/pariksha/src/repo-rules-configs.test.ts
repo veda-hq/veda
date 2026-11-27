@@ -344,6 +344,19 @@ describe('pre-merge-commit-merge-head', () => {
     assert.deepEqual(lefthookRuns(doc), ['one', 'two', 'three']);
   });
 
+  it('reads a lefthook node that holds itself once, where main overflowed the stack', () => {
+    const hook: Record<string, unknown> = { run: 'one' };
+    hook['again'] = hook;
+    assert.deepEqual(lefthookRuns({ 'pre-merge-commit': hook }), ['one']);
+    // A YAML alias inside its own anchor builds such a node.
+    const config = 'pre-merge-commit: &a\n  commands:\n    loop: *a\n    m: { run: bash scripts/m.sh }\n';
+    const plain = 'pre-merge-commit:\n  commands:\n    m: { run: bash scripts/m.sh }\n';
+    const script = { 'scripts/m.sh': 'git rev-parse MERGE_HEAD\n' };
+    const looped = preMergeCommitMergeHead.run(memoryRepo({ 'lefthook.yml': config, ...script }), {});
+    assert.equal(looped.length, 1);
+    assert.deepEqual(looped, preMergeCommitMergeHead.run(memoryRepo({ 'lefthook.yml': plain, ...script }), {}));
+  });
+
   it('reads only a lefthook config at the root, and no other YAML', () => {
     const config = 'pre-merge-commit:\n  commands:\n    m: { run: bash scripts/m.sh }\n';
     const files = { 'sub/lefthook.yml': config, 'lefthook.yml.bak': config, 'ci/hooks.yml': config, 'scripts/m.sh': 'git rev-parse MERGE_HEAD\n' };

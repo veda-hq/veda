@@ -219,6 +219,7 @@ describe('checkRegressionControls', () => {
     ['a skip table', () => check(appended("test.skip.each([1])('x %s', () => {});")), uses('test.skip')],
     ['a node:test case skipped by its options', () => check(appended("test('x', { skip: true }, () => {});")), uses('{ skip:')],
     ['a node:test case left as a todo', () => check(appended("test('x', {todo:'later'}, () => {});")), uses('{todo:')],
+    ['a node:test case skipped by options spaced before the colon', () => check(appended("test('x', { skip : true }, () => {});")), uses('{ skip :')],
     ['an unknown gate', () => check(overlay(), (r) => void (nth(r, 0)['gate'] = 'nightly')), 'pool-cap (F-1): unknown gate "nightly"'],
     ['a gate named like an inherited member', () => check(overlay(), (r) => void (nth(r, 0)['gate'] = 'constructor')), 'pool-cap (F-1): unknown gate "constructor"'],
     ['a file the gate does not collect', () => check(overlay(), (r) => void (nth(r, 2)['gate'] = 'web test')), `${LABEL}: ${CONTROL} is not collected by web test`],
@@ -325,6 +326,7 @@ describe('checkRegressionControls', () => {
     ['options on another call', "const call = vi.fn();\ncall('x', { a: 1, skip: true });"],
     ['case options that set no modifier', "it('x', { timeout: 1, ...{}, [String('k')]: 1 }, () => {});"],
     ['a case with a string second argument', "it('x', 'skip');"],
+    ['a computed key on another object, read and discarded', "const flags: Record<string, number> = {};\nvoid flags['skip'];"],
   ];
   for (const [name, code] of harmless) {
     it(`near miss: ${name} disables nothing`, () => {
@@ -347,10 +349,18 @@ describe('checkRegressionControls', () => {
     assert.deepEqual(check(overlay(), edit), []);
   });
 
+  it('takes a file any one pattern of its gate collects as collected', () => {
+    const edit = (r: RegistryJson): void => {
+      r.gates = { ...r.gates, tooling: ['^never/', '^scripts/.+\\.test\\.ts$'] };
+    };
+    assert.deepEqual(check(overlay(), edit), []);
+  });
+
   it('reads the guarded path from a guard ending "in <path>"', () => {
     assert.equal(guardedPath('max: POOL_MAX in apps/api/src/pool.ts'), 'apps/api/src/pool.ts');
     assert.equal(guardedPath('the ownership check'), null);
     assert.equal(guardedPath('in apps/x.ts'), null);
+    assert.equal(guardedPath('the check in scripts/cleanup.ts for now'), null);
   });
 });
 
@@ -396,6 +406,14 @@ describe('parseRegistry', () => {
     assert.deepEqual(registry.skipped, []);
   });
 
+  it('takes a $schema key', () => {
+    const registry = parseRegistry(JSON.stringify({ $schema: './regression-controls.schema.json', ...registryJson() }));
+    assert.deepEqual(
+      registry.controls.map((c) => c.id),
+      ['pool-cap', 'search-oracle', 'fixture-root-ownership'],
+    );
+  });
+
   it('records what a registry opting gates and required findings out with null leaves unchecked', () => {
     const r = registryJson();
     r.gates = null;
@@ -425,6 +443,8 @@ describe('parseRegistry', () => {
     ['a gate whose pattern is not a regular expression', (r) => ({ ...r, gates: { tooling: ['('] } }), /^gates: tooling\[0\]: "\(" is not a regular expression/],
     ['required findings that are not a list', (r) => ({ ...r, requiredFindings: 'F-1' }), /^"requiredFindings" must be a list$/],
     ['a required finding that is not a string', (r) => ({ ...r, requiredFindings: ['F-1', ' '] }), /^requiredFindings\[1\] must be a non-empty string$/],
+    ['a required finding that is a number', (r) => ({ ...r, requiredFindings: [5] }), /^requiredFindings\[0\] must be a non-empty string$/],
+    ['a second control without a guard-flip case', (r) => ({ ...r, controls: [nth(r, 0), { ...nth(r, 1), cases: { bad: 'a', fixed: 'b', nearMiss: 'c' } }] }), /^controls\[1\]\.cases: "guardFlip" must be a non-empty string$/],
   ];
   for (const [name, edit, message] of refused) {
     it(`refuses ${name}`, () => {
@@ -486,9 +506,67 @@ describe('parseBatch', () => {
     ]);
     assert.deepEqual([...parseBatch(Buffer.alloc(0), ['a'])], [['a', null]]);
   });
+
+  it('stops at a last header with no newline, never reading it as an entry', () => {
+    assert.deepEqual([...parseBatch(Buffer.from('abc blob 1\nx\nabd blob 1X'), ['a', 'b'])], [
+      ['a', 'x'],
+      ['b', null],
+    ]);
+  });
+
+  it('takes a header as an entry only when the whole line is `<object> <type> <size>`', () => {
+    assert.deepEqual([...parseBatch(Buffer.from('abc blob 1 more\nx\n'), ['a'])], [['a', null]]);
+    assert.deepEqual([...parseBatch(Buffer.from(':ab blob 1\nx\n'), ['a'])], [['a', null]]);
+  });
+});
+
+// The first test to run git cat-file, and a top-level one, so its result is
+// reported as soon as it ends: git fails here before it reads its input, so a
+// reader whose stdin never ends fails this at once, before any read that waits.
+it('indexReader throws when git fails, its stderr not read', () => {
+  const root = repo({ [CONTROL]: CONTROL_SOURCE });
+  const read = indexReader(root, { ...env, GIT_DIR: join(root, 'no-such-git-dir') });
+  assert.throws(() => read(CONTROL), {
+    message: 'Command failed: git -c core.quotePath=off -c grep.column=false -c color.ui=never -c core.precomposeUnicode=false cat-file --batch',
+    status: 128,
+    stderr: null,
+  });
 });
 
 describe('indexReader', () => {
+  // A git call blocks the event loop, and the reporter writes only between
+  // turns of it: one turn here lets the test above be reported before any
+  // read below can wait on git.
+  before(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+
+  it('loads each path once: a path it holds, or one it could not ask for, needs no git again', () => {
+    const root = repo({ [CONTROL]: CONTROL_SOURCE });
+    const read = indexReader(root, env);
+    read.prefetch?.([CONTROL, 'a\nb']);
+    // With the repository gone, any further git call would fail.
+    rmSync(root, { recursive: true, force: true });
+    read.prefetch?.([CONTROL]);
+    assert.equal(read(CONTROL), CONTROL_SOURCE);
+    assert.equal(read('a\nb'), null);
+  });
+
+  it('keeps the stream aligned when a path with a newline comes first', () => {
+    const root = repo({ [CONTROL]: CONTROL_SOURCE });
+    const read = indexReader(root, env);
+    read.prefetch?.(['a\nb', CONTROL]);
+    assert.equal(read(CONTROL), CONTROL_SOURCE);
+  });
+
+  it('asks for a path as given at the top level: git holds no entry `a/./b`', () => {
+    const root = repo({ [CONTROL]: CONTROL_SOURCE });
+    assert.equal(indexReader(root, env)('scripts/./cleanup.test.ts'), null);
+  });
+
+  it('reads paths relative to a root two folders below the top level', () => {
+    const top = repo({ [`sub/inner/${CONTROL}`]: CONTROL_SOURCE, [`subinner/${CONTROL}`]: 'the joined copy\n' });
+    assert.equal(indexReader(join(top, 'sub', 'inner'), env)(CONTROL), CONTROL_SOURCE);
+  });
+
   it('staged invalid, worktree valid: the index reader judges what the commit records', () => {
     const root = repo({ [CONTROL]: CONTROL_SOURCE.replace(FIXED_TITLE, 'renamed') });
     writeFileSync(join(root, CONTROL), CONTROL_SOURCE);

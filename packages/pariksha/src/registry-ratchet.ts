@@ -119,10 +119,13 @@ export const note = (raw: Raw, key: string, where: string, min: number, required
   return v;
 };
 
+/** A whole number: `Number.isInteger` holds only for numbers, so it narrows. */
+const isWhole = (v: unknown): v is number => Number.isInteger(v);
+
 /** `minNoteLength`: the fewest characters, trimmed, an exemption reason or note may have. Required. */
 export const minNoteLength = (raw: Raw): number => {
   const v = raw['minNoteLength'];
-  if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) throw new Error('"minNoteLength" must be a whole number of at least 1');
+  if (!isWhole(v) || v < 1) throw new Error('"minNoteLength" must be a whole number of at least 1');
   return v;
 };
 
@@ -289,7 +292,7 @@ export const importSpecifiers = (ts: Ts, file: string, source: string): string[]
     }
     ts.forEachChild(node, visit);
   };
-  visit(ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true));
+  visit(ts.createSourceFile(file, source, ts.ScriptTarget.Latest));
   return out;
 };
 
@@ -321,15 +324,21 @@ export const isCollected = (collected: readonly RegExp[], path: string): boolean
 /** Whether `path` is a regular file under `root`. */
 export const isFile = (root: string, path: string): boolean => statSync(join(root, path), { throwIfNoEntry: false })?.isFile() === true;
 
-/** The text of a file under `root`, or undefined when it is not a readable file. */
-export const readText = (root: string, path: string): string | undefined => {
-  if (!isFile(root, path)) return undefined;
+/** The text of the file at `full`, or null when reading it fails (a folder, no permission). */
+export const fileText = (full: string): string | null => {
   try {
-    return readFileSync(join(root, path), 'utf8');
+    return readFileSync(full, 'utf8');
   } catch {
-    return undefined;
+    return null;
   }
 };
+
+/**
+ * The text of a file under `root`, or undefined when it is not a readable
+ * file. A path that is not a regular file is never read: a device such as
+ * `/dev/null` reads as text, and a FIFO would block.
+ */
+export const readText = (root: string, path: string): string | undefined => (isFile(root, path) ? (fileText(join(root, path)) ?? undefined) : undefined);
 
 // ── catalogue examples ──────────────────────────────────────────────────────
 

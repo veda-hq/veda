@@ -71,11 +71,11 @@ export const parseRegistry = (source: string): Registry => {
   );
   if (!Array.isArray(raw['controls'])) throw new Error('"controls" must be a list');
   if (raw['controls'].length === 0) throw new Error('"controls" is empty, so nothing would be checked');
-  const controls = records(raw['controls'], 'controls').map(({ raw: c, where }): Control => {
+  const controls = records(raw['controls'], 'controls').map(({ raw: c, where }, i): Control => {
     onlyKeys(c, CONTROL_KEYS, where);
     const fields = { id: text(c, 'id', where), finding: text(c, 'finding', where), family: text(c, 'family', where), file: path(c, 'file', where), gate: text(c, 'gate', where), guard: text(c, 'guard', where) };
     const cases = object(c, 'cases', where);
-    const at = `${where.replace(/: $/, '')}.cases: `;
+    const at = `controls[${i}].cases: `;
     onlyKeys(cases, CASE_KINDS, at);
     return { ...fields, cases: { bad: text(cases, 'bad', at), fixed: text(cases, 'fixed', at), nearMiss: text(cases, 'nearMiss', at), guardFlip: text(cases, 'guardFlip', at) } };
   });
@@ -146,8 +146,9 @@ export const indexReader = (root: string, env: NodeJS.ProcessEnv = process.env):
     });
     for (const [p, body] of parseBatch(out, asked)) blobs.set(p, body);
   };
+  // prefetch asks git only for a path it has not loaded.
   const read: Reader = (p) => {
-    if (!blobs.has(p)) prefetch([p]);
+    prefetch([p]);
     return blobs.get(p) ?? null;
   };
   read.prefetch = prefetch;
@@ -194,9 +195,13 @@ const onTestApi = (ts: Ts, node: TS.Expression): boolean => {
   return ts.isIdentifier(at) && TEST_APIS.has(at.text);
 };
 
-/** Whether a property or binding is literally named one of `names`. */
-const namedIn = (ts: Ts, names: ReadonlySet<string>, name: TS.Node | undefined): boolean =>
-  name !== undefined && (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) && names.has(name.text);
+/**
+ * Whether a property or binding is literally named one of `names`. Of the
+ * names a property or binding can have, an identifier and a string literal
+ * have the text a modifier is; a number or a private name has another text,
+ * and a computed name or a binding pattern has none.
+ */
+const namedIn = (names: ReadonlySet<string>, name: TS.Node | undefined): boolean => name !== undefined && names.has(String((name as { readonly text?: unknown }).text));
 
 /** Called, or reached through, as `x['skip'](` and `x['only'].each` are. */
 const isUsed = (ts: Ts, node: TS.Expression): boolean => {
@@ -216,12 +221,12 @@ const disables = (ts: Ts, node: TS.Node): boolean => {
   if (ts.isObjectBindingPattern(node)) {
     // A variable, a parameter's default or an outer binding's default.
     const from = node.parent.initializer;
-    return from !== undefined && onTestApi(ts, from) && node.elements.some((element) => namedIn(ts, MODIFIERS, element.propertyName ?? element.name));
+    return from !== undefined && onTestApi(ts, from) && node.elements.some((element) => namedIn(MODIFIERS, element.propertyName ?? element.name));
   }
   return (
     ts.isCallExpression(node) &&
     onTestApi(ts, node.expression) &&
-    node.arguments.some((argument) => ts.isObjectLiteralExpression(argument) && argument.properties.some((property) => namedIn(ts, OPTION_MODIFIERS, ts.getNameOfDeclaration(property))))
+    node.arguments.some((argument) => ts.isObjectLiteralExpression(argument) && argument.properties.some((property) => namedIn(OPTION_MODIFIERS, ts.getNameOfDeclaration(property))))
   );
 };
 

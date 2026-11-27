@@ -1,7 +1,7 @@
 // The python-floor wrapper: the arguments it hands the script, the exit codes it
 // passes through, and the runs that never reach the script.
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, fstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -82,6 +82,27 @@ describe('inheritRunner', () => {
     assert.equal(done.status, 5);
     assert.equal(done.signal, null);
     assert.equal(done.error, undefined);
+  });
+
+  it("hands the interpreter this process's own stdout and stderr, so the script's output is never held back", () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pariksha-python-runner-'));
+    made.push(dir);
+    const script = join(dir, 'same-fds.js');
+    writeFileSync(
+      script,
+      [
+        "const { fstatSync } = process.getBuiltinModule('node:fs');",
+        'const id = (fd) => { const s = fstatSync(fd, { bigint: true }); return `${s.dev}:${s.ino}`; };',
+        'process.exitCode = id(1) === process.argv[2] && id(2) === process.argv[3] ? 0 : 9;',
+        '',
+      ].join('\n'),
+    );
+    const id = (fd: number): string => {
+      const s = fstatSync(fd, { bigint: true });
+      return `${s.dev}:${s.ino}`;
+    };
+    const done = inheritRunner(process.execPath, [script, id(1), id(2)]);
+    assert.equal(done.status, 0);
   });
 
   it('reports an interpreter that does not exist as an error', () => {

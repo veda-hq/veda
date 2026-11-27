@@ -1176,21 +1176,32 @@ describe("turn", () => {
 
   it("runs directly and records nothing when off", async () => {
     const calls: string[][] = [];
-    const run = turn(["--", "x"], {
+    const spawned: Array<Parameters<SpawnSlotChild>> = [];
+    const signals = new EventEmitter();
+    const child = new FakeChild();
+    const run = turn(["--", "x", "y"], {
       err: () => undefined,
-      env: { DVARA_TURN_DIR: dir, CI: "true" },
+      env: { DVARA_TURN_DIR: dir, CI: "true", KEEP: "k" },
       cwd: "/c/repo",
       system: w.system,
-      signals: new EventEmitter(),
+      signals,
       git: fakeGit({}, calls),
       sleep: async () => undefined,
-      spawn: () => {
-        const child = new FakeChild();
+      spawn: (...call) => {
+        spawned.push(call);
         setImmediate(() => child.emit("exit", 0, null));
         return child;
       },
     });
-    assert.equal(await run, 0);
+    // Signals reach the command in off mode too.
+    signals.emit("SIGINT", "SIGINT");
+    assert.equal(await run, 130);
+    assert.deepEqual(child.killed, ["SIGINT"]);
+    assert.deepEqual(spawned, [
+      ["x", ["y"], { stdio: "inherit", env: { DVARA_TURN_DIR: dir, CI: "true", KEEP: "k" } }],
+    ]);
+    assert.equal(signals.listenerCount("SIGINT"), 0);
+    assert.equal(signals.listenerCount("SIGTERM"), 0);
     assert.deepEqual(calls, []);
     assert.deepEqual(readdirSync(dir), []);
   });

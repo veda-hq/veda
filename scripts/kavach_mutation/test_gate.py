@@ -367,6 +367,17 @@ class Choose(unittest.TestCase):
         self.assertIn("### Skipped: inside an annotation never evaluated", text)
         self.assertIn("`m.py:3:", text)
 
+    def test_run_reads_the_scope_and_chooses_with_nothing_changed(self):
+        # Through read_annotation_scope, unevaluated, choose and skip_note,
+        # to the early return before any recording.
+        from unittest import mock
+
+        empty = {"lines": {}, "rows": [], "problems": [], "any": False}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gate, "plan", return_value=empty):
+            verdict = gate.run("HEAD", Path(tmp), 1)
+        self.assertTrue(verdict.passed)
+        self.assertEqual((verdict.skipped, verdict.annotation_reader, verdict.mutants), ([], None, []))
+
     def test_the_report_names_the_file_that_turned_the_skip_off(self):
         text = gate.report(gate.Verdict(annotation_reader="packages/kavach/python/tests/test_x.py"))
         self.assertIn(

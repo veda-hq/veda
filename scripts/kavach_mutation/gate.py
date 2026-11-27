@@ -986,7 +986,7 @@ def run(base: str, work: Path, workers: int, pattern: str = "test_*.py") -> Verd
         for number in lines
         if statements_of[module].executable(number)
     ]
-    say(f"{len(chosen)} mutant(s) and {len(executable)} executable changed line(s) to judge; {skip_note(verdict)}")
+    say(f"{len(chosen)} mutant(s) and {len(executable)} executable changed line(s) to judge; skipped: {skip_note(verdict)}")
     if not chosen and not executable:
         # Comments, blank lines or docstrings only: nothing to record or run.
         verdict.timings["total"] = round(time.monotonic() - began, 1)

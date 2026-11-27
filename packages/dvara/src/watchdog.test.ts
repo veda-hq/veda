@@ -1681,6 +1681,8 @@ describe("createWatchdog", () => {
 
     it("withdraws a verdict when the hook starts waiting before the kill", async () => {
       let checks = 0;
+      const [, reader] = pair(scenario("deadlock").info);
+      // Only the re-check before the kill finds the waiter, and only among the tree's own processes.
       const { kills, watchdog } = harness(
         "deadlock",
         "enforce",
@@ -1688,7 +1690,7 @@ describe("createWatchdog", () => {
         {},
         {},
         undefined,
-        () => ++checks > 2,
+        (pids) => ++checks > 2 && pids.includes(reader),
       );
       await advance(16_000);
       watchdog.stop();

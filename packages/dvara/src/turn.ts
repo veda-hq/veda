@@ -91,6 +91,12 @@ export const DEFAULT_TURNS = 2;
 export const DEFAULT_WAIT_MINUTES = 30;
 /** How often a waiting request looks again. */
 export const POLL_MS = 1000;
+/**
+ * How often a record-mode request whose command runs looks at its virtual
+ * place: its grant time is an estimate, which replaying the log makes exact,
+ * so it looks less often than a real waiter.
+ */
+export const VIRTUAL_POLL_MS = 5000;
 /** How often a waiting request says so. */
 export const NOTICE_MS = 60_000;
 /** How many times a decision tries the queue lock before deciding without it. */
@@ -615,6 +621,8 @@ export const turn = async (argv: readonly string[], context: TurnContext): Promi
     startIdentityOf: (pid) => (pid === real.pid ? ownStart : real.startIdentityOf(pid)),
   };
   const askedAt = system.now();
+  // The stage it was asked in: a command that marks stages of its own must not move its wait.
+  const stage = currentStage(env);
   const label = cleanLabel(parsed.label ?? parsed.command.join(" "));
   const asker = whoAsks(cwd, context.git ?? gitIn);
   let me: Ticket = {
@@ -633,20 +641,20 @@ export const turn = async (argv: readonly string[], context: TurnContext): Promi
   let error: string | null = null;
   const queued = !nested;
   const alive = liveness(system);
-  const lookNow = async (): Promise<Look> => {
-    const view = await underQueueLock(dir, system, sleep, () =>
-      look(dir, me, settings, system.now(), alive),
-    );
+  const lookNow = async (at = system.now()): Promise<Look> => {
+    const view = await underQueueLock(dir, system, sleep, () => look(dir, me, settings, at, alive));
     me = view.me;
     return view;
   };
-  let startedAt = askedAt;
+  /** When the command started; null for a request cancelled before it did. */
+  let startedAt: number | null = null;
   let code: number;
   try {
     if (queued) {
       try {
         writeTicket(dir, me);
-        found = await lookNow();
+        // A turn free when asked is granted when asked: reading git took time, not the queue.
+        found = await lookNow(askedAt);
         if (settings.mode === "enforce" && me.grantedAt === null)
           await waitForTurn(found);
         else if (me.grantedAt === null)
@@ -707,7 +715,7 @@ export const turn = async (argv: readonly string[], context: TurnContext): Promi
       // A granted request leaves at once.
       while (running && me.grantedAt === null) {
         // The command's exit ends the wait at once: it must not hold up the exit status.
-        await Promise.race([sleep(POLL_MS), exited]);
+        await Promise.race([sleep(VIRTUAL_POLL_MS), exited]);
         if (running) await lookNow();
       }
     };
@@ -743,12 +751,13 @@ export const turn = async (argv: readonly string[], context: TurnContext): Promi
       branch: asker.branch,
       cwd,
       hook: env["DVARA_MEASURED_HOOK"] ?? null,
-      stage: currentStage(env),
+      stage,
       askedAt,
       grantedAt: me.grantedAt,
       startedAt,
       endedAt,
-      waitedMs: startedAt - askedAt,
+      // A request cancelled while it waited waited until it ended.
+      waitedMs: (startedAt ?? endedAt) - askedAt,
       wouldWaitMs: me.grantedAt === null ? null : me.grantedAt - askedAt,
       ranAnyway: me.overBound,
       ahead: found === null ? 0 : Math.max(0, found.place - 1),

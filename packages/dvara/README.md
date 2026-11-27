@@ -422,7 +422,8 @@ there: `id`, `pid`, `mode`, `turns`, `waitMinutes`, `class`, `exclusive`,
 `width`, `nested` and `outer` (the holder's id), `label`, `repo`, `worktree`,
 `branch`, `cwd`, `hook` and `stage` (inside a hook), `askedAt`, `grantedAt`
 (in record mode, when it would have been granted; null if never while it
-ran), `startedAt`, `endedAt` (milliseconds since the epoch), `waitedMs`,
+ran, estimated every 5 s), `startedAt` (null for a request cancelled while
+it waited), `endedAt` (milliseconds since the epoch), `waitedMs`,
 `wouldWaitMs`, `ranAnyway`, `ahead`, `holders` (each with its `heldMs`),
 `exitCode`, `signal` and `error`. Inside a hook, the request also writes a
 `turn` record, and the run's history row lists each in `turns`: `stage`,

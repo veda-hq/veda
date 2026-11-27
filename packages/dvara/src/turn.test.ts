@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -33,6 +34,7 @@ import {
   parseTicket,
   parseTurnArgs,
   POLL_MS,
+  VIRTUAL_POLL_MS,
   QUEUE_LOCK_NAME,
   queuedPids,
   readSettingsFile,
@@ -116,13 +118,18 @@ const world = (): World => {
 
 let dir: string;
 let w: World;
+const realHome = process.env["HOME"];
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "dvara-turn-"));
   w = world();
+  // The home folder is scratch too: a mutant that drops DVARA_TURN_DIR
+  // lands here, never in the machine's queue the reading replays.
+  process.env["HOME"] = join(dir, "home");
 });
 
 afterEach(() => {
+  process.env["HOME"] = realHome;
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -923,7 +930,7 @@ describe("turn", () => {
     ended = true;
     run.child.emit("exit", 0, null);
     assert.equal(await run.status, 0);
-    assert.deepEqual(run.sleeps, [POLL_MS, POLL_MS, POLL_MS, POLL_MS]);
+    assert.deepEqual(run.sleeps, [VIRTUAL_POLL_MS, VIRTUAL_POLL_MS, VIRTUAL_POLL_MS, VIRTUAL_POLL_MS]);
     const [line] = logLines();
     assert.equal(line?.["mode"], "record");
     assert.equal(line?.["class"], "push");
@@ -932,8 +939,8 @@ describe("turn", () => {
     assert.equal(line?.["label"], "android flows");
     assert.equal(line?.["startedAt"], T0);
     assert.equal(line?.["waitedMs"], 0);
-    assert.equal(line?.["grantedAt"], T0 + 4 * POLL_MS);
-    assert.equal(line?.["wouldWaitMs"], 4 * POLL_MS);
+    assert.equal(line?.["grantedAt"], T0 + 4 * VIRTUAL_POLL_MS);
+    assert.equal(line?.["wouldWaitMs"], 4 * VIRTUAL_POLL_MS);
     assert.equal(line?.["ahead"], 0);
     assert.deepEqual(line?.["holders"], [
       {
@@ -1110,8 +1117,50 @@ describe("turn", () => {
     assert.equal(line?.["exitCode"], 143);
     assert.equal(line?.["grantedAt"], null);
     assert.equal(line?.["error"], null);
+    // It never ran: no start, and its wait lasted until it ended, so a replay skips it.
+    assert.equal(line?.["startedAt"], null);
+    assert.equal(line?.["waitedMs"], 2 * POLL_MS);
+    assert.deepEqual(replayable(readFileSync(join(dir, TURN_LOG_FILENAME), "utf8"), 0), []);
     assert.equal(run.signals.listenerCount("SIGTERM"), 0);
     assert.deepEqual(run.stderr.filter((text) => !text.startsWith("⏳") && !text.startsWith("   ")), []);
+  });
+
+  it("grants a free turn at the moment it was asked for, however long git took", async () => {
+    const run = turn(["--", "x"], {
+      err: () => undefined,
+      env: { DVARA_TURN_DIR: dir },
+      cwd: dir,
+      system: w.system,
+      signals: new EventEmitter(),
+      git: () => {
+        w.clock += 40;
+        return null;
+      },
+      sleep: async () => undefined,
+      spawn: () => {
+        const child = new FakeChild();
+        setImmediate(() => child.emit("exit", 0, null));
+        return child;
+      },
+    });
+    assert.equal(await run, 0);
+    const [line] = logLines();
+    assert.equal(line?.["grantedAt"], T0);
+    assert.equal(line?.["wouldWaitMs"], 0);
+    assert.equal(line?.["startedAt"], T0 + 40);
+  });
+
+  it("books its wait to the stage it was asked in, not one its command marked later", async () => {
+    const records = join(dir, "run.records");
+    const stages = join(dir, "run.stages");
+    writeFileSync(stages, "0\tmutation\n");
+    const run = start(["--", "x"], { env: { DVARA_RECORD_FILE: records, DVARA_STAGE_FILE: stages } });
+    await run.started;
+    appendFileSync(stages, "9\tinner\n");
+    run.child.emit("exit", 0, null);
+    await run.status;
+    assert.equal(logLines()[0]?.["stage"], "mutation");
+    assert.match(readFileSync(records, "utf8"), /^turn\tmutation\t/);
   });
 
   it("spawns a real command with its arguments, the held turn and inherited stdio", async () => {

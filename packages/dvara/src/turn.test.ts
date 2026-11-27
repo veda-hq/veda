@@ -143,7 +143,7 @@ const ticket = (overrides: Partial<Ticket> = {}): Ticket => ({
   grantedAt: T0 - 120_000,
   overBound: false,
   label: "pnpm check",
-  repo: "athya-rules",
+  repo: "acme-policy",
   worktree: "brave-curie",
   branch: "claude/x",
   ...overrides,
@@ -270,13 +270,13 @@ describe("whoAsks", () => {
     const calls: string[][] = [];
     const git = fakeGit(
       {
-        "rev-parse": "/code/athya_mono/.claude/worktrees/w55\n/code/athya_mono/.git",
+        "rev-parse": "/code/acme_store/.claude/worktrees/w55\n/code/acme_store/.git",
         branch: "claude/4015",
       },
       calls,
     );
     assert.deepEqual(whoAsks("/here", git), {
-      repo: "athya_mono",
+      repo: "acme_store",
       worktree: "w55",
       branch: "claude/4015",
     });
@@ -606,7 +606,7 @@ describe("waitingLines", () => {
         ticket({ grantedAt: T0 - 6 * 60_000 + 1 }),
         ticket({
           token: "b",
-          repo: "athya_mono",
+          repo: "acme_store",
           label: "mutation gate",
           worktree: null,
           branch: "claude/w-58-hooks",
@@ -619,8 +619,8 @@ describe("waitingLines", () => {
     };
     assert.deepEqual(waitingLines(view, settings(), T0 + 3 * 60_000), [
       "⏳ Waiting for a heavy-work turn (2 of 2 in use, you are 1st in line); waited 3 min of up to 30.",
-      "   athya-rules  pnpm check     for 8 min  (worktree brave-curie)",
-      "   athya_mono   mutation gate  for 5 min  (branch claude/w-58-hooks)",
+      "   acme-policy  pnpm check     for 8 min  (worktree brave-curie)",
+      "   acme_store   mutation gate  for 5 min  (branch claude/w-58-hooks)",
       "   veda         tsc            for 3 min",
     ]);
   });
@@ -946,7 +946,7 @@ describe("turn", () => {
       {
         id: "their-token",
         pid: OTHER,
-        repo: "athya-rules",
+        repo: "acme-policy",
         worktree: "brave-curie",
         branch: "claude/x",
         label: "pnpm check",
@@ -1063,7 +1063,7 @@ describe("turn", () => {
       "⏳ Waiting for a heavy-work turn (2 of 2 in use, you are 1st in line); waited 2 min of up to 30.",
     ]);
     assert.equal(
-      run.stderr.filter((line) => line === "   athya-rules  pnpm check  for 6 min  (worktree brave-curie)").length,
+      run.stderr.filter((line) => line === "   acme-policy  pnpm check  for 6 min  (worktree brave-curie)").length,
       1,
     );
     assert.equal(run.stderr.length, 6);

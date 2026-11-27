@@ -382,8 +382,8 @@ dvara turn [--exclusive] [--class push|other] [--label <text>] -- <command> [arg
 
   ```text
   ⏳ Waiting for a heavy-work turn (2 of 2 in use, you are 1st in line); waited 3 min of up to 30.
-     athya-rules  pnpm check     for 6 min  (worktree brave-curie)
-     athya_mono   mutation gate  for 2 min  (branch claude/w-58-hooks)
+     acme-policy  pnpm check     for 6 min  (worktree brave-curie)
+     acme_store   mutation gate  for 2 min  (branch claude/w-58-hooks)
   ```
 
   `--label` names the request there (default: the command).

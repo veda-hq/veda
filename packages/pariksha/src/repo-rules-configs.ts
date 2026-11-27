@@ -12,57 +12,58 @@ const CODE = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
 /** `text` with `//` line comments and `/* *\/` blocks blanked, strings kept; offsets stay where they were. */
 export const withoutJsComments = (text: string): string => {
   let out = '';
-  let i = 0;
+  // The first index not yet read: an escape or a comment reads ahead of the character at hand.
+  let from = 0;
   let quote: string | undefined;
-  while (i < text.length) {
-    const c = text[i] as string;
+  // One UTF-16 unit at a time, as the offsets count.
+  for (const [i, c] of text.split('').entries()) {
+    if (i < from) continue;
     const next = text[i + 1];
     if (quote !== undefined) {
-      out += c;
       if (c === '\\' && next !== undefined) {
-        out += next;
-        i += 2;
+        out += c + next;
+        from = i + 2;
         continue;
       }
+      out += c;
       if (c === quote || (c === '\n' && quote !== '`')) quote = undefined;
-      i += 1;
       continue;
     }
     if (c === '"' || c === "'" || c === '`') {
       quote = c;
       out += c;
-      i += 1;
       continue;
     }
     if (c === '/' && next === '/') {
-      while (i < text.length && text[i] !== '\n') {
-        out += ' ';
-        i += 1;
-      }
+      const end = text.indexOf('\n', i);
+      from = end === -1 ? text.length : end;
+      out += ' '.repeat(from - i);
       continue;
     }
     if (c === '/' && next === '*') {
       const end = text.indexOf('*/', i + 2);
-      const stop = end === -1 ? text.length : end + 2;
-      out += text.slice(i, stop).replace(/[^\n]/g, ' ');
-      i = stop;
+      from = end === -1 ? text.length : end + 2;
+      out += text.slice(i, from).replace(/[^\n]/g, ' ');
       continue;
     }
     out += c;
-    i += 1;
   }
   return out;
 };
 
-/** JSON with comments and trailing commas, as turbo.json allows; undefined when it does not parse. */
-export const parseJsonc = (text: string): unknown => {
+/** JSON with comments and trailing commas, as turbo.json allows, boxed; null when it does not parse. */
+export const jsoncBox = (text: string): { readonly value: unknown } | null => {
+  const json = withoutJsComments(text).replace(/,(\s*[}\]])/g, '$1');
   try {
-    return JSON.parse(withoutJsComments(text).replace(/,(\s*[}\]])/g, '$1')) as unknown;
+    return { value: JSON.parse(json) as unknown };
   } catch {
     // fail-open: a file that is not JSON is its own tool's to refuse.
-    return undefined;
+    return null;
   }
 };
+
+/** JSON with comments and trailing commas, as turbo.json allows; undefined when it does not parse. */
+export const parseJsonc = (text: string): unknown => jsoncBox(text)?.value;
 
 /** A Vitest or Vite config file. */
 export const isVitestConfig = (path: string): boolean => /(^|\/)(vitest|vite)(\.[\w-]+)*\.(config|workspace)\.(ts|mts|cts|js|mjs|cjs)$/.test(path) || /(^|\/)vitest\.workspace\.(ts|mts|js|mjs|json)$/.test(path);
@@ -84,10 +85,12 @@ const isShell = (path: string): boolean => /\.(sh|bash|zsh)$/.test(path) || /^\.
  */
 export const workersIntoTurbo = (file: string, text: string): number[] => {
   if (isWorkflow(file) || isAction(file)) {
-    const doc = yamlOf(text);
+    const parsed = yamlOf(text);
+    const doc = isRecord(parsed) ? parsed : {};
     const sets = (env: unknown): boolean => isRecord(env) && Object.hasOwn(env, 'VITEST_MAX_WORKERS');
-    const top = isRecord(doc) && sets(doc['env']);
-    const jobs = isRecord(doc) && isRecord(doc['jobs']) ? Object.values(doc['jobs']) : isRecord(doc) && isRecord(doc['runs']) ? [doc['runs']] : [];
+    const top = sets(doc['env']);
+    // A workflow's jobs, or an action's `runs`; a job that is no record runs nothing.
+    const jobs = isRecord(doc['jobs']) ? Object.values(doc['jobs']) : [doc['runs']];
     const hit = jobs.some((job) => {
       if (!isRecord(job) || !Array.isArray(job['steps'])) return false;
       const jobSets = top || sets(job['env']);
@@ -136,7 +139,7 @@ export const vitest4InertPoolConfig: Rule = {
     const callers = repo.files.includes('turbo.json') ? repo.grep(['VITEST_MAX_WORKERS'], ['.']).map((hit) => hit.file) : repo.files;
     for (const file of [...new Set(callers)]) {
       const text = repo.read(file);
-      if (text === undefined || !text.includes('VITEST_MAX_WORKERS')) continue;
+      if (text === undefined) continue;
       for (const line of workersIntoTurbo(file, text)) {
         findings.push({ file, line, detail: "hands VITEST_MAX_WORKERS to a turbo run, and turbo.json's globalPassThroughEnv does not list it, so turbo strips it" });
       }
@@ -158,8 +161,8 @@ export const eslintIgnoresWorktrees: Rule = {
       const text = repo.read(file);
       if (text === undefined || withoutJsComments(text).includes('.claude/worktrees')) continue;
       // A config that reads .gitignore into its ignores holds the folder when .gitignore does.
-      const gitignore = repo.read('.gitignore') ?? '';
-      if (/includeIgnoreFile|gitignore/.test(text) && /^\/?\.claude\/(worktrees\/?)?(\*\*)?\s*$/m.test(gitignore)) continue;
+      const listed = repo.read('.gitignore')?.match(/^\/?\.claude\/(worktrees\/?)?(\*\*)?\s*$/m) ?? null;
+      if (/includeIgnoreFile|gitignore/.test(text) && listed !== null) continue;
       findings.push({ file, detail: "the root ESLint config does not ignore '.claude/worktrees/**'" });
     }
     return findings;
@@ -171,31 +174,27 @@ const SINGLE_DOC_CALL = /\b(?:(?:js)?yaml|YAML|jsYaml|jsyaml)\s*\.\s*(?:load|par
 
 /** The text from `open` (an index just past a `(`) to its matching `)`, at most `limit` characters. */
 export const callArguments = (text: string, open: number, limit = 600): string => {
+  const window = text.slice(open, open + limit);
   let depth = 1;
-  for (let i = open; i < text.length && i < open + limit; i += 1) {
-    const c = text[i];
+  const close = window.split('').findIndex((c) => {
     if (c === '(') depth += 1;
-    else if (c === ')') {
-      depth -= 1;
-      if (depth === 0) return text.slice(open, i);
-    }
-  }
-  return text.slice(open, open + limit);
+    if (c === ')') depth -= 1;
+    return depth === 0;
+  });
+  return close === -1 ? window : window.slice(0, close);
 };
 
-/** Names bound, directly or through one another, to text that mentions the lockfile. */
+/** Whether `text` names `name` as a whole identifier. */
+const names = (text: string, name: string): boolean => new RegExp(`(?<![\\w$])${name.replace(/\$/g, '\\$')}(?![\\w$])`).test(text);
+
+/** Names bound, directly or through one another, to text that mentions the lockfile; a binding is followed through four passes at most. */
 export const lockfileNames = (text: string): Set<string> => {
-  const names = new Set<string>();
-  const assignments = [...text.matchAll(/(?:\b(?:const|let|var)\s+|^\s*)([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=(?!=)([^\n;]*)/gm)];
-  for (let round = 0; round < 4; round += 1) {
-    const before = names.size;
-    for (const [, name, value] of assignments) {
-      if (name === undefined || value === undefined) continue;
-      if (value.includes('pnpm-lock.yaml') || [...names].some((n) => new RegExp(`(?<![\\w$])${n.replace(/\$/g, '\\$')}(?![\\w$])`).test(value))) names.add(name);
-    }
-    if (names.size === before) break;
-  }
-  return names;
+  const found = new Set<string>();
+  const assignments = [...text.matchAll(/(?:\b(?:const|let|var)\s+|^\s*)([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=(?!=)([^\n;]*)/gm)].map(([, name, value]) => ({ name: name as string, value: value as string }));
+  [1, 2, 3, 4].forEach(() => {
+    for (const { name, value } of assignments) if (value.includes('pnpm-lock.yaml') || [...found].some((n) => names(value, n))) found.add(name);
+  });
+  return found;
 };
 
 export const lockfileSingleDocParse: Rule = {
@@ -206,13 +205,14 @@ export const lockfileSingleDocParse: Rule = {
     const findings: Finding[] = [];
     for (const file of repo.files.filter((p) => CODE.test(p) || p.endsWith('.py'))) {
       const text = repo.read(file);
-      if (text === undefined || !text.includes('pnpm-lock.yaml')) continue;
-      const code = file.endsWith('.py') ? text.replace(/(^|\s)#.*$/gm, '$1') : withoutJsComments(text);
-      const names = lockfileNames(code);
+      if (text === undefined) continue;
+      // `.` stops at a line's end, so a Python comment runs to it.
+      const code = file.endsWith('.py') ? text.replace(/(^|\s)#.*/gm, '$1') : withoutJsComments(text);
+      const bound = lockfileNames(code);
       for (const match of code.matchAll(SINGLE_DOC_CALL)) {
         const args = callArguments(code, match.index + match[0].length);
-        const reads = args.includes('pnpm-lock.yaml') || [...names].some((n) => new RegExp(`(?<![\\w$])${n.replace(/\$/g, '\\$')}(?![\\w$])`).test(args));
-        if (reads) findings.push({ file, line: lineAt(code, match.index), detail: `\`${match[0].replace(/\s+/g, '')}…)\` parses one document of pnpm-lock.yaml` });
+        const reads = args.includes('pnpm-lock.yaml') || [...bound].some((n) => names(args, n));
+        if (reads) findings.push({ file, line: lineAt(code, match.index), detail: `\`${match[0].replace(/\s/g, '')}…)\` parses one document of pnpm-lock.yaml` });
       }
     }
     return findings;
@@ -229,30 +229,28 @@ export const namedScripts = (text: string, from: string, tracked: ReadonlySet<st
   const resolved = text.replace(/"?\$\(\s*dirname\s+(?:--\s+)?"?\$\{?0\}?"?\s*\)"?\/|"?\$\{0%\/\*\}"?\//g, `${dir === '.' ? '' : `${dir}/`}`);
   for (const [word] of resolved.matchAll(/[\w./-]+\.(?:sh|bash|ts|mts|js|mjs|cjs|py)\b|\.?[\w-]+\/[\w./-]+/g)) {
     for (const candidate of [word, join(dir, word)]) {
-      const path = normalize(candidate).replace(/^\.\//, '');
+      // normalize leaves no leading `./`.
+      const path = normalize(candidate);
       if (tracked.has(path)) out.add(path);
     }
   }
   return [...out];
 };
 
-/** The `run` lines of lefthook's `pre-merge-commit` hook. */
-const lefthookRuns = (doc: unknown): string[] => {
-  const hook = isRecord(doc) ? doc['pre-merge-commit'] : undefined;
-  if (!isRecord(hook)) return [];
+/** The `run` lines of lefthook's `pre-merge-commit` hook, at any depth, each node read once. */
+export const lefthookRuns = (doc: unknown): string[] => {
   const runs: string[] = [];
-  const visit = (value: unknown): void => {
-    if (Array.isArray(value)) {
-      value.forEach(visit);
-      return;
+  // A Set visits what is added while it is iterated, each value once.
+  const nodes = new Set<unknown>([isRecord(doc) ? doc['pre-merge-commit'] : undefined]);
+  for (const node of nodes) {
+    if (Array.isArray(node)) for (const item of node) nodes.add(item);
+    else if (isRecord(node)) {
+      for (const [key, child] of Object.entries(node)) {
+        if (key === 'run' && typeof child === 'string') runs.push(child);
+        else nodes.add(child);
+      }
     }
-    if (!isRecord(value)) return;
-    for (const [key, child] of Object.entries(value)) {
-      if (key === 'run' && typeof child === 'string') runs.push(child);
-      else visit(child);
-    }
-  };
-  visit(hook);
+  }
   return runs;
 };
 
@@ -269,9 +267,8 @@ export const preMergeCommitMergeHead: Rule = {
     const hooks = tracked.filter((p) => basename(p) === 'pre-merge-commit');
     const reach = new Set<string>(hooks);
     for (const config of tracked.filter((p) => LEFTHOOK.test(p))) {
-      const text = repo.read(config);
-      if (text === undefined) continue;
-      for (const run of lefthookRuns(yamlOf(text))) for (const path of namedScripts(run, config, all)) reach.add(path);
+      // A config gone from the working tree reads as the text `undefined`: a YAML string, which holds no hook.
+      for (const run of lefthookRuns(yamlOf(String(repo.read(config))))) for (const path of namedScripts(run, config, all)) reach.add(path);
     }
     for (const hook of [...reach]) {
       const text = repo.read(hook);
@@ -337,10 +334,10 @@ export const rollupStateGate: Rule = {
     const findings: Finding[] = [];
     for (const file of repo.files.filter(isGateCode)) {
       const text = repo.read(file);
-      if (text === undefined || !text.includes('statusCheckRollup')) continue;
+      if (text === undefined) continue;
       for (const match of text.matchAll(ROLLUP_STATE)) {
         const line = lineAt(text, match.index);
-        const source = text.split('\n')[line - 1] ?? '';
+        const source = text.split('\n')[line - 1] as string;
         if (/^\s*(\/\/|\/\*|#|\*)/.test(source)) continue;
         findings.push({ file, line, detail: 'gates on statusCheckRollup.state' });
       }

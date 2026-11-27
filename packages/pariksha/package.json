@@ -1,6 +1,6 @@
 {
   "name": "@veda-hq/pariksha",
-  "version": "0.8.16",
+  "version": "0.8.17",
   "description": "Repository checks: doc drift, rule enforcement, test-quality ratchets, read from one .pariksha.json. Checks: absolute-paths, aggregate-gate-needs, authority-citations, boundary, bp-rules, codec-registry, codeql-baseline, coverage-by-type, coverage-exemptions, doc-budgets, doc-references, duplicate-tests, enforcement-claims, env-gate-switches, eslint-by-workspace, eslint-targets, export-deletions, fault-injection-registry, flaky-tests, license-check, masked-exit-codes, non-synced-resources, own-provenance, pnpm-settings, pr-title, python-floor, regression-controls, repo-rules, required-settings, schema-roots, shell-gates. Also markdownlint rules for Markdown that renders mangled, @veda-hq/pariksha/markdownlint, and the git reads of a baseline that only shrinks, @veda-hq/pariksha/baseline-ratchet.",
   "keywords": ["repository checks", "lint", "boundary", "ci", "coding agents", "markdownlint"],
   "license": "MIT",

@@ -702,7 +702,7 @@ describe('npxVitest', () => {
       mkdirSync(join(dir, 'bin'));
       mkdirSync(join(dir, 'work'));
       // A stand-in npx: it records how it was started, then prints a large report.
-      const fake = `#!${process.execPath}\nconst fs = require('node:fs');\nconst s = fs.fstatSync(0);\nfs.writeFileSync('${join(dir, 'seen.json')}', JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), stdin: [s.dev, s.ino] }));\nprocess.stdout.write('x'.repeat(2_000_000));\nprocess.stderr.write('warn');\n`;
+      const fake = `#!${process.execPath}\nconst fs = process.getBuiltinModule('node:fs');\nconst s = fs.fstatSync(0);\nfs.writeFileSync('${join(dir, 'seen.json')}', JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), stdin: [s.dev, s.ino] }));\nprocess.stdout.write('x'.repeat(2_000_000));\nprocess.stderr.write('warn');\n`;
       writeFileSync(join(dir, 'bin/npx'), fake);
       chmodSync(join(dir, 'bin/npx'), 0o755);
       process.env['PATH'] = `${join(dir, 'bin')}:${path ?? ''}`;

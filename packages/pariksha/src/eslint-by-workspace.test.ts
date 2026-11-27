@@ -172,7 +172,7 @@ describe('lintByWorkspace', () => {
     const root = temp();
     mkdirSync(join(root, 'apps/w'), { recursive: true });
     // The fake ESLint records its folder and what its three streams are.
-    const fake = `#!${process.execPath}\nconst fs = require('node:fs');\nfs.writeFileSync('${join(root, 'seen.json')}', JSON.stringify({ cwd: process.cwd(), fds: [0, 1, 2].map((fd) => { const s = fs.fstatSync(fd); return [s.dev, s.ino]; }) }));\n`;
+    const fake = `#!${process.execPath}\nconst fs = process.getBuiltinModule('node:fs');\nfs.writeFileSync('${join(root, 'seen.json')}', JSON.stringify({ cwd: process.cwd(), fds: [0, 1, 2].map((fd) => { const s = fs.fstatSync(fd); return [s.dev, s.ino]; }) }));\n`;
     bin(root, 'apps/w', fake);
     const result = inheritEslint(join(root, 'apps/w/node_modules/.bin/eslint'), [], join(root, 'apps/w'));
     assert.equal(result.status, 0);

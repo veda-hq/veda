@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
   readdirSync,
@@ -11,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { after, describe, it } from "node:test";
 import {
@@ -588,6 +589,60 @@ describe("isEntry", () => {
     );
     assert.equal(await entry(["node"], url, io, cwd, {}), undefined);
     assert.deepEqual([out, err, asked], [["lint"], [], []]);
+  });
+});
+
+// The command's routing, held here: the mutation gate runs a source's own
+// suite, and exec-bits.test.ts does not judge cli.ts.
+describe("dvara exec-bits", () => {
+  const scripted = () => {
+    const r = repo("dvara-cli-exec-bits-");
+    dirs.push(r.root);
+    r.write("run.sh", "#!/bin/sh\necho hi\n");
+    chmodSync(join(r.root, "run.sh"), 0o755);
+    r.commit("init");
+    return r;
+  };
+
+  it("passes an index with no dropped bit, warns on one, and refuses it with --refuse", async () => {
+    const r = scripted();
+    const clean = capture();
+    assert.equal(await run(["exec-bits", "--staged"], { io: clean.io, cwd: r.root, env: r.env }), 0);
+    assert.deepEqual([clean.out, clean.err], [[], []]);
+    chmodSync(join(r.root, "run.sh"), 0o644);
+    r.git("add", "-A");
+    const warned = capture();
+    assert.equal(await run(["exec-bits", "--staged"], { io: warned.io, cwd: r.root, env: r.env }), 0);
+    assert.match(warned.err[0] ?? "", /^⚠ exec-bits: 1 staged file/);
+    assert.equal(warned.err[1], "  run.sh");
+    const refused = capture();
+    assert.equal(
+      await run(["exec-bits", "--staged", "--refuse"], { io: refused.io, cwd: r.root, env: r.env }),
+      1,
+    );
+    assert.match(refused.err[0] ?? "", /^❌ exec-bits: 1 staged file/);
+  });
+
+  it("exits 2 with its usage on bad arguments, and with git's error outside a repository", async () => {
+    const bad = capture();
+    assert.equal(await run(["exec-bits"], { io: bad.io, cwd: "/", env: {} }), 2);
+    assert.deepEqual(bad.err, [
+      "dvara exec-bits: give --staged",
+      "usage: dvara exec-bits --staged [--refuse]",
+    ]);
+    const r = scripted();
+    const outside = scratch("dvara-cli-exec-bits-outside-");
+    const broken = capture();
+    assert.equal(
+      await run(["exec-bits", "--staged"], {
+        io: broken.io,
+        cwd: outside,
+        env: { ...r.env, GIT_CEILING_DIRECTORIES: dirname(outside) },
+      }),
+      2,
+    );
+    assert.equal(broken.err.length, 1);
+    assert.match(broken.err[0] ?? "", /^dvara exec-bits: ./);
   });
 });
 

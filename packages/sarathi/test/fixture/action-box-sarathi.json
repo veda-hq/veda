@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__.+__(publish_version|publish_files|edit_version)$",
+        "command": "bash \"$SARATHI_HOOKS\"/action-box.sh",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ]
+  }
+}

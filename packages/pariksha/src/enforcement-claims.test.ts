@@ -54,13 +54,17 @@ describe('parseConfig', () => {
     assert.deepEqual(c.packageRunner, CONFIG.packageRunner);
     assert.deepEqual([c.hooks, c.workflows, c.actions], [['.husky'], ['.github/workflows'], ['.github/actions']]);
     assert.equal(c.runnable.length, 2);
+    assert.equal(c.bin, 'node_modules/.bin');
+    assert.deepEqual(c.programs, new Map());
+    assert.deepEqual(config({ runnable: { ...CONFIG.runnable, programs: { 'my-rules': ['vendor/rules/src/cli.ts', 'vendor/rules/dist/cli.js'], 'tool.v2': ['t.js'] } } }).programs, new Map([['my-rules', ['vendor/rules/src/cli.ts', 'vendor/rules/dist/cli.js']], ['tool.v2', ['t.js']]]));
+    assert.deepEqual(config({ runnable: { ...CONFIG.runnable, programs: null } }).programs, new Map());
     assert.deepEqual([c.workspaceFile, c.turbo], ['pnpm-workspace.yaml', 'turbo.json']);
     assert.deepEqual([c.testFile.source, c.testRunner.source], ['\\.test\\.tsx?$', '\\bvitest\\b|\\s--test\\b']);
   });
 
   it('reads the optional keys as none when absent or null', () => {
     const c = config({ id: undefined, packageRunner: null, stageRoots: { hooks: ['.husky'] }, runnable: { prefixes: ['scripts/'], extensions: ['sh'], bin: null }, workspaceList: { pnpm: 'pnpm-workspace.yaml', turbo: null } });
-    assert.deepEqual([c.id, c.packageRunner, c.turbo, c.workflows, c.actions, c.runnable.length], [undefined, undefined, undefined, [], [], 1]);
+    assert.deepEqual([c.id, c.packageRunner, c.turbo, c.workflows, c.actions, c.runnable.length, c.bin], [undefined, undefined, undefined, [], [], 1, undefined]);
     assert.equal(config({ packageRunner: undefined }).packageRunner, undefined);
     // A repository whose stages call each check directly has no dispatcher.
     for (const dispatcher of [undefined, null]) {
@@ -104,6 +108,15 @@ describe('parseConfig', () => {
     refuses({ runnable: { prefixes: ['scripts/'], extensions: ['.sh'] } }, /extensions\[0\]: "\.sh" is not a file extension/);
     refuses({ runnable: { prefixes: ['scripts/'], extensions: [] } }, /"extensions" is empty/);
     refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], bin: '' } }, /"bin" must be a non-empty string/);
+    refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], programs: ['tool'] } }, /runnable: "programs" must be an object/);
+    refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], programs: { tool: 'vendor/cli.ts' } } }, /runnable\.programs: "tool" must be a list/);
+    refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], programs: { tool: [] } } }, /runnable\.programs: "tool" is empty/);
+    refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], programs: { tool: ['../cli.ts'] } } }, /runnable\.programs: tool\[0\]: "\.\.\/cli\.ts" is not a normalized root-relative path/);
+    refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], programs: { tool: ['./cli.ts'] } } }, /tool\[0\]: "\.\/cli\.ts" is not a normalized/);
+    refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], programs: { tool: [1] } } }, /tool\[0\]: 1 is not a normalized/);
+    refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], programs: { 'my tool': ['cli.ts'] } } }, /runnable\.programs: "my tool" is not a program name/);
+    refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], programs: { '-x': ['cli.ts'] } } }, /"-x" is not a program name/);
+    refuses({ runnable: { prefixes: ['scripts/'], extensions: ['sh'], programs: { a: ['cli.ts'], b: ['cli.ts'] } } }, /runnable\.programs: "cli\.ts" runs both "a" and "b"/);
     refuses({ workspaceList: { turbo: 'turbo.json' } }, /workspaceList: "pnpm" must be a non-empty string/);
     refuses({ tests: { file: '(', runner: 'x' } }, /tests\.file: "\(" is not a regular expression/);
     refuses({ tests: { file: 'x' } }, /tests\.runner must be a non-empty regular expression/);

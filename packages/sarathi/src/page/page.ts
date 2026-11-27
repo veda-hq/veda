@@ -579,15 +579,27 @@ export function jobTools(job: Job): (typeof ALL_TOOLS)[number][] {
   return ['Read', 'Artifact'];
 }
 
+/**
+ * The model a page job runs on. Each job is a few mechanical tool calls that
+ * `outcome` checks, so it needs no Opus: with the same tools, a trivial run
+ * on Sonnet cost half what it did on the inherited Opus (measured 2026-11-27).
+ */
+export const PAGE_MODEL = 'sonnet';
+
 export function claudeArgs(
   prompt: string,
   tools: readonly string[] = ALL_TOOLS,
 ): string[] {
-  // Never deny Artifact by name: the CLI then drops ArtifactComments too, and a
-  // comments session has nothing to read with. The guard refuses its calls.
-  const denied = ALL_TOOLS.filter(
-    tool => tool !== 'Artifact' && !tools.includes(tool),
-  );
+  // `--tools` sets which tools the session has at all; `--allowedTools` only
+  // approves them. The CLI offers ArtifactComments and ArtifactData only with
+  // Artifact, so `--tools` names Artifact for either, and the deny drops what
+  // the job does not use. Never deny Artifact by name: the CLI then drops
+  // ArtifactComments too. A comments job keeps it, and the guard refuses its
+  // calls.
+  const available = tools.includes('Read') ? 'Read,Artifact' : 'Artifact';
+  const denied = tools.includes('ArtifactComments')
+    ? 'ArtifactData'
+    : 'ArtifactData,ArtifactComments';
   return [
     '-p',
     prompt,
@@ -595,9 +607,14 @@ export function claudeArgs(
     'stream-json',
     '--verbose',
     '--strict-mcp-config',
+    '--model',
+    PAGE_MODEL,
+    '--tools',
+    available,
     '--allowedTools',
     tools.join(','),
-    ...(denied.length > 0 ? ['--disallowedTools', denied.join(',')] : []),
+    '--disallowedTools',
+    denied,
   ];
 }
 

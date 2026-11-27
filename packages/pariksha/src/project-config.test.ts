@@ -62,6 +62,7 @@ describe('configLocation', () => {
 describe('loadProjectConfig', () => {
   it('is no settings when there is no file', () => {
     assert.equal(loadProjectConfig(dir(), {}, KNOWN, '1.0.0'), NO_CONFIG);
+    assert.deepEqual(loadProjectConfig(dir(), {}, KNOWN, '1.0.0'), { file: undefined, checks: new Map() });
   });
 
   it('reads the file it finds', () => {

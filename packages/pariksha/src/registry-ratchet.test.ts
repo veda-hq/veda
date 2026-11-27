@@ -79,6 +79,11 @@ describe('config helpers', () => {
     assert.throws(() => regex('(', 'k'), /k: "\(" is not a regular expression/);
     assert.throws(() => regex('', 'k'), /k must be a non-empty regular expression/);
     assert.equal(regexes({ a: ['x'] }, 'a', '').length, 1);
+    assert.deepEqual(
+      regexes({ a: ['x', 'y$'] }, 'a', 'w: ').map((r) => r.source),
+      ['x', 'y$'],
+    );
+    assert.throws(() => regexes({ a: ['x', ''] }, 'a', 'w: '), { message: 'w: a[1] must be a non-empty regular expression' });
     assert.throws(() => regexes({ a: [] }, 'a', ''), /"a" is empty, so nothing would match/);
     assert.deepEqual(object({ a: { b: 1 } }, 'a', ''), { b: 1 });
     assert.throws(() => object({ a: [] }, 'a', ''), /"a" must be an object/);

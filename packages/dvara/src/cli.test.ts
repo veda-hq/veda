@@ -32,10 +32,14 @@ const dirs: string[] = [];
 after(() => {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
   // A run that never settles leaves the supervisor's sampling interval
-  // running: once every test has ended, a process still alive 5 s later
-  // exits, so the mutant is killed rather than timed out (veda#654). The
-  // timer is unref'd, so a healthy run ends as before.
-  setTimeout(() => process.exit(), 5_000).unref();
+  // running: once every test has ended, a process still alive 5 s later is
+  // held open by a handle nothing closed, and fails, so the mutant is killed
+  // rather than timed out (veda#654). The timer is unref'd, so it fires only
+  // then; a healthy run ends as before, and a leak in the real code fails.
+  setTimeout(() => {
+    process.stderr.write("cli.test.ts: still running 5 s after the last test; a handle was left open\n");
+    process.exit(1);
+  }, 5_000).unref();
 });
 
 type Case = (t: TestContext) => void | Promise<void>;

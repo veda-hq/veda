@@ -42,11 +42,15 @@ const it = (name: string, fn: (t: TestContext) => void | Promise<void>) =>
  * A run that never settles also never clears its sampling interval, so its
  * test fails at 5 s but the process stays alive until Stryker's limit: five
  * such retries outgrew the gate's 15-minute budget (veda#654). Once every
- * test has ended, a process still alive 5 s later exits, with the code the
- * runner set. The timer is unref'd, so a healthy run ends as before.
+ * test has ended, a process still alive 5 s later is held open by a handle
+ * nothing closed: it fails, and exits. The timer is unref'd, so it fires only
+ * then, and a healthy run ends as before; a leak in the real code fails too.
  */
 after(() => {
-  setTimeout(() => process.exit(), 5_000).unref();
+  setTimeout(() => {
+    process.stderr.write("supervisor.test.ts: still running 5 s after the last test; a handle was left open\n");
+    process.exit(1);
+  }, 5_000).unref();
 });
 
 /**

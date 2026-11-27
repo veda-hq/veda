@@ -50,10 +50,11 @@ has no shell, where `Explore` has one. Its `omitClaudeMd: true` keeps the
 user, project and local `CLAUDE.md` out when Claude Code spawns it as a
 subagent; managed policy files still load. The key needs a Claude Code build
 that knows it (2.1.326 and 2.1.330 do). Where a hook runs the call as a
-separate session instead, that session's `CLAUDE.md`, memory index and user
-instructions reach the reviewer. Those are the repository's rules, not the
-session's reasoning, so the review still counts; note what ran. Paste this
-brief with its slots filled:
+separate session instead, that session loads `CLAUDE.md`, the memory index
+and the user's instructions unless the hook reads the agent's file and
+honours the key too. Those are the repository's rules, not the session's
+reasoning, so a review that got them still counts; note what ran. Paste
+this brief with its slots filled:
 
 ```text
 Adversarial review. Below is a work slice that an agent will ask its owner

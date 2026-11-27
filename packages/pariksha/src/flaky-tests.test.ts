@@ -707,8 +707,13 @@ describe('npxVitest', () => {
       chmodSync(join(dir, 'bin/npx'), 0o755);
       process.env['PATH'] = `${join(dir, 'bin')}:${path ?? ''}`;
       const outcome = npxVitest(['run', 'a.test.ts'], join(dir, 'work'));
-      // Every stream is read, as text: a stream left out of the pipes is missing from `output`.
-      assert.deepEqual({ ...outcome, pid: 0 }, { pid: 0, output:[null, 'x'.repeat(2_000_000), 'warn'], stdout: 'x'.repeat(2_000_000), stderr: 'warn', status: 0, signal: null });
+      // Both streams are read whole, as text. Compared by summary: a failed
+      // deepEqual of two 2 MB values takes minutes to print its diff.
+      const { stdout } = outcome;
+      assert.deepEqual(
+        { status: outcome.status, error: outcome.error?.message, text: typeof stdout, whole: stdout === 'x'.repeat(2_000_000), stderr: outcome.stderr },
+        { status: 0, error: undefined, text: 'string', whole: true, stderr: 'warn' },
+      );
       const devNull = statSync('/dev/null');
       assert.deepEqual(JSON.parse(readFileSync(join(dir, 'seen.json'), 'utf8')), { argv: ['vitest', 'run', 'a.test.ts'], cwd: join(dir, 'work'), stdin: [devNull.dev, devNull.ino] });
     } finally {

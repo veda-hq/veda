@@ -100,6 +100,15 @@ describe('the defaults, read through behaviour', () => {
     ]);
   });
 
+  it('reads no path from the empty entry after git’s last NUL, even when a config names its own folder', () => {
+    const root = temp();
+    // `./.` resolves to the root itself, so the empty path is among its candidates.
+    put(root, 'eslint.config.mjs', "import here from './.';");
+    assert.ok(configInputs(root, '.').has(''));
+    const git = { run: (): string => 'notes.txt\0' };
+    assert.deepEqual(rangeTargets(git, root, parseConfig('{}'), 'a..b'), []);
+  });
+
   it('sweeps every target when the pins move a named package, without reading the changed paths', () => {
     const root = temp();
     put(root, 'apps/a/package.json', LINTED);

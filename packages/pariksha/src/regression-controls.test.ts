@@ -520,25 +520,22 @@ describe('parseBatch', () => {
   });
 });
 
-// The first test to run git cat-file, and a top-level one, so its result is
-// reported as soon as it ends: git fails here before it reads its input, so a
-// reader whose stdin never ends fails this at once, before any read that waits.
-it('indexReader throws when git fails, its stderr not read', () => {
+it('indexReader throws when git fails, naming the command', () => {
   const root = repo({ [CONTROL]: CONTROL_SOURCE });
   const read = indexReader(root, { ...env, GIT_DIR: join(root, 'no-such-git-dir') });
   assert.throws(() => read(CONTROL), {
     message: 'Command failed: git -c core.quotePath=off -c grep.column=false -c color.ui=never -c core.precomposeUnicode=false cat-file --batch',
     status: 128,
-    stderr: null,
   });
 });
 
-describe('indexReader', () => {
-  // A git call blocks the event loop, and the reporter writes only between
-  // turns of it: one turn here lets the test above be reported before any
-  // read below can wait on git.
-  before(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+it('indexReader throws git’s spawn error as it is when git cannot start', () => {
+  const root = repo({ [CONTROL]: CONTROL_SOURCE });
+  const read = indexReader(root, { ...env, PATH: join(root, 'no-bin') });
+  assert.throws(() => read(CONTROL), { message: 'spawnSync git ENOENT', code: 'ENOENT' });
+});
 
+describe('indexReader', () => {
   it('loads each path once: a path it holds, or one it could not ask for, needs no git again', () => {
     const root = repo({ [CONTROL]: CONTROL_SOURCE });
     const read = indexReader(root, env);

@@ -14,7 +14,7 @@
 //
 // `--staged` reads every file from the index, and the registry too when the
 // index holds it, so a commit is judged on what it records.
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { posix, relative, sep } from 'node:path';
 import type * as TS from 'typescript';
@@ -136,15 +136,20 @@ export const indexReader = (root: string, env: NodeJS.ProcessEnv = process.env):
     // One `cat-file --batch` for every path: a git process per file is most
     // of a pre-commit check's time. A path with a newline cannot be asked for.
     const asked = wanted.filter((p) => !p.includes('\n'));
-    const out = execFileSync('git', [...PINNED, 'cat-file', '--batch'], {
+    // spawnSync captures stderr unread, so no stdio list is needed, and fails
+    // as execFileSync did: its spawn error as it is, a non-zero exit as
+    // "Command failed: <command>".
+    const args = [...PINNED, 'cat-file', '--batch'];
+    const run = spawnSync('git', args, {
       cwd: top,
       env: gitEnv(env),
       input: asked.map((p) => `:${prefix === '' ? p : posix.join(prefix, p)}\n`).join(''),
       maxBuffer: 1 << 28,
-      stdio: ['pipe', 'pipe', 'ignore'],
       timeout: 120_000,
     });
-    for (const [p, body] of parseBatch(out, asked)) blobs.set(p, body);
+    if (run.error !== undefined) throw run.error;
+    if (run.status !== 0) throw Object.assign(new Error(`Command failed: git ${args.join(' ')}`), { status: run.status });
+    for (const [p, body] of parseBatch(run.stdout, asked)) blobs.set(p, body);
   };
   // prefetch asks git only for a path it has not loaded.
   const read: Reader = (p) => {

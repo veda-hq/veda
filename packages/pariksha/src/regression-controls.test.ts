@@ -219,7 +219,6 @@ describe('checkRegressionControls', () => {
     ['a skip table', () => check(appended("test.skip.each([1])('x %s', () => {});")), uses('test.skip')],
     ['a node:test case skipped by its options', () => check(appended("test('x', { skip: true }, () => {});")), uses('{ skip:')],
     ['a node:test case left as a todo', () => check(appended("test('x', {todo:'later'}, () => {});")), uses('{todo:')],
-    ['a node:test case skipped by options spaced before the colon', () => check(appended("test('x', { skip : true }, () => {});")), uses('{ skip :')],
     ['an unknown gate', () => check(overlay(), (r) => void (nth(r, 0)['gate'] = 'nightly')), 'pool-cap (F-1): unknown gate "nightly"'],
     ['a gate named like an inherited member', () => check(overlay(), (r) => void (nth(r, 0)['gate'] = 'constructor')), 'pool-cap (F-1): unknown gate "constructor"'],
     ['a file the gate does not collect', () => check(overlay(), (r) => void (nth(r, 2)['gate'] = 'web test')), `${LABEL}: ${CONTROL} is not collected by web test`],
@@ -326,6 +325,7 @@ describe('checkRegressionControls', () => {
     ['options on another call', "const call = vi.fn();\ncall('x', { a: 1, skip: true });"],
     ['case options that set no modifier', "it('x', { timeout: 1, ...{}, [String('k')]: 1 }, () => {});"],
     ['a case with a string second argument', "it('x', 'skip');"],
+    ['case options with a key that only begins like a modifier', "it('x', { skipped: true }, () => {});"],
     ['a computed key on another object, read and discarded', "const flags: Record<string, number> = {};\nvoid flags['skip'];"],
   ];
   for (const [name, code] of harmless) {

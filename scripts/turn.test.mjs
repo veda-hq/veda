@@ -46,6 +46,15 @@ function fakeChild({ started = true } = {}) {
   return Object.assign(new EventEmitter(), { pid: started ? 4242 : undefined, sent, kill: signal => sent.push(signal) });
 }
 
+/**
+ * What `pending` settled to by the next turn of the event loop, or 'pending'.
+ * A fake child ends a run synchronously, so a run still pending then never
+ * settles: the test fails at once instead of hanging to Stryker's limit.
+ */
+function settled(pending) {
+  return Promise.race([pending, new Promise(resolve => setImmediate(() => resolve('pending')))]);
+}
+
 /** Start `main` on a fake child, with every effect recorded. */
 function start(argv, { cli = null, started = true } = {}) {
   const child = fakeChild({ started });
@@ -180,7 +189,7 @@ describe('parse', () => {
 describe('main', () => {
   test('refuses bad arguments with its usage, running nothing', async () => {
     const run = start(['--label']);
-    assert.equal(await run.status, 2);
+    assert.equal(await settled(run.status), 2);
     assert.deepEqual(run.stderr.lines, [`${USAGE}\n`]);
     assert.equal(USAGE, 'usage: turn.mjs --label <text> -- <command> [args…]');
     assert.deepEqual(run.calls, []);
@@ -192,7 +201,7 @@ describe('main', () => {
     assert.deepEqual(run.calls, [['/bin/node', ['/d/cli.js', 'turn', '--label', 'veda check', '--', 'pnpm', 'check:run'], { stdio: 'inherit', env: run.env }]]);
     assert.equal(run.calls[0][2].env, run.env);
     run.child.emit('close', 7, null);
-    assert.equal(await run.status, 7);
+    assert.equal(await settled(run.status), 7);
     assert.deepEqual(run.stderr.lines, []);
   });
 
@@ -200,7 +209,7 @@ describe('main', () => {
     const run = start(['--label', 'x', '--', 'tsc', '-p', 'tsconfig.json']);
     assert.deepEqual(run.calls[0].slice(0, 2), ['tsc', ['-p', 'tsconfig.json']]);
     run.child.emit('close', null, 'SIGTERM');
-    assert.equal(await run.status, 143);
+    assert.equal(await settled(run.status), 143);
   });
 
   test('forwards each signal to the command while it runs, and none after', async () => {
@@ -210,14 +219,14 @@ describe('main', () => {
     for (const signal of FORWARDED) run.signals.emit(signal);
     assert.deepEqual(run.child.sent, FORWARDED);
     run.child.emit('close', 0, null);
-    assert.equal(await run.status, 0);
+    assert.equal(await settled(run.status), 0);
     for (const signal of FORWARDED) assert.equal(run.signals.listenerCount(signal), 0, signal);
   });
 
   test('a command that cannot start is 127, and says why', async () => {
     const run = start(['--label', 'x', '--', 'nope'], { started: false });
     run.child.emit('error', new Error('spawn nope ENOENT'));
-    assert.equal(await run.status, NOT_STARTED);
+    assert.equal(await settled(run.status), NOT_STARTED);
     assert.equal(NOT_STARTED, 127);
     assert.deepEqual(run.stderr.lines, ['turn.mjs: nope: spawn nope ENOENT\n']);
     for (const signal of FORWARDED) assert.equal(run.signals.listenerCount(signal), 0, signal);
@@ -227,7 +236,7 @@ describe('main', () => {
     const run = start(['--label', 'x', '--', 'cmd']);
     run.child.emit('error', new Error('kill EPERM'));
     run.child.emit('close', 5, null);
-    assert.equal(await run.status, 5);
+    assert.equal(await settled(run.status), 5);
     assert.deepEqual(run.stderr.lines, ['turn.mjs: cmd: kill EPERM\n']);
   });
 });
@@ -241,7 +250,7 @@ describe('entry', () => {
     assert.equal(entry(['node'], url, options), undefined);
     const status = entry(['node', SCRIPT, '--label', 'x', '--', 'c'], url, options);
     child.emit('close', 4, null);
-    assert.equal(await status, 4);
+    assert.equal(await settled(status), 4);
   });
 
   test('as a real process, exits with the command it ran', REAL, () => {

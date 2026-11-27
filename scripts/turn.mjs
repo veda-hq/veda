@@ -28,7 +28,8 @@ export const USAGE = 'usage: turn.mjs --label <text> -- <command> [args…]';
 export function atLeast(version, floor) {
   const parts = version.split('.').map(Number);
   for (const [i, want] of floor.entries()) {
-    if (parts[i] !== want) return parts[i] > want;
+    if (parts[i] > want) return true;
+    if (parts[i] < want) return false;
   }
   return true;
 }
@@ -39,7 +40,7 @@ export function atLeast(version, floor) {
  * @param {(path: string) => string} [read]
  * @returns {string | null}
  */
-export function dvaraWithTurn(from, read = path => readFileSync(path, 'utf8')) {
+export function dvaraWithTurn(from, read = path => String(readFileSync(path))) {
   try {
     const manifest = createRequire(join(from, 'turn.mjs')).resolve('@veda-hq/dvara/package.json');
     const { version, bin } = JSON.parse(read(manifest));
@@ -118,7 +119,7 @@ export function main(argv, options = {}) {
  * @param {readonly string[]} argv @param {string} url @param {Parameters<typeof main>[1]} [options]
  */
 export function entry(argv, url, options) {
-  return url === pathToFileURL(argv[1] ?? '').href ? main(argv.slice(2), options) : undefined;
+  return argv[1] && url === pathToFileURL(argv[1]).href ? main(argv.slice(2), options) : undefined;
 }
 
 process.exitCode = (await entry(process.argv, import.meta.url)) ?? process.exitCode;

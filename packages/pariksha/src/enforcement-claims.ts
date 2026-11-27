@@ -12,7 +12,7 @@
 // Validator claims must name something a stage runs (stage-reach.ts), and,
 // where the repository has a dispatcher, a dispatcher target that exists.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { basename, join, posix, relative, resolve } from 'node:path';
+import { basename, join, posix, resolve } from 'node:path';
 import { load } from 'js-yaml';
 import { isRecord, isRepoPath, list, object, onlyKeys, optionalText, parseJson, path, paths, records, regex, text, type Raw } from './registry-ratchet.ts';
 import { dispatcherTargets, findUncalledValidators, runnablePatterns, type PackageRunner, type Problem, type Standard, type StageConfig } from './stage-reach.ts';
@@ -41,7 +41,7 @@ const folders = (raw: Raw, key: string, where: string): string[] => {
 };
 
 /** An optional object key: absent or null is none. */
-const optional = (raw: Raw, key: string): Raw | undefined => (raw[key] === undefined || raw[key] === null ? undefined : object(raw, key, ''));
+const optional = (raw: Raw, key: string, where = ''): Raw | undefined => (raw[key] === undefined || raw[key] === null ? undefined : object(raw, key, where));
 
 const PREFIX = /^(?:(?:[\w.-]+|\*)\/)+$/;
 
@@ -84,7 +84,7 @@ export const parseConfig = (source: string): Config => {
   if (hooks.length + workflows.length === 0) throw new Error('stageRoots: "hooks" and "workflows" are both empty, so no stage would be walked');
 
   const runnableRaw = object(raw, 'runnable', '');
-  onlyKeys(runnableRaw, ['prefixes', 'extensions', 'bin'], 'runnable: ');
+  onlyKeys(runnableRaw, ['prefixes', 'extensions', 'bin', 'programs'], 'runnable: ');
   const prefixes = list(runnableRaw, 'prefixes', 'runnable: ').map((p, i) => {
     if (typeof p !== 'string' || !PREFIX.test(p) || p.split('/').some((s) => s === '.' || s === '..')) {
       throw new Error(`runnable.prefixes[${i}]: ${JSON.stringify(p)} is not a folder path ending in "/" (a "*" segment is one folder)`);
@@ -98,6 +98,20 @@ export const parseConfig = (source: string): Config => {
   });
   if (extensions.length === 0) throw new Error('runnable: "extensions" is empty, so no command would name a script');
   const bin = runnableRaw['bin'] === undefined || runnableRaw['bin'] === null ? undefined : path(runnableRaw, 'bin', 'runnable: ');
+  // Optional: other paths that run a program, by the name a claim's config begins with.
+  const programs = new Map<string, string[]>();
+  const programsRaw = optional(runnableRaw, 'programs', 'runnable: ');
+  const runBy = new Map<string, string>();
+  for (const name of Object.keys(programsRaw ?? {})) {
+    if (!/^[A-Za-z0-9][\w.-]*$/.test(name)) throw new Error(`runnable.programs: ${JSON.stringify(name)} is not a program name`);
+    const listed = paths(programsRaw as Raw, name, 'runnable.programs: ');
+    for (const one of listed) {
+      const other = runBy.get(one);
+      if (other !== undefined) throw new Error(`runnable.programs: ${JSON.stringify(one)} runs both ${JSON.stringify(other)} and ${JSON.stringify(name)}`);
+      runBy.set(one, name);
+    }
+    programs.set(name, listed);
+  }
 
   const listRaw = object(raw, 'workspaceList', '');
   onlyKeys(listRaw, ['pnpm', 'turbo'], 'workspaceList: ');
@@ -117,6 +131,8 @@ export const parseConfig = (source: string): Config => {
     workflows,
     actions: folders(stages, 'actions', 'stageRoots: '),
     runnable: runnablePatterns(prefixes, extensions, bin),
+    bin,
+    programs,
     workspaceFile: path(listRaw, 'pnpm', 'workspaceList: '),
     turbo,
     testFile: regex(tests['file'], 'tests.file'),
@@ -124,14 +140,21 @@ export const parseConfig = (source: string): Config => {
   };
 };
 
-const markdown = (dir: string, out: string[] = []): string[] => {
-  for (const entry of readdirSync(dir).sort()) {
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) markdown(full, out);
-    else if (entry.endsWith('.md')) out.push(full);
+/** The `.md` files under `dir`, as root-relative paths with `/` separators, in no set order. */
+const markdown = (root: string, dir: string, out: string[] = []): string[] => {
+  for (const entry of readdirSync(join(root, dir))) {
+    const path = posix.join(dir, entry);
+    if (statSync(join(root, path)).isDirectory()) markdown(root, path, out);
+    else if (entry.endsWith('.md')) out.push(path);
   }
   return out;
 };
+
+/** No text: an absent field's value, and the dispatcher's when the repository has none. */
+const EMPTY = '';
+
+/** A file's text; the one place the check reads one, so the dispatcher and the standards read alike. */
+const readText = (path: string): string => readFileSync(path, 'utf8');
 
 /**
  * The standards under `dir` that declare an enforcement, sorted by file.
@@ -144,12 +167,14 @@ const markdown = (dir: string, out: string[] = []): string[] => {
  */
 export const readStandards = (root: string, dir: string): Standard[] => {
   const standards: Standard[] = [];
-  for (const file of markdown(join(root, dir))) {
-    const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readFileSync(file, 'utf8'));
+  for (const file of markdown(root, dir)) {
+    const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readText(join(root, file)));
     if (match === null) continue;
+    // Read outside the try: only a YAML error skips a file.
+    const block = match[1] as string;
     let frontmatter: Raw;
     try {
-      const loaded = load(match[1] as string);
+      const loaded = load(block);
       if (!isRecord(loaded)) continue;
       frontmatter = loaded;
     } catch {
@@ -157,7 +182,7 @@ export const readStandards = (root: string, dir: string): Standard[] => {
     }
     const field = (name: string): string => {
       const value = frontmatter[name];
-      if (value === undefined || value === null) return '';
+      if (value === undefined || value === null) return EMPTY;
       return typeof value === 'string' ? value.trim() : String(value);
     };
     // A bare scalar is a one-entry list: `applies_to: apps/api` claims one
@@ -172,7 +197,7 @@ export const readStandards = (root: string, dir: string): Standard[] => {
     const enforcement = field('enforcement');
     if (enforcement === '') continue;
     standards.push({
-      file: relative(root, file).split('\\').join('/'),
+      file,
       id: field('id'),
       enforcement,
       enforcementConfig: field('enforcement_config'),
@@ -193,7 +218,10 @@ export const readStandards = (root: string, dir: string): Standard[] => {
  */
 export const claimedRules = (claim: string): string[] =>
   // Parentheticals go first: `no-restricted-globals (Buffer, process)` is one rule.
-  (claim.replace(/\([^)]*\)/g, '').match(/[^,]+/g) ?? []).map((part) => part.trim()).filter((part) => /^[@a-z][\w@/.-]*$/i.test(part));
+  claim
+    .replace(/\([^)]*\)/g, '')
+    .split(',')
+    .map((part) => part.trim()).filter((part) => /^[@a-z][\w@/.-]*$/i.test(part));
 
 /** Is one resolved rule setting on (error or warn), as a number or a word, bare or an options array's head? */
 export const ruleIsOn = (setting: unknown): boolean => {
@@ -234,16 +262,18 @@ export const activeRules = async (ESLint: LinterClass, root: string, workspaces:
       if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`workspace "${workspace.dir}" is not a folder under the root`);
       const eslint = new ESLint({ cwd });
       const settled = await Promise.allSettled(workspace.probes.map((probe) => eslint.calculateConfigForFile(resolve(cwd, probe))));
-      const failed = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
-      if (failed !== undefined && settled.every((s) => s.status === 'rejected')) {
-        throw new Error(`no probe of workspace "${workspace.dir}" resolves a config: ${(failed.reason as Error).message}`);
+      const failed = settled.filter((s): s is PromiseRejectedResult => s.status === 'rejected');
+      if (failed.length === settled.length) {
+        throw new Error(`no probe of workspace "${workspace.dir}" resolves a config: ${((failed[0] as PromiseRejectedResult).reason as Error).message}`);
       }
       const active = new Set<string>();
       for (const s of settled) {
-        if (s.status === 'rejected' || !isRecord(s.value)) continue;
-        const rules = s.value['rules'];
+        // A rejected probe has no value, and a value that is not a config has no rules.
+        const value: unknown = (s as { value?: unknown }).value;
+        if (!isRecord(value)) continue;
+        const rules = value['rules'];
         if (isRecord(rules)) for (const [name, setting] of Object.entries(rules)) if (ruleIsOn(setting)) active.add(name);
-        const options = s.value['linterOptions'];
+        const options = value['linterOptions'];
         if (isRecord(options) && options['noInlineConfig'] === true) active.add(NO_INLINE_CONFIG);
       }
       return [workspace.dir, active] as const;
@@ -341,7 +371,7 @@ export const checkClaims = async (root: string, config: Config, ESLint: LinterCl
   if (!dir?.isDirectory()) throw new Error(`the standards folder ${config.standards} is not a folder under the root`);
   const standards = readStandards(root, config.standards);
   if (standards.length === 0) throw new Error(`no standard under ${config.standards} declares an enforcement — the scan failed`);
-  const dispatch = config.dispatcher === undefined ? '' : readFileSync(posix.join(root, config.dispatcher), 'utf8');
+  const dispatch = config.dispatcher === undefined ? EMPTY : readText(posix.join(root, config.dispatcher));
   const byWorkspace = await activeRules(ESLint, root, config.workspaces);
   return { standards, problems: [...findEnforcementProblems(standards, byWorkspace, dispatch, config), ...findUncalledValidators(root, standards, config)] };
 };

@@ -500,7 +500,7 @@ describe('resolveStageReach', () => {
 
   it('walks a repo with no hooks or workflows to nothing', () => {
     const root = tree({ 'pnpm-workspace.yaml': 'packages:\n', 'turbo.json': '{}', 'scripts/run-validation.sh': '' });
-    assert.deepEqual(resolveStageReach(root, STAGES), { files: new Set(), scripts: new Map(), workspaces: [] });
+    assert.deepEqual(resolveStageReach(root, STAGES), { files: new Set(), scripts: new Map(), workspaces: [], calls: new Set() });
   });
 
   it('throws naming a workflow that is not YAML, or a package.json that is not JSON', () => {
@@ -523,7 +523,7 @@ describe('resolveStageReach', () => {
 });
 
 describe('testFileRuns', () => {
-  const reachWith = (scripts: Array<[string, string]>): StageReach => ({ files: new Set(), scripts: new Map(scripts), workspaces: ['apps/web', 'apps/web/nested', 'apps/server'] });
+  const reachWith = (scripts: Array<[string, string]>): StageReach => ({ files: new Set(), scripts: new Map(scripts), workspaces: ['apps/web', 'apps/web/nested', 'apps/server'], calls: new Set() });
 
   it('is true when its workspace runs a test runner some stage reached', () => {
     const reach = reachWith([
@@ -626,7 +626,7 @@ describe('findUncalledValidators', () => {
   });
 
   it('uses a reach it is given instead of walking', () => {
-    const given: StageReach = { files: new Set(['scripts/hidden.sh']), scripts: new Map(), workspaces: [] };
+    const given: StageReach = { files: new Set(['scripts/hidden.sh']), scripts: new Map(), workspaces: [], calls: new Set() };
     assert.deepEqual(findUncalledValidators(root, [claim({ enforcementScript: 'scripts/hidden.sh' })], STAGES, given), []);
   });
 
@@ -643,5 +643,199 @@ describe('findUncalledValidators', () => {
     // scripts/run-validation.sh is an ordinary script under this config, so
     // the hook's call follows the whole file, pk-unrun's line included.
     assert.deepEqual(findUncalledValidators(other, [claim({ enforcementConfig: 'dispatch.sh pk-unrun' })], stages), []);
+  });
+});
+
+describe('subcommand claims', () => {
+  const claim = (overrides: Partial<Standard>): Standard => ({
+    file: 'docs/standards/probe.md',
+    id: 'BP-PROBE-001',
+    enforcement: 'validator',
+    enforcementConfig: 'tool sub, in pre-commit',
+    partialGates: '',
+    appliesTo: [],
+    enforcementScript: 'node_modules/.bin/tool',
+    deprecated: false,
+    ...overrides,
+  });
+  const PROGRAMS = { tool: ['vendor/tool/cli.ts', 'vendor/tool/dist/cli.js'] };
+  const withPrograms = config({ runnable: { ...CONFIG.runnable, programs: PROGRAMS } });
+  /** A repo whose pre-commit hook is `hook`, with the tool installed both ways. */
+  const repo = (hook: string, more: Record<string, string> = {}): string =>
+    tree({
+      'pnpm-workspace.yaml': "packages:\n  - 'apps/*'\n",
+      'turbo.json': '{}\n',
+      'node_modules/.bin/tool': '#!/bin/sh\n',
+      'node_modules/.bin/tsx': '#!/bin/sh\n',
+      'vendor/tool/cli.ts': 'export {};\n',
+      'vendor/tool/dist/cli.js': 'export {};\n',
+      'scripts/run-validation.sh': 'case "$1" in\nesac\n',
+      '.husky/pre-commit': hook,
+      ...more,
+    });
+  const verdict = (hook: string, standard: Standard = claim({}), stages: StageConfig = withPrograms, more: Record<string, string> = {}) => findUncalledValidators(repo(hook, more), [standard], stages);
+  const NOT_RUN = 'is never run by a hook or workflow — the claim names a subcommand nothing calls';
+
+  it('refuses a claim on a bin whose own subcommand no stage runs, though another subcommand of it runs', () => {
+    assert.deepEqual(verdict('node_modules/.bin/tool other\n'), [{ file: 'docs/standards/probe.md', id: 'BP-PROBE-001', rule: 'tool sub', reason: NOT_RUN }]);
+    assert.deepEqual(verdict('node_modules/.bin/tool other\n', claim({}), STAGES), [{ file: 'docs/standards/probe.md', id: 'BP-PROBE-001', rule: 'tool sub', reason: NOT_RUN }]);
+  });
+
+  it('passes the claim once a stage runs that subcommand first', () => {
+    assert.deepEqual(verdict('node_modules/.bin/tool other\nnode_modules/.bin/tool sub --staged\n'), []);
+    assert.deepEqual(verdict('node_modules/.bin/tool sub\n', claim({}), STAGES), []);
+    assert.deepEqual(verdict('FOO=1 node_modules/.bin/tool "sub"\n'), []);
+    assert.deepEqual(verdict('if node_modules/.bin/tool \\\n  sub; then :; fi\n'), []);
+    assert.deepEqual(verdict('exit 0\n', claim({}), withPrograms, { '.github/workflows/ci.yml': 'jobs:\n  a:\n    steps:\n      - run: node_modules/.bin/tool sub\n' }), []);
+  });
+
+  it('counts a call only where the bin runs as a command, in a code line, with the subcommand as its first argument', () => {
+    for (const hook of [
+      'test -x node_modules/.bin/tool sub\n',
+      '# node_modules/.bin/tool sub\n',
+      'echo "node_modules/.bin/tool sub"\n',
+      'node_modules/.bin/tool --x sub\n',
+      'node_modules/.bin/tool subtle\n',
+      'node_modules/.bin/tool sub/x\n',
+      'node_modules/.bin/tool\nsub\n',
+      'node_modules/.bin/toolkit sub\n',
+    ]) {
+      assert.equal(verdict(`node_modules/.bin/tool other\n${hook}`)[0]?.rule, 'tool sub', hook);
+    }
+  });
+
+  it('counts a call through a path runnable.programs lists for the program, resolved from the caller', () => {
+    assert.deepEqual(verdict('node_modules/.bin/tsx vendor/tool/cli.ts sub --x\n'), []);
+    assert.deepEqual(verdict('node vendor/tool/dist/cli.js sub\n'), []);
+    assert.deepEqual(verdict('node_modules/.bin/tsx "vendor/tool/cli.ts" sub\n'), []);
+    assert.deepEqual(verdict('pnpm turbo run check\n', claim({}), withPrograms, { 'apps/web/package.json': JSON.stringify({ scripts: { check: 'tsx ../../vendor/tool/cli.ts sub' } }) }), []);
+    // The listed path counts only as written from the root, or climbing to it.
+    for (const hook of ['tsx "$TOOL/vendor/tool/cli.ts" sub\n', 'tsx other/vendor/tool/cli.ts sub\n', 'tsx vendor/tool/cli.ts other\n', 'tsx vendor/tool/cli.tsx sub\n']) {
+      assert.equal(verdict(`node_modules/.bin/tool other\n${hook}`)[0]?.rule, 'tool sub', hook);
+    }
+    assert.equal(verdict('node_modules/.bin/tool other\npnpm turbo run check\n', claim({}), withPrograms, { 'apps/web/package.json': JSON.stringify({ scripts: { check: 'tsx vendor/tool/cli.ts sub' } }) })[0]?.rule, 'tool sub');
+    // Without the setting, a path names no program.
+    assert.equal(verdict('node_modules/.bin/tool other\nnode_modules/.bin/tsx vendor/tool/cli.ts sub\n', claim({}), STAGES)[0]?.rule, 'tool sub');
+  });
+
+  it('holds a claim naming one of the program paths to the subcommand too', () => {
+    const onPath = claim({ enforcementScript: 'vendor/tool/cli.ts' });
+    assert.deepEqual(verdict('node_modules/.bin/tool sub\n', onPath), []);
+    assert.deepEqual(verdict('tsx vendor/tool/dist/cli.js sub\n', onPath), []);
+    assert.deepEqual(verdict('tsx vendor/tool/cli.ts other\n', onPath), [{ file: 'docs/standards/probe.md', id: 'BP-PROBE-001', rule: 'tool sub', reason: NOT_RUN }]);
+  });
+
+  it("keeps the file-level verdict when the config does not begin with the script's program and a subcommand", () => {
+    const reached = 'node_modules/.bin/tool other\n';
+    for (const enforcementConfig of ['pnpm lint, in pre-commit', 'tool', 'tool, in pre-commit', 'tools sub', 'run tool sub', 'Tool Sub', 'tool --sub']) {
+      assert.deepEqual(verdict(reached, claim({ enforcementConfig })), [], enforcementConfig);
+    }
+    assert.deepEqual(verdict('node_modules/.bin/tool other\n', claim({ enforcementScript: 'node_modules/.bin/tsx', enforcementConfig: 'tool sub' })), [
+      { file: 'docs/standards/probe.md', id: 'BP-PROBE-001', rule: 'node_modules/.bin/tsx', reason: 'is never run by a hook or workflow — the claim names a validator nothing calls' },
+    ]);
+    assert.deepEqual(verdict('exit 0\n', claim({ enforcementScript: 'scripts/x.sh', enforcementConfig: 'x.sh sub' }), withPrograms, { 'scripts/x.sh': 'exit 0\n' })[0]?.rule, 'scripts/x.sh');
+  });
+
+  it('still reports a named program that does not exist, and nothing else for it', () => {
+    assert.deepEqual(verdict('node_modules/.bin/gone sub\n', claim({ enforcementScript: 'node_modules/.bin/gone', enforcementConfig: 'gone sub' })), [
+      { file: 'docs/standards/probe.md', id: 'BP-PROBE-001', rule: 'node_modules/.bin/gone', reason: 'does not exist' },
+    ]);
+  });
+
+  it('records each program call with its first argument, by program, and nothing a path outside the root bin or the listed paths runs', () => {
+    const hook = ['node_modules/.bin/tool one', 'tsx vendor/tool/cli.ts two', 'node_modules/.bin/tsx three', '../node_modules/.bin/tool six', 'print  seven', 'pnpm turbo run check'].join('\n');
+    const more = { 'apps/web/package.json': JSON.stringify({ scripts: { check: 'node_modules/.bin/tool four && tsx vendor/tool/cli.ts five' } }) };
+    assert.deepEqual([...resolveStageReach(repo(hook, more), withPrograms).calls].sort(), ['tool\tone', 'tool\ttwo', 'tsx\tthree']);
+    assert.deepEqual([...resolveStageReach(repo(hook, more), STAGES).calls].sort(), ['tool\tone', 'tsx\tthree']);
+    const noBin = config({ runnable: { prefixes: CONFIG.runnable.prefixes, extensions: CONFIG.runnable.extensions, programs: PROGRAMS } });
+    assert.deepEqual([...resolveStageReach(repo(hook, more), noBin).calls].sort(), ['tool\ttwo']);
+  });
+
+  it('reads no program into a script that is not one, whatever its config begins with', () => {
+    assert.deepEqual(verdict('bash scripts/x.sh\n', claim({ enforcementScript: 'scripts/x.sh', enforcementConfig: 'tool sub' }), withPrograms, { 'scripts/x.sh': 'exit 0\n' }), []);
+    const noBin = config({ runnable: { prefixes: CONFIG.runnable.prefixes, extensions: CONFIG.runnable.extensions } });
+    assert.deepEqual(verdict('node_modules/.bin/tool other\nbash scripts/x.sh\n', claim({}), noBin)[0]?.rule, 'node_modules/.bin/tool');
+  });
+});
+
+describe('edges each part of the walk decides', () => {
+  const steps = (lines: string[]) => yamlCommands(['jobs:', '  a:', '    defaults:', '      run:', '        working-directory: apps/web', '    steps:', ...lines].join('\n'), ['.github/actions']);
+
+  it("reads a step's working-directory trimmed and normalized, and falls back on a blank, absolute or climbing one", () => {
+    assert.deepEqual(
+      steps(['      - run: a', "        working-directory: ' '", '      - run: b', "        working-directory: ' /abs'", '      - run: c', "        working-directory: ' tools/x/ '", '      - run: d', '        working-directory: ..', '      - run: e', '        working-directory: tools/../..']).runs,
+      [
+        { text: 'a', dir: 'apps/web' },
+        { text: 'b', dir: 'apps/web' },
+        { text: 'c', dir: 'tools/x' },
+        { text: 'd', dir: 'apps/web' },
+        { text: 'e', dir: 'apps/web' },
+      ],
+    );
+  });
+
+  it('reads a step only as a mapping in a steps list, and a uses only as text', () => {
+    assert.deepEqual(steps(['      -', '      - uses: [./.github/actions/setup]', '      - run: x', '    strategy:', '      matrix:', '        include:', '          - run: not-a-step']), { runs: [{ text: 'x', dir: 'apps/web' }], actions: [] });
+  });
+
+  it('keeps every dir an exclusion does not name exactly, and sorts the result', () => {
+    const root = tree({
+      'pnpm-workspace.yaml': 'packages:\n  - packages/one\n  - apps/a/b\n  - "apx/*"\n  - "apps/*"\n  - _x\n  - x\n  - "!apps/*"\n',
+      'apx/b/package.json': '{}',
+      'apps/z/package.json': '{}',
+    });
+    assert.deepEqual(workspaceDirs(root, 'pnpm-workspace.yaml'), ['_x', 'apps/a/b', 'apx/b', 'packages/one', 'x']);
+  });
+
+  it('reads no scripts from a package.json that is null or whose scripts are null, and runs only string scripts', () => {
+    const run = (pkg: string): StageReach =>
+      resolveStageReach(tree({ 'pnpm-workspace.yaml': 'packages:\n', 'turbo.json': '{}', 'scripts/run-validation.sh': '', 'package.json': pkg, '.husky/pre-commit': 'pnpm count\npnpm lint\n', 'scripts/lint.sh': 'exit 0\n' }), STAGES);
+    assert.deepEqual(run('null').scripts, new Map());
+    assert.deepEqual(run('{"scripts": null}').scripts, new Map());
+    assert.deepEqual(run('{"scripts": {"count": 3, "lint": "bash scripts/lint.sh"}}').scripts, new Map([['.\tlint', 'bash scripts/lint.sh']]));
+  });
+
+  it('reads a case or a target only where a line starts with it', () => {
+    const dispatch = 'case "$1" in\n  echo foo)\n    bash scripts/a.sh\n    ;;\nesac\n';
+    assert.equal(dispatcherCase(dispatch, 'foo'), '');
+    assert.deepEqual(dispatcherTargets(dispatch), new Set());
+  });
+
+  it('follows a hook in any hooks folder, and nothing else that is not shell', () => {
+    const root = tree({
+      'pnpm-workspace.yaml': 'packages:\n',
+      'turbo.json': '{}',
+      'scripts/run-validation.sh': '',
+      'git-hooks/pre-push': 'bash scripts/pushed.sh\n',
+      '.husky/pre-commit': 'python3 scripts/x.py\nbash scripts/a.yml.sh\nbash scripts/not-runner.sh\n',
+      'scripts/x.py': 'bash scripts/from-python.sh\n',
+      'scripts/a.yml.sh': 'bash scripts/from-shell.sh\n',
+      'scripts/not-runner.sh': 'run_validator "alpha"\n',
+      'scripts/pushed.sh': 'exit 0\n',
+      'scripts/from-python.sh': 'exit 0\n',
+      'scripts/from-shell.sh': 'exit 0\n',
+      'scripts/package-validations/validate-package.sh': '',
+      'scripts/package-validations/validators/alpha.sh': 'exit 0\n',
+    });
+    const files = resolveStageReach(root, config({ stageRoots: { hooks: ['.husky', 'git-hooks'] } })).files;
+    assert.deepEqual([...files].sort(), ['.husky/pre-commit', 'git-hooks/pre-push', 'scripts/a.yml.sh', 'scripts/from-shell.sh', 'scripts/not-runner.sh', 'scripts/pushed.sh', 'scripts/x.py']);
+  });
+
+  it('reads pnpm and turbo calls past any run of spaces', () => {
+    const root = tree({
+      'pnpm-workspace.yaml': "packages:\n  - 'apps/*'\n",
+      'turbo.json': '{}',
+      'scripts/run-validation.sh': '',
+      'package.json': JSON.stringify({ scripts: { one: 'exit 0', two: 'exit 0', three: 'exit 0' } }),
+      'apps/web/package.json': JSON.stringify({ scripts: { lint: 'exit 0', test: 'exit 0' } }),
+      '.husky/pre-commit': 'pnpm  one\npnpm run  two\npnpm run three\npnpm turbo  run lint\npnpm turbo run  test\n',
+    });
+    assert.deepEqual([...resolveStageReach(root, STAGES).scripts.keys()].sort(), ['.\tone', '.\tthree', '.\ttwo', 'apps/web\tlint', 'apps/web\ttest']);
+  });
+
+  it('reports a named file that does not exist, and nothing else for it', () => {
+    const root = tree({ 'pnpm-workspace.yaml': 'packages:\n', 'turbo.json': '{}', 'scripts/run-validation.sh': '' });
+    const standard: Standard = { file: 'docs/standards/probe.md', id: 'BP-PROBE-001', enforcement: 'validator', enforcementConfig: '', partialGates: '', appliesTo: [], enforcementScript: 'scripts/gone.sh', deprecated: false };
+    assert.deepEqual(findUncalledValidators(root, [standard], STAGES), [{ file: 'docs/standards/probe.md', id: 'BP-PROBE-001', rule: 'scripts/gone.sh', reason: 'does not exist' }]);
   });
 });

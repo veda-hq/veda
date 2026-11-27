@@ -16,8 +16,8 @@ import { constants } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-/** The first dvara release with `dvara turn`; none from 0.8.16 to 0.8.17 was published. */
-export const FIRST_WITH_TURN = Object.freeze([0, 8, 18]);
+/** The first dvara release with `dvara turn`; no dvara from 0.8.16 to 0.8.18 was published. */
+export const FIRST_WITH_TURN = Object.freeze([0, 8, 19]);
 /** The signals passed on to the command. */
 export const FORWARDED = Object.freeze(['SIGINT', 'SIGTERM', 'SIGHUP']);
 /** The exit code when the command cannot be started, as a shell gives it. */

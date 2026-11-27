@@ -68,24 +68,25 @@ function start(argv, { cli = null, started = true } = {}) {
 
 describe('atLeast', () => {
   test('compares each part in turn, as numbers', () => {
-    assert.equal(atLeast('0.8.18', [0, 8, 18]), true);
-    assert.equal(atLeast('0.8.19', [0, 8, 18]), true);
-    assert.equal(atLeast('0.9.0', [0, 8, 18]), true);
-    assert.equal(atLeast('1.0.0', [0, 8, 18]), true);
-    assert.equal(atLeast('0.8.17', [0, 8, 18]), false);
-    assert.equal(atLeast('0.8.9', [0, 8, 18]), false);
-    assert.equal(atLeast('0.7.99', [0, 8, 18]), false);
+    assert.equal(atLeast('0.8.19', [0, 8, 19]), true);
+    assert.equal(atLeast('0.8.20', [0, 8, 19]), true);
+    assert.equal(atLeast('0.8.18', [0, 8, 19]), false);
+    assert.equal(atLeast('0.9.0', [0, 8, 19]), true);
+    assert.equal(atLeast('1.0.0', [0, 8, 19]), true);
+    assert.equal(atLeast('0.8.17', [0, 8, 19]), false);
+    assert.equal(atLeast('0.8.9', [0, 8, 19]), false);
+    assert.equal(atLeast('0.7.99', [0, 8, 19]), false);
   });
 
-  test('names 0.8.18 as the first release with turn', () => {
-    assert.deepEqual(FIRST_WITH_TURN, [0, 8, 18]);
+  test('names 0.8.19 as the first release with turn', () => {
+    assert.deepEqual(FIRST_WITH_TURN, [0, 8, 19]);
     assert.ok(Object.isFrozen(FIRST_WITH_TURN));
   });
 });
 
 describe('dvaraWithTurn', () => {
   test("gives the installed dvara's CLI when it has turn", () => {
-    const { root, pkg } = installed('0.8.18');
+    const { root, pkg } = installed('0.8.19');
     assert.equal(dvaraWithTurn(root), join(pkg, 'dist/cli.js'));
   });
 
@@ -98,7 +99,7 @@ describe('dvaraWithTurn', () => {
     const empty = mkdtempSync(join(tmpdir(), 'turn test-'));
     roots.push(empty);
     assert.equal(dvaraWithTurn(empty), null);
-    const { root } = installed('0.8.18');
+    const { root } = installed('0.8.19');
     assert.equal(
       dvaraWithTurn(root, () => '{'),
       null,
@@ -244,7 +245,11 @@ describe('entry', () => {
   });
 
   test('as a real process, exits with the command it ran', REAL, () => {
-    const ran = spawnSync(process.execPath, [SCRIPT, '--label', 'x', '--', process.execPath, '-e', 'process.exit(3)'], { encoding: 'utf8' });
+    // veda's pinned dvara may take a turn for it: in a queue of the test's own, never the machine's.
+    const queue = realpathSync(mkdtempSync(join(tmpdir(), 'turn test-')));
+    roots.push(queue);
+    const env = { ...process.env, DVARA_TURN_DIR: queue };
+    const ran = spawnSync(process.execPath, [SCRIPT, '--label', 'x', '--', process.execPath, '-e', 'process.exit(3)'], { encoding: 'utf8', env });
     assert.equal(ran.status, 3, ran.stderr);
     const bad = spawnSync(process.execPath, [SCRIPT], { encoding: 'utf8' });
     assert.equal(bad.status, 2);
@@ -252,7 +257,7 @@ describe('entry', () => {
   });
 
   test("as a real process, runs the command in an installed dvara's turn", REAL, () => {
-    const { root, pkg } = installed('0.8.18');
+    const { root, pkg } = installed('0.8.19');
     mkdirSync(join(pkg, 'dist'));
     // A stand-in dvara: prints the arguments it got, then exits 6.
     writeFileSync(join(pkg, 'dist', 'cli.js'), 'process.stdout.write(JSON.stringify(process.argv.slice(2))); process.exit(6);');

@@ -27,7 +27,10 @@
       "mcp__Claude_Browser__get_page_text",
       "mcp__Claude_Browser__tabs_context",
       "mcp__claude-code-remote__send_message",
-      "Bash(niyam review-thread *)"
+      "Bash(niyam review-thread *)",
+      "mcp__claude-artifacts__publish_version",
+      "mcp__claude-artifacts__publish_files",
+      "mcp__claude-artifacts__edit_version"
     ],
     "deny": ["Bash(*--no-verify*)", "Artifact"],
     "ask": [

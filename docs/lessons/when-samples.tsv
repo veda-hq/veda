@@ -21,6 +21,7 @@ git-github.md#handing-a-branch-to-another-worktree	error	is already used by work
 git-github.md#mutations-during-an-outage-may-have-landed	error	HTTP 502		Exit code 1 gh: HTTP 502: Bad Gateway (https://api.github.com/graphql)
 git-github.md#mutations-during-an-outage-may-have-landed	error	HTTP 504		Exit code 1 gh: HTTP 504: Gateway Timeout (https://api.github.com/graphql)
 git-github.md#squash-merges-defeat-merged-branch-checks	command	\bgit (branch -[dD]|cherry(?![-\w]))		git branch -d claude/old-slice
+github-actions.md#a-conflicted-pr-runs-no-ci	command	\bgh pr checks\b		gh pr checks 3640 --watch
 github-actions.md#a-re-run-replays-the-original-event	command	\bgh run rerun\b		gh run rerun 1234567 --failed
 github-actions.md#billing-lock-every-job-fails-in-seconds	error	your spending limit needs to be increased		Exit code 1 X The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings
 github-actions.md#continue-on-error-reports-success	command	continue-on-error		grep -n continue-on-error .github/workflows/ci.yml

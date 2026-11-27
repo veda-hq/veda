@@ -19,10 +19,26 @@
 #
 # Plain strings, not arrays: macOS runs hooks under /bin/bash 3.2, where an
 # empty array is an unbound variable under `set -u`.
+#
+# Each refusal, held check and skipped check is also a record for the run's
+# history row (`failed <stage>`, `held <check> <reason>`,
+# `skipped <check> <reason>`; records.ts), so the row says which check refused
+# a push. A stop that does not come through here (`builtin exit`, a `set -e`
+# abort, a hook run without keep-going mode) writes no `failed` record: its
+# row's last stage reads `failed`, as before.
 
 DVARA_KEEP_GOING_FAILED=""
 DVARA_KEEP_GOING_HELD=""
 DVARA_KEEP_GOING_SKIPPED=""
+
+# One record, through stages.sh's dvara_record. Sourced without stages.sh,
+# keep-going mode records nothing and still never fails the hook. A newline in
+# a field would start a record of its own, so each becomes a space.
+_dvara_keep_going_record() {
+  if declare -F dvara_record > /dev/null; then
+    dvara_record "${@//$'\n'/ }"
+  fi
+}
 
 # shellcheck disable=SC2034 # DVARA_UNREPORTED_REFUSAL is read by stages.sh
 exit() {
@@ -31,6 +47,7 @@ exit() {
     local stage="${DVARA_CURRENT_STAGE:-unknown}"
     DVARA_KEEP_GOING_FAILED="${DVARA_KEEP_GOING_FAILED}${stage}"$'\n'
     DVARA_UNREPORTED_REFUSAL=1
+    _dvara_keep_going_record failed "$stage"
     echo "✗ ${DVARA_KEEP_GOING_NAME:-preflight}: ${stage} failed; carrying on to the next check"
     return 0
   fi
@@ -40,12 +57,14 @@ exit() {
 # A check not run because an earlier result makes its verdict meaningless.
 dvara_keep_going_held() {
   DVARA_KEEP_GOING_HELD="${DVARA_KEEP_GOING_HELD}$1: not run: $2"$'\n'
+  _dvara_keep_going_record held "$1" "$2"
   echo "→ $1: not run: $2"
 }
 
 # A check this run was asked not to run: not a failure, and not a pass.
 dvara_keep_going_skipped() {
   DVARA_KEEP_GOING_SKIPPED="${DVARA_KEEP_GOING_SKIPPED}$1: skipped: $2"$'\n'
+  _dvara_keep_going_record skipped "$1" "$2"
   echo "⏭  $1: skipped: $2"
 }
 

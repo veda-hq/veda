@@ -470,8 +470,7 @@ const docReferences = (f: Map<string, string>, io: Io): number => {
     return 2;
   }
   const mode: GateMode = base !== undefined ? { kind: 'range', base, head: f.get('--head') ?? 'HEAD' } : all ? { kind: 'all' } : { kind: 'staged' };
-  // The identifier search reads the whole tree: a push and CI, not a commit.
-  const checks: readonly CheckId[] = listed ?? (mode.kind === 'staged' ? ['DOC-DRIFT-01', 'DOC-DRIFT-02'] : [...CHECK_IDS]);
+  const checks: readonly CheckId[] = listed ?? [...CHECK_IDS];
   let config: DocReferencesConfig;
   let report: GateReport;
   try {

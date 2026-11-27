@@ -108,6 +108,67 @@ describe("git and tryGit", () => {
     assert.match(git({ cwd: at.cwd }, ["--version"]), /^git version/);
   });
 
+  it("runs git in the environment it is given, never this process's", (t) => {
+    const { r } = committed();
+    r.write("two\nlines.md", "two\n");
+    r.git("add", "-A");
+    const elsewhere = mkdtempSync(join(tmpdir(), "dvara-env-"));
+    t.after(() => rmSync(elsewhere, { recursive: true, force: true }));
+    // Only the given environment says where the repository is.
+    const away: Git = {
+      cwd: elsewhere,
+      env: { ...r.env, GIT_DIR: join(r.root, ".git") },
+    };
+    assert.deepEqual(listTree(away, ":"), [
+      "a.md",
+      "docs/b.md",
+      "two\nlines.md",
+    ]);
+    assert.deepEqual(
+      [...readBlobs(away, [":a.md", ":two\nlines.md"])],
+      [
+        [":two\nlines.md", "two\n"],
+        [":a.md", "alpha\n"],
+      ],
+    );
+  });
+
+  it("gives git an empty stdin when asked no input", () => {
+    const { at } = committed();
+    assert.equal(
+      git(at, ["hash-object", "--stdin"]),
+      "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391\n",
+    );
+  });
+
+  it("keeps a failing git's stderr off the terminal", (t) => {
+    const { at } = committed();
+    const write = t.mock.method(process.stderr, "write", () => true);
+    assert.throws(() => git(at, ["cat-file", "-t", "nope"]), /fatal: /);
+    assert.equal(write.mock.callCount(), 0);
+  });
+
+  it("answers more than a few bytes", () => {
+    const { r, at } = committed();
+    const commit = r.git("cat-file", "-p", "HEAD");
+    assert.ok(commit.length > 100);
+    assert.equal(tryGit(at, ["cat-file", "-p", "HEAD"]), commit);
+  });
+
+  it("answers more than a pipe holds", () => {
+    const { r, at } = committed();
+    // Past the 64 KiB a pipe buffers, git cannot finish before a small buffer stops it.
+    const big = "x".repeat(200_000);
+    r.write("big.txt", big);
+    r.git("add", "big.txt");
+    // Compared as a boolean: when the answer is not this text (a Buffer, say),
+    // assert's message would print and diff 200,000 lines, and that diff took
+    // a 16 GB CI runner down (veda#469).
+    const answer = tryGit(at, ["cat-file", "-p", ":big.txt"]);
+    assert.equal(typeof answer, "string");
+    assert.equal(answer === big, true);
+  });
+
   it("reads exit 1 as no and throws any other failure", () => {
     const { at } = committed();
     assert.equal(
@@ -153,7 +214,7 @@ describe("trees", () => {
     r.git("commit", "-q", "-m", "links");
     assert.deepEqual(listModes(at, "HEAD"), expected);
     for (const ref of [":", "HEAD"]) {
-      const tree = treeContext(at, ref, undefined);
+      const tree = treeContext(at, ref, undefined, undefined, []);
       assert.deepEqual(
         ["a.md", "link.md", "vendor/lib", "none.md"].map(tree.isLink),
         [false, true, true, false],
@@ -162,11 +223,44 @@ describe("trees", () => {
     }
   });
 
+  it("lists a commit's modes, not the index's", () => {
+    const { r, at } = committed();
+    r.write("staged.md", "x\n");
+    r.git("add", "-A");
+    assert.deepEqual(
+      listModes(at, "HEAD"),
+      new Map([
+        ["a.md", "100644"],
+        ["docs/b.md", "100644"],
+      ]),
+    );
+  });
+
+  it("asks git nothing for no paths, so a rev that does not resolve lists none", () => {
+    const { at } = committed();
+    assert.deepEqual(listedIn(at, "no-such-rev", []), new Set());
+  });
+
+  it("reads a listing of more than 512 bytes whole", () => {
+    const { r, at } = committed();
+    const names = Array.from({ length: 40 }, (_, i) => `listed-file-number-${String(i).padStart(2, "0")}.md`);
+    for (const name of names) r.write(name, "x\n");
+    r.git("add", "-A");
+    assert.deepEqual(
+      listTree(at, ":").filter((path) => path.startsWith("listed-file-number-")),
+      names,
+    );
+  });
+
   it("reads a blob above 64 MiB asked on its own, as the batch would", () => {
     const { r, at } = committed();
     const big = `${"x".repeat(65 * 1024 * 1024)}\n`;
     r.write("big\nname.txt", big);
     r.git("add", "-A");
+    // Staged, the blob is in the object store, compressed to a few KiB. The
+    // 65 MiB file goes at once: a mutation run that bails before this suite's
+    // cleanup would otherwise leave one per mutant, and fill a runner's disk.
+    rmSync(join(r.root, "big\nname.txt"));
     assert.equal(OBJECT_BUFFER, 1024 * 1024 * 1024);
     assert.equal(
       readBlobs(at, [":big\nname.txt"]).get(":big\nname.txt")?.length,
@@ -257,6 +351,27 @@ describe("readBlobs and objectTypes", () => {
     );
   });
 
+  it("runs no batch with only newline-bearing names to ask", (t) => {
+    const elsewhere = mkdtempSync(join(tmpdir(), "dvara-no-repo-"));
+    t.after(() => rmSync(elsewhere, { recursive: true, force: true }));
+    const away = { cwd: elsewhere, env: hermeticEnv };
+    assert.deepEqual([...readBlobs(away, [":a\nb.md"])], [[":a\nb.md", null]]);
+    assert.deepEqual([...objectTypes(away, [":a\nb.md"])], []);
+  });
+
+  it("types a batched name after a newline-bearing one", () => {
+    const { r, at } = committed();
+    r.write("two\nlines.md", "two\n");
+    r.git("add", "-A");
+    assert.deepEqual(
+      [...objectTypes(at, [":two\nlines.md", "HEAD:a.md"])],
+      [
+        [":two\nlines.md", "blob"],
+        ["HEAD:a.md", "blob"],
+      ],
+    );
+  });
+
   it("types every name the store has, a newline-bearing one on its own", () => {
     const { r, at } = committed();
     r.write("two\nlines.md", "two\n");
@@ -344,20 +459,48 @@ describe("treeContext", () => {
     const { r, at } = committed();
     r.write("a.md", "staged\n");
     r.git("add", "-A");
-    const head = treeContext(at, "HEAD", undefined);
+    const head = treeContext(at, "HEAD", undefined, undefined, []);
     assert.equal(head.read("a.md"), "alpha\n");
     assert.equal(head.read("a.md"), "alpha\n");
     assert.equal(head.read("none.md"), null);
     assert.equal(head.pathExists("docs/b.md"), true);
     assert.equal(head.pathExists("none.md"), false);
-    assert.equal(treeContext(at, ":", undefined).read("a.md"), "staged\n");
+    assert.equal(
+      treeContext(at, ":", undefined, undefined, []).read("a.md"),
+      "staged\n",
+    );
+  });
+
+  it("answers a path read before, and an id typed before, from what it read", () => {
+    const { r, at } = committed();
+    const blob = r.git("rev-parse", "HEAD:a.md").trim();
+    const tree = treeContext(at, "HEAD", undefined, undefined, []);
+    assert.equal(tree.read("a.md"), "alpha\n");
+    assert.deepEqual([...tree.typesOf([blob])], [[blob, "blob"]]);
+    r.breakObject("HEAD:a.md");
+    assert.equal(tree.read("a.md"), "alpha\n");
+    assert.deepEqual([...tree.typesOf([blob])], [[blob, "blob"]]);
+  });
+
+  it("reads no base text for a path with no rename source", () => {
+    const { r, at } = committed();
+    // A file named as an absent source would print.
+    r.write("undefined", "not a source\n");
+    r.commit("undefined");
+    const base = r.git("rev-parse", "HEAD").trim();
+    r.write("new.md", "new\n");
+    r.commit("new");
+    assert.equal(
+      treeContext(at, "HEAD", base, () => undefined, []).baseText("new.md"),
+      null,
+    );
   });
 
   it("throws for a listed path whose object is gone", () => {
     const { r, at } = committed();
     r.breakObject("HEAD:a.md");
     assert.throws(
-      () => treeContext(at, "HEAD", undefined).read("a.md"),
+      () => treeContext(at, "HEAD", undefined, undefined, []).read("a.md"),
       UnreadableObject,
     );
   });
@@ -365,10 +508,13 @@ describe("treeContext", () => {
   it("answers the base text: none without a branch, null when added", () => {
     const { at } = committed();
     assert.equal(
-      treeContext(at, "HEAD", undefined).baseText("a.md"),
+      treeContext(at, "HEAD", undefined, undefined, []).baseText("a.md"),
       undefined,
     );
-    assert.equal(treeContext(at, "HEAD", null).baseText("a.md"), null);
+    assert.equal(
+      treeContext(at, "HEAD", null, undefined, []).baseText("a.md"),
+      null,
+    );
   });
 
   it("reads base texts under the base-side path, once", () => {
@@ -378,10 +524,16 @@ describe("treeContext", () => {
     r.write("new.md", "new\n");
     r.commit("rename");
     const asked: string[] = [];
-    const tree = treeContext(at, "HEAD", base, (path) => {
-      asked.push(path);
-      return path === "moved.md" ? "a.md" : undefined;
-    });
+    const tree = treeContext(
+      at,
+      "HEAD",
+      base,
+      (path) => {
+        asked.push(path);
+        return path === "moved.md" ? "a.md" : undefined;
+      },
+      [],
+    );
     assert.equal(tree.baseText("docs/b.md"), "beta\n");
     assert.equal(tree.baseText("moved.md"), "alpha\n");
     assert.equal(tree.baseText("new.md"), null);
@@ -393,11 +545,13 @@ describe("treeContext", () => {
     const { r, at } = committed();
     const base = r.git("rev-parse", "HEAD").trim();
     r.breakObject("HEAD:a.md");
-    assert.throws(() => treeContext(at, "HEAD", base).baseText("a.md"), {
-      message: `${base}:a.md is listed but its object cannot be read`,
-    });
     assert.throws(
-      () => treeContext(at, "HEAD", base, () => "a.md").baseText("moved.md"),
+      () => treeContext(at, "HEAD", base, undefined, []).baseText("a.md"),
+      { message: `${base}:a.md is listed but its object cannot be read` },
+    );
+    assert.throws(
+      () =>
+        treeContext(at, "HEAD", base, () => "a.md", []).baseText("moved.md"),
       { message: `${base}:a.md is listed but its object cannot be read` },
     );
   });
@@ -407,7 +561,7 @@ describe("treeContext", () => {
     const head = r.git("rev-parse", "HEAD").trim();
     const blob = r.git("rev-parse", "HEAD:a.md").trim();
     const missing = "0123456789abcdef0123456789abcdef01234567";
-    const tree = treeContext(at, "HEAD", undefined);
+    const tree = treeContext(at, "HEAD", undefined, undefined, []);
     assert.deepEqual(
       [...tree.typesOf([head, blob, missing, head])],
       [
@@ -436,27 +590,41 @@ describe("treeContext", () => {
     // Asked again, from what it knows.
     assert.deepEqual(tree.onHistory([side, head]), history);
     // With no base refs, only HEAD's history counts.
-    assert.deepEqual(treeContext(at, "HEAD", undefined).onHistory([merged]), {
-      unreached: new Set([merged]),
-      refs: [],
+    assert.deepEqual(
+      treeContext(at, "HEAD", undefined, undefined, []).onHistory([merged]),
+      { unreached: new Set([merged]), refs: [] },
+    );
+  });
+
+  it("asks where history stands once, and only for a commit to judge", () => {
+    const { r, at, head, merged } = histories();
+    const tree = treeContext(at, "HEAD", undefined, undefined, ["origin/main"]);
+    // Nothing to judge: no base ref was asked about.
+    assert.deepEqual(tree.onHistory([]), { unreached: new Set(), refs: [] });
+    assert.deepEqual(tree.onHistory([head]), {
+      unreached: new Set(),
+      refs: ["origin/main"],
+    });
+    // Once asked, a ref gone since changes nothing.
+    r.git("update-ref", "-d", "refs/remotes/origin/main");
+    assert.deepEqual(tree.onHistory([merged]), {
+      unreached: new Set(),
+      refs: ["origin/main"],
     });
   });
 
   it("counts a staged merge's other parent as the new commit's history", () => {
     const { r, at, side } = histories();
     writeFileSync(join(r.root, ".git", "MERGE_HEAD"), `${side}\n`);
-    assert.deepEqual(treeContext(at, ":", undefined).onHistory([side]), {
-      unreached: new Set(),
-      refs: [],
-    });
-    // A commit's tree has no merge in progress.
     assert.deepEqual(
-      [
-        ...(treeContext(at, "HEAD", undefined).onHistory([side])?.unreached ??
-          []),
-      ],
-      [side],
+      treeContext(at, ":", undefined, undefined, []).onHistory([side]),
+      { unreached: new Set(), refs: [] },
     );
+    // A commit's tree has no merge in progress.
+    const commitTree = treeContext(at, "HEAD", undefined, undefined, []);
+    assert.deepEqual([...(commitTree.onHistory([side])?.unreached ?? [])], [
+      side,
+    ]);
   });
 
   it("judges nothing in a shallow clone, whose walk stops at its cut", (t) => {
@@ -467,7 +635,10 @@ describe("treeContext", () => {
     const at = { cwd: clone, env: r.env };
     const tip = git(at, ["rev-parse", "HEAD"]).trim();
     assert.equal(isShallow(at), true);
-    assert.equal(treeContext(at, "HEAD", undefined).onHistory([tip]), null);
+    assert.equal(
+      treeContext(at, "HEAD", undefined, undefined, []).onHistory([tip]),
+      null,
+    );
     assert.equal(isShallow({ cwd: r.root, env: r.env }), false);
   });
 
@@ -477,14 +648,25 @@ describe("treeContext", () => {
     const asked = noQuestions();
     asked.shas.add(base);
     asked.bases.add("a.md");
-    const tree = treeContext(at, "HEAD", base);
+    const tree = treeContext(at, "HEAD", base, undefined, []);
     tree.warm(asked);
     // Answered from the cache: a broken store no longer matters.
     r.breakObject("HEAD:a.md");
     assert.equal(tree.baseText("a.md"), "alpha\n");
     assert.deepEqual([...tree.typesOf([base])], [[base, "commit"]]);
     // With no base commit, only the ids are asked.
-    treeContext(at, "HEAD", null).warm(asked);
+    treeContext(at, "HEAD", null, undefined, []).warm(asked);
+  });
+
+  it("types the ids asked while warming, before any is asked again", () => {
+    const { r, at } = committed();
+    const blob = r.git("rev-parse", "HEAD:a.md").trim();
+    const asked = noQuestions();
+    asked.shas.add(blob);
+    const tree = treeContext(at, "HEAD", undefined, undefined, []);
+    tree.warm(asked);
+    r.breakObject("HEAD:a.md");
+    assert.deepEqual([...tree.typesOf([blob])], [[blob, "blob"]]);
   });
 
   it("warms history for the commits among the ids asked", () => {
@@ -495,7 +677,7 @@ describe("treeContext", () => {
       asked.shas.add(id);
       asked.history.add(id);
     }
-    const tree = treeContext(at, "HEAD", undefined);
+    const tree = treeContext(at, "HEAD", undefined, undefined, []);
     tree.warm(asked);
     // Answered from the cache: the side branch's commit is gone from git's view.
     r.git("branch", "-q", "-D", "side");
@@ -517,6 +699,11 @@ describe("unreachable", () => {
       new Set([first, side]),
     );
     assert.deepEqual(unreachable(at, [], [head]), new Set());
+  });
+
+  it("asks git nothing for no commits, whatever the tips", () => {
+    const { at } = histories();
+    assert.deepEqual(unreachable(at, [], ["no-such-ref"]), new Set());
   });
 
   it("walks no blob, so it never lists one", () => {

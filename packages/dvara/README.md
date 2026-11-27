@@ -24,7 +24,12 @@ file in your repository; dvara runs it.
   `DVARA_VERBOSE=1` streams it.
 - **Keep-going mode.** For a preflight, a run of the push hook ahead of the
   push: each stage's `exit 1` is recorded and the hook carries on, so one run
-  lists every failure.
+  lists every failure. The row says which: `failed` lists the stage of each
+  refusal, in order, once per refusal, and `held` and `skipped` list each check
+  not run as `{ "check", "reason" }`. Every row has the three, empty when
+  there were none. A stop keep-going mode does not carry on past
+  (`builtin exit`, a `set -e` abort, a hook run without it) adds nothing to
+  `failed`: there the row's last stage reads `failed`.
 - **A watchdog, if you want one.** `"watchdog": "dvara"` attaches the built-in
   watchdog to each run (below); any other value names a module of your own.
   It may stop a hung hook and decide the verdict. Without one, or when it
@@ -88,9 +93,13 @@ if [ "${DVARA_MODE:-}" = preflight ] && [ $# -eq 0 ]; then dvara_keep_going_repo
 | `dvara_record_refs "$stdin"`    | the commits a push updates, from git's ref lines; never the ref names                                       |
 | `dvara_passed`                  | false once after keep-going mode carried on past a refusal, to guard a "✅" line                            |
 
-`keep-going.sh` adds `dvara_keep_going_held`, `dvara_keep_going_skipped` and
-`dvara_keep_going_report`. `DVARA_KEEP_GOING_NAME` and `DVARA_KEEP_GOING_TITLE`
-rename it in its messages (default "preflight" and "Preflight").
+`keep-going.sh` adds `dvara_keep_going_held <check> <reason>`,
+`dvara_keep_going_skipped <check> <reason>` and `dvara_keep_going_report`.
+`DVARA_KEEP_GOING_NAME` and `DVARA_KEEP_GOING_TITLE` rename it in its messages
+(default "preflight" and "Preflight"). It records each refusal, held check and
+skipped check through `dvara_record` (`failed <stage>`, `held <check> <reason>`,
+`skipped <check> <reason>`), so source `stages.sh` first; without it,
+keep-going mode records nothing.
 
 ## Configuration
 
@@ -136,7 +145,11 @@ open descriptors with `lsof`. It acts only on positive evidence: a leaf
 process whose every open IPC channel leads to another idle process in the
 same tree, where no process outside the tree holds any of those channels.
 That last part is checked against an `lsof` of every process this user can
-read, taken only once such a core is found. Waiting on the outside world (a network peer, a daemon, a
+read, taken only once such a core is found. Every live child of those
+processes must be one of them too. A parent waits on its children's exit,
+which `lsof` never shows, so a core with a child still running outside it is
+spared. One such child is a run polling for a lock another process holds,
+which keeps no descriptor on the lock. Waiting on the outside world (a network peer, a daemon, a
 terminal) or on a timed wait (`sleep`) is spared, and a measurement it cannot
 read is never evidence. A timer is invisible to `ps` and `lsof`, so a kill
 also needs the same processes found that way twice, one quiet window apart,

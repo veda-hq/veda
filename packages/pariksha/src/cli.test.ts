@@ -1378,8 +1378,8 @@ describe('run doc-references', () => {
     assert.deepEqual(docRefs('broken.json', ['--all']), { code: 2, out: [], err: [`${P} unknown key "x"; nothing was checked, so this is not a pass`] });
   });
 
-  it('checks a commit with DOC-DRIFT-01 and -02 by default, or the checks asked for', () => {
-    assert.deepEqual(docRefs('clean.json', ['--staged']), { code: 0, out: [docRefClean(1, 'staged; DOC-DRIFT-04 not run'), NOT_CHECKED], err: [] });
+  it('checks a commit with every check by default, or the checks asked for', () => {
+    assert.deepEqual(docRefs('clean.json', ['--staged']), { code: 0, out: [docRefClean(1, 'staged'), NOT_CHECKED], err: [] });
     assert.deepEqual(docRefs('clean.json', ['--staged', '--checks', '01,DOC-DRIFT-04']), { code: 0, out: [docRefClean(1, 'staged; DOC-DRIFT-02 not run'), NOT_CHECKED], err: [] });
   });
 

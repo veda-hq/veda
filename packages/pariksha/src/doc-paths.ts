@@ -255,8 +255,9 @@ export const findPathProblems = (config: Config, snapshot: RepoSnapshot, files: 
       return;
     }
     if (line.frontmatter) {
-      // More blanks after the `-` or `:` read as empty words, which are no paths.
-      for (const [, value] of line.text.matchAll(/^\s*(?:-\s|[\w-]+:\s)(.+)$/g)) {
+      // More blanks after the `-` or `:` read as empty words, which are no paths. The value ends at the line's
+      // end or at a carriage return, which a CRLF file leaves on every line.
+      for (const [, value] of line.text.matchAll(/^\s*(?:-\s|[\w-]+:\s)(.+)/g)) {
         for (const token of String(value).split(/[\s,]/)) checkToken(file, line.number, token, null);
       }
       return;

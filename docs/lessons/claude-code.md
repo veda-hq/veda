@@ -105,7 +105,11 @@ undoing another.
   result has usage) and isolate A/B runs with `--setting-sources user,local`. A bare name in
   `permissions.deny` blocks calls in an open session at once, but definitions drop only in a new
   session, and desktop-provided MCP tools keep their definitions even then; disable connectors
-  with the session connector toggle instead.
+  with the session connector toggle instead. Re-checked 2026-11-27 in three new desktop
+  sessions: with `mcp__claude-artifacts` denied in `settings.local.json`, then in
+  `settings.json`, then with `Artifact` denied beside it, each still received the server's
+  seven eager tools. Desktop transcripts record the definitions a session received
+  (`attachment.tools`), so read them there.
 - **Transcript usage repeats per block.** JSONL transcripts write one line per assistant content
   block and repeat that API response's usage on each line under the same `requestId`, so
   per-line summation over-counts cost about 1.7x. In subagent transcripts `output_tokens` is a

@@ -639,6 +639,9 @@ describe("EVIDENCE-01: commit identity", () => {
     const pad = "x ".repeat(500_000);
     const page = `<p>${pad}merged abc1234d ${pad}git ${pad}--oneline ${pad}https://github.com/octo/tools/commit/${UNKNOWN_2}</p>`;
     const found = check(`${page}\n`, "docs/research/0001-a/review.html");
+    // The count first: a mutant that finds a token in every pad word fails
+    // here, before assert prints and diffs half a million findings (veda#469).
+    assert.equal(found.length, 1);
     assert.deepEqual(
       found.map((f) => f.check),
       ["abbreviated-id"],
@@ -685,5 +688,276 @@ describe("hexRole and citesAsCommit", () => {
       ["see `abc1234def", "abc1234def", null],
     ] as const)
       assert.equal(citedOf(line, token), cited, line);
+  });
+
+  it("reads a range only with an id on each side, at the token", () => {
+    for (const [line, token, role] of [
+      // The other side of the dots is a ref, not an id.
+      ["abc1234d..feature", "abc1234d", "none"],
+      ["feature..abc1234d", "abc1234d", "none"],
+      // A range or an ellipsis farther along the line is not this token's.
+      ["abc1234d and main..def5678", "abc1234d", "none"],
+      ["abc1234..def5678 then 7654321", "7654321", "none"],
+      ["see abc1234d, then... more", "abc1234d", "none"],
+    ] as const)
+      assert.equal(roleOf(line, token), role, line);
+  });
+});
+
+describe("EVIDENCE-01: each word and boundary the rule reads", () => {
+  const abbreviated = (line: number, token: string, file = PATH): Finding => ({
+    rule: "EVIDENCE-01",
+    check: "abbreviated-id",
+    file,
+    line,
+    message: `abbreviated commit "${token}": cite the full 40-hex sha (git rev-parse ${token})`,
+  });
+  const rangeEnd = (line: number, token: string): Finding => ({
+    rule: "EVIDENCE-01",
+    check: "abbreviated-id",
+    file: PATH,
+    line,
+    message: `abbreviated commit "${token}" ends a range: cite the full 40-hex sha (git rev-parse ${token})`,
+  });
+  const unresolved = (line: number, sha: string, file = PATH): Finding => ({
+    rule: "EVIDENCE-01",
+    check: "unresolved-id",
+    file,
+    line,
+    message: `${sha} does not resolve in this repository (git cat-file -t ${sha})`,
+    ratchet: false,
+  });
+  const at = (text: string): number[] =>
+    check(text)
+      .filter((f) => f.check === "abbreviating-command")
+      .map((f) => f.line);
+
+  it("reads each commit word in its bare form", () => {
+    for (const word of [
+      "merge",
+      "push",
+      "revert",
+      "cherry-pick",
+      "rebase",
+      "fix in",
+    ])
+      assert.deepEqual(
+        check(`${word} abc1234d\n`),
+        [abbreviated(1, "abc1234d")],
+        word,
+      );
+  });
+
+  it("reads a JSON base key with or without a space before its colon", () => {
+    for (const line of ['{"base":"abc1234d"}', '{"base" : "abc1234d"}'])
+      assert.deepEqual(
+        check(`${line}\n`),
+        [abbreviated(1, "abc1234d")],
+        line,
+      );
+  });
+
+  it("reads each hash label in its singular and joined forms", () => {
+    for (const label of [
+      "sha512",
+      "fingerprint",
+      "etag",
+      "hash",
+      "key",
+      "nonce",
+      "uuid",
+      "runid",
+      "run-id",
+      "version",
+      "state-list",
+    ])
+      assert.deepEqual(check(`The ${label} \`abc1234def\`.\n`), [], label);
+  });
+
+  it("reads a label within twenty characters before or 24 after the token", () => {
+    // The checksum ends 21 characters before the token, the commit word
+    // farther back: the label is not at the token, so the word implies it.
+    assert.deepEqual(
+      check("merged a while; the checksum, read it back as: `abc1234def`.\n"),
+      [abbreviated(1, "abc1234def")],
+    );
+    assert.deepEqual(
+      check("merged then `abc1234def` and, much later on, its checksum.\n"),
+      [abbreviated(1, "abc1234def")],
+    );
+  });
+
+  it("reads a task hash's prefix only right before the token", () => {
+    assert.deepEqual(check("Replaying the log found commit abc1234d.\n"), [
+      abbreviated(1, "abc1234d"),
+    ]);
+  });
+
+  it("holds an implied all-letter token to be a word", () => {
+    assert.deepEqual(
+      check("The fix landed earlier, see deadbeef for it.\n"),
+      [],
+    );
+  });
+
+  it("reads a one-character ref and a bare ~ or ^ before a range's dots", () => {
+    assert.deepEqual(unbranched("Compare v..abc1234 first.\n"), [
+      rangeEnd(1, "abc1234"),
+    ]);
+    assert.deepEqual(unbranched("Compare HEAD^..abc1234 first.\n"), [
+      rangeEnd(1, "abc1234"),
+    ]);
+    assert.deepEqual(unbranched("Compare HEAD~..abc1234 first.\n"), [
+      rangeEnd(1, "abc1234"),
+    ]);
+  });
+
+  it("reads no range across dots a path leaves", () => {
+    assert.deepEqual(unbranched("Path docs/...abc1234 here.\n"), []);
+    assert.deepEqual(unbranched("Path x. ..abc1234 here.\n"), []);
+  });
+
+  it("reads a diff's index header only where it starts the line", () => {
+    assert.deepEqual(unbranched("Reindex main..abc1234 first.\n"), [
+      rangeEnd(1, "abc1234"),
+    ]);
+  });
+
+  it("reads a captured log by its last extension only", () => {
+    const path = "docs/research/0001-a/notes.txt.md";
+    assert.deepEqual(check("merged abc1234d\n", path), [
+      abbreviated(1, "abc1234d", path),
+    ]);
+  });
+
+  it("reads a data file by its last extension, fences as lines", () => {
+    const path = "docs/research/0001-a/notes.md.csv";
+    assert.deepEqual(check(`${F}text\nmerged abc1234d\n${F}\n`, path), [
+      abbreviated(2, "abc1234d", path),
+    ]);
+  });
+
+  it("reads a transcript command only at a bare `$ ` prompt", () => {
+    assert.deepEqual(
+      check(`${F}text\n$ run\nuser@host:~$ git log --oneline\n${F}\n`),
+      [],
+    );
+    // A command continued into the closing marker ends there.
+    assert.deepEqual(check(`${F}text\n$ git log \\\n${F}\n`), []);
+    // Printed output ending in a backslash continues no command.
+    assert.deepEqual(
+      check(`${F}text\n$ run\nsome output \\\ngit log --oneline\n${F}\n`),
+      [],
+    );
+  });
+
+  it("joins a continued command only at a trailing backslash", () => {
+    assert.deepEqual(at("Run git log 'a\\b' x\n--oneline here.\n"), []);
+    // The backslash goes, so `rev-parse` and `--short` still meet.
+    assert.deepEqual(at(`${F}sh\ngit rev-parse \\\n  --short HEAD\n${F}\n`), [
+      2,
+    ]);
+    // A command after a continued one is reported at its own line.
+    assert.deepEqual(at(`${F}sh\ngit log \\\n  -1\ngit log --oneline\n${F}\n`), [
+      4,
+    ]);
+  });
+
+  it("reads rev-parse --short across any run of spaces", () => {
+    assert.deepEqual(at("git rev-parse  --short HEAD\n"), [1]);
+  });
+
+  it("restores full ids after --abbrev-commit, and with a bare --no-abbrev", () => {
+    for (const command of [
+      "git log --abbrev-commit --no-abbrev-commit -1",
+      "git log --oneline --no-abbrev -1",
+    ])
+      assert.deepEqual(check(`${command}\n`), [], command);
+    // `--no-abbrev-commit` undoes no `rev-parse --short`.
+    assert.deepEqual(
+      at("git rev-parse --short HEAD && git log --no-abbrev-commit -1\n"),
+      [1],
+    );
+  });
+
+  it("escapes the repository's name in its commit URL", () => {
+    const dotted = { identityPaths: [/./], repository: "acme/my.repo" };
+    assert.deepEqual(
+      check(
+        "See https://github.com/acme/my.repo/commit/abc1234.\n",
+        PATH,
+        null,
+        dotted,
+      ),
+      [
+        {
+          rule: "EVIDENCE-01",
+          check: "abbreviated-id",
+          file: PATH,
+          line: 1,
+          message:
+            'abbreviated commit URL "abc1234": link the full 40-hex sha (git rev-parse abc1234)',
+        },
+      ],
+    );
+  });
+
+  it("with no repository, reads the word null as no URL", () => {
+    const none = { identityPaths: [/./], repository: null };
+    assert.deepEqual(check("Its result was null.\n", PATH, null, none), []);
+  });
+
+  it("reads a test merge's arrow across any run of spaces, and a refs/ prefix", () => {
+    const sha = "fedcba9876543210fedcba9876543210fedcba98";
+    for (const named of [
+      `${sha}  ->  pull/1/merge`,
+      `${sha} -> refs/pull/7/merge`,
+    ])
+      assert.deepEqual(check(`${sha}\n${named}\n`, LOG), [], named);
+  });
+
+  it("skips only git's all-zero null id", () => {
+    const sha = "fedcba9876543210fedcba9876543210fedcba90";
+    assert.deepEqual(check(`Built from ${sha}.\n`), [unresolved(1, sha)]);
+  });
+
+  it("reads another repository's URL or action only right before the id", () => {
+    const sha = "fedcba9876543210fedcba9876543210fedcba98";
+    assert.deepEqual(
+      check(`https://github.com/octo/tools/commit/x is not it; built from ${sha}.\n`),
+      [unresolved(1, sha)],
+    );
+    const other = "0123456789abcdef0123456789abcdef01234567";
+    assert.deepEqual(
+      check(
+        `Download action repository 'actions/checkout@v4' (SHA:${other}) then ${sha}\n`,
+        LOG,
+      ),
+      [unresolved(1, sha, LOG)],
+    );
+  });
+
+  it("treats as legacy an id the base printed bare", () => {
+    const sha = "fedcba9876543210fedcba9876543210fedcba98";
+    assert.deepEqual(check(`${sha}\n`, LOG, `${sha}\n`), []);
+  });
+
+  it("asks pushed history only of commits, whatever it answers", () => {
+    const commit = "303d6a0be64dae6588efd4cf4a86c40be6638301";
+    const blob = "8f2a1c0d9e7b6a5f4e3d2c1b0a9f8e7d6c5b4a39";
+    assert.deepEqual(
+      check(`${commit}\n${blob}\n`, LOG, null, records, () => ({
+        unreached: new Set([blob]),
+        refs: ["origin/main"],
+      })),
+      [],
+    );
+  });
+
+  it("reads a file only when an identity path matches it", () => {
+    const two = { identityPaths: [/^docs\//, /^notes\//], repository: null };
+    assert.deepEqual(check("merged abc1234d\n", PATH, null, two), [
+      abbreviated(1, "abc1234d"),
+    ]);
   });
 });

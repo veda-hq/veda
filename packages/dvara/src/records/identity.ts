@@ -28,12 +28,14 @@ import type { Finding, Rule } from "./types.ts";
 const SHORT = /(?<![\w./=?#-])[0-9a-f]{7,39}(?![\w-])/gi;
 /**
  * The right endpoint of an `a..b` or `a...b` range. The left one is an id or
- * a ref (`main`, `origin/main`, `HEAD~2`, `v1.2`): a ref's dots never run
- * into the range's own. Bounded, as the windows below are: a page's line of
+ * a ref (`main`, `origin/main`, `HEAD~2`, `v1.2`, `HEAD^`): a ref's dots
+ * never run into the range's own. A match may start after any `/`, `.`, `~`
+ * or `^` of the ref, so it reads only the ref's last word and a bare `~` or
+ * `^` after it. Bounded, as the windows below are: a page's line of
  * megabytes is not a ref.
  */
 const RANGE_RIGHT =
-  /(?<![\w-])[\w-]{1,64}(?:[/.][\w-]{1,64}){0,8}(?:[~^]\d{0,4}){0,4}\.{2,3}([0-9a-f]{7,40})(?![\w-])/gi;
+  /(?<![\w-])[\w-]{1,64}[~^]{0,4}\.{2,3}([0-9a-f]{7,40})(?![\w-])/gi;
 const FULL = /(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])/gi;
 const TEST_MERGE =
   /(?<![0-9a-f])([0-9a-f]{40})(?::refs\/(?:remotes\/)?| +-> +(?:refs\/(?:remotes\/)?)?)pull\/\d+\/merge\b/gi;
@@ -142,8 +144,8 @@ const readable = (
   }
   const out: { n: number; text: string }[] = [];
   // A transcript command ending in `\` goes on: its next line is the same
-  // command, though it has no `$ `.
-  let continues = false;
+  // command, though it has no `$ `. The line it carries onto, once one has.
+  let continued: number | undefined;
   lines.forEach((line, i) => {
     const n = i + 1;
     if (!doc.inFence[n]) {
@@ -156,36 +158,57 @@ const readable = (
       return;
     }
     const body = transcript.get(n);
-    const command = body !== undefined && (continues || /^\s*\$ /.test(body));
+    const command =
+      body !== undefined && (n === continued || /^\s*\$ /.test(body));
     if (command) out.push({ n, text: body });
-    continues = command && CONTINUED.test(body);
+    if (command && CONTINUED.test(body)) continued = n + 1;
   });
   return out;
 };
 
 /**
- * Each line's command with the lines a trailing `\` continues it onto joined
- * in, keyed by its first line; a continuation line maps to null. Lines join
- * only when adjacent in the file, so a skipped line breaks the command.
+ * Whether a command prints abbreviated commits. `--no-abbrev-commit` after
+ * `--oneline` or `--abbrev-commit` restores full ids; `%h` is abbreviated
+ * whatever follows.
  */
-const commands = (
+const abbreviates = (command: string): boolean => {
+  const abbreviating = ABBREVIATING_COMMAND.exec(command);
+  if (abbreviating === null) return false;
+  const restored =
+    ["--oneline", "--abbrev-commit"].includes(group(abbreviating, 1)) &&
+    !/%h\b/.test(command) &&
+    /--no-abbrev(-commit)?\b/.test(
+      command.slice(abbreviating.index + abbreviating[0].length),
+    );
+  return !restored;
+};
+
+/**
+ * The lines, by index, whose command prints abbreviated commits. A command
+ * is read with the lines a trailing `\` continues it onto joined in, and
+ * keyed by its first line. Lines join only when adjacent in the file, so a
+ * skipped line breaks the command.
+ */
+const abbreviatingCommands = (
   lines: readonly { n: number; text: string }[],
-): (string | null)[] => {
-  const out: (string | null)[] = [];
-  let open: { at: number; text: string } | null = null;
+): Set<number> => {
+  // Each command's text, joined so far, by the index of its first line.
+  const commands = new Map<number, string>();
+  // The command a trailing `\` leaves open, and the line that goes on with it.
+  let open: { at: number; text: string; next: number } | null = null;
   lines.forEach((line, i) => {
-    const previous = lines[i - 1];
-    if (open !== null && previous !== undefined && previous.n + 1 === line.n) {
+    if (open !== null && open.next === line.n) {
       open.text = `${open.text.slice(0, -1)} ${line.text}`;
-      out[open.at] = open.text;
-      out.push(null);
+      open.next = line.n + 1;
     } else {
-      open = { at: i, text: line.text };
-      out.push(line.text);
+      open = { at: i, text: line.text, next: line.n + 1 };
     }
+    commands.set(open.at, open.text);
     if (!CONTINUED.test(line.text)) open = null;
   });
-  return out;
+  return new Set(
+    [...commands].filter(([, text]) => abbreviates(text)).map(([at]) => at),
+  );
 };
 
 interface Cited {
@@ -258,22 +281,9 @@ export const commitIdentity = (
     const found: Finding[] = [];
     const lines = readable(path, text);
     // A command continued with `\` is read whole, reported at its first line.
-    const joined = commands(lines);
+    const abbreviating = abbreviatingCommands(lines);
     lines.forEach(({ n, text: line }, i) => {
-      const command = joined[i] ?? null;
-      const abbreviating =
-        command === null ? null : ABBREVIATING_COMMAND.exec(command);
-      // `--no-abbrev-commit` after `--oneline` or `--abbrev-commit` restores
-      // full ids; `%h` is abbreviated whatever follows.
-      const restored =
-        command !== null &&
-        abbreviating !== null &&
-        /^--(oneline|abbrev-commit)$/.test(group(abbreviating, 1)) &&
-        !/%h\b/.test(command) &&
-        /--no-abbrev(-commit)?\b/.test(
-          command.slice(abbreviating.index + abbreviating[0].length),
-        );
-      if (abbreviating !== null && !restored) {
+      if (abbreviating.has(i)) {
         found.push(
           finding(
             path,
@@ -331,11 +341,15 @@ export const commitIdentity = (
     if (baseText === undefined) return found;
     // Legacy means cited before in the same role: an id the base only printed
     // as an object is new again once a line calls it a commit.
-    const old = baseText === null ? [] : citedIds(baseText, records.repository);
-    const legacyAny = new Set(old.map((c) => c.sha));
-    const legacyCommit = new Set(
-      old.filter((c) => c.asCommit).map((c) => c.sha),
-    );
+    // A file the change adds (null) has none.
+    const legacyAny = new Set<string>();
+    const legacyCommit = new Set<string>();
+    if (baseText !== null) {
+      for (const { sha, asCommit } of citedIds(baseText, records.repository)) {
+        legacyAny.add(sha);
+        if (asCommit) legacyCommit.add(sha);
+      }
+    }
     const full = citedIds(text, records.repository).filter((c) =>
       c.asCommit ? !legacyCommit.has(c.sha) : !legacyAny.has(c.sha),
     );

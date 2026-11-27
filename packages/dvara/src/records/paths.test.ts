@@ -193,6 +193,82 @@ describe("EVIDENCE-02: durable paths", () => {
       ]);
   });
 
+  it("ends a /home name at the path's boundary, a dot inside it kept", () => {
+    const named = (line: string) =>
+      check("docs/x.md", `${line}\n`).map((f) => f.message);
+    for (const [line, name] of [
+      ["home is /home/someone", "/home/someone"],
+      ["home is /home/someone.", "/home/someone"],
+      ["home (/home/someone), then", "/home/someone"],
+      ["home is /home/some.one, then", "/home/some.one"],
+      ["home /home/someone/code", "/home/someone/"],
+      ["home /home/runners/code", "/home/runners/"],
+    ] as const)
+      assert.deepEqual(
+        named(line),
+        [`a /home/<name> path names one machine and its operator: "${name}"`],
+        line,
+      );
+  });
+
+  it("finds an agent marker with no space before its number", () => {
+    assert.deepEqual(
+      check("docs/x.md", "I am Agent7.\n").map((f) => f.message),
+      [
+        'an agent-process marker is session narration, not a record: "I am Agent7"',
+      ],
+    );
+  });
+
+  it("lets every negation word cover its clause", () => {
+    for (const word of [
+      "never",
+      "not",
+      "no",
+      "don't",
+      "do not",
+      "instead of",
+      "rather than",
+      "refuse",
+      "refuses",
+      "refused",
+      "forbid",
+      "forbids",
+      "forbidden",
+      "ban",
+      "bans",
+      "banned",
+    ])
+      assert.deepEqual(
+        check("docs/x.md", `We ${word} npm install.\n`),
+        [],
+        word,
+      );
+    assert.equal(check("docs/x.md", "We know npm install.\n").length, 1);
+  });
+
+  it("lets an allowed path cover a file URL, a home path or a .git/ path", () => {
+    const allowPaths = [
+      /^file:\/\/\/srv\//,
+      /^\/Users\/ci\//,
+      /^\/home\/ci\//,
+      /^\.git\/info\//,
+    ];
+    for (const line of [
+      "see file:///srv/x",
+      "at /Users/ci/x",
+      "at /home/ci/x",
+      "see .git/info/exclude",
+    ]) {
+      assert.deepEqual(
+        check("docs/x.md", `${line}\n`, { allowPaths }),
+        [],
+        line,
+      );
+      assert.equal(check("docs/x.md", `${line}\n`).length, 1, line);
+    }
+  });
+
   it("refuses the install commands of every manager but the configured one", () => {
     const messages = (packageManager: RecordsConfig["packageManager"]) =>
       ["npm install", "yarn add x", "pnpm add x", "pnpm i"].map((line) =>

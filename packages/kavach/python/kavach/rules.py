@@ -479,9 +479,15 @@ def stryker_inplace_command(call: Call) -> str | None:
     return None
 
 
+# The unmerged states of `git status` (git help status, "Short Format").
+UNMERGED = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
+
+
 def uncommitted(paths: Sequence[str], cwd: str) -> list[str]:
-    """Which of ``paths`` hold uncommitted changes (staged, unstaged or in
-    conflict), by ``git status``. Raises when git cannot say."""
+    """Which of ``paths`` hold uncommitted changes (staged or unstaged), by
+    ``git status``. A path in conflict is left out: overwriting it with one
+    side or a ref is how a conflict is resolved, and git refuses the other
+    forms over it. Raises when git cannot say."""
 
     done = subprocess.run(
         ["git", "-C", cwd, "status", "--porcelain=v1", "-z", "--untracked-files=no", "--", *paths],
@@ -492,7 +498,7 @@ def uncommitted(paths: Sequence[str], cwd: str) -> list[str]:
     )
     if done.returncode != 0:
         raise RuntimeError("git status failed")
-    return [entry[3:] for entry in done.stdout.split("\0") if len(entry) > 3]
+    return [path for entry in done.stdout.split("\0") if (path := entry[3:]) and entry[:2] not in UNMERGED]
 
 
 def checkout_discards_uncommitted(call: Call) -> str | None:
@@ -537,10 +543,10 @@ def checkout_discards_uncommitted(call: Call) -> str | None:
         how = f"`git {sub} {sided}`" if sided else f"`git {sub}`"
         return (
             f"{how} overwrites the whole of each file it names, and {shown} holds uncommitted changes "
-            "that would be lost (with --ours or --theirs, the other side's changes to the file). Resolve "
-            "a conflict hunk by hunk in the file itself; to throw local work away, first keep it: commit "
-            "it (a WIP commit), or `git stash push -m <tag> -- <path>` where stash runs (kavach refuses "
-            "it in a cloud session's own clone), after which the path is clean and this passes."
+            "that would be lost. A path in a merge conflict passes, so to resolve one name only the "
+            "conflicted paths; to throw local work away, first keep it: commit it (a WIP commit), or "
+            "`git stash push -m <tag> -- <path>` where stash runs (kavach refuses it in a cloud session's "
+            "own clone), after which the path is clean and this passes."
         )
     return None
 
@@ -551,7 +557,8 @@ SHORT_VALUE_OPTIONS = set("mFCctS")
 def commit_messages(args: Sequence[Any], cwd: str) -> list[str] | None:
     """The message paragraphs a ``git commit`` gives on its command line
     (``-m``, in order; a computed one as a blank) or the text of its ``-F``
-    file; None when the file is computed at run time or cannot be read."""
+    file; None when the file is computed at run time or cannot be read, or
+    when git writes the subject itself (``--fixup``, ``--squash``)."""
 
     found: list[str] = []
     index = 0
@@ -582,6 +589,8 @@ def commit_messages(args: Sequence[Any], cwd: str) -> list[str] | None:
             continue
         if text == "--":
             break
+        if text in ("--fixup", "--squash") or text.startswith(("--fixup=", "--squash=")):
+            return None
         if text in ("-m", "--message", "-F", "--file"):
             if index >= len(args) or not take(literal(args[index]), "m" if text in ("-m", "--message") else "F"):
                 return None
@@ -611,6 +620,46 @@ def commit_messages(args: Sequence[Any], cwd: str) -> list[str] | None:
 
 REFERENCE = re.compile(r"#[0-9]+")
 
+# commitlint's own exemptions, ported from the release veda installs (20.5):
+# the URL exemption of @commitlint/ensure's max-line-length, and the default
+# `ignores` of @commitlint/is-ignored (lib/defaults.js), each of which skips
+# the whole message. Each keeps its JavaScript flags: the two Merge patterns
+# are /m, so they match at any line; the others anchor at the message start.
+COMMITLINT_URL = re.compile(r"\bhttps?://\S+", re.ASCII)
+COMMITLINT_IGNORED = (
+    re.compile(r"^((Merge pull request)|(Merge (.*?) into (.*?)|(Merge branch (.*?)))(?:\r?\n)*$)", re.M),
+    re.compile(r"^(Merge tag (.*?))(?:\r?\n)*$", re.M),
+    re.compile(r"\A(R|r)evert (.*)"),
+    re.compile(r"\A(R|r)eapply (.*)"),
+    re.compile(r"\A(amend|fixup|squash)!"),
+    re.compile(r"\A(Merged (.*?)(in|into) (.*)|Merged PR (.*): (.*))"),
+    re.compile(r"\AMerge remote-tracking branch(\s*)(.*)"),
+    re.compile(r"\AAutomatic merge(.*)"),
+    re.compile(r"\AAuto-merged (.*?) into (.*)"),
+)
+# semver's FULL version (internal/re.js), which `semver.valid` matches.
+SEMVER_PART = r"(?:\d*[a-zA-Z-][a-zA-Z0-9-]*|0|[1-9]\d*)"
+SEMVER = re.compile(
+    rf"v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-{SEMVER_PART}(?:\.{SEMVER_PART})*)?"
+    r"(?:\+[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*)?",
+    re.ASCII,
+)
+
+
+def semver_subject(message: str) -> bool:
+    """commitlint's ``isSemver``: the first line, without a ``chore:`` type
+    and a skip-ci tag, is a valid semver version."""
+
+    subject = re.sub(r"^chore(\([^)]+\))?:", "", message.split("\n")[0])
+    subject = re.sub(r"\[(skip|ci)(-|\s)(ci|skip)\]", "", subject, count=1, flags=re.I)
+    subject = re.sub(r"\((skip|ci)(-|\s)(ci|skip)\)", "", subject, count=1, flags=re.I).strip()
+    found = SEMVER.fullmatch(subject) if len(subject) <= 256 else None
+    return found is not None and all(int(number) < 2**53 for number in found.groups())
+
+
+def commitlint_ignores(message: str) -> bool:
+    return semver_subject(message) or any(pattern.search(message) for pattern in COMMITLINT_IGNORED)
+
 
 def commit_body_ref_line_length(call: Call) -> str | None:
     script = bash_command(call)
@@ -623,16 +672,18 @@ def commit_body_ref_line_length(call: Call) -> str | None:
         messages = commit_messages(found[1], found[2])
         if not messages:
             continue
-        lines = "\n\n".join(messages).split("\n")[1:]
-        for line in lines:
+        message = "\n\n".join(messages)
+        if commitlint_ignores(message):
+            continue
+        for line in message.split("\n")[1:]:
             if line.startswith("#"):
                 continue  # a comment, which git strips
-            if len(line) > 100 and REFERENCE.search(line):
+            if len(line) > 100 and REFERENCE.search(line) and not COMMITLINT_URL.search(line):
                 return (
                     f"this commit message has a body line of {len(line)} characters holding "
                     f"`{REFERENCE.search(line).group(0)}`; commitlint reads such a line as a footer and fails "
                     "footer-max-line-length (100), after every other hook has run. Wrap body lines well under "
-                    "100 characters and keep issue references off long lines."
+                    "100 characters and keep issue references off long lines (a line holding a URL passes)."
                 )
     return None
 

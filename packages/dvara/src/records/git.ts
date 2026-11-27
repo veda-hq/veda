@@ -13,16 +13,13 @@ export interface Git {
   readonly env?: NodeJS.ProcessEnv;
 }
 
-export const git = (
-  repo: Git,
-  args: readonly string[],
-  input?: string,
-): string =>
+/** Runs git with `args`, `input` on its stdin, and returns its stdout. */
+export const git = (repo: Git, args: readonly string[], input = ""): string =>
   execFileSync("git", args, {
     cwd: repo.cwd,
     env: repo.env ?? process.env,
     encoding: "utf8",
-    ...(input === undefined ? {} : { input }),
+    input,
     maxBuffer: 512 * 1024 * 1024,
     // All three piped: stderr goes into the thrown error, not the terminal.
     stdio: "pipe",
@@ -82,7 +79,10 @@ export const listModes = (repo: Git, ref: TreeRef): Map<string, string> => {
 };
 
 /** A symlink (its blob is the target's path) or a submodule's commit. */
-const LINK_MODES = new Set(["120000", "160000"]);
+const LINK_MODES: ReadonlySet<string | undefined> = new Set([
+  "120000",
+  "160000",
+]);
 
 /**
  * A path the tree lists whose object git cannot read. Nothing about it can be
@@ -148,7 +148,8 @@ const askOne = (repo: Git, args: readonly string[]): string | null => {
  * later blob in the batch the wrong bytes.
  */
 export const batchObjectSize = (header: string): number => {
-  const field = header.split(" ")[2] ?? "";
+  // A header short of a third field reads "undefined", which is no count.
+  const field = String(header.split(" ")[2]);
   if (!/^\d+$/.test(field))
     throw new Error(`git cat-file --batch: unexpected header "${header}"`);
   return Number(field);
@@ -216,14 +217,16 @@ export const objectTypes = (
   }
   if (batch.length === 0) return types;
   const out = git(repo, ["cat-file", "--batch-check"], `${batch.join("\n")}\n`);
-  const lines = out.split("\n");
-  batch.forEach((name, i) => {
+  const asked = batch.values();
+  for (const line of out.split("\n")) {
+    const name = asked.next().value;
+    // Past the last name: the empty text after the output's last newline.
+    if (name === undefined) break;
     // `<oid> <type> <size>` for a found name, `<name> missing|ambiguous`
     // for any other: the type is the field between the first and last space.
-    const line = lines[i];
-    if (line === undefined || / (missing|ambiguous)$/.test(line)) return;
+    if (line.endsWith(" missing") || line.endsWith(" ambiguous")) continue;
     types.set(name, line.slice(line.indexOf(" ") + 1, line.lastIndexOf(" ")));
-  });
+  }
   return types;
 };
 
@@ -343,7 +346,7 @@ export const treeContext = (
    * The base refs whose history counts as pushed, beside HEAD: a cited
    * commit off all of them exists in this clone only.
    */
-  pushed: readonly string[] = [],
+  pushed: readonly string[],
 ): GitTreeContext => {
   const modes = listModes(repo, ref);
   const present = new Set(modes.keys());
@@ -353,28 +356,28 @@ export const treeContext = (
   const objects = new Map<string, string | null>();
   /** Whether each commit judged is off pushed history. */
   const off = new Map<string, boolean>();
-  let standing: { shallow: boolean; tips: string[]; refs: string[] } | null =
-    null;
+  /**
+   * The tips of pushed history, and the base refs among them: undefined
+   * until asked, null in a shallow clone, which cannot judge.
+   */
+  let standing: { tips: string[]; refs: string[] } | null | undefined;
   /** What pushed history is here, asked once and only when a commit needs it. */
-  const history = (): { shallow: boolean; tips: string[]; refs: string[] } => {
-    if (standing !== null) return standing;
-    if (isShallow(repo))
-      return (standing = { shallow: true, tips: [], refs: [] });
+  const history = (): { tips: string[]; refs: string[] } | null => {
+    if (standing !== undefined) return standing;
+    if (isShallow(repo)) return (standing = null);
     const tips: string[] = [];
     const refs: string[] = [];
+    const names = ["HEAD", ...pushed];
     // A staged merge commits MERGE_HEAD as a parent, so its history is the
     // new commit's too. A ref that does not resolve here is no tip.
-    for (const name of [
-      "HEAD",
-      ...(ref === ":" ? ["MERGE_HEAD"] : []),
-      ...pushed,
-    ]) {
+    if (ref === ":") names.splice(1, 0, "MERGE_HEAD");
+    for (const name of names) {
       const id = resolveRef(repo, name);
       if (id === null) continue;
       tips.push(id);
       if (pushed.includes(name) && !refs.includes(name)) refs.push(name);
     }
-    return (standing = { shallow: false, tips, refs });
+    return (standing = { tips, refs });
   };
   const judge = (commits: readonly string[]): void => {
     probe(commits);
@@ -382,69 +385,74 @@ export const treeContext = (
       (commit) => objects.get(commit) === "commit" && !off.has(commit),
     );
     if (fresh.length === 0) return;
-    const { shallow, tips } = history();
-    if (shallow) return;
-    const unreached = unreachable(repo, fresh, tips);
+    const pushedHistory = history();
+    if (pushedHistory === null) return;
+    const unreached = unreachable(repo, fresh, pushedHistory.tips);
     for (const commit of fresh) off.set(commit, unreached.has(commit));
   };
 
+  /**
+   * Into `into`, under each key of `paths`, the blob at `rev` of the path it
+   * maps to: null when git has none.
+   */
   const readInto = (
     into: Map<string, string | null>,
     rev: string,
-    wanted: readonly string[],
+    paths: ReadonlyMap<string, string>,
   ): void => {
-    const missing = wanted.filter((path) => !into.has(path));
-    const names = missing.map((path) => objectName(rev, path));
-    const blobs = readBlobs(repo, names);
-    missing.forEach((path, i) =>
-      into.set(path, blobs.get(names[i] ?? "") ?? null),
+    const names = new Map(
+      [...paths].map(([key, path]): [string, string] => [
+        key,
+        objectName(rev, path),
+      ]),
     );
+    const blobs = readBlobs(repo, [...new Set(names.values())]);
+    for (const [key, name] of names) into.set(key, blobs.get(name) ?? null);
   };
   const probe = (names: readonly string[]): void => {
     const missing = [...new Set(names)].filter((name) => !objects.has(name));
-    if (missing.length === 0) return;
     const types = objectTypes(repo, missing);
     for (const name of missing) objects.set(name, types.get(name) ?? null);
   };
   // Base texts are read under the base-side path and cached by head path.
   const readBases = (rev: string, wanted: readonly string[]): void => {
     const missing = wanted.filter((path) => !baseCache.has(path));
-    if (missing.length === 0) return;
     const direct = new Map<string, string | null>();
-    readInto(direct, rev, missing);
+    readInto(
+      direct,
+      rev,
+      new Map(missing.map((path): [string, string] => [path, path])),
+    );
     const renamed = missing.filter((path) => direct.get(path) === null);
+    /** The base-side path of each renamed one, by its head path. */
     const sources = new Map<string, string>();
     for (const path of renamed) {
       const from = renamedFrom(path);
       if (from !== undefined) sources.set(path, from);
     }
     const old = new Map<string, string | null>();
-    readInto(old, rev, [...new Set(sources.values())]);
+    readInto(old, rev, sources);
     // Absent is what the base tree does not list: a listed path whose blob
     // cannot be read is a broken store, not a file the branch adds.
     const unread = [
       ...renamed,
-      ...[...sources.values()].filter((from) => old.get(from) === null),
+      ...[...sources]
+        .filter(([path]) => old.get(path) === null)
+        .map(([, from]) => from),
     ];
     const listed = listedIn(repo, rev, [...new Set(unread)]);
     const broken = unread.find((p) => listed.has(p));
     if (broken !== undefined) throw new UnreadableObject(`${rev}:${broken}`);
-    for (const path of missing) {
-      const from = sources.get(path);
-      baseCache.set(
-        path,
-        direct.get(path) ??
-          (from === undefined ? null : (old.get(from) ?? null)),
-      );
-    }
+    for (const path of missing)
+      baseCache.set(path, direct.get(path) ?? old.get(path) ?? null);
   };
   return {
     base,
     pathExists: (path) => present.has(path),
-    isLink: (path) => LINK_MODES.has(modes.get(path) ?? ""),
+    isLink: (path) => LINK_MODES.has(modes.get(path)),
     read: (path) => {
       if (!present.has(path)) return null;
-      readInto(cache, ref, [path]);
+      if (!cache.has(path)) readInto(cache, ref, new Map([[path, path]]));
       const text = cache.get(path) ?? null;
       // Listed but unreadable is a broken store, not an absent file.
       if (text === null) throw new UnreadableObject(objectName(ref, path));
@@ -461,7 +469,7 @@ export const treeContext = (
     },
     onHistory: (commits): History | null => {
       judge(commits);
-      if (standing?.shallow) return null;
+      if (standing === null) return null;
       return {
         unreached: new Set(
           commits.filter((commit) => off.get(commit) === true),

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -10,6 +10,7 @@ import {
   checkExamples,
   checkFindingIds,
   emptyRoots,
+  fileText,
   formatOutcome,
   grownEntries,
   growthSince,
@@ -17,6 +18,8 @@ import {
   importsModule,
   importsPackage,
   isCollected,
+  isFile,
+  isRecord,
   minNoteLength,
   namesModule,
   note,
@@ -76,6 +79,11 @@ describe('config helpers', () => {
     assert.throws(() => regex('(', 'k'), /k: "\(" is not a regular expression/);
     assert.throws(() => regex('', 'k'), /k must be a non-empty regular expression/);
     assert.equal(regexes({ a: ['x'] }, 'a', '').length, 1);
+    assert.deepEqual(
+      regexes({ a: ['x', 'y$'] }, 'a', 'w: ').map((r) => r.source),
+      ['x', 'y$'],
+    );
+    assert.throws(() => regexes({ a: ['x', ''] }, 'a', 'w: '), { message: 'w: a[1] must be a non-empty regular expression' });
     assert.throws(() => regexes({ a: [] }, 'a', ''), /"a" is empty, so nothing would match/);
     assert.deepEqual(object({ a: { b: 1 } }, 'a', ''), { b: 1 });
     assert.throws(() => object({ a: [] }, 'a', ''), /"a" must be an object/);
@@ -127,6 +135,47 @@ describe('config helpers', () => {
     assert.throws(() => parseFindingIds({ findingIds: { motivatedBy: null } }, []), /findingIds: "example" is required/);
     assert.throws(() => parseFindingIds({ findingIds: { motivatedBy: null, example: null, other: 1 } }, []), /findingIds: unknown key "other"/);
     assert.throws(() => parseFindingIds({ findingIds: { motivatedBy: '(', example: null } }, []), /findingIds\.motivatedBy: "\(" is not a regular expression/);
+  });
+
+  it('takes only a plain object as a record: null and a list are not one', () => {
+    assert.equal(isRecord({}), true);
+    assert.equal(isRecord(null), false);
+    assert.equal(isRecord([]), false);
+    assert.throws(() => object({ a: null }, 'a', 'w: '), { message: 'w: "a" must be an object' });
+  });
+
+  it('refuses ".." as a path, and a regex source that is not a string', () => {
+    assert.throws(() => path({ a: '..' }, 'a', 'w: '), { message: 'w: "a": ".." is not a normalized root-relative path' });
+    assert.throws(() => regex(5, 'k'), { message: 'k must be a non-empty regular expression' });
+    assert.throws(() => regex(undefined, 'k'), { message: 'k must be a non-empty regular expression' });
+  });
+
+  it('holds a note to minNoteLength trimmed, and takes 1 as the least minNoteLength', () => {
+    assert.throws(() => note({ uncovered: `  ${'x'.repeat(20)}  ` }, 'uncovered', 'c: ', 21, false), { message: 'c: "uncovered" is shorter than minNoteLength (21): say it in words' });
+    assert.equal(minNoteLength({ minNoteLength: 1 }), 1);
+  });
+
+  it('names an opt-out by the last part of where it is, joined with a dot', () => {
+    const skipped: string[] = [];
+    assert.equal(required({ k: null }, 'k', 'a: b: ', skipped, () => 1), undefined);
+    assert.deepEqual(skipped, ['a: b.k']);
+  });
+
+  it('reads an example pattern, and names the key a bad finding-id setting breaks', () => {
+    const skipped: string[] = [];
+    const ids = parseFindingIds({ findingIds: { motivatedBy: null, example: '^M\\d+$' } }, skipped);
+    assert.equal(ids.motivatedBy, undefined);
+    assert.equal(ids.example?.source, '^M\\d+$');
+    assert.deepEqual(skipped, ['findingIds.motivatedBy']);
+    assert.throws(() => parseFindingIds({ findingIds: 5 }, []), { message: '"findingIds" must be an object' });
+    assert.throws(() => parseFindingIds({ findingIds: { example: null } }, []), { message: 'findingIds: "motivatedBy" is required (null opts its check out)' });
+    let why = '';
+    try {
+      RegExp('(');
+    } catch (e) {
+      why = (e as Error).message;
+    }
+    assert.throws(() => parseFindingIds({ findingIds: { motivatedBy: null, example: '(' } }, []), { message: `findingIds.example: "(" is not a regular expression: ${why}` });
   });
 
   it('reads a JSON object, refusing anything else', () => {
@@ -287,6 +336,22 @@ describe('suite wiring', () => {
   it('collects a suite by any collected pattern', () => {
     assert.equal(isCollected([/^scripts\/.+\.test\.ts$/], 'scripts/a.test.ts'), true);
     assert.equal(isCollected([/^scripts\/.+\.test\.ts$/], 'docs/a.test.ts'), false);
+    assert.equal(isCollected([/^docs\//, /^scripts\//], 'scripts/a.test.ts'), true);
+  });
+
+  it('takes no specifier from a local export list, another call, or an import with no argument', () => {
+    assert.deepEqual(imports('const d = 1;\nexport { d };'), []);
+    assert.deepEqual(imports("load('./target.ts');"), []);
+    assert.deepEqual(imports('const m = import();'), []);
+  });
+
+  it('strips only the extension at the end, so a folder named like one stays', () => {
+    assert.equal(importsModule('scripts/x.test.ts', ['../packages/a.ts-kit/src/m'], 'packages/a.ts-kit/src/m.ts'), true);
+  });
+
+  it('takes a folder import only as its index module, never as another module in it', () => {
+    assert.equal(importsModule('scripts/x.test.ts', ['./'], 'scripts/y.ts'), false);
+    assert.equal(importsModule('scripts/x.test.ts', ['./'], 'scripts/index.ts'), true);
   });
 });
 
@@ -362,6 +427,47 @@ describe('catalogue examples', () => {
     assert.throws(() => checkExamples(root, { catalogue: { path: 'none.json', slice: 'S' }, fixtures }, collected), /the catalogue none\.json is not a readable file/);
     assert.throws(() => checkExamples(root, { catalogue: { path: 'bad.json', slice: 'S' }, fixtures }, collected), /the catalogue bad\.json: not JSON/);
     assert.throws(() => checkExamples(root, { catalogue: { path: 'shape.json', slice: 'S' }, fixtures }, collected), /"checks" must be a list of \{ id, slice, example \}/);
+  });
+
+  it('names the key a malformed examples setting breaks', () => {
+    const fixtures = { 'A-1': { example: 'M1', test: 'scripts/a.test.ts' } };
+    assert.throws(() => parseExamples({ examples: 5 }, []), { message: '"examples" must be an object' });
+    assert.throws(() => parseExamples({ examples: { catalogue: 5, fixtures } }, []), { message: 'examples: "catalogue" must be an object' });
+    assert.throws(() => parseExamples({ examples: { catalogue: { path: '../cat.json', slice: 'S' }, fixtures } }, []), { message: 'examples.catalogue: "path": "../cat.json" is not a normalized root-relative path' });
+    assert.throws(() => parseExamples({ examples: { catalogue: null } }, []), { message: 'examples: "fixtures" must be an object' });
+  });
+
+  it('refuses a catalogue row that is not an object or lacks a string id, slice or example', () => {
+    const here = mkdtempSync(join(tmpdir(), 'pariksha-rows-'));
+    try {
+      const fixtures = { 'A-1': { example: 'M1', test: 'scripts/a.test.ts' } };
+      const good = { id: 'A-1', slice: 'S', example: 'M1: a' };
+      const rows: unknown[][] = [[null], [{ ...good, id: 1 }], [{ ...good, slice: 1 }], [{ ...good, example: 1 }], [good, { id: 1 }]];
+      for (const [i, checks] of rows.entries()) {
+        put(here, { [`rows${i}.json`]: JSON.stringify({ checks }) });
+        assert.throws(() => checkExamples(here, { catalogue: { path: `rows${i}.json`, slice: 'S' }, fixtures }, []), { message: `the catalogue rows${i}.json: "checks" must be a list of { id, slice, example }` }, JSON.stringify(checks));
+      }
+    } finally {
+      rmSync(here, { recursive: true, force: true });
+    }
+  });
+
+  it('reads no path that is not a regular file, a link to a device included', () => {
+    const here = mkdtempSync(join(tmpdir(), 'pariksha-read-'));
+    try {
+      put(here, { 'dir/a.txt': 'A' });
+      symlinkSync('/dev/null', join(here, 'null'));
+      assert.equal(isFile(here, 'dir/a.txt'), true);
+      assert.equal(isFile(here, 'dir'), false);
+      assert.equal(isFile(here, 'gone'), false);
+      assert.equal(isFile(here, 'null'), false);
+      assert.equal(readText(here, 'null'), undefined);
+      assert.equal(fileText(join(here, 'dir/a.txt')), 'A');
+      // A folder cannot be read as a file, whoever reads it.
+      assert.equal(fileText(join(here, 'dir')), null);
+    } finally {
+      rmSync(here, { recursive: true, force: true });
+    }
   });
 
   it('reads a file only when it is a readable file', () => {

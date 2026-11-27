@@ -62,6 +62,7 @@ describe('configLocation', () => {
 describe('loadProjectConfig', () => {
   it('is no settings when there is no file', () => {
     assert.equal(loadProjectConfig(dir(), {}, KNOWN, '1.0.0'), NO_CONFIG);
+    assert.deepEqual(loadProjectConfig(dir(), {}, KNOWN, '1.0.0'), { file: undefined, checks: new Map() });
   });
 
   it('reads the file it finds', () => {
@@ -95,5 +96,19 @@ describe('entryText and entryObject', () => {
     assert.deepEqual(entryObject(at('ok.json'), 'doc-budgets', '1.0.0'), { table: 't.md' });
     assert.throws(() => entryObject(at('list.json'), 'doc-budgets', '1.0.0'), /checks\.doc-budgets \(list\.json, pariksha 1\.0\.0\): must be a JSON object/);
     assert.throws(() => entryObject(at('bad.json'), 'doc-budgets', '1.0.0'), /checks\.doc-budgets \(bad\.json, pariksha 1\.0\.0\): /);
+  });
+
+  it("name the file and the reader's own reason when a file entry is not JSON or cannot be read", () => {
+    const root = dir();
+    writeFileSync(join(root, 'bad.json'), '{');
+    const at = (name: string) => ({ kind: 'file', path: join(root, name), shown: name }) as const;
+    let notJson = '';
+    try {
+      JSON.parse('{');
+    } catch (e) {
+      notJson = (e as Error).message;
+    }
+    assert.throws(() => entryObject(at('bad.json'), 'doc-budgets', '1.0.0'), { message: `checks.doc-budgets (bad.json, pariksha 1.0.0): ${notJson}` });
+    assert.throws(() => entryObject(at('gone.json'), 'doc-budgets', '1.0.0'), { message: `checks.doc-budgets (gone.json, pariksha 1.0.0): ENOENT: no such file or directory, open '${join(root, 'gone.json')}'` });
   });
 });

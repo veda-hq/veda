@@ -26,6 +26,9 @@ export const NO_CONFIG: ProjectConfig = { file: undefined, checks: new Map() };
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
+/** A settings file's text, as each reader here takes it. */
+const readUtf8 = (path: string): string => readFileSync(path, 'utf8');
+
 /**
  * The settings `text` holds, the file it came from at `file`. Every key must
  * be known: a field this version does not read would be a setting nobody
@@ -80,7 +83,7 @@ export const loadProjectConfig = (cwd: string, env: NodeJS.ProcessEnv, known: re
   const { path, named } = configLocation(cwd, env);
   let text: string;
   try {
-    text = readFileSync(path, 'utf8');
+    text = readUtf8(path);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT' && !named) return NO_CONFIG;
     throw new Error(`cannot read ${path}${named ? ` (${CONFIG_ENV})` : ''} (pariksha ${version}): ${(e as Error).message}`);
@@ -89,14 +92,14 @@ export const loadProjectConfig = (cwd: string, env: NodeJS.ProcessEnv, known: re
 };
 
 /** An entry's settings as the text a check's `--config` file would hold. */
-export const entryText = (entry: Entry): string => (entry.kind === 'inline' ? JSON.stringify(entry.value) : readFileSync(entry.path, 'utf8'));
+export const entryText = (entry: Entry): string => (entry.kind === 'inline' ? JSON.stringify(entry.value) : readUtf8(entry.path));
 
 /** An entry's settings as an object: the inline value, or the file's JSON. */
 export const entryObject = (entry: Entry, check: string, version: string): Readonly<Record<string, unknown>> => {
   if (entry.kind === 'inline') return entry.value;
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(entry.path, 'utf8'));
+    raw = JSON.parse(readUtf8(entry.path));
   } catch (e) {
     throw new Error(`checks.${check} (${entry.shown}, pariksha ${version}): ${(e as Error).message}`);
   }

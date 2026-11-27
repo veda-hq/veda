@@ -1,4 +1,4 @@
-# Written by niyam onboard: the shared niyam checks at v0.7.22.
+# Written by niyam onboard: the shared niyam checks at v0.8.0.
 # To upgrade, change the version on every line that names it (two per job).
 # The weekly, merged and needs-owner jobs are split out so pull request and push runs stay read-only.
 name: niyam
@@ -40,9 +40,9 @@ jobs:
       startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       !contains(github.event.pull_request.title, ' pull requests ahead'))) || github.event_name == 'push'
-    uses: veda-hq/niyam/.github/workflows/checks.yml@v0.7.22
+    uses: veda-hq/niyam/.github/workflows/checks.yml@v0.8.0
     with:
-      niyam-ref: v0.7.22
+      niyam-ref: v0.8.0
     secrets:
       FIGMA_TOKEN: ${{ secrets.FIGMA_TOKEN }}
       FIGMA_LIBRARY: ${{ secrets.FIGMA_LIBRARY }}
@@ -57,9 +57,9 @@ jobs:
       contents: read
       issues: write
       pull-requests: read
-    uses: veda-hq/niyam/.github/workflows/checks.yml@v0.7.22
+    uses: veda-hq/niyam/.github/workflows/checks.yml@v0.8.0
     with:
-      niyam-ref: v0.7.22
+      niyam-ref: v0.8.0
     secrets:
       FIGMA_TOKEN: ${{ secrets.FIGMA_TOKEN }}
       FIGMA_LIBRARY: ${{ secrets.FIGMA_LIBRARY }}
@@ -75,9 +75,9 @@ jobs:
       contents: read
       issues: write
       pull-requests: read
-    uses: veda-hq/niyam/.github/workflows/checks.yml@v0.7.22
+    uses: veda-hq/niyam/.github/workflows/checks.yml@v0.8.0
     with:
-      niyam-ref: v0.7.22
+      niyam-ref: v0.8.0
     secrets:
       FIGMA_TOKEN: ${{ secrets.FIGMA_TOKEN }}
       FIGMA_LIBRARY: ${{ secrets.FIGMA_LIBRARY }}
@@ -98,9 +98,9 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    uses: veda-hq/niyam/.github/workflows/checks.yml@v0.7.22
+    uses: veda-hq/niyam/.github/workflows/checks.yml@v0.8.0
     with:
-      niyam-ref: v0.7.22
+      niyam-ref: v0.8.0
     secrets:
       FIGMA_TOKEN: ${{ secrets.FIGMA_TOKEN }}
       FIGMA_LIBRARY: ${{ secrets.FIGMA_LIBRARY }}

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -43,6 +43,30 @@ const all = (repo: TestRepo, baseline: 'update' | 'write' | undefined = undefine
 const baseline = (files: Record<string, Partial<Record<CheckId, number>>>): string => `${JSON.stringify({ version: 1, files }, null, 2)}\n`;
 const refs = (report: GateReport): string[][] => report.failures.map((p) => [p.file, p.ref]);
 const mergeFails = /Command failed: git merge --no-edit main/;
+
+/** Runs `run` with a `git` first on PATH that logs each call's arguments, then the real git; returns the calls. */
+const gitCalls = (run: () => void): string[] => {
+  const path = process.env['PATH'] ?? '';
+  const real = path
+    .split(delimiter)
+    .map((dir) => join(dir, 'git'))
+    .find((file) => existsSync(file));
+  assert.ok(real !== undefined, 'git on PATH');
+  const bin = mkdtempSync(join(tmpdir(), 'logging-git-'));
+  const log = join(bin, 'calls');
+  writeFileSync(log, '');
+  writeFileSync(join(bin, 'git'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${real}' "$@"\n`);
+  chmodSync(join(bin, 'git'), 0o755);
+  process.env['PATH'] = `${bin}${delimiter}${path}`;
+  try {
+    run();
+    return readFileSync(log, 'utf8').split('\n').filter(Boolean);
+  } finally {
+    process.env['PATH'] = path;
+    rmSync(bin, { recursive: true, force: true });
+  }
+};
+const catFiles = (calls: readonly string[]): number => calls.filter((call) => call.includes('cat-file --batch')).length;
 
 describe('pre-commit (staged)', () => {
   it('A: an added doc with a broken path fails; fixed, it passes', () => {
@@ -257,6 +281,19 @@ describe('pre-commit (staged)', () => {
     );
   });
 
+  it('under a .gitignore change a doc pulled in for a removal is held to its count, legacy and all', () => {
+    const repo = base();
+    repo.write('docs/api.md', 'Call `runTool`. See `scripts/gone.ts`.\n');
+    repo.commit('legacy drift');
+    repo.write('scripts/tool.ts', 'export function startTool() {\n  return 1;\n}\n');
+    repo.write('.gitignore', 'node_modules/\n');
+    repo.git('add', '-A');
+    assert.deepEqual(
+      committed(repo).failures.map((p) => p.ref),
+      ['scripts/gone.ts', 'runTool'],
+    );
+  });
+
   it('mid-merge: an identifier the merge took from main removes nothing; one this side removes does', () => {
     const repo = base();
     repo.write('docs/api.md', 'Call `runTool` to start.\n');
@@ -292,12 +329,76 @@ describe('pre-commit (staged)', () => {
     const repo = base();
     repo.write('tools/a/package.json', '{ not json');
     repo.write('tools/b/package.json', JSON.stringify({ scripts: ['gate'] }));
+    repo.write('tools/c/package.json', JSON.stringify({ scripts: null }));
     repo.write('docs/run.md', 'Run `pnpm gate` with `--fast`.\n');
     repo.commit('odd manifests');
     repo.write('tools/a/package.json', JSON.stringify({ scripts: {} }));
     repo.write('tools/b/package.json', JSON.stringify({ scripts: {} }));
+    repo.write('tools/c/package.json', JSON.stringify({ scripts: {} }));
     repo.git('add', '-A');
     assert.deepEqual(staged(repo).checked, []);
+  });
+
+  it('a script a manifest keeps pulls in no doc; one a nested manifest drops does', () => {
+    const repo = base();
+    repo.write('package.json', JSON.stringify({ name: 'root', scripts: { gate: 'echo', extra: 'echo' } }));
+    repo.write('tools/c/package.json', JSON.stringify({ scripts: { 'deploy-x': 'echo' } }));
+    repo.write('docs/run.md', 'Run `pnpm gate`.\n');
+    repo.write('docs/extra.md', 'Run `pnpm extra`.\n');
+    repo.write('docs/deploy.md', 'Run `pnpm deploy-x`.\n');
+    repo.commit('scripts');
+    repo.write('package.json', JSON.stringify({ name: 'root', scripts: { gate: 'echo' } }));
+    repo.write('tools/c/package.json', JSON.stringify({ scripts: {} }));
+    repo.git('add', '-A');
+    const { checked } = staged(repo);
+    assert.ok(checked.includes('docs/extra.md'));
+    assert.ok(checked.includes('docs/deploy.md'));
+    assert.ok(!checked.includes('docs/run.md'));
+  });
+
+  it('a commit re-checks no doc that cites a changed file by name:line', () => {
+    const repo = base();
+    repo.write('docs/api.md', '`runTool` in `scripts/tool.ts:1`.\n');
+    repo.commit('doc');
+    repo.write('scripts/tool.ts', '// moved\nexport function runTool() {\n  return 1;\n}\n');
+    repo.git('add', '-A');
+    assert.deepEqual(committed(repo).checked, ['scripts/tool.ts']);
+  });
+
+  it('a staged doc that fails runs no link check at HEAD: it has no legacy there', () => {
+    const repo = base();
+    repo.write('docs/guide.md', 'Run `scripts/tool.ts`. See [lost](lost.md).\n');
+    repo.git('add', '-A');
+    const dirs: string[] = [];
+    const counting: LinkRunner = (dir, files) => {
+      dirs.push(dir);
+      return links(dir, files);
+    };
+    // The staged doc answers for all it holds: HEAD is never read for it.
+    assert.deepEqual(
+      committed(repo, counting).failures.map((p) => p.ref),
+      ['lost.md'],
+    );
+    assert.equal(dirs.length, 1);
+  });
+
+  it('reads the files it checks in one git process, not one per file', () => {
+    const repo = base();
+    repo.write('docs/a.md', 'Run `scripts/tool.ts`.\n');
+    repo.write('docs/b.md', 'Run `scripts/tool.ts`.\n');
+    repo.commit('docs');
+    repo.write('docs/a.md', 'Run `scripts/tool.ts` now.\n');
+    repo.write('docs/b.md', 'Run `scripts/tool.ts` now.\n');
+    repo.git('add', '-A');
+    // The worktree differs from the index, so each staged doc is read through git.
+    repo.write('docs/a.md', 'Unstaged.\n');
+    repo.write('docs/b.md', 'Unstaged.\n');
+    let report: GateReport | undefined;
+    const calls = gitCalls(() => {
+      report = staged(repo);
+    });
+    assert.deepEqual(report?.checked, ['docs/a.md', 'docs/b.md']);
+    assert.equal(catFiles(calls), 1);
   });
 });
 
@@ -433,6 +534,8 @@ describe('the baseline', () => {
     assert.equal(report.wrote, 2);
     assert.equal(report.problems.length, 3);
     assert.deepEqual(report.failures, []);
+    assert.deepEqual(report.slack, []);
+    assert.deepEqual(report.growth, []);
   });
 });
 
@@ -605,6 +708,56 @@ describe('pre-push and CI (range)', () => {
     assert.deepEqual(gate(repo, { kind: 'range', base: from, head: 'HEAD' }, ['DOC-DRIFT-01']).checked, ['scripts/tool.ts']);
   });
 
+  it('a removed identifier pulls in its docs even while other code holds it; DOC-DRIFT-04 judges them', () => {
+    const repo = base();
+    repo.write('docs/api.md', 'Call `runTool` to start.\n');
+    repo.write('scripts/other.ts', "import { runTool } from './tool.ts';\n");
+    const from = repo.commit('doc');
+    repo.write('scripts/tool.ts', 'export function startTool() {\n  return 1;\n}\n');
+    repo.commit('rename');
+    const report = pushed(repo, from);
+    assert.deepEqual(report.checked, ['docs/api.md', 'scripts/tool.ts']);
+    assert.equal(report.exitCode, 0);
+  });
+
+  it('re-checks a name:line citation of a modified file only, not an added one', () => {
+    const repo = base();
+    repo.write('docs/cite.md', 'See `new.ts:1`.\n');
+    const from = repo.commit('doc');
+    repo.write('scripts/new.ts', 'export const fresh = 1;\n');
+    repo.commit('add');
+    assert.deepEqual(pushed(repo, from).checked, ['scripts/new.ts']);
+  });
+
+  it('a word only an excluded file removed strands no doc', () => {
+    const repo = base();
+    repo.write('docs/a.md', 'Uses `oldThing`.\n');
+    repo.write('docs/b.md', 'Read `oldThing`.\n');
+    const from = repo.commit('docs');
+    // The fixture's diffExclude leaves markdown out of the removed-word diff.
+    repo.write('docs/a.md', 'Uses nothing.\n');
+    repo.commit('edit');
+    assert.deepEqual(pushed(repo, from).checked, ['docs/a.md']);
+  });
+
+  it('reads the base for its legacy in one git process, not one per file', () => {
+    const repo = base();
+    repo.write('docs/a.md', 'Call `goneThing`.\n');
+    repo.write('docs/b.md', 'Call `lostThing`.\n');
+    const from = repo.commit('legacy drift');
+    repo.write('docs/a.md', 'Call `goneThing`. Reflowed.\n');
+    repo.write('docs/b.md', 'Call `lostThing`. Reflowed.\n');
+    repo.commit('edit');
+    let report: GateReport | undefined;
+    const calls = gitCalls(() => {
+      report = gate(repo, { kind: 'range', base: from, head: 'HEAD' }, ['DOC-DRIFT-04']);
+    });
+    assert.deepEqual(report?.problems.length, 2);
+    assert.deepEqual(report?.failures, []);
+    // Both docs differ from the base on disk, so the base reads them through git.
+    assert.equal(catFiles(calls), 1);
+  });
+
   it('names the ref git cannot find', () => {
     const repo = base();
     assert.throws(() => pushed(repo, 'no-such-ref'), /merge-base no-such-ref HEAD/);
@@ -754,6 +907,21 @@ describe('diff reading', () => {
 
   it('skips anything before the first hunk', () => {
     assert.deepEqual(hunkLines('index 1..2\n@@ -1 +1 @@\n-a'), ['-a']);
+    // A hunk header can carry the enclosing function after its closing @@.
+    assert.deepEqual(hunkLines('@@ -1 +1 @@ function runTool() {\n-b'), ['-b']);
+  });
+
+  it('withoutFiles drops a rename by either of its paths', () => {
+    const rename = 'diff --git a/old.ts b/new.ts\nsimilarity index 90%\nrename from old.ts\nrename to new.ts\n--- a/old.ts\n+++ b/new.ts\n@@ -1 +1 @@\n-oldWord\n+newWord\n';
+    assert.equal(withoutFiles(rename, new Set(['old.ts'])), '');
+    assert.equal(withoutFiles(rename, new Set(['new.ts'])), '');
+  });
+
+  it('withoutFiles reads a file header only at the start of a line', () => {
+    // A removed line holding `diff --git ` starts no file; a path holding ` --- a/` names no other.
+    const inHunk = 'diff --git a/keep.md b/keep.md\n--- a/keep.md\n+++ b/keep.md\n@@ -1,2 +0,0 @@\n-see diff --git a/x\n--- a/skip.ts\n';
+    const oddPath = 'diff --git a/x --- a/skip.ts b/y.ts\nsimilarity index 90%\nrename from x --- a/skip.ts\nrename to y.ts\n--- a/x --- a/skip.ts\n+++ b/y.ts\n@@ -1 +1 @@\n-a\n+b\n';
+    assert.equal(withoutFiles(`${inHunk}${oddPath}`, new Set(['skip.ts'])), `${inHunk}${oddPath}`);
   });
 
   it('weighs removed lines against added ones and ignores context', () => {
@@ -763,8 +931,9 @@ describe('diff reading', () => {
   });
 
   it('keeps only identifier-shaped words: SCREAMING_CASE, camelCase and PascalCase', () => {
-    const hunk = ['@@ -1 +0,0 @@', '-MAX_SIZE fooBar FooBar plain Plain X_ ab'].join('\n');
-    assert.deepEqual([...removedIdentifiers(hunk)], ['MAX_SIZE', 'fooBar', 'FooBar']);
+    // Whole words only: `xMAX_SIZE` and `MAX_SIZEx` are neither shape; every shape repeats its humps.
+    const hunk = ['@@ -1 +0,0 @@', '-MAX_SIZE fooBar FooBar plain Plain X_ ab xMAX_SIZE MAX_SIZEx MAX_FILE_SIZE fooBarBaz FooBarBaz'].join('\n');
+    assert.deepEqual([...removedIdentifiers(hunk)], ['MAX_SIZE', 'fooBar', 'FooBar', 'MAX_FILE_SIZE', 'fooBarBaz', 'FooBarBaz']);
   });
 });
 
@@ -780,20 +949,31 @@ describe('referrers', () => {
   };
 
   it('finds a removed identifier in docs only, even with nothing else removed', () => {
-    assert.deepEqual(referrers(CONFIG, snapshot(), [], [], new Set(['runTool'])), ['docs/api.md']);
+    assert.deepEqual(referrers(CONFIG, snapshot(), [], [], new Set(['runTool']), []), ['docs/api.md']);
   });
 
   it('finds a name:line citation of the changed file only', () => {
     const snap = snapshot();
-    assert.deepEqual(referrers(CONFIG, snap, [], ['scripts/tool.ts'], new Set()), []);
-    assert.deepEqual(referrers(CONFIG, snap, [], ['lib/other.ts'], new Set()), ['docs/cite.md']);
+    assert.deepEqual(referrers(CONFIG, snap, [], ['scripts/tool.ts'], new Set(), []), []);
+    assert.deepEqual(referrers(CONFIG, snap, [], ['lib/other.ts'], new Set(), []), ['docs/cite.md']);
   });
 
   it('finds a removed path by its basename and a removed term anywhere, and nothing when nothing was removed', () => {
     const snap = snapshot();
-    assert.deepEqual(referrers(CONFIG, snap, ['lib/other.ts'], [], new Set()), ['docs/cite.md']);
+    assert.deepEqual(referrers(CONFIG, snap, ['lib/other.ts'], [], new Set(), []), ['docs/cite.md']);
     assert.deepEqual(referrers(CONFIG, snap, [], [], new Set(), ['runTool']), ['docs/api.md', 'scripts/tool.ts']);
-    assert.deepEqual(referrers(CONFIG, snap, [], [], new Set()), []);
+    assert.deepEqual(referrers(CONFIG, snap, [], [], new Set(), []), []);
+  });
+
+  it('reads no file when nothing was removed', () => {
+    const sealed = {
+      ...snapshot(),
+      readMany: (): Map<string, string> => {
+        throw new Error('read a file');
+      },
+    };
+    assert.deepEqual(referrers(CONFIG, sealed, [], [], new Set(), []), []);
+    assert.throws(() => referrers(CONFIG, sealed, [], [], new Set(['runTool']), []), /read a file/);
   });
 });
 
@@ -924,7 +1104,7 @@ describe('runChecks', () => {
   it('runs the DOC-DRIFT-02 rules over markdown only, and links through the runner it is given', () => {
     const repo = createTestRepo({
       'package.json': JSON.stringify({ scripts: {} }),
-      'docs/run.md': 'Run `pnpm nope`. See [x](absent.md).\n',
+      'docs/run.md': 'Run `pnpm nope`. See [x](absent.md). Call `goneThing`.\n',
       'scripts/run.sh': '# Run `pnpm nope`.\n',
     });
     const snapshot = repo.snapshot();
@@ -937,6 +1117,11 @@ describe('runChecks', () => {
     assert.deepEqual(runChecks(CONFIG, snapshot, files, ['DOC-DRIFT-01'], noLinks), []);
     assert.equal(runChecks(CONFIG, snapshot, files, ['DOC-DRIFT-01'], fakeLinks).length, 1);
     assert.deepEqual(runChecks(testConfig({ links: null }), snapshot, files, ['DOC-DRIFT-01'], fakeLinks), []);
+    // DOC-DRIFT-04 runs only when asked: the two runs above found no `goneThing`.
+    assert.deepEqual(
+      runChecks(CONFIG, snapshot, files, ['DOC-DRIFT-04'], noLinks).map((p) => [p.check, p.file, p.ref]),
+      [['DOC-DRIFT-04', 'docs/run.md', 'goneThing']],
+    );
   });
 });
 
@@ -995,6 +1180,12 @@ describe('formatReport', () => {
         ],
       },
     );
+  });
+
+  it('counts the files the failures are in', () => {
+    const failure = (file: string): ReferenceProblem => ({ check: 'DOC-DRIFT-01', file, line: 1, ref: 'x.ts', reason: 'no such file' });
+    const { err } = format({ ...clean, failures: [failure('a.md'), failure('b.md'), failure('b.md')], exitCode: 1 }, { kind: 'all' });
+    assert.match(err[3] ?? '', /^pariksha doc-references: 3 unresolved reference\(s\) in 2 file\(s\)\. /);
   });
 
   it('reports a written baseline and nothing else', () => {

@@ -109,12 +109,13 @@ export const parseNameStatus = (output: string): Change[] => {
   const fields = output.split('\0').filter(Boolean);
   const changes: Change[] = [];
   for (let i = 0; i < fields.length; ) {
-    const status = String(fields[i]);
-    if (/^[RC]/.test(status)) {
-      changes.push({ status: status.charAt(0), from: String(fields[i + 1]), path: String(fields[i + 2]) });
+    // A rename or copy carries a score (`R100`) and two paths; the rest one path.
+    const status = String(fields[i]).charAt(0);
+    if (status === 'R' || status === 'C') {
+      changes.push({ status, from: String(fields[i + 1]), path: String(fields[i + 2]) });
       i += 3;
     } else {
-      changes.push({ status: status.charAt(0), path: String(fields[i + 1]), from: String(fields[i + 1]) });
+      changes.push({ status, path: String(fields[i + 1]), from: String(fields[i + 1]) });
       i += 2;
     }
   }
@@ -131,7 +132,7 @@ const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/
  * `name:line`, an identifier whose last definition the diff removed, or a
  * removed term (a script name, a `--flag`).
  */
-export const referrers = (config: Config, snapshot: RepoSnapshot, removedPaths: readonly string[], lineCited: readonly string[], removedWords: ReadonlySet<string>, removedTerms: readonly string[] = []): string[] => {
+export const referrers = (config: Config, snapshot: RepoSnapshot, removedPaths: readonly string[], lineCited: readonly string[], removedWords: ReadonlySet<string>, removedTerms: readonly string[]): string[] => {
   if (removedPaths.length === 0 && lineCited.length === 0 && removedWords.size === 0 && removedTerms.length === 0) return [];
   const names = [...new Set([...removedPaths.map((path) => posix.basename(path)), ...removedTerms])];
   // The basename starts a path segment: `check-x.sh:11` does not cite a changed `x.sh`.
@@ -142,7 +143,7 @@ export const referrers = (config: Config, snapshot: RepoSnapshot, removedPaths: 
       out.push(file);
       continue;
     }
-    if (removedWords.size !== 0 && docKind(config, file) === 'markdown') {
+    if (docKind(config, file) === 'markdown') {
       for (const match of text.matchAll(IDENTIFIER_WORD)) {
         if (removedWords.has(match[0])) {
           out.push(file);
@@ -159,8 +160,9 @@ const readBaseline = (text: string | undefined, where: string): Baseline => (tex
 /** Script names a manifest change removed (`pnpm <name>` now runs nothing); an unparsable manifest names none. */
 const removedScripts = (before: string | undefined, after: string | undefined): string[] => {
   const names = (text: string | undefined): Set<string> => {
-    const scripts = text === undefined ? undefined : manifestObject(text)?.['scripts'];
-    return new Set(typeof scripts === 'object' && scripts !== null && !Array.isArray(scripts) ? Object.keys(scripts) : []);
+    // An absent manifest (one added, or deleted) reads as `undefined`: no JSON, no script.
+    const scripts = manifestObject(String(text))['scripts'];
+    return new Set(Object.keys(typeof scripts === 'object' && scripts !== null && !Array.isArray(scripts) ? scripts : {}));
   };
   const now = names(after);
   return [...names(before)].filter((name) => !now.has(name));
@@ -198,8 +200,8 @@ export const withoutFiles = (diff: string, skip: ReadonlySet<string>): string =>
   diff
     .split(/^(?=diff --git )/m)
     .filter((section) => {
-      const header = section.split('\n@@')[0] ?? '';
-      return ![...header.matchAll(/^(?:--- a|\+\+\+ b)\/(.*)$/gm)].some((match) => skip.has(String(match[1])));
+      const header = String(section.split('\n@@')[0]);
+      return ![...header.matchAll(/^(?:--- a|\+\+\+ b)\/(.*)/gm)].some((match) => skip.has(String(match[1])));
     })
     .join('');
 
@@ -237,8 +239,10 @@ export const runGate = (options: GateOptions): GateReport => {
   // commit, only the docs it pulls in for what it removed, so a staged doc or
   // an edited baseline entry is held to its count as before.
   let legacy: { ref: string; files: ReadonlySet<string> | 'every' } | undefined;
-  // A file's path at the merge base: a rename's old path.
-  let baseOf = (file: string): string => file;
+  // A file's path at the merge base: a rename's old path. Read only where a
+  // legacy is, so --all leaves it empty.
+  let fromOf: ReadonlyMap<string, string> = new Map();
+  const baseOf = (file: string): string => fromOf.get(file) ?? file;
   // Baseline entries whose file this change answers for if it is gone: every
   // entry under --all; otherwise the paths the change removed and the entries
   // it edited. A doc another change deleted is that change's to clear.
@@ -260,7 +264,8 @@ export const runGate = (options: GateOptions): GateReport => {
       snapshot = createSnapshot(root, { kind: 'index' });
       const hasHead = gitOrUndefined(root, ['show', 'HEAD:']) !== undefined;
       if (hasHead) legacy = { ref: 'HEAD', files: new Set() };
-      diffArgs = ['diff', '--cached', '--name-status', '-z', '-M', ...(hasHead ? ['HEAD'] : [])];
+      // Named no revision, it compares with HEAD, or before the first commit with nothing.
+      diffArgs = ['diff', '--cached', '--name-status', '-z', '-M'];
       before = (path) => (hasHead ? gitOrUndefined(root, ['show', `HEAD:${path}`]) : undefined);
     } else {
       const base = git(root, ['merge-base', mode.base, mode.head]).trim();
@@ -273,19 +278,19 @@ export const runGate = (options: GateOptions): GateReport => {
     const priorText = before(baselineFile);
     previous = priorText === undefined ? undefined : parseBaseline(priorText, `${baselineFile} (before this change)`);
     const changes = parseNameStatus(git(root, diffArgs)).filter((change) => !taken.has(change.path));
-    const renamed = new Map(changes.filter((change) => change.status === 'R').map((change) => [change.path, change.from]));
-    baseOf = (file) => renamed.get(file) ?? file;
+    // Only a rename's differs from its path; a deletion's is its own.
+    fromOf = new Map(changes.map((change) => [change.path, change.from]));
     changed = changes.filter((change) => change.status !== 'D' && docKind(config, change.path) !== null).map((change) => change.path);
-    const removedPaths = changes.flatMap((change) => (change.status === 'D' ? [change.path] : change.status === 'R' ? [change.from] : []));
+    const removedPaths = changes.filter((change) => change.status === 'D' || change.status === 'R').map((change) => change.from);
     // A script removed from a manifest strands every doc that runs it.
     const terms = changes.filter((change) => change.path.endsWith('package.json')).flatMap((change) => removedScripts(before(change.from), snapshot.read(change.path)));
-    let lineCited: string[] = [];
+    // Pushed, a changed file can move the line a doc cites; only a push
+    // re-checks the docs that cite one by `name:line`.
+    const lineCited = changes.filter((change) => range !== undefined && change.status === 'M').map((change) => change.path);
     let words = new Set<string>();
     const diffExclude = config.identifiers.diffExclude.map((p) => `:(exclude)${p}`);
     if (range !== undefined) {
-      // Pushed: a changed file can move the line a doc cites, and a removed
-      // definition or flag strands the docs that name it.
-      lineCited = changes.filter((change) => change.status === 'M').map((change) => change.path);
+      // Pushed: a removed definition or flag strands the docs that name it.
       const diff = git(root, ['diff', '-U0', '--no-color', '--no-ext-diff', '--no-textconv', range.base, range.head, '--', '.', ...diffExclude]);
       terms.push(...removedFlags(diff));
       if (checks.includes('DOC-DRIFT-04')) words = removedIdentifiers(diff);
@@ -303,21 +308,22 @@ export const runGate = (options: GateOptions): GateReport => {
     const everything = changes.some((change) => posix.basename(change.path) === '.gitignore');
     const edited = baselineEdits(previous, readBaseline(snapshot.read(baselineFile), baselineFile));
     // A seed (no earlier baseline) edits every entry, but deleted none of their files.
-    const answered = new Set([...removedPaths, ...(previous === undefined ? [] : edited)]);
+    const answered = new Set(previous === undefined ? removedPaths : [...removedPaths, ...edited]);
     answersForGone = (file) => answered.has(file);
-    const cited = everything ? [] : referrers(config, snapshot, removedPaths, lineCited, words, terms);
+    const cited = referrers(config, snapshot, removedPaths, lineCited, words, terms);
     // An entry dropped for a file the check no longer reads re-checks nothing.
     const reread = edited.filter((file) => snapshot.files.has(file) && docKind(config, file) !== null);
     checked = (everything ? referenceFiles(config, snapshot) : [...new Set([...changed, ...cited, ...reread])].sort()).filter((file) => !taken.has(file));
     if (legacy !== undefined && range === undefined) {
       const own = new Set([...changed, ...reread]);
-      legacy.files = new Set(cited.filter((file) => !own.has(file)));
+      // A .gitignore change checks every reference file, each held to its count.
+      legacy.files = new Set(cited.filter((file) => !everything && !own.has(file)));
     }
   }
 
   // --all reads the worktree, where a baseline being written is not yet
   // tracked; every other mode reads the snapshot it checks.
-  const current = readBaseline(mode.kind === 'all' && existsSync(join(root, baselineFile)) ? readFileSync(join(root, baselineFile), 'utf8') : snapshot.read(baselineFile), baselineFile);
+  const current = readBaseline(mode.kind === 'all' && existsSync(join(root, baselineFile)) ? String(readFileSync(join(root, baselineFile))) : snapshot.read(baselineFile), baselineFile);
   // One batched read: an index or ref snapshot otherwise spawns a git process per file.
   snapshot.readMany(checked);
   const problems = runChecks(config, snapshot, checked, checks, links);
@@ -329,12 +335,10 @@ export const runGate = (options: GateOptions): GateReport => {
       entry[p.check] = (entry[p.check] ?? 0) + 1;
     }
     if (options.baseline === 'update') {
-      // Only ever lower: a count can fall to what remains, never rise.
+      // Only ever lower: a count can fall to what remains, never rise. A
+      // count of 0 is written as no entry.
       for (const [file, entry] of Object.entries(counts.files)) {
-        for (const check of CHECK_IDS) {
-          const now = entry[check];
-          if (now !== undefined) entry[check] = Math.min(now, current.files[file]?.[check] ?? 0);
-        }
+        for (const check of CHECK_IDS) entry[check] = Math.min(entry[check] ?? 0, current.files[file]?.[check] ?? 0);
       }
     }
     const text = serializeBaseline(counts);

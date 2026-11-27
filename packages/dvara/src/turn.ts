@@ -99,6 +99,12 @@ export const POLL_MS = 1000;
 export const VIRTUAL_POLL_MS = 5000;
 /** How often a waiting request says so. */
 export const NOTICE_MS = 60_000;
+/**
+ * Each holder line under the ⏳ line starts with exactly five spaces: a hook
+ * that hides a stage's output passes on the ⏳ lines and the lines indented
+ * so beneath them (#651).
+ */
+export const HOLDER_INDENT = "     ";
 /** How many times a decision tries the queue lock before deciding without it. */
 export const LOCK_TRIES = 100;
 export const LOCK_RETRY_MS = 10;
@@ -447,7 +453,7 @@ export const waitingLines = (
   const repoWidth = Math.max(0, ...view.holders.map((holder) => holder.repo.length));
   const labelWidth = Math.max(0, ...view.holders.map((holder) => holder.label.length));
   const rows = view.holders.map((holder) =>
-    `   ${holder.repo.padEnd(repoWidth)}  ${holder.label.padEnd(labelWidth)}  ` +
+    `${HOLDER_INDENT}${holder.repo.padEnd(repoWidth)}  ${holder.label.padEnd(labelWidth)}  ` +
     `for ${minutes(now - (holder.grantedAt as number))} min  ${where(holder)}`.trimEnd(),
   );
   return [head, ...rows];

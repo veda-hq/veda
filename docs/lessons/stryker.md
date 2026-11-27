@@ -135,6 +135,27 @@ without suppressing them, and the traps of a gate scoped to a diff.
   do not travel over the file's stdout. A mutant that hangs an async test also needs a
   per-test `timeout` (15 s in agnipariksha's `src/cli.test.ts`), and every polling loop in a
   test needs a deadline, or the failed suite never exits.
+- **A promise a mutant leaves unsettled hangs its test to the gate's limit.** A test that awaits
+  such a promise (a `resolve` the mutant drops, a loop that never ends) and has no `timeout`
+  runs to the gate's limit: 90 s in the lane run, then 3 minutes in the retry. Give every test
+  a `timeout`; a wrapper that sets a default does it once (`packages/dvara/src/cli.test.ts`
+  gives each case 30 s). Give the suite an exit guard for handles a mutant leaks: in `after`, an
+  `unref`'d timer that exits 1 if the process is still alive 5 s after the last test, so the
+  mutant reads Killed, not Timeout. veda#654 did both, and bounded the loops in `replay`, after
+  two such hangs cost its dvara lane two full retries. The bullet above has the per-test
+  `timeout` agnipariksha's own `src/cli.test.ts` sets.
+- **List a lane's timeouts with a direct Stryker run.** agnipariksha 0.8.13 and earlier (veda's
+  root pins 0.8.11) runs each timeout retry with the lane's own JSON report path (`judgeLane`
+  in `packages/agnipariksha/src/lanes.ts` passes `report` to every retry's config), so every
+  retry overwrites `reports/agnipariksha/<lane>.json`. CI's `mutation-*` artifact, uploaded on a
+  failed lane, then holds only the last retried mutant: on veda#654 it named one timeout of 33.
+  To list every timeout, run Stryker directly from the package, in a heavy-work turn:
+  `pnpm exec node scripts/turn.mjs --label 'stryker <pkg>' -- env AGNIPARIKSHA_SUITES=<suites> pnpm --dir packages/<pkg> exec stryker run stryker.config.mjs --mutate <files>`,
+  from the root (kavach refuses a bare `node scripts/turn.mjs` in an agent session, and passes
+  it through `pnpm exec`). Where a session coordinates mutation runs on the Mac, ask it first. Its
+  `reports/mutation/mutation.json` keeps every status; that file is shared, so a concurrent hand
+  run overwrites it. veda#706 changes the retry to write its own report, and rewrites this
+  bullet when it lands.
 
 ## Mutants Stryker misreports
 

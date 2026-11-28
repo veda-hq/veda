@@ -56,30 +56,33 @@ const bounded = (source: string): string => {
 const re = (source: string, flags?: string): RegExp => new RegExp(bounded(source), flags);
 
 const NUMERIC = '0|[1-9]\\d*';
-const NUMERIC_LOOSE = '\\d+';
 const NON_NUMERIC = `\\d*[a-zA-Z-]${LETTER_DASH_NUMBER}*`;
 const MAIN = `(${NUMERIC})\\.(${NUMERIC})\\.(${NUMERIC})`;
-const MAIN_LOOSE = `(${NUMERIC_LOOSE})\\.(${NUMERIC_LOOSE})\\.(${NUMERIC_LOOSE})`;
 const PRERELEASE_ID = `(?:${NON_NUMERIC}|${NUMERIC})`;
-const PRERELEASE_ID_LOOSE = `(?:${NON_NUMERIC}|${NUMERIC_LOOSE})`;
 const PRERELEASE = `(?:-(${PRERELEASE_ID}(?:\\.${PRERELEASE_ID})*))`;
-const PRERELEASE_LOOSE = `(?:-?(${PRERELEASE_ID_LOOSE}(?:\\.${PRERELEASE_ID_LOOSE})*))`;
 const BUILD_ID = `${LETTER_DASH_NUMBER}+`;
 const BUILD = `(?:\\+(${BUILD_ID}(?:\\.${BUILD_ID})*))`;
 const FULL_PLAIN = `v?${MAIN}${PRERELEASE}?${BUILD}?`;
-const LOOSE_PLAIN = `[v=\\s]*${MAIN_LOOSE}${PRERELEASE_LOOSE}?${BUILD}?`;
 const GTLT = '((?:<|>)?=?)';
 const X_ID = `${NUMERIC}|x|X|\\*`;
 const X_PLAIN = `[v=\\s]*(${X_ID})(?:\\.(${X_ID})(?:\\.(${X_ID})(?:${PRERELEASE})?${BUILD}?)?)?`;
 
 /** A version, as `new SemVer` reads one (after trimming). */
 const FULL = re(`^${FULL_PLAIN}$`);
-/** Build metadata anywhere in a set: `semver` strips it, with the unbounded pattern, before anything else. */
+/**
+ * Build metadata anywhere in a set: `semver` strips it, with the unbounded
+ * pattern, before anything else. Its second, bounded strip of each
+ * comparator finds nothing left after this one, so it is not ported.
+ */
 const BUILD_STRIP = new RegExp(BUILD, 'g');
-const BUILD_ONE = re(BUILD);
 const HYPHEN_RANGE = re(`^\\s*(${X_PLAIN})\\s+-\\s+(${X_PLAIN})\\s*$`);
-/** `> 1.2.3` is `>1.2.3`. */
-const COMPARATOR_TRIM = re(`(\\s*)${GTLT}\\s*(${LOOSE_PLAIN}|${X_PLAIN})`, 'g');
+/**
+ * `> 1.2.3` is `>1.2.3`. `semver` tries a loose version (`\d+.\d+.\d+…`)
+ * before the x-range one here; any text the loose one matches, the x-range
+ * one matches from the same start, and only the whitespace before it is
+ * removed, so it is not ported.
+ */
+const COMPARATOR_TRIM = re(`(\\s*)${GTLT}\\s*(${X_PLAIN})`, 'g');
 const TILDE_TRIM = re('(\\s*)(?:~>?)\\s+', 'g');
 const CARET_TRIM = re('(\\s*)(?:\\^)\\s+', 'g');
 const TILDE = re(`^(?:~>?)${X_PLAIN}$`);
@@ -118,36 +121,35 @@ export const validVersion = (text: unknown): boolean => parseVersion(text) !== u
 
 const NUMERIC_ID = /^[0-9]+$/;
 
+/** -1, 0 or 1 as `x` sorts before, with or after `y`. */
+const order = <T extends number | string>(x: T, y: T): number => (x < y ? -1 : x > y ? 1 : 0);
+
 /** semver's compareIdentifiers: numbers numerically and before words, words in ASCII order. */
 export const compareIdentifiers = (a: string, b: string): number => {
   const aNum = NUMERIC_ID.test(a);
   const bNum = NUMERIC_ID.test(b);
-  if (aNum && bNum) {
-    const [x, y] = [Number(a), Number(b)];
-    return x === y ? 0 : x < y ? -1 : 1;
-  }
-  if (a === b) return 0;
+  if (aNum && bNum) return order(Number(a), Number(b));
   if (aNum) return -1;
   if (bNum) return 1;
-  return a < b ? -1 : 1;
+  return order(a, b);
+};
+
+/** semver's comparePre past the release check: identifier by identifier, a shorter list first when one is the other's start. */
+const comparePrerelease = ([x, ...xs]: readonly string[], [y, ...ys]: readonly string[]): number => {
+  if (x === undefined && y === undefined) return 0;
+  if (y === undefined) return 1;
+  if (x === undefined) return -1;
+  if (x !== y) return compareIdentifiers(x, y);
+  return comparePrerelease(xs, ys);
 };
 
 /** Semver precedence; build metadata plays no part. */
 export const compareVersions = (a: Version, b: Version): number => {
-  for (let i = 0; i < 3; i++) {
-    const c = compareIdentifiers(String(a.main[i]), String(b.main[i]));
-    if (c !== 0) return c;
-  }
+  const main = a.main.map((n, i) => compareIdentifiers(String(n), String(b.main[i]))).find((c) => c !== 0);
+  if (main !== undefined) return main;
   if (a.prerelease.length > 0 && b.prerelease.length === 0) return -1;
   if (a.prerelease.length === 0 && b.prerelease.length > 0) return 1;
-  for (let i = 0; ; i++) {
-    const x = a.prerelease[i];
-    const y = b.prerelease[i];
-    if (x === undefined && y === undefined) return 0;
-    if (y === undefined) return 1;
-    if (x === undefined) return -1;
-    if (x !== y) return compareIdentifiers(x, y);
-  }
+  return comparePrerelease(a.prerelease, b.prerelease);
 };
 
 type Group = string | undefined;
@@ -202,7 +204,7 @@ const replaceTilde = (comp: string): string =>
 
 /** `<8` is `<8.0.0-0`, `>1.2` is `>=1.3.0-0`, `1.2` is `>=1.2.0-0 <1.3.0-0`, `>*` is nothing. */
 const replaceXRange = (comp: string): string =>
-  comp.trim().replace(X_RANGE, (whole: string, gtltText: string, MText: Group, mText: Group, pText: Group) => {
+  comp.replace(X_RANGE, (whole: string, gtltText: string, MText: Group, mText: Group, pText: Group) => {
     let gtlt = gtltText;
     let [M, m, p]: (Group | number)[] = [MText, mText, pText];
     const xM = isX(MText);
@@ -211,7 +213,8 @@ const replaceXRange = (comp: string): string =>
     if (gtlt === '=' && xp) gtlt = '';
     // includePrerelease: every bound starts at the lowest prerelease.
     const pr = '-0';
-    if (xM) return gtlt === '>' || gtlt === '<' ? '<0.0.0-0' : '*';
+    // `semver` returns `*` for every version, which its star step then drops.
+    if (xM) return gtlt === '>' || gtlt === '<' ? '<0.0.0-0' : '';
     if (gtlt && xp) {
       if (xm) m = 0;
       p = 0;
@@ -234,18 +237,17 @@ const replaceXRange = (comp: string): string =>
     return whole;
   });
 
-/** semver's parseComparator: one space-free piece of a set to plain comparators. */
-const desugar = (piece: string): string => {
-  let comp = piece.replace(BUILD_ONE, '');
-  comp = comp.trim().split(/\s+/).map(replaceCaret).join(' ');
-  comp = comp.trim().split(/\s+/).map(replaceTilde).join(' ');
-  comp = comp.split(/\s+/).map(replaceXRange).join(' ');
-  return comp.trim().replace(STAR, '');
-};
+/**
+ * semver's parseComparator: one space-free piece of a set to plain
+ * comparators. `semver` splits and trims between the steps; a piece holds no
+ * space, and each step matches the whole piece and turns it into full
+ * versions the next steps leave alone, so each step reads the piece whole.
+ */
+const desugar = (piece: string): string => replaceXRange(replaceTilde(replaceCaret(piece))).replace(STAR, '');
 
-/** semver's Comparator constructor, or undefined where it throws. */
+/** semver's Comparator constructor, or undefined where it throws; `text` holds no space. */
 const comparator = (text: string): Comparator | undefined => {
-  const m = COMPARATOR.exec(text.trim().split(/\s+/).join(' '));
+  const m = COMPARATOR.exec(text);
   if (m === null) return undefined;
   const operator = (m[1] === undefined || m[1] === '=' ? '' : m[1]) as Operator;
   if (!m[2]) return { operator };
@@ -265,7 +267,7 @@ const parseSet = (part: string): Comparator[] | undefined => {
     .map(desugar)
     .join(' ')
     .split(/\s+/)
-    .map((c) => c.trim().replace(GTE0_PRERELEASE, ''));
+    .map((c) => c.replace(GTE0_PRERELEASE, ''));
   const set = pieces.map(comparator);
   return set.every((c) => c !== undefined) ? (set as Comparator[]) : undefined;
 };
@@ -274,7 +276,8 @@ const parseSet = (part: string): Comparator[] | undefined => {
 export const parseRange = (range: unknown): Comparator[][] | undefined => {
   if (typeof range !== 'string') return undefined;
   const sets: Comparator[][] = [];
-  for (const part of range.trim().replace(/\s+/g, ' ').split('||')) {
+  // Each part is trimmed, so the range need not be.
+  for (const part of range.replace(/\s+/g, ' ').split('||')) {
     const set = parseSet(part.trim());
     if (set === undefined) return undefined;
     sets.push(set);

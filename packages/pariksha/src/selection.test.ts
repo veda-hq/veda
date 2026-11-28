@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { run } from './cli.ts';
 import { gitAt } from './git.ts';
-import { changedPaths, selectedList, selectionOf, settingsInputs } from './selection.ts';
+import { changedPaths, isFile, selectedList, selectionOf, settingsInputs } from './selection.ts';
 
 /**
  * Git hermetic for the whole process, as in cli.test.ts: the code under test
@@ -67,6 +67,17 @@ describe('selectionOf', () => {
   it('refuses two modes, and --head alone', () => {
     assert.deepEqual(of([['--staged', ''], ['--files-from', '-']]), { error: 'choose one of --staged, --base, --all, --files-from (got --staged, --files-from)' });
     assert.deepEqual(of([['--head', 'x']]), { error: '--head needs --base' });
+  });
+  it('refuses --base with another mode, naming both', () => {
+    assert.deepEqual(of([['--base', 'main'], ['--all', '']]), { error: 'choose one of --staged, --base, --all, --files-from (got --base, --all)' });
+  });
+});
+
+describe('isFile', () => {
+  it('is true for a regular file, and false for a path gone from the tree', () => {
+    const root = repo({ 'here.md': 'x\n' });
+    assert.equal(isFile(root, 'here.md'), true);
+    assert.equal(isFile(root, 'gone.md'), false);
   });
 });
 

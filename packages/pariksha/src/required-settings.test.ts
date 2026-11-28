@@ -58,6 +58,19 @@ describe('parseRequirements', () => {
   ] as const) {
     it(`refuses ${name}`, () => assert.throws(() => parseRequirements(text), message));
   }
+
+  it('refuses null and a scalar as the whole file, naming the shape', () => {
+    assert.throws(() => parseRequirements('null'), { message: 'the requirements must be an object of keys' });
+    assert.throws(() => parseRequirements('5'), { message: 'the requirements must be an object of keys' });
+  });
+
+  it('refuses a null spec, naming its shape', () => {
+    assert.throws(() => parseRequirements(JSON.stringify({ a: null })), { message: '"a" needs { "value": …, "why": "…" } or { "includes": […], "why": "…" }' });
+  });
+
+  it('names every unknown key, each quoted', () => {
+    assert.throws(() => parseRequirements(JSON.stringify({ a: { value: 1, why: 'w', note: 'n', see: 's' } })), { message: '"a": unknown key "note", "see"' });
+  });
 });
 
 describe('findMissing', () => {
@@ -122,7 +135,7 @@ describe('formatFindings', () => {
       `pariksha required-settings: s.json: "e" holds "x", not a list; it must be a list holding "x" (s). ${tail}`,
     ]);
     const rule = formatFindings([{ key: 'permissions.allow', kind: 'rule', rule: 'Write(x)', why: 'r' }], 1, 's.json', 'r.json');
-    assert.deepEqual(rule.err, ['pariksha required-settings: s.json: "permissions.allow" lists "Write(x)": r.']);
+    assert.deepEqual(rule, { ok: false, out: [], err: ['pariksha required-settings: s.json: "permissions.allow" lists "Write(x)": r.'] });
   });
 });
 
@@ -147,6 +160,21 @@ describe('ruleProblem', () => {
   for (const rule of ['Bash(*git push* :**)', 'Bash(git status:*)', 'Bash(*--no-verify*)', 'Bash(niyam review-thread *)', 'Write', 'NotebookEdit', 'Edit(./**)', 'Read(./**)', 'mcp__ccd_pr__bind_pr', 'Bash(*:*', 'Bash']) {
     it(`passes ${rule}`, () => assert.equal(ruleProblem(rule), undefined));
   }
+
+  it('reads the ":*" ending only in a closed Bash rule, and a file tool only at the start', () => {
+    assert.equal(ruleProblem('Read(*x*:*)'), undefined);
+    assert.equal(ruleProblem('Bash(*x*:*z'), undefined);
+    assert.equal(ruleProblem('Bash(x:*)'), undefined);
+    assert.equal(ruleProblem('Bash(echo Write(x))'), undefined);
+    assert.equal(
+      ruleProblem('Bash(*x*:*)'),
+      'Claude Code reads a ":*" ending as a prefix only in a rule with no other "*", so this rule does not match a colon followed by anything; write ":**" for that',
+    );
+    assert.equal(
+      ruleProblem('MultiEdit(a)'),
+      'Claude Code checks file edits against Edit(path) rules only, so a path on MultiEdit never matches; write Edit(path), which covers every file-editing tool',
+    );
+  });
 });
 
 describe('permission rules Claude Code does not match as written', () => {

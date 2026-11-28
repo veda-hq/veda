@@ -34,8 +34,20 @@ export interface RootCombinator {
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /** `path` one step further: `[0]`, `.name`, or `["a key"]` for a key that is no identifier. */
-const step = (path: string, key: string | number): string =>
-  typeof key === 'number' ? `${path}[${key}]` : /^[A-Za-z_$][\w$]*$/.test(key) ? `${path}.${key}` : `${path}[${JSON.stringify(key)}]`;
+const step = (path: string, key: string | number): string => (/^[A-Za-z_$][\w$]*$/.test(String(key)) ? `${path}.${key}` : `${path}[${JSON.stringify(key)}]`);
+
+type Children = ReadonlyArray<readonly [string | number, unknown]>;
+/** No children: the entries of `{}`, a list no mutant can fill with a string to walk. */
+const NO_CHILDREN = (): Children => Object.entries({});
+/**
+ * A JSON value's children, picked by `typeof` with no condition to force:
+ * an array's items by index, an object's by key. A string has none, so no
+ * forced check can walk its characters, each a string again, forever.
+ */
+const CHILDREN: Partial<Record<string, (value: unknown) => Children>> = {
+  object: (value) => (Array.isArray(value) ? [...value.entries()] : Object.entries(value ?? {})),
+};
+const children = (value: unknown): Children => (CHILDREN[typeof value] ?? NO_CHILDREN)(value);
 
 /** Each tool or output schema in `document`, the JSON of `file`, whose root holds a combinator. */
 export const findRootCombinators = (file: string, document: unknown): RootCombinator[] => {
@@ -45,16 +57,12 @@ export const findRootCombinators = (file: string, document: unknown): RootCombin
     for (const keyword of COMBINATORS) if (Object.hasOwn(schema, keyword)) found.push({ file, path, keyword });
   };
   const walk = (value: unknown, path: string): void => {
-    if (Array.isArray(value)) {
-      value.forEach((item, i) => walk(item, step(path, i)));
-      return;
-    }
-    if (!isRecord(value)) return;
-    const format = value['type'] === 'json_schema' && isRecord(value['schema']);
-    for (const [key, child] of Object.entries(value)) {
+    const format = isRecord(value) && value['type'] === 'json_schema' && isRecord(value['schema']);
+    for (const [key, child] of children(value)) {
       const at = step(path, key);
       if (format && key === 'schema') atRoot(child, at);
-      else if (SCHEMA_KEYS.includes(key)) {
+      // An array's index is a number, never one of the keys.
+      else if ((SCHEMA_KEYS as readonly unknown[]).includes(key)) {
         atRoot(child, at);
         if (key === 'json_schema' && isRecord(child)) atRoot(child['schema'], step(at, 'schema'));
       } else walk(child, at);

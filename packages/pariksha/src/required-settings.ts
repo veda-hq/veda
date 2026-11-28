@@ -61,9 +61,8 @@ const FILE_TOOLS = /^(Write|NotebookEdit|MultiEdit)\(/;
 export function ruleProblem(rule: string): string | undefined {
   const tool = FILE_TOOLS.exec(rule)?.[1];
   if (tool !== undefined) return `Claude Code checks file edits against Edit(path) rules only, so a path on ${tool} never matches; write Edit(path), which covers every file-editing tool`;
-  if (!rule.startsWith('Bash(') || !rule.endsWith(')')) return undefined;
-  const body = rule.slice('Bash('.length, -1);
-  if (body.endsWith(':*') && body.slice(0, -2).includes('*'))
+  // `Bash(` holds no `*`, so the rule up to its `:*)` holds another `*` just when the pattern does.
+  if (rule.startsWith('Bash(') && rule.endsWith(':*)') && rule.slice(0, -3).includes('*'))
     return 'Claude Code reads a ":*" ending as a prefix only in a rule with no other "*", so this rule does not match a colon followed by anything; write ":**" for that';
   return undefined;
 }
@@ -96,7 +95,8 @@ export function parseRequirements(text: string): Requirement[] {
   const out: Requirement[] = [];
   for (const [key, spec] of Object.entries(raw)) {
     if (key === '$schema') continue;
-    if (key === '' || key.split('.').some((part) => part === '')) throw new Error(`"${key}" is not a key or dotted path`);
+    // An empty key splits into one empty part.
+    if (key.split('.').some((part) => part === '')) throw new Error(`"${key}" is not a key or dotted path`);
     const shape = `"${key}" needs { "value": …, "why": "…" } or { "includes": […], "why": "…" }`;
     if (!isRecord(spec)) throw new Error(shape);
     const hasValue = Object.hasOwn(spec, 'value');

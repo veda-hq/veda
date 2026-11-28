@@ -2,7 +2,7 @@
 // over temp git trees, and the subcommand end to end through `run`.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -533,6 +533,31 @@ it('indexReader throws git’s spawn error as it is when git cannot start', () =
   const root = repo({ [CONTROL]: CONTROL_SOURCE });
   const read = indexReader(root, { ...env, PATH: join(root, 'no-bin') });
   assert.throws(() => read(CONTROL), { message: 'spawnSync git ENOENT', code: 'ENOENT' });
+});
+
+it("indexReader reads an EPIPE on input git never read as git's failure", () => {
+  const root = repo({ [CONTROL]: CONTROL_SOURCE });
+  const read = indexReader(root, { ...env, GIT_DIR: join(root, 'no-such-git-dir') });
+  // 1 MB of input, 16 times a 64 KiB pipe: the write always meets the pipe git closed by exiting.
+  const paths = Array.from({ length: 50_000 }, (_, i) => `scripts/a-path-${String(i).padStart(5, '0')}.ts`);
+  assert.throws(() => read.prefetch?.(paths), {
+    message: 'Command failed: git -c core.quotePath=off -c grep.column=false -c color.ui=never -c core.precomposeUnicode=false cat-file --batch',
+    status: 128,
+  });
+});
+
+it("indexReader reads a git stopped by a signal as git's failure", () => {
+  const root = repo({ [CONTROL]: CONTROL_SOURCE });
+  const bin = join(root, 'stand-in-bin');
+  mkdirSync(bin);
+  // It reads its input to the end first, so no write can race its exit.
+  writeFileSync(join(bin, 'git'), '#!/bin/sh\n/bin/cat > /dev/null\nkill -9 $$\n');
+  chmodSync(join(bin, 'git'), 0o755);
+  const read = indexReader(root, { ...env, PATH: `${bin}:${process.env['PATH'] ?? ''}` });
+  assert.throws(() => read(CONTROL), {
+    message: 'Command failed: git -c core.quotePath=off -c grep.column=false -c color.ui=never -c core.precomposeUnicode=false cat-file --batch',
+    status: null,
+  });
 });
 
 describe('indexReader', () => {

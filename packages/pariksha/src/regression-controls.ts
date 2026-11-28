@@ -136,9 +136,11 @@ export const indexReader = (root: string, env: NodeJS.ProcessEnv = process.env):
     // One `cat-file --batch` for every path: a git process per file is most
     // of a pre-commit check's time. A path with a newline cannot be asked for.
     const asked = wanted.filter((p) => !p.includes('\n'));
-    // spawnSync captures stderr unread, so no stdio list is needed, and fails
-    // as execFileSync did: its spawn error as it is, a non-zero exit as
-    // "Command failed: <command>".
+    // spawnSync captures stderr unread, so no stdio list is needed. Git that
+    // never started, or ran out its time, has no status and its own error,
+    // thrown as it is. Any other ending is git's verdict, "Command failed:
+    // <command>" when not 0: a signal, or an exit, an EPIPE on input git
+    // exited without reading included, which only races git's exit.
     const args = [...PINNED, 'cat-file', '--batch'];
     const run = spawnSync('git', args, {
       cwd: top,
@@ -147,7 +149,7 @@ export const indexReader = (root: string, env: NodeJS.ProcessEnv = process.env):
       maxBuffer: 1 << 28,
       timeout: 120_000,
     });
-    if (run.error !== undefined) throw run.error;
+    if (run.status === null && run.error !== undefined) throw run.error;
     if (run.status !== 0) throw Object.assign(new Error(`Command failed: git ${args.join(' ')}`), { status: run.status });
     for (const [p, body] of parseBatch(run.stdout, asked)) blobs.set(p, body);
   };

@@ -13,22 +13,28 @@ export const isAction = (path: string): boolean => /(^|\/)action\.ya?ml$/.test(p
 /** A compose file, by Docker's own names and the common variants. */
 export const isCompose = (path: string): boolean => /(^|\/)(docker-)?compose(\.[\w-]+)*\.ya?ml$/.test(path);
 
-/** `text` as YAML; undefined when it does not parse (a syntax check is another tool's). */
-export const yamlOf = (text: string): unknown => {
+/** `text` as YAML in a box, `{ doc }`, or null when it does not parse; a document of `null` is `{ doc: null }`. */
+export const yamlBox = (text: string): { doc: unknown } | null => {
   try {
-    return load(text, { schema: CORE_SCHEMA });
+    return { doc: load(text, { schema: CORE_SCHEMA }) };
   } catch {
     // fail-open: a file that is not YAML is actionlint's or compose's to refuse; these rules read only what parses.
-    return undefined;
+    return null;
   }
 };
 
-/** The selected files `pick` keeps, each with its text and parsed YAML. */
+/** `text` as YAML; undefined when it does not parse (a syntax check is another tool's). */
+export const yamlOf = (text: string): unknown => yamlBox(text)?.doc;
+
+/**
+ * The selected files `pick` keeps, each with its text and parsed YAML. A
+ * selected file that is gone reads as the text `undefined`, whose YAML is that
+ * one word: no trigger, job or service, so no rule finds anything in it.
+ */
 const parsed = (repo: Repo, pick: (path: string) => boolean): Array<{ file: string; text: string; doc: unknown }> =>
-  repo.files.filter(pick).flatMap((file) => {
-    const text = repo.read(file);
-    if (text === undefined) return [];
-    return [{ file, text, doc: yamlOf(text) }];
+  repo.files.filter(pick).map((file) => {
+    const text = String(repo.read(file));
+    return { file, text, doc: yamlOf(text) };
   });
 
 /** The `on:` triggers of a workflow, as an event name to its settings (null when it has none). */
@@ -91,7 +97,8 @@ export const falsyTernaryExpression: Rule = {
       const text = repo.read(file);
       if (text === undefined) continue;
       text.split('\n').forEach((line, i) => {
-        const code = line.replace(/(^|\s)#.*$/, '');
+        // The text before a comment that runs to the end of the line.
+        const code = line.split(/(?:^|\s)#.*$/)[0] as string;
         const match = FALSY_TERNARY.exec(code);
         if (match !== null) findings.push({ file, line: i + 1, detail: `\`&& ${match[1]} ||\` always takes the right-hand side` });
       });
@@ -145,8 +152,12 @@ export const jobTimeoutMinutes: Rule = {
   },
 };
 
-/** Whether a `pg_isready` command line probes over TCP: a `-h`/`--host` naming a host. */
-export const probesOverTcp = (command: string): boolean => /(^|\s)(-h\s*\S|--host(=|\s+)\S)/.test(command.slice(command.indexOf('pg_isready')));
+/**
+ * Whether a `pg_isready` command line probes over TCP: a `-h`/`--host` naming
+ * a host, after a space. The text read starts at `pg_isready` (or, with none,
+ * is the last character), so the option never opens it.
+ */
+export const probesOverTcp = (command: string): boolean => /\s(-h\s*\S|--host(=|\s+)\S)/.test(command.slice(command.indexOf('pg_isready')));
 
 export const pgIsreadyOverSocket: Rule = {
   id: 'pg-isready-over-socket',

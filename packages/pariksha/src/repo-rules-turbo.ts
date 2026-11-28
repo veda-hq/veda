@@ -7,40 +7,27 @@ import { parseJsonc, withoutJsComments } from './repo-rules-configs.ts';
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
+/** The regex for each glob token that stands for itself alone. */
+const GLOB_FIXED = new Map([
+  ['**/', '(?:.*/)?'],
+  ['**', '.*'],
+  ['*', '[^/]*'],
+  ['?', '[^/]'],
+]);
+/** A glob's tokens, left to right: a double star with or without its slash, `*`, `?`, `{…}` (its alternatives), `[…]` (its class), or one other character. */
+const GLOB_TOKEN = /\*\*\/?|\*|\?|\{([^}]*)\}|\[([^\]]*)\]|[^]/g;
+
 /** A glob as Turborepo writes them (`**`, `*`, `?`, `{a,b}`, `[ab]`), as an anchored regex over a `/` path. */
-export const globToRegExp = (glob: string): RegExp => {
-  let out = '';
-  for (let i = 0; i < glob.length; i += 1) {
-    const c = glob[i] as string;
-    if (c === '*') {
-      if (glob[i + 1] === '*') {
-        const slash = glob[i + 2] === '/';
-        out += slash ? '(?:.*/)?' : '.*';
-        i += slash ? 2 : 1;
-      } else out += '[^/]*';
-    } else if (c === '?') out += '[^/]';
-    else if (c === '{') {
-      const end = glob.indexOf('}', i);
-      if (end === -1) out += '\\{';
-      else {
-        out += `(?:${glob
-          .slice(i + 1, end)
-          .split(',')
-          .map((alt) => globToRegExp(alt).source.slice(1, -1))
-          .join('|')})`;
-        i = end;
-      }
-    } else if (c === '[') {
-      const end = glob.indexOf(']', i);
-      if (end === -1) out += '\\[';
-      else {
-        out += `[${glob.slice(i + 1, end).replace(/^!/, '^')}]`;
-        i = end;
-      }
-    } else out += c.replace(/[.+^${}()|\\]/g, '\\$&');
-  }
-  return new RegExp(`^${out}$`);
-};
+export const globToRegExp = (glob: string): RegExp =>
+  new RegExp(
+    `^${glob.replace(GLOB_TOKEN, (token: string, braces: string | undefined, klass: string | undefined) => {
+      // Each alternative is shorter than the glob, so the recursion ends.
+      if (braces !== undefined) return `(?:${braces.split(',').map((alt) => globToRegExp(alt).source.slice(1, -1)).join('|')})`;
+      if (klass !== undefined) return `[${klass.replace(/^!/, '^')}]`;
+      // An unclosed `{` or `[` stands for itself.
+      return GLOB_FIXED.get(token) ?? token.replace(/[.+^${}()|[\\]/g, '\\$&');
+    })}$`,
+  );
 
 /** The paths, relative to the repository root, a task's `inputs` hash for a package at `dir` ('' for the root). */
 export const inputMatcher = (inputs: readonly string[], dir: string): ((path: string) => boolean) => {
@@ -49,7 +36,8 @@ export const inputMatcher = (inputs: readonly string[], dir: string): ((path: st
     const glob = negated ? raw.slice(1) : raw;
     const rooted = glob.startsWith('$TURBO_ROOT$/');
     const relativeGlob = rooted ? glob.slice('$TURBO_ROOT$/'.length) : glob;
-    const full = rooted || dir === '' ? relativeGlob : `${dir}/${relativeGlob.replace(/^\.\//, '')}`;
+    // normalize drops a leading `./` but keeps a lone one, which hashes the root path ''.
+    const full = rooted || dir === '' ? relativeGlob : `${dir}/${relativeGlob}`;
     return { negated, pattern: globToRegExp(normalize(full).replace(/^\.\//, '')) };
   });
   return (path) => {
@@ -74,7 +62,8 @@ export const namedFiles = (code: string, file: string, dir: string, tracked: Rea
     const literal = match[2] as string;
     const bases = literal.startsWith('.') ? [dirname(file)] : [dirname(file), dir, ''];
     for (const base of bases) {
-      const path = normalize(join(base, literal)).replace(/^\.\//, '');
+      // join normalizes, and never leaves a leading `./`.
+      const path = join(base, literal);
       if (!path.startsWith('..') && tracked.has(path)) {
         out.push({ path, index: match.index });
         break;
@@ -134,17 +123,20 @@ export const turboInputsCoverReads: Rule = {
     const tracked = repo.tracked();
     const all = new Set(tracked);
     const packages = tracked.filter((p) => /(^|\/)package\.json$/.test(p) && !/(^|\/)node_modules\//.test(p)).map((p) => (p === 'package.json' ? '' : dirname(p)));
-    const owner = (path: string): string => packages.filter((d) => d === '' || path.startsWith(`${d}/`)).sort((a, b) => b.length - a.length)[0] ?? '';
+    // The innermost package holding `path`; the root (`''`) holds what no other does.
+    const owner = (path: string): string => packages.filter((d) => path.startsWith(`${d}/`)).sort((a, b) => b.length - a.length)[0] ?? '';
     const touched = new Set(repo.files.map(owner));
     const everything = repo.files.includes('turbo.json');
     const findings: Finding[] = [];
     for (const dir of packages) {
       if (!everything && !touched.has(dir)) continue;
-      const pkg = parseJsonc(repo.read(join(dir, 'package.json')) ?? '');
-      const scripts = isRecord(pkg) && isRecord(pkg['scripts']) ? Object.keys(pkg['scripts']) : [];
+      // A file that is gone reads as the text `undefined`, which is no JSON: parseJsonc gives undefined.
+      const pkg = parseJsonc(String(repo.read(join(dir, 'package.json'))));
+      const scripts = Object.keys(isRecord(pkg) && isRecord(pkg['scripts']) ? pkg['scripts'] : {});
       const name = isRecord(pkg) && typeof pkg['name'] === 'string' ? pkg['name'] : undefined;
-      const ownText = dir === '' ? undefined : repo.read(join(dir, 'turbo.json'));
-      const tasks = tasksWithInputs(rootTurbo, ownText === undefined ? undefined : parseJsonc(ownText), dir, name, scripts).filter((t) => judged.some((r) => r.test(t.name.replace(/^\/\/#/, ''))));
+      // The root's own turbo.json is the root one, which tasksWithInputs reads for the root alone.
+      const own = parseJsonc(String(repo.read(join(dir, 'turbo.json'))));
+      const tasks = tasksWithInputs(rootTurbo, own, dir, name, scripts).filter((t) => judged.some((r) => r.test(t.name.replace(/^\/\/#/, ''))));
       // package.json and turbo.json are always part of a task's hash.
       const always = new Set([join(dir, 'package.json'), join(dir, 'turbo.json'), 'turbo.json'].map((p) => normalize(p)));
       for (const task of tasks) {
@@ -157,7 +149,8 @@ export const turboInputsCoverReads: Rule = {
           for (const { path, index } of namedFiles(code, file, dir, all)) {
             if (hashed(path) || always.has(path)) continue;
             const line = code.slice(0, index).split('\n').length;
-            const shown = relative(dir === '' ? '.' : dir, path) || path;
+            // relative reads '' as the working folder, as it reads '.'.
+            const shown = relative(dir, path) || path;
             findings.push({ file, line, detail: `task ${task.name} runs this file, which names ${shown}; the task's inputs do not hash it` });
           }
         }

@@ -8,6 +8,16 @@ const v = (text: string) => {
   return parsed;
 };
 
+/** Each set of `range` as its comparators, written out: `>=1.2.0-0 <1.3.0-0`; `*` for one every version passes. */
+const plain = (range: string): string[] | undefined =>
+  parseRange(range)?.map((set) =>
+    set
+      .map(({ operator, version }) =>
+        version === undefined ? '*' : `${operator}${version.main.join('.')}${version.prerelease.length > 0 ? `-${version.prerelease.join('.')}` : ''}`,
+      )
+      .join(' '),
+  );
+
 describe('parseVersion and validVersion', () => {
   it('reads full versions, trimmed, with v, prerelease and build', () => {
     assert.deepEqual(parseVersion(' v1.2.3-beta.1+build.5 '), { main: [1, 2, 3], prerelease: ['beta', '1'] });
@@ -22,6 +32,12 @@ describe('parseVersion and validVersion', () => {
     assert.equal(validVersion(123), false);
     assert.equal(validVersion(undefined), false);
   });
+
+  it('reads up to 256 characters, and a part up to the largest safe integer', () => {
+    assert.equal(validVersion(`1.2.3-${'a'.repeat(250)}`), true);
+    assert.equal(validVersion(`1.2.3-${'a'.repeat(251)}`), false);
+    assert.deepEqual(parseVersion('9007199254740991.0.0'), { main: [9007199254740991, 0, 0], prerelease: [] });
+  });
 });
 
 describe('compareIdentifiers and compareVersions', () => {
@@ -33,6 +49,26 @@ describe('compareIdentifiers and compareVersions', () => {
     assert.equal(compareIdentifiers('B', 'a'), -1);
     assert.equal(compareIdentifiers('b', 'a'), 1);
     assert.equal(compareIdentifiers('x', 'x'), 0);
+  });
+
+  it('reads an identifier as a number only when it is all digits', () => {
+    assert.equal(compareIdentifiers('5', '5'), 0);
+    assert.equal(compareIdentifiers('1', '01'), 0);
+    assert.equal(compareIdentifiers('20', '100'), -1);
+    assert.equal(compareIdentifiers('1a', '1b'), -1);
+    assert.equal(compareIdentifiers('a1', 'b1'), -1);
+  });
+
+  it('puts a number before a word that sorts before digits', () => {
+    assert.equal(compareIdentifiers('1', '-a'), -1);
+    assert.equal(compareIdentifiers('-a', '1'), 1);
+  });
+
+  it('orders by minor and by patch alone', () => {
+    assert.equal(compareVersions(v('1.2.3'), v('1.3.0')), -1);
+    assert.equal(compareVersions(v('1.2.4'), v('1.2.3')), 1);
+    assert.equal(compareVersions(v('1.0.0-a'), v('1.0.0-a.b')), -1);
+    assert.equal(compareVersions(v('1.0.0-a.b'), v('1.0.0-a')), 1);
   });
 
   it('follows semver precedence, build ignored', () => {
@@ -66,12 +102,62 @@ describe('parseRange and validRange', () => {
     assert.deepEqual(parseRange('<8'), [[{ operator: '<', version: v('8.0.0-0') }]]);
   });
 
+  it('turns a hyphen range into bounds', () => {
+    assert.deepEqual(plain('* - 1.0'), ['<1.1.0-0']);
+    assert.deepEqual(plain('2.0 - 10'), ['>=2.0.0-0 <11.0.0-0']);
+    assert.deepEqual(plain('10.2 - x.2'), ['>=10.2.0-0']);
+    assert.deepEqual(plain('1 - 2'), ['>=1.0.0-0 <3.0.0-0']);
+    assert.deepEqual(plain('1.2 - 2'), ['>=1.2.0-0 <3.0.0-0']);
+    assert.deepEqual(plain('1.2.3 - 2'), ['>=1.2.3-0 <3.0.0-0']);
+    assert.deepEqual(plain('1.2.3-rc - 2'), ['>=1.2.3-rc <3.0.0-0']);
+    assert.deepEqual(plain('1 - 2.3'), ['>=1.0.0-0 <2.4.0-0']);
+    assert.deepEqual(plain('1.2 - *'), ['>=1.2.0-0']);
+  });
+
+  it('turns carets and tildes into bounds', () => {
+    assert.deepEqual(plain('^2.x'), ['>=2.0.0-0 <3.0.0-0']);
+    assert.deepEqual(plain('^1.2'), ['>=1.2.0-0 <2.0.0-0']);
+    assert.deepEqual(plain('^10.3.1-beta'), ['>=10.3.1-beta <11.0.0-0']);
+    assert.deepEqual(plain('^0.1.10-rc'), ['>=0.1.10-rc <0.2.0-0']);
+    assert.deepEqual(plain('^0.2.0'), ['>=0.2.0-0 <0.3.0-0']);
+    assert.deepEqual(plain('~1.2.3'), ['>=1.2.3 <1.3.0-0']);
+    assert.deepEqual(plain('~10.0'), ['>=10.0.0 <10.1.0-0']);
+    assert.deepEqual(plain('~1.0.0-a.1'), ['>=1.0.0-a.1 <1.1.0-0']);
+    assert.deepEqual(plain('>1'), ['>=2.0.0-0']);
+  });
+
+  it('joins an operator, a tilde or a caret to the version after a space, each time', () => {
+    assert.deepEqual(plain('> 1.0.0 < 2.0.0'), ['>1.0.0 <2.0.0']);
+    assert.deepEqual(plain('>  1.2.3'), ['>1.2.3']);
+    assert.deepEqual(plain('~ 10.0'), ['>=10.0.0 <10.1.0-0']);
+    assert.deepEqual(plain('^ 1.2.3'), ['>=1.2.3 <2.0.0-0']);
+    assert.deepEqual(plain('~ 1.2.3 ~ 1.2.4'), ['>=1.2.3 <1.3.0-0 >=1.2.4 <1.3.0-0']);
+    assert.deepEqual(plain('^ 1.2.3 ^ 1.2.4'), ['>=1.2.3 <2.0.0-0 >=1.2.4 <2.0.0-0']);
+  });
+
+  it('drops a star and every build, and trims each set', () => {
+    assert.deepEqual(plain('1.0.0 * 2.0.0'), ['1.0.0 2.0.0']);
+    assert.deepEqual(plain('1.2.3*'), ['1.2.3']);
+    assert.deepEqual(plain('>=*1.2.3'), ['1.2.3']);
+    assert.deepEqual(plain('1.0.0 || 2.0.0'), ['1.0.0', '2.0.0']);
+    assert.deepEqual(plain('1.2+a 1.2+b'), ['>=1.2.0-0 <1.3.0-0 >=1.2.0-0 <1.3.0-0']);
+  });
+
+  it('bounds a word identifier at a letter and 250 more, even where the range drops it', () => {
+    assert.deepEqual(plain(`1.2.x-${'a'.repeat(251)}`), ['>=1.2.0-0 <1.3.0-0']);
+    assert.equal(parseRange(`1.2.x-${'a'.repeat(252)}`), undefined);
+  });
+
   it('refuses what semver refuses', () => {
     for (const range of ['npm:other@1.0.0', '==1.2.3', 'latest', '>', '1.2.3.4', '01.2.3', `>=1.2.3-${'a'.repeat(260)}`, '>=9007199254740992.0.0']) {
       assert.equal(validRange(range), false, range);
     }
     assert.equal(validRange(7), false);
     assert.equal(validRange(null), false);
+  });
+
+  it('refuses a set with any comparator it cannot read', () => {
+    assert.equal(parseRange('1.2.3 latest'), undefined);
   });
 });
 

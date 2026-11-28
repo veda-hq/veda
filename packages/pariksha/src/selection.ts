@@ -51,7 +51,7 @@ export const changedPaths = (git: Git, selection: Exclude<Selection, { kind: 'al
 };
 
 /** Whether `path` under `top` is a regular file: not a symlink, a submodule or gone. */
-const isFile = (top: string, path: string): boolean => {
+export const isFile = (top: string, path: string): boolean => {
   try {
     return lstatSync(join(top, path)).isFile();
   } catch {

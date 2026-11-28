@@ -66,6 +66,25 @@ describe('findRootCombinators', () => {
     assert.deepEqual(found([ONE_OF], 'list.schema.json'), []);
   });
 
+  it('reads a json_schema wrapper with no schema inside as the wrapper alone', () => {
+    assert.deepEqual(found({ json_schema: { name: 'verdict' } }), []);
+    assert.deepEqual(found({ json_schema: { name: 'verdict', oneOf: [] } }), ['$.json_schema oneOf']);
+  });
+
+  it('reads no schema inside a schema under another key', () => {
+    assert.deepEqual(found({ input_schema: { type: 'object', schema: { oneOf: [] } } }), []);
+  });
+
+  it('walks the other keys of an output format, and a format schema that is a list', () => {
+    const format = { type: 'json_schema', schema: { type: 'object' }, tools: { input_schema: { anyOf: [] } } };
+    assert.deepEqual(found({ output_format: format }), ['$.output_format.tools.input_schema anyOf']);
+    assert.deepEqual(found({ type: 'json_schema', schema: [{ input_schema: { allOf: [] } }] }), ['$.schema[0].input_schema allOf']);
+  });
+
+  it('steps into an index and a key that looks like one apart', () => {
+    assert.deepEqual(found({ list: [{ input_schema: { oneOf: [] } }], map: { 0: { input_schema: { oneOf: [] } } } }), ['$.list[0].input_schema oneOf', '$.map["0"].input_schema oneOf']);
+  });
+
   it('records the file in each finding', () => {
     assert.deepEqual(findRootCombinators('a/b.json', { input_schema: ONE_OF }), [{ file: 'a/b.json', path: '$.input_schema', keyword: 'oneOf' }]);
   });

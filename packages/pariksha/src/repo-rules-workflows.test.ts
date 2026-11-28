@@ -14,6 +14,8 @@ import {
   pgIsreadyOverSocket,
   probesOverTcp,
   triggersOf,
+  WORKFLOW_RULES,
+  yamlBox,
   yamlOf,
 } from './repo-rules-workflows.ts';
 
@@ -31,12 +33,58 @@ describe('file kinds', () => {
     for (const p of ['compose.yml', 'docker-compose.yml', 'docker-compose.test.yaml', 'infra/compose.dev.yml']) assert.equal(isCompose(p), true, p);
     assert.equal(isCompose('composer.yml'), false);
   });
+
+  it('names a whole path only, from its start to its end', () => {
+    assert.equal(isWorkflow('x/.github/workflows/ci.yml'), false);
+    assert.equal(isWorkflow('.github/workflows/ci.yml.bak'), false);
+    assert.equal(isAction('action.yml.bak'), false);
+    assert.equal(isCompose('compose.yml.bak'), false);
+  });
+});
+
+describe('the workflow rules', () => {
+  it('lists each rule with its id and lesson', () => {
+    assert.deepEqual(
+      WORKFLOW_RULES.map((r) => [r.id, r.lesson]),
+      [
+        [
+          'actions-path-leading-slash',
+          '`paths` and `paths-ignore` match each pattern against the path from the repository root, as written, and are not gitignore: a leading `/` matches nothing, so the workflow silently never runs for those files. A bare name is already root-only; write `docs/**`, not `/docs/**` (the filter cheat sheet in GitHub\'s workflow-syntax docs).',
+        ],
+        [
+          'falsy-ternary-expression',
+          "A workflow expression `a && b || c` yields `b` only when `b` is itself truthy, so `cond && 0 || 1` always gives `1` and the fix silently does nothing; actionlint passes it. Quote the falsy value (`cond && '0' || '1'`) with a comment saying why.",
+        ],
+        [
+          'job-level-if-not-step',
+          'GitHub bills each job rounded up to a whole minute, plus about 90 s of setup. A job whose every step has an `if:` still starts, sets up and bills when all of them skip. Put the condition on the job (`jobs.<id>.if`), build the matrix upstream, or drop the job.',
+        ],
+        [
+          'job-timeout-minutes',
+          'A job with no `timeout-minutes` can run for GitHub\'s default 360 minutes. In a merge queue a hung one ends as "Checks timed out": Mergify dequeues the pull request, re-adding the queue label does not requeue the same head, and only an `@mergifyio requeue` comment does. Give every job a merge queue waits on a `timeout-minutes`.',
+        ],
+        [
+          'pg-isready-over-socket',
+          "A Postgres healthcheck of `pg_isready` over the Unix socket passes against the image entrypoint's first-boot temporary server (`listen_addresses` empty), so `compose up --wait` or a job's service returns mid-init and the next `psql` sees \"the database system is starting up\". Probe over TCP, `pg_isready -h 127.0.0.1`, so healthy means the real server accepts connections.",
+        ],
+      ],
+    );
+  });
 });
 
 describe('YAML reading', () => {
   it('reads what parses and nothing else', () => {
     assert.deepEqual(yamlOf('a: 1'), { a: 1 });
     assert.equal(yamlOf('a: [1'), undefined);
+  });
+
+  it('boxes what parses, null included, and gives null for what does not', () => {
+    assert.deepEqual(yamlBox('null'), { doc: null });
+    assert.equal(yamlBox('a: [1'), null);
+  });
+
+  it('reads YAML 1.2 core types, so a date stays a string', () => {
+    assert.deepEqual(yamlOf('a: 2001-12-14'), { a: '2001-12-14' });
   });
 
   it('reads triggers in all three spellings', () => {
@@ -81,6 +129,11 @@ describe('actions-path-leading-slash', () => {
   it('skips a selected file that is gone', () => {
     assert.deepEqual(actionsPathLeadingSlash.run(memoryRepo({}, { selected: [W] }), {}), []);
   });
+
+  it('skips a pattern that is no string, even one that reads as a slash path', () => {
+    const repo = memoryRepo({ [W]: 'on:\n  push:\n    paths: [["/a"]]\n' });
+    assert.deepEqual(actionsPathLeadingSlash.run(repo, {}), []);
+  });
 });
 
 describe('falsy-ternary-expression', () => {
@@ -100,6 +153,16 @@ describe('falsy-ternary-expression', () => {
       [1, 2, 3, 4],
     );
     assert.deepEqual(falsyTernaryExpression.run(memoryRepo({}, { selected: [W] }), {}), []);
+  });
+
+  it('refuses the expression with no spaces around the falsy value', () => {
+    const repo = memoryRepo({ [W]: 'jobs:\n  a:\n    env:\n      N: ${{ x &&0||1 }}\n' });
+    assert.deepEqual(falsyTernaryExpression.run(repo, {}), [{ file: W, line: 4, detail: '`&& 0 ||` always takes the right-hand side' }]);
+  });
+
+  it('strips a comment only where it runs to the end of the line: a carriage return keeps it', () => {
+    const repo = memoryRepo({ [W]: 'a: 1 # x && 0 || 1\r\nb: 2 # x && 0 || 1\n' });
+    assert.deepEqual(falsyTernaryExpression.run(repo, {}), [{ file: W, line: 1, detail: '`&& 0 ||` always takes the right-hand side' }]);
   });
 });
 
@@ -134,6 +197,18 @@ describe('job-level-if-not-step', () => {
     const repo = memoryRepo({ [W]: 'on: push\njobs: { "a b": { steps: [{ if: x, run: y }] } }\n' });
     assert.deepEqual(jobLevelIfNotStep.run(repo, {}), [{ file: W, detail: 'job "a b" has no if:, and each of its 1 step(s) has one' }]);
   });
+
+  it('finds the job line under jobs:, past a key of the same name above it', () => {
+    const spaced = ['env:', '  myjobs: 1', 'on:', '  workflow_dispatch:', '    inputs:', '      test:', '        type: string', 'jobs :', '  test:', '    steps: [{ if: x, run: y }]'].join('\n');
+    assert.deepEqual(jobLevelIfNotStep.run(memoryRepo({ [W]: spaced }), {}), [{ file: W, line: 9, detail: 'job "test" has no if:, and each of its 1 step(s) has one' }]);
+    const tight = ['on:', '  workflow_dispatch:', '    inputs:', '      test:', '        type: string', 'jobs:', '  test:', '    steps: [{ if: x, run: y }]'].join('\n');
+    assert.deepEqual(jobLevelIfNotStep.run(memoryRepo({ [W]: tight }), {}), [{ file: W, line: 7, detail: 'job "test" has no if:, and each of its 1 step(s) has one' }]);
+  });
+
+  it('finds the line of a job id holding a regex character', () => {
+    const repo = memoryRepo({ [W]: 'on: push\njobs:\n  a.b:\n    steps: [{ if: x, run: y }]\n' });
+    assert.deepEqual(jobLevelIfNotStep.run(repo, {}), [{ file: W, line: 3, detail: 'job "a.b" has no if:, and each of its 1 step(s) has one' }]);
+  });
 });
 
 describe('job-timeout-minutes', () => {
@@ -152,6 +227,11 @@ describe('job-timeout-minutes', () => {
     assert.equal(jobTimeoutMinutes.settings?.['triggers']?.(['push']), undefined);
     assert.match(jobTimeoutMinutes.settings?.['triggers']?.([]) ?? '', /non-empty list/);
   });
+
+  it('gives no line when the job id is not written as a key', () => {
+    const repo = memoryRepo({ [W]: 'on: pull_request\njobs: { "a b": { steps: [{ run: y }] } }\n' });
+    assert.deepEqual(jobTimeoutMinutes.run(repo, {}), [{ file: W, detail: 'job "a b" has no timeout-minutes (the workflow runs on pull_request)' }]);
+  });
 });
 
 describe('pg-isready-over-socket', () => {
@@ -162,6 +242,51 @@ describe('pg-isready-over-socket', () => {
     assert.equal(probesOverTcp('pg_isready --host db'), true);
     assert.equal(probesOverTcp('pg_isready -U postgres'), false);
     assert.equal(probesOverTcp('PGHOST=-h pg_isready'), false);
+  });
+
+  it('reads only what follows pg_isready, and any run of spaces after --host', () => {
+    assert.equal(probesOverTcp('env -h1 pg_isready -U x'), false);
+    assert.equal(probesOverTcp('pg_isready --host  db'), true);
+  });
+
+  it('names a compose command trimmed, past CMD-SHELL, with no line when the text spells it otherwise', () => {
+    const repo = memoryRepo({
+      'compose.yml': 'services:\n  a:\n    healthcheck: { test: ["CMD-SHELL", "pg_isready"] }\n  b:\n    healthcheck: { test: " pg_isready " }\n',
+      'compose.dev.yml': 'services:\n  c:\n    healthcheck: { test: "pg\\x5Fisready" }\n',
+    });
+    assert.deepEqual(pgIsreadyOverSocket.run(repo, {}), [
+      { file: 'compose.dev.yml', detail: 'healthcheck `pg_isready` probes over the socket' },
+      { file: 'compose.yml', line: 3, detail: 'healthcheck `pg_isready` probes over the socket' },
+      { file: 'compose.yml', line: 3, detail: 'healthcheck `pg_isready` probes over the socket' },
+    ]);
+  });
+
+  it('reads a workflow service --health-cmd quoted, after spaces, and skips options that are no string or hold none', () => {
+    const repo = memoryRepo({
+      [W]: [
+        'on: push',
+        'jobs:',
+        '  a:',
+        '    services:',
+        '      quoted:',
+        `        options: --health-cmd "pg_isready -U 'postgres'"`,
+        '      single:',
+        "        options: --health-cmd 'pg_isready -U x'",
+        '      spaced:',
+        '        options: --health-cmd  pg_isready',
+        '      none:',
+        '        options: --health-interval 2s',
+        '      listed:',
+        '        options: ["--health-cmd pg_isready"]',
+        '  b:',
+        '    services:',
+      ].join('\n'),
+    });
+    assert.deepEqual(pgIsreadyOverSocket.run(repo, {}), [
+      { file: W, line: 6, detail: "healthcheck `pg_isready -U 'postgres'` probes over the socket" },
+      { file: W, line: 6, detail: 'healthcheck `pg_isready -U x` probes over the socket' },
+      { file: W, line: 6, detail: 'healthcheck `pg_isready` probes over the socket' },
+    ]);
   });
 
   it('refuses the incident: a compose healthcheck over the socket that passed mid-init', () => {

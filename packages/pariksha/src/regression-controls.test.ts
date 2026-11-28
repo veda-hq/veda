@@ -538,7 +538,7 @@ it('indexReader throws git’s spawn error as it is when git cannot start', () =
 it("indexReader reads an EPIPE on input git never read as git's failure", () => {
   const root = repo({ [CONTROL]: CONTROL_SOURCE });
   const read = indexReader(root, { ...env, GIT_DIR: join(root, 'no-such-git-dir') });
-  // 1 MB of input, 16 times a 64 KiB pipe: the write always meets the pipe git closed by exiting.
+  // 1 MB of input, far past any stdio buffer: the write always meets the pipe git closed by exiting.
   const paths = Array.from({ length: 50_000 }, (_, i) => `scripts/a-path-${String(i).padStart(5, '0')}.ts`);
   assert.throws(() => read.prefetch?.(paths), {
     message: 'Command failed: git -c core.quotePath=off -c grep.column=false -c color.ui=never -c core.precomposeUnicode=false cat-file --batch',

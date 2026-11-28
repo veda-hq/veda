@@ -7,7 +7,7 @@ import { RETRY_IGNORER_NAME, RETRY_SPANS_VAR } from './retry-ignorer.ts';
 import { readEvents, RETRY_EVENTS_VAR, RETRY_REPORTER_NAME } from './retry-reporter.ts';
 import { forReuse, pruneToTargets } from './reuse-filter.ts';
 import { ownerOf, type Exists } from './suite-owner.ts';
-import { mutantSpan, RETRY_TIMEOUT_MS, retryTimeouts } from './timeout-retry.ts';
+import { mutantSpan, RETRY_CONCURRENCY, RETRY_TIMEOUT_MS, retryTimeouts } from './timeout-retry.ts';
 import { judge, readMutants, type Judgement, type Mutant } from './verdict.ts';
 
 export interface Lane {
@@ -297,7 +297,7 @@ export async function judgeLane(plan: Plan, deps: LaneDeps): Promise<LaneResult>
       const spans = round.map((m) => `${local(m.file)}:${mutantSpan(m)}`);
       const result = await deps.runStryker(
         cwd,
-        ['run', retryWrapper, '--concurrency', '1', '--timeoutMS', String(RETRY_TIMEOUT_MS), '--mutate', spans.join(',')],
+        ['run', retryWrapper, '--concurrency', String(RETRY_CONCURRENCY), '--timeoutMS', String(RETRY_TIMEOUT_MS), '--mutate', spans.join(',')],
         { ...env, [RETRY_SPANS_VAR]: spans.join('\n'), [RETRY_EVENTS_VAR]: events },
         deadline - deps.now(),
       );

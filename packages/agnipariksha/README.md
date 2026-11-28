@@ -97,8 +97,10 @@ runs the repository's own `node_modules/.bin/stryker`.
   for the file: `a-cases.test.ts is not the owner, so it did not run; only
   a.test.ts kills mutants of a.ts here`. Under a related filter any suite
   that imports the file runs, a sibling included, so there it says nothing.
-- **A timed-out mutant** is retried once, with concurrency 1 and a
-  three-minute timeout; one that times out again counts as caught. The
+- **A timed-out mutant** is retried once, four at a time and with a
+  three-minute timeout; one that times out again counts as caught. Four
+  side by side make five real hangs cost two three-minute rows, not five
+  (veda#726). The
   retries run in rounds: one Stryker run per round, whose `--mutate` lists
   every span it retries, so a round pays the initial test run once for all
   its mutants (a run per mutant once spent 8 of 17 minutes repeating it,

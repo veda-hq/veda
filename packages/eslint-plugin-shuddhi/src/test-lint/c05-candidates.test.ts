@@ -1730,11 +1730,48 @@ describe('no-fixed-sleep edges', () => {
     );
   });
 
-  it('reads no delay from a setTimeout given two arguments', () => {
+  it('reads the delay from a setTimeout given two arguments', () => {
     assert.deepEqual(
       ids(
         'no-fixed-sleep',
         `async function f() { await setTimeout(5000, 'done'); }`,
+      ),
+      ['fixedSleep'],
+    );
+  });
+
+  it('reads the delay from a setTimeout given three arguments', () => {
+    assert.deepEqual(
+      findings(
+        'no-fixed-sleep',
+        `async function f() { await setTimeout(5000, 'done', { ref: false }); }`,
+      ).map(finding => finding.slice(0, 32)),
+      ['fixedSleep: A fixed 5000 ms wait'],
+    );
+  });
+
+  it('keeps the poll exemption for a two-argument setTimeout', () => {
+    assert.deepEqual(
+      ids(
+        'no-fixed-sleep',
+        `async function f() { while (!done()) await setTimeout(50, 'tick'); }`,
+      ),
+      [],
+    );
+    assert.deepEqual(
+      ids(
+        'no-fixed-sleep',
+        `async function f() { while (!done()) await setTimeout(1000, 'tick'); }`,
+      ),
+      ['fixedSleep'],
+    );
+  });
+
+  it('reads no delay from a callback setTimeout given a second argument', () => {
+    assert.deepEqual(
+      ids(
+        'no-fixed-sleep',
+        `async function f() { await setTimeout(cb, 10); await setTimeout(() => done(), 5000); }`,
       ),
       [],
     );

@@ -146,10 +146,11 @@ export function c05CandidateRules({
     if (value.type !== 'CallExpression') return null;
     // A member callee (`obj.sleep`) has no `name`, so it is no sleep.
     const name = unwrap(value.callee).name;
-    // `sleep()` has no delay: staticNumber(undefined) is null.
-    if (SLEEP_NAMES.has(name)) return staticNumber(value.arguments[0], context);
-    // `await setTimeout(ms)` from node:timers/promises takes the delay first.
-    if (name === 'setTimeout' && value.arguments.length === 1) {
+    // `sleep()` has no delay: staticNumber(undefined) is null. `await
+    // setTimeout(ms, value, options)` from node:timers/promises takes the
+    // delay first, whatever follows it; the callback form `setTimeout(cb, ms)`
+    // starts with a function, which is no static number.
+    if (SLEEP_NAMES.has(name) || name === 'setTimeout') {
       return staticNumber(value.arguments[0], context);
     }
     return null;

@@ -12,15 +12,17 @@
  * `$'…'`, `'…'` or `"…"` string (open to the end of the line when unclosed;
  * `\` escapes in all but `'…'`); a comment, from a `#` that starts a word to
  * the end of the line; `((` or `))` around arithmetic, where `<<` is a shift;
- * a `<<<` here-string, which opens no body; a heredoc operator and its word;
- * or any other character.
+ * a `<<<` here-string, which opens no body; or a heredoc operator and its
+ * word. Any other character starts none of these, so the reader steps over
+ * it, and over a backslash before one (a carriage return, say): neither
+ * changes where the next piece starts.
  *
  * The delimiter is any shell WORD, not an identifier: `<<'END-OF'` is a
  * heredoc. Quoted and bare parts concatenate into one word, as bash reads
  * them: `<<'END'-OF` ends at `END-OF`.
  */
 const LINE_PIECE =
-  /\\[\s\S]?|\$'(?:[^'\\]|\\[\s\S])*'?|'[^']*'?|"(?:[^"\\]|\\[\s\S])*"?|(?<=^|[\s;&|(])#[\s\S]*|\(\(|\)\)|<<<+|<<(-?)\s*((?:\$'(?:[^'\\]|\\.)*'|'[^']*'|"[^"]*"|\\.|[^\s;&|<>()'"\\])+)|[\s\S]/g;
+  /\\.|\$'(?:[^'\\]|\\[\s\S])*'?|'[^']*'?|"(?:[^"\\]|\\[\s\S])*"?|(?<=^|[\s;&|(])#[\s\S]*|\(\(|\)\)|<<<+|<<(-?)\s*((?:\$'(?:[^'\\]|\\.)*'|'[^']*'|"[^"]*"|\\.|[^\s;&|<>()'"\\])+)/g;
 
 /**
  * The delimiter a heredoc word names, with its quoting removed: `$'EOF'` is
@@ -122,16 +124,6 @@ const opensAnsiC = (source: string, index: number): boolean => {
   return ANSI_C_OPENER.test(source);
 };
 
-/** The rest of a line, up to its newline: what a comment covers. */
-const LINE_REST = /[^\n]*/y;
-
-/** The index of the newline ending the line at `from`, or the text's end. */
-const lineEnd = (source: string, from: number): number => {
-  LINE_REST.lastIndex = from;
-  LINE_REST.exec(source);
-  return LINE_REST.lastIndex;
-};
-
 /**
  * Whether the `(` at `index` opens a `<(…)` or `>(…)` process substitution:
  * its `<` or `>` must not be escaped. `escapedAt` is the index of the last
@@ -164,12 +156,17 @@ export const splitSegmentsWithSeparators = (script: string): Segment[] => {
   /** The index of the last character a backslash escaped. */
   let escapedAt = -1;
   let substitution = 0;
+  /** In a comment, which the next newline ends; that newline goes with it. */
+  let comment = false;
   const flush = (next = '\n'): void => {
     if (current.trim() !== '') segments.push({ text: current.trim(), next });
     current = '';
   };
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source.charAt(index);
+  for (const [index, char] of source.split('').entries()) {
+    if (comment) {
+      if (char === '\n') comment = false;
+      continue;
+    }
     if (escaped) {
       current += char;
       escaped = false;
@@ -205,7 +202,7 @@ export const splitSegmentsWithSeparators = (script: string): Segment[] => {
     // start of a word: `http://x#y` and `${VAR#prefix}` are left alone.
     const previous = index === 0 ? '\n' : source.charAt(index - 1);
     if (char === '#' && /[\s;&|(]/.test(previous)) {
-      index = lineEnd(source, index);
+      comment = true;
       if (substitution > 0) current += '\n';
       else flush();
       continue;
@@ -219,10 +216,9 @@ export const splitSegmentsWithSeparators = (script: string): Segment[] => {
       continue;
     }
     if (char === '&' || char === '|') {
-      // Consume a doubled operator so the second character is not re-read.
-      const doubled = source[index + 1] === char;
-      flush(doubled ? char + char : char);
-      if (doubled) index += 1;
+      // A doubled operator ends the segment once: its second character
+      // finds the segment already flushed, and flushes nothing.
+      flush(source[index + 1] === char ? char + char : char);
       continue;
     }
     current += char;
@@ -245,12 +241,17 @@ export const splitAndOrLists = (script: string): string[] => {
   let quote: Quote = null;
   let escaped = false;
   let depth = 0;
+  /** In a comment, which ends before the next newline: that newline still ends the list. */
+  let comment = false;
   const flush = (): void => {
     if (current.trim() !== '') lists.push(current.trim());
     current = '';
   };
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source.charAt(index);
+  for (const [index, char] of source.split('').entries()) {
+    if (comment) {
+      if (char !== '\n') continue;
+      comment = false;
+    }
     if (escaped) {
       current += char;
       escaped = false;
@@ -273,8 +274,7 @@ export const splitAndOrLists = (script: string): string[] => {
     }
     const previous = index === 0 ? '\n' : source.charAt(index - 1);
     if (char === '#' && /[\s;&|(]/.test(previous)) {
-      // Stop before the newline: it still ends the list.
-      index = lineEnd(source, index) - 1;
+      comment = true;
       continue;
     }
     if (char === '(' || char === '{') depth += 1;
@@ -318,29 +318,34 @@ export const tokenize = (segment: string): ShellToken[] => {
   let quoted = false;
   let started = false;
   let quote: Quote = null;
+  /** Characters an escape already read, still to step over. */
+  let skip = 0;
   const flush = (): void => {
     if (started) tokens.push({ value: current, quoted });
     current = '';
     quoted = false;
     started = false;
   };
-  for (let index = 0; index < segment.length; index += 1) {
-    const char = segment.charAt(index);
+  for (const [index, char] of segment.split('').entries()) {
+    if (skip > 0) {
+      skip -= 1;
+      continue;
+    }
     if (char === '\\' && quote !== "'") {
       const next = segment[index + 1];
       if (next !== undefined && quote === ANSI_C) {
         const hex = /^x([0-9A-Fa-f]{1,2})/.exec(segment.slice(index + 1));
         if (hex) {
           current += String.fromCharCode(hexValue(hex[1] as string));
-          index += hex[0].length;
+          skip = hex[0].length;
         } else {
           current += ANSI_C_ESCAPES[next] ?? `\\${next}`;
-          index += 1;
+          skip = 1;
         }
         continue;
       }
       if (next === '\n') {
-        index += 1;
+        skip = 1;
         continue;
       }
       if (next !== undefined) {
@@ -348,7 +353,7 @@ export const tokenize = (segment: string): ShellToken[] => {
         if (escapable !== undefined && !escapable.includes(next)) current += char + next;
         else current += next;
         started = true;
-        index += 1;
+        skip = 1;
         continue;
       }
     }
@@ -386,20 +391,23 @@ export const tokenize = (segment: string): ShellToken[] => {
  * it: an escaped character; a `$'…'` or `'…'` string or a comment, which
  * hold no substitution (an unclosed one runs to the end, as bash reads it);
  * a closed backquoted body (group 1); an unclosed backquote, which runs
- * nothing; a `"`; or a `$(` that opens no `$((` arithmetic.
+ * nothing; a `"`; or a `$(` that opens no `$((` arithmetic. The reader steps
+ * over anything else, a backslash before a line break included: no piece
+ * starts at a line break.
  */
-const SUBSTITUTION_PIECE = /\\[\s\S]?|\$'(?:[^'\\]|\\[\s\S])*'?|'[^']*'?|(?<=^|[\s;&|(])#[^\n]*|`((?:[^`\\]|\\[\s\S])*)`|`[\s\S]*|"|\$\((?!\()/g;
+const SUBSTITUTION_PIECE = /\\.|\$'(?:[^'\\]|\\[\s\S])*'?|'[^']*'?|(?<=^|[\s;&|(])#[^\n]*|`((?:[^`\\]|\\[\s\S])*)`|`[\s\S]*|"|\$\((?!\()/g;
 
 /** The same pieces inside double quotes, where quotes and `#` are plain. */
-const DOUBLE_QUOTED_SUBSTITUTION_PIECE = /\\[\s\S]?|`((?:[^`\\]|\\[\s\S])*)`|`[\s\S]*|"|\$\((?!\()/g;
+const DOUBLE_QUOTED_SUBSTITUTION_PIECE = /\\.|`((?:[^`\\]|\\[\s\S])*)`|`[\s\S]*|"|\$\((?!\()/g;
 
 /**
  * One piece of a `$( … )` body as `substitutionBody` reads it: an escaped
  * character, a quoted string (open to the end when unclosed), a comment from
- * a `#` that starts a word to the end of its line, or any other character.
- * Parentheses inside quotes and comments close nothing.
+ * a `#` that starts a word to the end of its line, or a parenthesis. The
+ * reader steps over anything else. Parentheses inside quotes and comments
+ * close nothing.
  */
-const BODY_PIECE = /\\[\s\S]?|\$'(?:[^'\\]|\\[\s\S])*'?|'[^']*'?|"(?:[^"\\]|\\[\s\S])*"?|(?<=^|[\s;&|()])#[^\n]*|[\s\S]/g;
+const BODY_PIECE = /\\.|\$'(?:[^'\\]|\\[\s\S])*'?|'[^']*'?|"(?:[^"\\]|\\[\s\S])*"?|(?<=^|[\s;&|()])#[^\n]*|[()]/g;
 
 /** The body of a `$(` that `rest` follows, up to the `)` closing it, or undefined when nothing closes it. */
 const substitutionBody = (rest: string): string | undefined => {
@@ -424,21 +432,25 @@ export const substitutionBodies = (script: string): string[] => {
   const bodies: string[] = [];
   let double = false;
   let from = 0;
-  for (;;) {
+  // One piece a step. Each piece starts at a character of its own (a `\`,
+  // `$`, quote, `#`, backquote or `"`), so there are no more pieces than
+  // characters, and a step per character reads them all.
+  for (const _character of script) {
     const reader = double ? DOUBLE_QUOTED_SUBSTITUTION_PIECE : SUBSTITUTION_PIECE;
     reader.lastIndex = from;
     const piece = reader.exec(script);
-    if (piece === null) return bodies;
+    if (piece === null) break;
     from = reader.lastIndex;
     const [text, backquoted] = piece;
     if (text === '"') double = !double;
     if (backquoted !== undefined) bodies.push(backquoted.replace(/\\`/g, '`'));
     if (text === '$(') {
       const body = substitutionBody(script.slice(from));
-      if (body === undefined) return bodies;
+      if (body === undefined) break;
       bodies.push(body);
       // Past the body and its `)`.
       from += body.length + 1;
     }
   }
+  return bodies;
 };

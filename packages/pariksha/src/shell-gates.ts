@@ -164,35 +164,39 @@ const shellcheckMatch = (hooksDir: string): RegExp => new RegExp(String.raw`\.(s
 /** A first line that names a shell ShellCheck reads: POSIX `[[:space:]]` spelt out. */
 const SHELLCHECK_SHEBANG = /^#![ \t\n\v\f\r]*(\/usr\/bin\/env[ \t\n\v\f\r]+(-[^ \t\n\v\f\r]+[ \t\n\v\f\r]+)*)?(\/[^ \t\n\v\f\r]*\/)?(sh|bash|dash|ksh)([ \t\n\v\f\r]|$)/;
 
-type Side = 'staged' | 'index' | 'range' | 'all';
+/**
+ * What ShellCheck reads: the staged change or the whole index (each as the
+ * index holds it), the HEAD commit, or the working tree.
+ */
+export type Side = 'staged' | 'index' | 'range' | 'all';
 
 /** The first line of `text`, as `head -n 1` writes it (its newline dropped). */
 const firstLine = (text: string): string => text.split('\n')[0] as string;
 
 /** The judged side's first line of `path`, or '' when it cannot be read (as `… 2>/dev/null | head -n 1 || true` gives). */
-const firstLineOn = (root: string, side: Side, path: string): string => {
+export const firstLineOn = (root: string, side: Side, path: string): string => {
   try {
-    if (side === 'all') return firstLine(readFileSync(join(root, path), 'utf8'));
-    return firstLine(gitText(root, ['show', side === 'range' ? `HEAD:${path}` : `:${path}`]));
+    if (side === 'staged' || side === 'index') return firstLine(gitText(root, ['show', `:${path}`]));
+    if (side === 'range') return firstLine(gitText(root, ['show', `HEAD:${path}`]));
+    return firstLine(readFileSync(join(root, path), 'utf8'));
   } catch {
     return '';
   }
 };
 
 /** The ShellCheck targets on `side`, in the order git lists them. */
-const shellcheckTargets = (root: string, side: Side, base: string | undefined, hooksDir: string): string[] => {
+const shellcheckTargets = (root: string, side: Side, mode: Mode, hooksDir: string): string[] => {
   const listed =
-    side === 'staged'
-      ? gitText(root, ['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMRT', '--no-renames'])
-      : side === 'index'
-        ? gitText(root, ['ls-files', '--cached', '-z'])
-        : side === 'range'
-          ? gitText(root, ['diff', '--name-only', '-z', '--diff-filter=ACMRT', '--no-renames', gitText(root, ['merge-base', base as string, 'HEAD']).trim(), 'HEAD'])
-          : gitText(root, ['ls-files', '-z']);
+    mode.kind === 'base'
+      ? gitText(root, ['diff', '--name-only', '-z', '--diff-filter=ACMRT', '--no-renames', gitText(root, ['merge-base', mode.base, 'HEAD']).trim(), 'HEAD'])
+      : side === 'staged'
+        ? gitText(root, ['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMRT', '--no-renames'])
+        : // The whole index, for the index side and the all side alike.
+          gitText(root, ['ls-files', '-z']);
   const match = shellcheckMatch(hooksDir);
   const files: string[] = [];
-  for (const path of listed.split('\0')) {
-    if (path === '') continue;
+  // Each path git lists ends in a NUL.
+  for (const { 0: path } of listed.matchAll(/[^\0]+/g)) {
     if (match.test(path)) files.push(path);
     else if (!(path.split('/').at(-1) as string).includes('.') && SHELLCHECK_SHEBANG.test(firstLineOn(root, side, path))) files.push(path);
   }
@@ -209,7 +213,7 @@ const snapshot = (root: string, side: Side, files: readonly string[]): string =>
       execFileSync('tar', ['-xf', tar, '-C', dir], { stdio: 'pipe' });
       rmSync(tar);
     } else {
-      execFileSync('git', ['checkout-index', '-f', '-z', `--prefix=${dir}/`, '--stdin'], { cwd: root, input: files.map((f) => `${f}\0`).join(''), stdio: ['pipe', 'pipe', 'pipe'] });
+      execFileSync('git', ['checkout-index', '-f', '-z', `--prefix=${dir}/`, '--stdin'], { cwd: root, input: files.map((f) => `${f}\0`).join(''), stdio: 'pipe' });
     }
   } catch (e) {
     rmSync(dir, { recursive: true, force: true });
@@ -328,6 +332,6 @@ const shellcheckPassFor = (options: GatesOptions, side: Side, flags: readonly st
   };
   if (options.mode.kind === 'files') return report(io.shellcheck(options.root, ['--norc', ...flags, '--', ...options.mode.files]));
   const top = gitText(options.root, ['rev-parse', '--show-toplevel']).trim();
-  const files = shellcheckTargets(top, side, options.mode.kind === 'base' ? options.mode.base : undefined, config.sources.hooksDir);
+  const files = shellcheckTargets(top, side, options.mode, config.sources.hooksDir);
   return shellcheckOn(top, side, files, flags, io, report);
 };

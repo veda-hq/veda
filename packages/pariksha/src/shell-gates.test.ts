@@ -10,13 +10,13 @@
  */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { after, afterEach, before, beforeEach, describe, it } from 'node:test';
+import { basename, dirname, join } from 'node:path';
+import { after, afterEach, before, beforeEach, describe, it, mock } from 'node:test';
 import { run } from './cli.ts';
 import { DEFAULT_RUNTIMES } from './hook-preamble.ts';
-import { DEFAULT_PASSES, errorDetail, type GatesConfig, type GatesIo, parseGatesConfig, report, type RunResult, runChecks, runShellGates, selectSources, type ShellcheckRunner, shellcheckRunner } from './shell-gates.ts';
+import { DEFAULT_PASSES, errorDetail, firstLineOn, type GatesConfig, type GatesIo, parseGatesConfig, report, type RunResult, runChecks, runShellGates, selectSources, type ShellcheckRunner, shellcheckRunner } from './shell-gates.ts';
 
 /** The original's rules, as the product that owned them configures this check. */
 const PRODUCT_JSON = {
@@ -81,6 +81,24 @@ describe('shell-gates: config', () => {
   ] as const) {
     it(`refuses ${json}`, () => {
       assert.throws(() => parseGatesConfig(json), message);
+    });
+  }
+
+  for (const [json, message] of [
+    ['"x"', 'the config must be a JSON object'],
+    ['null', 'the config must be a JSON object'],
+    ['{"exclude":[1]}', '"exclude" must be a list of non-empty strings'],
+    ['{"pitfalls":{"id":" "}}', '"pitfalls.id" must be a non-empty string'],
+    ['{"preamble":{"id":"","selectScript":"s.sh","selectFunction":"f"}}', '"preamble.id" must be a non-empty string'],
+    ['{"preamble":{"selectFunction":"f"}}', '"preamble.selectScript" must be a non-empty string'],
+    ['{"shellcheck":{"passes":[["-a",""]]}}', '"shellcheck.passes" must be a list of flag lists'],
+    ['{"shellcheck":{"passes":[[1]]}}', '"shellcheck.passes" must be a list of flag lists'],
+    ['{"shellcheck":{"inputs":[""]}}', '"shellcheck.inputs" must be a list of non-empty strings'],
+    ['{"shellcheck":{"install":""}}', '"shellcheck.install" must be a non-empty string'],
+    ['{"guidance":["a",1]}', '"guidance" must be a list of lines'],
+  ] as const) {
+    it(`refuses ${json} with the whole message`, () => {
+      assert.throws(() => parseGatesConfig(json), { message });
     });
   }
 });
@@ -172,6 +190,19 @@ describe('shell-gates: in a repository', () => {
     writeFileSync(join(repo, path), text);
   };
   const useConfig = (config: object) => writeFileSync(configFile, JSON.stringify(config));
+  /** Runs `body` with `vars` set in this process's environment, where the gate's own git and ShellCheck read it, then puts the old values back. */
+  const withEnv = <T>(vars: Readonly<Record<string, string>>, body: () => T): T => {
+    const saved = Object.fromEntries(Object.keys(vars).map((name) => [name, process.env[name]]));
+    Object.assign(process.env, vars);
+    try {
+      return body();
+    } finally {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) Reflect.deleteProperty(process.env, name);
+        else process.env[name] = value;
+      }
+    }
+  };
 
   /** What each ShellCheck call was asked, and the text of each file it was named, read from where it ran. */
   interface Call {
@@ -528,6 +559,202 @@ describe('shell-gates: in a repository', () => {
       const absent = shellcheckRunner(join(repo, 'no-such-binary'))(repo, ['--version']);
       assert.equal(absent.error?.code, 'ENOENT');
       assert.equal(absent.stdout, '');
+    });
+
+    it('shellcheckRunner keeps all of a run’s output, and adds no error to a clean run', () => {
+      const ran = shellcheckRunner(process.execPath)(repo, ['-e', 'process.stdout.write("o".repeat(1000)); process.stderr.write("e")']);
+      assert.deepEqual(ran, { status: 0, stdout: 'o'.repeat(1000), stderr: 'e' });
+      const absent = shellcheckRunner(join(repo, 'no-such-binary'))(repo, ['--version']);
+      assert.deepEqual({ status: absent.status, stdout: absent.stdout, stderr: absent.stderr, code: absent.error?.code }, { status: null, stdout: '', stderr: '', code: 'ENOENT' });
+    });
+
+    it('shellcheckRunner runs the shellcheck on PATH by default', () => {
+      const bin = join(dirname(repo), 'bin');
+      mkdirSync(bin);
+      writeFileSync(join(bin, 'shellcheck'), `#!${process.execPath}\nprocess.stdout.write(process.argv.slice(2).join(' '));\n`, { mode: 0o755 });
+      assert.deepEqual(
+        withEnv({ PATH: bin }, () => shellcheckRunner()(repo, ['--version'])),
+        { status: 0, stdout: '--version', stderr: '' },
+      );
+    });
+
+    it('reads a staged file from the index, however long it is', () => {
+      const long = `#!/bin/sh\n# ${'x'.repeat(400)}\n`;
+      write('tools/run', long);
+      write('tools/data', 'not shell\n');
+      git('add', '-A');
+      write('tools/run', 'not shell\n');
+      write('tools/data', '#!/bin/sh\n');
+      assert.equal(cli(['--config', configFile, '--staged']).code, 0);
+      const pass = calls[1] as Call;
+      assert.deepEqual(pass.args, ['--norc', '--severity=warning', 'tools/run']);
+      assert.deepEqual(pass.seen, { 'tools/run': long });
+    });
+
+    it('reads the whole index from the index, not the working tree', () => {
+      write('tools/run', '#!/bin/sh\necho run\n');
+      write('tools/data', 'not shell\n');
+      git('add', '-A');
+      git('commit', '-qm', 'tools');
+      write('scripts/run-validation.sh', '#!/bin/bash\necho "dispatch"\n');
+      git('add', '-A');
+      write('tools/run', 'not shell\n');
+      write('tools/data', '#!/bin/sh\n');
+      assert.equal(cli(['--config', configFile, '--staged']).code, 0);
+      const pass = calls[1] as Call;
+      assert.deepEqual(pass.args, ['--norc', '--severity=warning', 'scripts/a.sh', 'scripts/run-validation.sh', 'tools/run']);
+      assert.equal(pass.seen['tools/run'], '#!/bin/sh\necho run\n');
+    });
+
+    it('reads first lines from the working tree in all mode, with POSIX spaces in a shebang', () => {
+      write('tools/was', '#!/bin/sh\n');
+      write('tools/now', 'not shell\n');
+      git('add', '-A');
+      git('commit', '-qm', 'tools');
+      write('tools/was', 'not shell\n');
+      write('tools/now', '#!/bin/sh\n');
+      const lines: Array<[string, string]> = [
+        ['t/a', '#! /bin/sh'],
+        ['t/b', '#!\v/bin/sh'],
+        ['t/c', '#!/usr/bin/env\vbash'],
+        ['t/d', '#!/usr/bin/env -V bash'],
+        ['t/e', '#!/usr/bin/env -S\vbash'],
+        ['t/f', '#!/V/sh'],
+        ['t/g', '#!/bin/sh\vx'],
+        ['t/h', '#!/usr/bin/env  bash'],
+        ['t/i', '#!/usr/bin/env -iS bash'],
+        ['t/j', '#!/usr/bin/env -S  bash'],
+        ['t/k', '#!/bin/sh -e'],
+        ['t/l', 'echo #!/bin/sh'],
+      ];
+      for (const [path, line] of lines) write(path, `${line}\necho x\n`);
+      git('add', 't');
+      assert.equal(cli(['--config', configFile, '--all']).code, 0);
+      assert.deepEqual((calls[1] as Call).args, ['--norc', '--severity=warning', 'scripts/a.sh', 't/a', 't/b', 't/c', 't/d', 't/e', 't/f', 't/g', 't/h', 't/i', 't/j', 't/k', 'tools/now']);
+    });
+
+    it('judges the HEAD commit in base mode where the index differs, from a snapshot under the temporary directory', () => {
+      const tmp = join(dirname(repo), 'tmp');
+      mkdirSync(tmp);
+      write('scripts/b.sh', '#!/bin/bash\necho "committed"\n');
+      write('tools/run', '#!/bin/sh\necho run\n');
+      git('add', '-A');
+      git('commit', '-qm', 'b');
+      write('scripts/b.sh', '#!/bin/bash\necho "staged"\n');
+      write('tools/run', 'not shell\n');
+      git('add', '-A');
+      const listings: string[][] = [];
+      const record = stub();
+      const runner: ShellcheckRunner = (cwd, args) => {
+        if (args[0] !== '--version') listings.push(readdirSync(cwd, { recursive: true }).map(String).sort());
+        return record(cwd, args);
+      };
+      assert.equal(withEnv({ TMPDIR: tmp }, () => cli(['--config', configFile, '--base', 'HEAD~1'], runner)).code, 0);
+      const pass = calls[1] as Call;
+      assert.deepEqual(pass.args, ['--norc', '--severity=warning', 'scripts/b.sh', 'tools/run']);
+      assert.deepEqual(pass.seen, { 'scripts/b.sh': '#!/bin/bash\necho "committed"\n', 'tools/run': '#!/bin/sh\necho run\n' });
+      assert.equal(dirname(pass.cwd), tmp);
+      assert.equal(basename(pass.cwd).slice(0, -6), 'shell-gates-');
+      assert.deepEqual(listings, [
+        ['scripts', 'scripts/b.sh', 'tools', 'tools/run'],
+        ['scripts', 'scripts/b.sh', 'tools', 'tools/run'],
+      ]);
+    });
+
+    it('keeps what git and tar print while snapshotting off the terminal', () => {
+      const bin = join(dirname(repo), 'bin');
+      mkdirSync(bin);
+      const path = process.env['PATH'] as string;
+      writeFileSync(join(bin, 'git'), `#!/bin/sh\ncase "$1" in archive|checkout-index) echo "$1 says hello" >&2 ;; esac\nPATH='${path}' exec git "$@"\n`, { mode: 0o755 });
+      writeFileSync(join(bin, 'tar'), `#!/bin/sh\necho "tar says hello" >&2\nPATH='${path}' exec tar "$@"\n`, { mode: 0o755 });
+      write('scripts/b.sh', '#!/bin/bash\necho "b"\n');
+      git('add', '-A');
+      git('commit', '-qm', 'b');
+      write('scripts/a.sh', '#!/bin/bash\necho "staged"\n');
+      git('add', '-A');
+      const spy = mock.method(process.stderr, 'write', () => true);
+      const [base, staged] = (() => {
+        try {
+          return withEnv({ PATH: `${bin}:${path}` }, () => [cli(['--config', configFile, '--base', 'HEAD~1']), cli(['--config', configFile, '--staged'])]);
+        } finally {
+          spy.mock.restore();
+        }
+      })();
+      // The gate's other git calls pass their stderr through, empty here.
+      assert.deepEqual(
+        spy.mock.calls.map((c) => String(c.arguments[0])).filter((chunk) => chunk !== ''),
+        [],
+      );
+      assert.deepEqual(base, { code: 0, out: ['✅ Shell gates: 1 file(s) pass preamble, pitfalls'], err: [] });
+      assert.deepEqual(staged, { code: 0, out: ['✅ Shell gates: 1 file(s) pass preamble, pitfalls'], err: [] });
+      assert.deepEqual(
+        calls.map((c) => [c.args.at(-1), Object.values(c.seen)]),
+        [
+          ['--version', []],
+          ['scripts/b.sh', ['#!/bin/bash\necho "b"\n']],
+          ['scripts/b.sh', ['#!/bin/bash\necho "b"\n']],
+          ['--version', []],
+          ['scripts/a.sh', ['#!/bin/bash\necho "staged"\n']],
+          ['scripts/a.sh', ['#!/bin/bash\necho "staged"\n']],
+        ],
+      );
+    });
+
+    it('removes a snapshot it could not write, and says why', () => {
+      const bin = join(dirname(repo), 'bin');
+      mkdirSync(bin);
+      const tmp = join(dirname(repo), 'tmp');
+      mkdirSync(tmp);
+      const record = join(dirname(repo), 'tar-dir');
+      writeFileSync(join(bin, 'tar'), `#!/bin/sh\nprintf '%s' "$4" > '${record}'\necho 'tar: cannot extract' >&2\nexit 2\n`, { mode: 0o755 });
+      write('scripts/b.sh', '#!/bin/bash\necho "b"\n');
+      git('add', '-A');
+      git('commit', '-qm', 'b');
+      const result = withEnv({ PATH: `${bin}:${process.env['PATH'] as string}`, TMPDIR: tmp }, () => cli(['--config', configFile, '--base', 'HEAD~1']));
+      const dir = readFileSync(record, 'utf8');
+      assert.deepEqual(result, { code: 2, out: [], err: [`❌ Shell gates could not run: Command failed: tar -xf ${dir}/.snapshot.tar -C ${dir}\ntar: cannot extract\n`] });
+      assert.deepEqual(readdirSync(tmp), []);
+    });
+
+    it('is no error when the snapshot is gone before it is removed', () => {
+      const bin = join(dirname(repo), 'bin');
+      mkdirSync(bin);
+      const tmp = join(dirname(repo), 'tmp');
+      mkdirSync(tmp);
+      const record = join(dirname(repo), 'tar-dir');
+      writeFileSync(join(bin, 'tar'), `#!/bin/sh\nprintf '%s' "$4" > '${record}'\nrm -rf "$4"\necho 'tar: cannot extract' >&2\nexit 2\n`, { mode: 0o755 });
+      write('scripts/b.sh', '#!/bin/bash\necho "b"\n');
+      git('add', '-A');
+      git('commit', '-qm', 'b');
+      const failed = withEnv({ PATH: `${bin}:${process.env['PATH'] as string}`, TMPDIR: tmp }, () => cli(['--config', configFile, '--base', 'HEAD~1']));
+      const dir = readFileSync(record, 'utf8');
+      assert.deepEqual(failed, { code: 2, out: [], err: [`❌ Shell gates could not run: Command failed: tar -xf ${dir}/.snapshot.tar -C ${dir}\ntar: cannot extract\n`] });
+      // A ShellCheck run that removes the snapshot it ran in.
+      write('scripts/a.sh', '#!/bin/bash\necho "staged"\n');
+      git('add', '-A');
+      const removing: ShellcheckRunner = (cwd) => {
+        if (cwd !== repo) rmSync(cwd, { recursive: true });
+        return { status: 0, stdout: '', stderr: '' };
+      };
+      assert.deepEqual(cli(['--config', configFile, '--staged'], removing), { code: 0, out: ['✅ Shell gates: 1 file(s) pass preamble, pitfalls'], err: [] });
+    });
+
+    it('asks git for the top level first when no ShellCheck input is configured', () => {
+      useConfig({ ...PRODUCT_JSON, shellcheck: { install: 'x' } });
+      const plain = join(dirname(repo), 'plain');
+      mkdirSync(plain);
+      const err: string[] = [];
+      const code = withEnv({ GIT_CEILING_DIRECTORIES: dirname(repo) }, () => run(['shell-gates', '--root', plain, '--config', configFile, '--staged'], { out: () => undefined, err: (l) => err.push(l), shellcheck: stub() }, '0.0.0'));
+      assert.equal(code, 2);
+      assert.deepEqual(
+        err.map((l) => l.split('\n')[0]),
+        ['❌ Shell gates could not run: Command failed: git rev-parse --show-toplevel'],
+      );
+    });
+
+    it('firstLineOn reads nothing from a file it cannot read', () => {
+      assert.equal(firstLineOn(repo, 'all', 'gone'), '');
+      assert.equal(firstLineOn(repo, 'staged', 'gone'), '');
     });
   });
 

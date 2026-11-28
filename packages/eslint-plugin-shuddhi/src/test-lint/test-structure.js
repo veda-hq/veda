@@ -301,8 +301,8 @@ const noNestedTestBlocks = {
 /**
  * How Vitest renders a literal cell for `token` (`%s`, `%j`..., or null for a
  * `$name`), or null when the cell is not a literal. Only the distinctions that decide
- * whether two rows collide matter: `%s` prints '10' and 10 alike, `%j`/`%p`
- * and `$name` quote the string.
+ * whether two rows collide matter: `%s` prints '10' and 10 alike, `%d` prints
+ * `true` as 1, `%j`/`%p` and `$name` quote the string.
  */
 function renderCell(node, token) {
   const value = unwrap(node);
@@ -315,6 +315,12 @@ function renderCell(node, token) {
   // Only an Identifier has a `name`.
   else if (value.name === 'undefined') raw = undefined;
   else return null;
+  // Vitest's `%d` is `Number(value).toString()`: `true` prints 1, `false` and
+  // `null` print 0. An `undefined` cell stays `undefined`, where Vitest prints
+  // NaN: two of them collide either way.
+  if (token === '%d' && (typeof raw === 'boolean' || raw === null)) {
+    return String(Number(raw));
+  }
   if (typeof raw !== 'string') return String(raw);
   if (['%d', '%i', '%f'].includes(token)) {
     // Text that is not a finite number renders NaN or Infinity, which says

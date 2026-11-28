@@ -2247,6 +2247,17 @@ ruleTester.run('env-via-stub: near misses', rules['env-via-stub']!, {
       filename: TEST_FILE,
       code: `it('a', () => { const prior = process.exitCode; onTestFinished(() => { process.exitCode = prior; }, 1_000); process.exitCode = 1; });`,
     },
+    // A beforeEach that registers an onTestFinished restore covers its
+    // block, as an afterEach does: Vitest runs the callback after each test.
+    {
+      filename: TEST_FILE,
+      code: `beforeEach(() => { onTestFinished(() => { process.exitCode = undefined; }); });\nit('a', () => { process.exitCode = 1; });`,
+    },
+    // A describe's beforeEach covers the tests nested inside it.
+    {
+      filename: TEST_FILE,
+      code: `describe('a', () => { beforeEach(() => { onTestFinished(() => { process.exitCode = undefined; }); }); describe('b', () => { it('c', () => { process.exitCode = 1; }); }); });`,
+    },
   ],
   invalid: [
     // A write in the registering call's own arguments runs before the
@@ -2262,11 +2273,32 @@ ruleTester.run('env-via-stub: near misses', rules['env-via-stub']!, {
       code: `it('a', () => { count += 1; process.exitCode = 1; });`,
       errors: [{ messageId: 'exitCode' }],
     },
-    // Only an after hook covers its block: a restore registered from a
-    // beforeEach is not read as one.
+    // A beforeEach restore in one describe does not cover a test in a
+    // sibling describe: only the second write is reported.
     {
       filename: TEST_FILE,
-      code: `beforeEach(() => { onTestFinished(() => { process.exitCode = undefined; }); });\nit('a', () => { process.exitCode = 1; });`,
+      code: `describe('a', () => { beforeEach(() => { onTestFinished(() => { process.exitCode = undefined; }); }); it('x', () => { process.exitCode = 1; }); });\ndescribe('b', () => { it('y', () => { process.exitCode = 2; }); });`,
+      errors: [{ messageId: 'exitCode', line: 2 }],
+    },
+    // An onTestFinished from a beforeEach that writes no exit code restores
+    // nothing.
+    {
+      filename: TEST_FILE,
+      code: `beforeEach(() => { onTestFinished(() => { process.exitCode; }); });\nit('a', () => { process.exitCode = 1; });`,
+      errors: [{ messageId: 'exitCode', line: 2 }],
+    },
+    // An onTestFailed from a beforeEach runs only when the test fails, so a
+    // passing test's exit code stays set.
+    {
+      filename: TEST_FILE,
+      code: `beforeEach(() => { onTestFailed(() => { process.exitCode = undefined; }); });\nit('a', () => { process.exitCode = 1; });`,
+      errors: [{ messageId: 'exitCode', line: 2 }],
+    },
+    // A beforeAll runs with no current test, so its onTestFinished restores
+    // no test of the block.
+    {
+      filename: TEST_FILE,
+      code: `beforeAll(() => { onTestFinished(() => { process.exitCode = undefined; }); });\nit('a', () => { process.exitCode = 1; });`,
       errors: [{ messageId: 'exitCode', line: 2 }],
     },
   ],

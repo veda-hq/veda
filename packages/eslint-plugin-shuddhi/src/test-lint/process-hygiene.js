@@ -807,10 +807,11 @@ const envViaStub = {
       maskHelper: optionsOf(context, GIT_MASK_DEFAULTS).maskHelper,
     };
     const exitCodes = [];
-    // The afterEach/afterAll callbacks that restore it. One covers the block
-    // that registers it (registeringBlock): the describe callback, or the
-    // whole file for a top-level hook. A restore in one describe says nothing
-    // about a test in another.
+    // The afterEach/afterAll callbacks that restore it, and the beforeEach
+    // callbacks that register an onTestFinished restoring it. One covers the
+    // block that registers it (registeringBlock): the describe callback, or
+    // the whole file for a top-level hook. A restore in one describe says
+    // nothing about a test in another.
     const restoringHooks = [];
     // Teardown callbacks that write `process.exitCode`, seen before any
     // write they guard: source order is visit order.
@@ -827,11 +828,18 @@ const envViaStub = {
         const teardown = chain.find(isTeardownCallback);
         if (teardown) {
           restorers.add(teardown.fn);
+          // A beforeEach restores only through an onTestFinished it
+          // registers, which Vitest runs after each test it covers; an
+          // onTestFailed runs only when the test fails. The teardown's
+          // parent is its registering call: only an Identifier callee has a
+          // `name`.
+          const finishes = teardown.fn.parent.callee.name === 'onTestFinished';
           const hook = chain.find(
             entry =>
               entry.owner?.kind === 'hook' &&
               (entry.owner.name === 'afterEach' ||
-                entry.owner.name === 'afterAll'),
+                entry.owner.name === 'afterAll' ||
+                (entry.owner.name === 'beforeEach' && finishes)),
           );
           if (hook) restoringHooks.push(hook.fn);
           return;

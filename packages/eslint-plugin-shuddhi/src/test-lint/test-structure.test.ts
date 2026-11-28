@@ -1961,7 +1961,18 @@ describe('test structure: decisions the mutation sweep pinned', () => {
     assert.deepEqual(ids(`[[1], [1]]`, `'case %s %s'`), []);
     assert.deepEqual(ids('[[`x`], [`y`]]', `'case %s'`), []);
     assert.deepEqual(ids(`[[undefined], [undefined]]`, `'case %d'`), ['duplicateTitle']);
-    assert.deepEqual(ids(`[[true], [1]]`, `'case %d'`), []);
+    // Under %d a boolean or null prints Number(value): true 1, false and null 0.
+    assert.deepEqual(ids(`[[true], [1]]`, `'case %d'`), ['duplicateTitle']);
+    assert.deepEqual(ids(`[[false], [0]]`, `'case %d'`), ['duplicateTitle']);
+    assert.deepEqual(ids(`[[null], ['0']]`, `'case %d'`), ['duplicateTitle']);
+    assert.deepEqual(ids(`[[true], [false]]`, `'case %d'`), []);
+    assert.deepEqual(ids(`[[true], [1]]`, `'case %s'`), []);
+    assert.deepEqual(ids(`[[true], [1]]`, `'case %i'`), []);
+    // An undefined cell under %d still prints undefined, not NaN.
+    assert.deepEqual(
+      ids(`[['a', undefined, '1 c'], ['a undefined', 1, 'c']]`, `'case %s %d %s'`),
+      ['duplicateTitle'],
+    );
     assert.deepEqual(ids(`[[null], ['null']]`, `'case %s'`), ['duplicateTitle']);
     assert.deepEqual(ids(`[[x.undefined], [x.undefined]]`, `'case %s'`), []);
     assert.deepEqual(ids(`[1, 1]`, `'case %s'`), ['duplicateTitle']);

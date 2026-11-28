@@ -93,6 +93,8 @@ describe('splitAndOrLists', () => {
     ['a <&0 b', ['a <&0 b']],
     ['a && b', ['a && b']],
     ['cat <<EOF\nx; y\nEOF\nb', ['cat <<EOF', 'b']],
+    ['a; ;b', ['a', 'b']],
+    ['((a); b); c', ['((a); b)', 'c']],
   ];
   for (const [script, lists] of cases) {
     it(`${JSON.stringify(script)} → ${JSON.stringify(lists)}`, () => {
@@ -119,6 +121,41 @@ describe('heredoc bodies end where bash ends them', () => {
   it('two bodies on one line, in order', () => {
     assert.equal(stripHeredocBodies('cat <<A <<B\na\nA\nb\nB\nrun gate'), 'cat <<A <<B\nrun gate');
   });
+});
+
+describe('stripHeredocBodies, script by script', () => {
+  const cases: Array<[string, string]> = [
+    // A `\'` inside `$'…'` closes nothing; the string, and its `<<`, run on.
+    ["echo $'a\\' <<EOF'\nrun gate", "echo $'a\\' <<EOF'\nrun gate"],
+    // An unclosed `$'…'` runs to the end of the line, past its `\'`.
+    ["cat $'a\\' <<EOF\nrun gate", "cat $'a\\' <<EOF\nrun gate"],
+    // An escaped space inside `$'…'` or `"…"`, then the closing quote.
+    ["cat $'a\\ ' <<EOF\nrun gate\nEOF", "cat $'a\\ ' <<EOF"],
+    ['cat "a\\ " <<EOF\nrun gate\nEOF', 'cat "a\\ " <<EOF'],
+    ['echo "a\\" <<EOF"\nrun gate', 'echo "a\\" <<EOF"\nrun gate'],
+    // An unclosed quote runs to the end of the line.
+    ["echo 'a <<EOF\nrun gate", "echo 'a <<EOF\nrun gate"],
+    ['echo "a <<EOF\nrun gate', 'echo "a <<EOF\nrun gate'],
+    // A comment after a word.
+    ['echo x # <<EOF\nrun gate', 'echo x # <<EOF\nrun gate'],
+    // Five `<` are one here-string operator.
+    ['cat <<<<<EOF\nrun gate', 'cat <<<<<EOF\nrun gate'],
+    // Quoted delimiters, and a `$'…'` one holding `\'`.
+    ["cat <<'EOF'\nbody\nEOF\nrun gate", "cat <<'EOF'\nrun gate"],
+    ['cat <<"E O F"\nbody\nE O F\nrun gate', 'cat <<"E O F"\nrun gate'],
+    ["cat <<$'a\\'b'\nbody\na'b\nrun gate", "cat <<$'a\\'b'\nrun gate"],
+    // Nested arithmetic: the `<<` is still inside the outer `((`.
+    ['n=$(( ((1)) << 2 ))\nrun gate', 'n=$(( ((1)) << 2 ))\nrun gate'],
+    // Only `<<-` strips tabs, every leading one, and only leading ones.
+    ['cat <<EOF\n\tEOF\nrun gate', 'cat <<EOF'],
+    ['cat <<-EOF\n\t\tEOF\nrun gate', 'cat <<-EOF\nrun gate'],
+    ['cat <<-EOF\nEOF\t\nrun gate\nEOF', 'cat <<-EOF'],
+  ];
+  for (const [script, stripped] of cases) {
+    it(`${JSON.stringify(script)} → ${JSON.stringify(stripped)}`, () => {
+      assert.equal(stripHeredocBodies(script), stripped);
+    });
+  }
 });
 
 describe('splitSegmentsWithSeparators', () => {
@@ -222,6 +259,40 @@ describe('splitSegmentsWithSeparators', () => {
       'echo "a;b"\\; c',
       [{ text: 'echo "a;b"\\; c', next: '' }],
     ],
+    // A bare `(` after a word opens nothing either.
+    [
+      'a (b; c)',
+      [
+        { text: 'a (b', next: ';' },
+        { text: 'c)', next: '' },
+      ],
+    ],
+    [String.raw`x<(a; b)`, [{ text: 'x<(a; b)', next: '' }]],
+    ['; a', [{ text: 'a', next: '' }]],
+    // An empty or blank segment is no segment.
+    [
+      'a;;b',
+      [
+        { text: 'a', next: ';' },
+        { text: 'b', next: '' },
+      ],
+    ],
+    [
+      'a; ;b',
+      [
+        { text: 'a', next: ';' },
+        { text: 'b', next: '' },
+      ],
+    ],
+    // A comment at the start of the script.
+    ['#x; y\nz', [{ text: 'z', next: '' }]],
+    [
+      'a\nb',
+      [
+        { text: 'a', next: '\n' },
+        { text: 'b', next: '' },
+      ],
+    ],
   ];
   for (const [script, segments] of cases) {
     it(JSON.stringify(script), () => {
@@ -262,6 +333,19 @@ describe('tokenize', () => {
     ['a\\', [{ value: 'a\\', quoted: false }]],
     ['"a b"c', [{ value: 'a bc', quoted: true }]],
     ['', []],
+    [
+      'a  b',
+      [
+        { value: 'a', quoted: false },
+        { value: 'b', quoted: false },
+      ],
+    ],
+    // A lone backslash at the end of a `$'…'` is kept as it is.
+    ["$'a\\", [{ value: 'a\\', quoted: true }]],
+    // Only a `\x` right after the backslash is a hex escape.
+    [String.raw`$'\qx41'`, [{ value: String.raw`\qx41`, quoted: true }]],
+    // A word that is only an escaped character is a word.
+    [String.raw`\a`, [{ value: 'a', quoted: false }]],
   ];
   for (const [segment, tokens] of cases) {
     it(JSON.stringify(segment), () => {
@@ -297,6 +381,26 @@ describe('substitutionBodies', () => {
     ['$(a (b) c) $(d)', ['a (b) c', 'd']],
     ['$(#)\n) $(y)', ['#)\n', 'y']],
     ['$(a#)', ['a#']],
+    // Strings and comments outside a substitution.
+    [String.raw`echo $'a\ '$(x)`, ['x']],
+    ["echo 'a$(x)'", []],
+    [String.raw`echo $'a\'$(x)`, []],
+    ["echo '$(x)", []],
+    ['#$(x)', []],
+    ['echo `a\\ b`', ['a\\ b']],
+    // Backquotes inside double quotes.
+    ['"`ab`"', ['ab']],
+    ['"`a\\`b`"', ['a`b']],
+    ['"`a\\ b`"', ['a\\ b']],
+    // Strings inside a substitution's body, closed and not.
+    ["$(echo 'a)') $(y)", ["echo 'a)'", 'y']],
+    [String.raw`$(echo $'\ )') $(y)`, [String.raw`echo $'\ )'`, 'y']],
+    [String.raw`$(echo $'a\')`, []],
+    ["$(echo 'a)", []],
+    [String.raw`$(echo "a\")") $(y)`, [String.raw`echo "a\")"`, 'y']],
+    ['$(echo "a)") $(y)', ['echo "a)"', 'y']],
+    [String.raw`$(echo "\ )") $(y)`, [String.raw`echo "\ )"`, 'y']],
+    ['$(echo "a)', []],
   ];
   for (const [script, bodies] of cases) {
     it(`${JSON.stringify(script)} → ${JSON.stringify(bodies)}`, () => {

@@ -242,7 +242,7 @@ test("one round retries a lane's timeouts: one worker, a 3-minute limit, every s
   const result = await judgeLane(plan, deps);
   assert.deepEqual(runs[1], {
     cwd: '/repo/apps/web',
-    args: ['run', RETRY_WRAPPER, '--concurrency', '1', '--timeoutMS', '180000', '--mutate', 'src/a.ts:3:4-3:8,src/b.ts:1:4-1:8'],
+    args: ['run', RETRY_WRAPPER, '--concurrency', '4', '--timeoutMS', '180000', '--mutate', 'src/a.ts:3:4-3:8,src/b.ts:1:4-1:8'],
     env: { X: '1', AGNIPARIKSHA_RETRY_SPANS: 'src/a.ts:3:4-3:8\nsrc/b.ts:1:4-1:8', AGNIPARIKSHA_RETRY_EVENTS: EVENTS },
     stopAfterMs: 900_000,
   });

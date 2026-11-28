@@ -5,6 +5,13 @@ import type { Mutant } from './verdict.ts';
 export const RETRY_TIMEOUT_MS = 180_000;
 /** The retry pass's budget: a wall from the pass's start, at which the round running is stopped. */
 export const RETRY_BUDGET_MS = 15 * 60_000;
+/**
+ * A round's Stryker concurrency. A real hang takes the whole
+ * `RETRY_TIMEOUT_MS`; four side by side make five hangs cost two of those
+ * rows, not five (veda#584, #726). The limit is far above what load does to
+ * a mutant that is killed, so running four at once turns none into a hang.
+ */
+export const RETRY_CONCURRENCY = 4;
 
 /** A mutant as Stryker finished it in a round, and when (on the pass's clock). */
 export interface Tested {
@@ -205,7 +212,8 @@ export async function retryTimeouts(
       refusals.push(`${label} (${round.map(describeMutant).join(', ')}): ${run.refusal}`);
       continue;
     }
-    // At one worker, a mutant's time runs from the event before it.
+    // A mutant's time runs from the event before it. At RETRY_CONCURRENCY workers that is its share of the
+    // round's wall time, not its own run: the shares add up to the round, so the refusal's split still holds.
     // An event for no retried mutant (another replacement at its node) keys `undefined`, which no lookup asks for.
     const times = new Map<Mutant | undefined, number>();
     let previous = dryRunEnd;
